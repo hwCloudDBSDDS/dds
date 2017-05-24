@@ -1,0 +1,34 @@
+net:
+  bindIp: 127.0.0.1
+  maxIncomingConnections: 1024
+  port: 8637
+  ssl: {CAFile: /CA/ca.crt, PEMKeyFile: /CA/clusterServer.pem, PEMKeyPassword: '******',
+    allowConnectionsWithoutCertificates: true, allowInvalidCertificates: false, clusterFile: /CA/clusterServer.pem,
+    clusterPassword: '******', disabledProtocols: 'TLS1_0,TLS1_1', mode: requireSSL}
+  unixDomainSocket: {enabled: false}
+operationProfiling: {mode: slowOp, profileSizeMB: 16, slowOpThresholdMs: 100}
+processManagement: {fork: true, pidFilePath: /opt/mongodb/pid/mongod.pid}
+replication: {enableMajorityReadConcern: true, oplogSizeMB: 10240, replSetName: SHARD-1,
+  secondaryIndexPrefetch: all}
+security: {authorization: enabled, clusterAuthMode: x509, javascriptEnabled: false,
+  limitVerifyTimes: true}
+setParameter: {connPoolMaxConnsPerHost: 600, connPoolMaxShardedConnsPerHost: 600,
+  cursorTimeoutMillis: 600000, diagnosticDataCollectionDirectorySizeMB: 100, diagnosticDataCollectionEnabled: true,
+  diagnosticDataCollectionFileSizeMB: 10, diagnosticDataCollectionPeriodMillis: 1000,
+  disableJavaScriptJIT: true, enableLocalhostAuthBypass: true, failIndexKeyTooLong: true,
+  logUserIds: 1, recoverShardingState: true, replWriterThreadCount: 5, wiredTigerConcurrentReadTransactions: 128,
+  wiredTigerConcurrentWriteTransactions: 128}
+sharding: {archiveMovedChunks: false, clusterRole: shardsvr}
+storage:
+  dbPath: /opt/mongodb/data/mongod/
+  directoryPerDB: true
+  engine: wiredTiger
+  indexBuildRetry: true
+  journal: {commitIntervalMs: 100, enabled: true}
+  syncPeriodSecs: 60
+  wiredTiger:
+    collectionConfig: {blockCompressor: snappy}
+    engineConfig: {directoryForIndexes: true, journalCompressor: snappy}
+    indexConfig: {prefixCompression: true}
+systemLog: {destination: file, logAppend: true, logRotate: reopen, path: /opt/mongodb/log/mongod.log,
+  timeStampFormat: iso8601-local, verbosity: 0}
