@@ -1,0 +1,16 @@
+net:
+  bindIp: 127.0.0.1
+  maxIncomingConnections: 200
+  port: '8635'
+  ssl: {CAFile: /CA/ca.crt, PEMKeyFile: /CA/client.pem, PEMKeyPassword: '******',
+    allowConnectionsWithoutCertificates: true, allowInvalidCertificates: false, clusterFile: /CA/clusterServer.pem,
+    clusterPassword: '******', disabledProtocols: 'TLS1_0,TLS1_1', mode: requireSSL}
+  unixDomainSocket: {enabled: false}
+processManagement: {fork: true, pidFilePath: /opt/mongodb/pid/mongos.pid}
+replication: {localPingThresholdMs: 15}
+security: {clusterAuthMode: x509, limitVerifyTimes: true}
+setParameter: {connPoolMaxConnsPerHost: 600, connPoolMaxShardedConnsPerHost: 600,
+  cursorTimeoutMillis: 600000, enableLocalhostAuthBypass: true, logUserIds: 1, userCacheInvalidationIntervalSecs: 30}
+sharding: {autoSplit: true, chunkSize: 64, configDB: 'CONFIGSVR-1/127.0.0.1:8636'}
+systemLog: {destination: file, logAppend: true, logRotate: reopen, path: /opt/mongodb/log/mongos.log,
+  timeStampFormat: iso8601-local, verbosity: 0}
