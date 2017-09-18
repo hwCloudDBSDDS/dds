@@ -38,6 +38,7 @@
 #include "mongo/client/global_conn_pool.h"
 #include "mongo/client/replica_set_monitor_internal.h"
 #include "mongo/db/server_options.h"
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 #include "mongo/db/server_parameters.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
@@ -83,7 +84,7 @@ const Milliseconds kFindHostMaxBackOffTime(500);
 // TODO: Move to ReplicaSetMonitorManager
 ReplicaSetMonitor::ConfigChangeHook asyncConfigChangeHook;
 ReplicaSetMonitor::ConfigChangeHook syncConfigChangeHook;
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 MONGO_EXPORT_SERVER_PARAMETER(timeOutMonitoringReplicaSets, bool, false);
 
 // global background job responsible for checking every X amount of time
@@ -174,7 +175,7 @@ protected:
             }
 
             m->startOrContinueRefresh().refreshAll();
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 			if (!m->isSetUsable()) {
 				if(timeOutMonitoringReplicaSets){
 				    log() << "Stopping periodic monitoring of set " << m->getName()
@@ -191,7 +192,7 @@ protected:
             }
         }
     }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     // protects _started, _stopRequested
     stdx::mutex _monitorMutex;
     bool _started;
@@ -494,6 +495,7 @@ Refresher::Refresher(const SetStatePtr& setState)
 
 Refresher::NextStep Refresher::getNextStep() {
     // If the set is faulty, don't try anymore
+	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     if (!_set->isUsable()&& timeOutMonitoringReplicaSets) {
         return NextStep(NextStep::DONE);
     }
@@ -549,6 +551,7 @@ Refresher::NextStep Refresher::getNextStep() {
             _set->consecutiveFailedScans = 0;
         } else {
             _set->consecutiveFailedScans++;
+			//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 			if(timeOutMonitoringReplicaSets){
 				log() << "All nodes for set " << _set->name << " are down. "
                   << "This has happened for " << _set->consecutiveFailedScans

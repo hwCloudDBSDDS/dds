@@ -339,7 +339,7 @@ void Command::logIfSlow(const Timer& timer, const string& msg) {
         log() << msg << " took " << ms << " ms." << endl;
     }
 }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 /*****modify mongodb code start*****/
 
 namespace {
@@ -404,7 +404,7 @@ static Status _checkAuthForUser(Command* c,
 
     return Status::OK();
 }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 static Status _checkAuthorizationImpl(Command* c,
                                       ClientBasic* client,
                                       const std::string& dbname,
@@ -426,7 +426,7 @@ static Status _checkAuthorizationImpl(Command* c,
         if (!status.isOK()) {
             return status;
         }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
         status = _checkAuthForUser(c, client, dbname, cmdObj);
         if (status == ErrorCodes::Unauthorized) {
             mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
@@ -435,7 +435,7 @@ static Status _checkAuthorizationImpl(Command* c,
                           str::stream() << "not authorized on " << dbname << " to execute command "
                                         << cmdToLog.toString());
         }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     } else if (c->adminOnly() && c->localHostOnlyIfNoAuth(cmdObj) &&
                !client->getIsLocalHostConnection()) {
         return Status(ErrorCodes::Unauthorized,

@@ -205,7 +205,7 @@ public:
     }
     int64_t cappedMaxDocs() const;
     int64_t cappedMaxSize() const;
-
+    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     virtual bool setCappedSize(long long cappedSize) {
          _cappedMaxSize = cappedSize;
 	  return true;
@@ -215,7 +215,7 @@ public:
         _cappedMaxDocs = cappedMaxDocs;
         return true;
     }
-	
+	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     const std::string& getURI() const {
         return _uri;
     }
@@ -287,9 +287,11 @@ private:
     const bool _isEphemeral;
     // True if the namespace of this record store starts with "local.oplog.", and false otherwise.
     const bool _isOplog;
+	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     int64_t _cappedMaxSize;
     const int64_t _cappedMaxSizeSlack;  // when to start applying backpressure
-    int64_t _cappedMaxDocs;
+    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+	int64_t _cappedMaxDocs;
     RecordId _cappedFirstRecord;
     AtomicInt64 _cappedSleep;
     AtomicInt64 _cappedSleepMS;

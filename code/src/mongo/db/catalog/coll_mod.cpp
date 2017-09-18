@@ -143,6 +143,7 @@ Status collMod(OperationContext* txn,
             auto status = coll->setValidationAction(txn, e.String());
             if (!status.isOK())
                 errorStatus = std::move(status);
+        //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
         } else if (str::equals("cappedSize", e.fieldName()) ||
                        str::equals("cappedMaxDocs", e.fieldName())) {
             if (!e.isNumber()) {
@@ -190,6 +191,7 @@ Status collMod(OperationContext* txn,
                     continue;
                 }
             }
+		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
         } else {
             // As of SERVER-17312 we only support these two options. When SERVER-17320 is
             // resolved this will need to be enhanced to handle other options.

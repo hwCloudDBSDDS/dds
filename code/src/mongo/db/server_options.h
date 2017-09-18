@@ -49,6 +49,7 @@ struct ServerGlobalParams {
           objcheck(true),
           defaultProfile(0),
           slowMS(100),
+		  //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
           profileSizeMB(1),
           defaultLocalThresholdMillis(15),
           moveParanoia(false),
@@ -61,6 +62,7 @@ struct ServerGlobalParams {
           logRenameOnRotate(true),
           logWithSyslog(false),
           isHttpInterfaceEnabled(false),
+		  //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
           limitVerifyTimes(true){
         started = time(0);
     }
@@ -91,6 +93,7 @@ struct ServerGlobalParams {
 
     int defaultProfile;               // --profile
     int slowMS;                       // --time in ms that is "slow"
+    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     int profileSizeMB;           // --the maxsize of system.profile collection 
     int defaultLocalThresholdMillis;  // --localThreshold in ms to consider a node local
     bool moveParanoia;                // for move chunk paranoia
@@ -113,7 +116,8 @@ struct ServerGlobalParams {
     int syslogFacility;      // Facility used when appending messages to the syslog.
 
     bool isHttpInterfaceEnabled;  // True if the dbwebserver should be enabled.
-    bool limitVerifyTimes;
+    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+	bool limitVerifyTimes;
 
 #ifndef _WIN32
     ProcessId parentProc;  // --fork pid of initial process

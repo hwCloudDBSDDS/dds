@@ -292,7 +292,7 @@ Status addGeneralServerOptions(moe::OptionSection* options) {
     options->addOptionChaining(
                  "net.http.port", "", moe::Switch, "port to listen on for http interface")
         .setSources(moe::SourceYAMLConfig);
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     options->addOptionChaining("security.limitVerifyTimes",
                                "limitverifytimes",
                                moe::Switch,
@@ -790,7 +790,7 @@ Status storeServerOptions(const moe::Environment& params, const std::vector<std:
     if (params.count("net.http.enabled")) {
         serverGlobalParams.isHttpInterfaceEnabled = params["net.http.enabled"].as<bool>();
     }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 	if (params.count("security.limitVerifyTimes")) {
         serverGlobalParams.limitVerifyTimes = params["security.limitVerifyTimes"].as<bool>();
     }

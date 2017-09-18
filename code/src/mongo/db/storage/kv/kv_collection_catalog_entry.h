@@ -76,9 +76,10 @@ public:
                          const BSONObj& validator,
                          StringData validationLevel,
                          StringData validationAction) final;
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     void updateCappedSize(OperationContext* txn, long long cappedSize) final;
     void updateCappedMaxDocs(OperationContext* txn, long long cappedMaxDocs) final;
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     RecordStore* getRecordStore() {
         return _recordStore.get();
     }

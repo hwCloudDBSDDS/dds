@@ -65,7 +65,7 @@ Status parseCreateOrUpdateUserCommands(const BSONObj& cmdObj,
                                        StringData cmdName,
                                        const std::string& dbname,
                                        CreateOrUpdateUserArgs* parsedArgs);
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 /**
  * *Check if the password is a weak password.
  * */
@@ -75,7 +75,7 @@ bool isInWeakPasswordDict(std::string password);
  * *Check whether the complexity of the password to meet the requirements.
  * */
 bool checkPasswordStrength(std::string password);
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 /**
  * Takes a command object describing an invocation of one of "grantRolesToUser",
  * "revokeRolesFromUser", "grantDelegateRolesToUser", "revokeDelegateRolesFromUser",

@@ -122,13 +122,13 @@ public:
                                  const BSONObj& validator,
                                  StringData validationLevel,
                                  StringData validationAction) = 0;
-
+    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     /**
      * Update capped collection config, only WiredTiger engine support
      */
     virtual void updateCappedSize(OperationContext* txn, long long cappedSize) {}
     virtual void updateCappedMaxDocs(OperationContext* txn, long long cappedMaxDocs) {}
-
+    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 private:
     NamespaceString _ns;
 };

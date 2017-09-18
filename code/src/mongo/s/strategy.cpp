@@ -80,7 +80,7 @@ using std::set;
 using std::string;
 using std::stringstream;
 using std::vector;
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 namespace {
 const std::string CUSTOM_USER = "rwuser@admin";
 }  // namespace
@@ -106,7 +106,7 @@ static Status _checkQueryOPAuthForUser(ClientBasic* client,
 
     return Status::OK();
 }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 void Strategy::queryOp(OperationContext* txn, Request& request) {
     verify(!NamespaceString(request.getns()).isCommand());
 
@@ -118,6 +118,7 @@ void Strategy::queryOp(OperationContext* txn, Request& request) {
     ClientBasic* client = txn->getClient();
     AuthorizationSession* authSession = AuthorizationSession::get(client);
     Status status = authSession->checkAuthForFind(ns, false);
+	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     /*****modify mongodb code start*****/
     if (MONGO_unlikely(!status.isOK())) {
         audit::logQueryAuthzCheck(client, ns, q.query, status.code());
@@ -128,6 +129,7 @@ void Strategy::queryOp(OperationContext* txn, Request& request) {
     audit::logQueryAuthzCheck(client, ns, q.query, status.code());
     uassertStatusOK(status);
     /*****modify mongodb code end*****/
+	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     LOG(3) << "query: " << q.ns << " " << q.query << " ntoreturn: " << q.ntoreturn
            << " options: " << q.queryOptions;
 

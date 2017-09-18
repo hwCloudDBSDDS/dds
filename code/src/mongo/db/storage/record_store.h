@@ -585,14 +585,14 @@ public:
     virtual void updateStatsAfterRepair(OperationContext* txn,
                                         long long numRecords,
                                         long long dataSize) = 0;
-
+    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     /**
      * support modify capped collection config
     * if storage engine cannot support this feature, simple return false
      */
     virtual bool setCappedSize(long long cappedSize) { return false; }
     virtual bool setCappedMaxDocs(long long cappedMaxDocs) { return false; }
-
+    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 protected:
     std::string _ns;
 };

@@ -55,11 +55,11 @@
 #include "mongo/util/sequence_util.h"
 #include "mongo/util/stringutils.h"
 
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 #include <mutex>
 #include "mongo/util/time_support.h"
 #include <time.h>
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 
 namespace mongo {
 namespace {
@@ -68,7 +68,7 @@ using std::stringstream;
 
 const bool autoAuthorizeDefault = true;
 
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 using ::std::mutex;
 using ::std::lock_guard;
 using ::std::make_pair;
@@ -160,7 +160,7 @@ private:
 
 
 LimitVerifyTimes limitVerifyInfo;
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 
 
 
@@ -280,7 +280,7 @@ Status doSaslStep(const ClientBasic* client,
                   BSONObjBuilder* result) {
     std::string payload;
     BSONType type = EOO;
-	
+	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     if(serverGlobalParams.limitVerifyTimes){
 		if(session->getPrincipalId() == limitVerifyInfo.getSaslAdminAuthUserName()){
 			std::string key = limitVerifyInfo.generateVerifiedKey(client,session);
@@ -291,7 +291,7 @@ Status doSaslStep(const ClientBasic* client,
 		    }
 		}	
 	}
-
+    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 	
     Status status = saslExtractPayload(cmdObj, &payload, &type);
     if (!status.isOK())
@@ -303,6 +303,7 @@ Status doSaslStep(const ClientBasic* client,
 
     if (!status.isOK()) {
         const SockAddr clientAddr = client->port()->remoteAddr();
+		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
         /*****modify mongodb code start*****/
         status = Status(ErrorCodes::AuthenticationFailed, "Authentication failed.");
         log() << session->getMechanism() << " authentication failed for "
@@ -322,6 +323,7 @@ Status doSaslStep(const ClientBasic* client,
         // All the client needs to know is that authentication has failed.
         return status;
         /*****modify mongodb code end*****/
+		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     }
 
     status = buildResponse(session, responsePayload, type, result);
@@ -335,13 +337,14 @@ Status doSaslStep(const ClientBasic* client,
         if (!status.isOK()) {
             return status;
         }
+		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 		if(serverGlobalParams.limitVerifyTimes){            
 		    if(session->getPrincipalId() == limitVerifyInfo.getSaslAdminAuthUserName()){            
 		        std::string key = limitVerifyInfo.generateVerifiedKey(client,session);
                 limitVerifyInfo.cleanVerifiedInfo(key);	            
 		    }	
 		}
-        
+        //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
         if (!serverGlobalParams.quiet) {
             log() << "Successfully authenticated as principal" << session->getPrincipalId()
                   << " on " << session->getAuthenticationDatabase();

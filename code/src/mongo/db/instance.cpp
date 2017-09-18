@@ -377,7 +377,7 @@ void receivedPseudoCommand(OperationContext* txn,
 }
 
 }  // namespace
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 namespace {
 const std::string CUSTOM_USER = "rwuser@admin";
 }  // namespace
@@ -405,7 +405,7 @@ static Status _checkOPAuthForUser(ClientBasic* client,
 
     return Status::OK();
 }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 static void receivedQuery(OperationContext* txn,
                           const NamespaceString& nss,
                           Client& c,
@@ -419,7 +419,7 @@ static void receivedQuery(OperationContext* txn,
     QueryMessage q(d);
 
     CurOp& op = *CurOp::get(txn);
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     try {
         Client* client = txn->getClient();
         Status status = AuthorizationSession::get(client)->checkAuthForFind(nss, false);
@@ -439,7 +439,7 @@ static void receivedQuery(OperationContext* txn,
         dbResponse.response.reset();
         generateLegacyQueryErrorResponse(&exception, q, &op, &dbResponse.response);
     }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     op.debug().responseLength = dbResponse.response.header().dataLen();
     dbResponse.responseTo = responseTo;
 }
@@ -707,6 +707,7 @@ void receivedUpdate(OperationContext* txn, const NamespaceString& nsString, Mess
 
     Status status =
         AuthorizationSession::get(client)->checkAuthForUpdate(nsString, query, toupdate, upsert);
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     /*****modify mongodb code start*****/
     if (MONGO_unlikely(!status.isOK())) {
         audit::logUpdateAuthzCheck(client, nsString, query, toupdate, upsert, multi, status.code());
@@ -717,7 +718,7 @@ void receivedUpdate(OperationContext* txn, const NamespaceString& nsString, Mess
     audit::logUpdateAuthzCheck(client, nsString, query, toupdate, upsert, multi, status.code());
     uassertStatusOK(status);
     /*****modify mongodb code end*****/
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     UpdateRequest request(nsString);
     request.setUpsert(upsert);
     request.setMulti(multi);
@@ -863,6 +864,7 @@ void receivedDelete(OperationContext* txn, const NamespaceString& nsString, Mess
     }
 
     Status status = AuthorizationSession::get(client)->checkAuthForDelete(nsString, pattern);
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     /*****modify mongodb code start*****/
     if (MONGO_unlikely(!status.isOK())) {
         audit::logDeleteAuthzCheck(client, nsString, pattern, status.code());
@@ -873,7 +875,7 @@ void receivedDelete(OperationContext* txn, const NamespaceString& nsString, Mess
     audit::logDeleteAuthzCheck(client, nsString, pattern, status.code());
     uassertStatusOK(status);
     /*****modify mongodb code end*****/
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     DeleteRequest request(nsString);
     request.setQuery(pattern);
     request.setMulti(!justOne);
@@ -1234,6 +1236,7 @@ void receivedInsert(OperationContext* txn, const NamespaceString& nsString, Mess
         // for the proper privileges in that case).
         Status status =
             AuthorizationSession::get(txn->getClient())->checkAuthForInsert(nsString, obj);
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
         /*****modify mongodb code start*****/
         if (MONGO_unlikely(!status.isOK())) {
             audit::logInsertAuthzCheck(txn->getClient(), nsString, obj, status.code());
@@ -1244,6 +1247,7 @@ void receivedInsert(OperationContext* txn, const NamespaceString& nsString, Mess
         audit::logInsertAuthzCheck(txn->getClient(), nsString, obj, status.code());
         uassertStatusOK(status);
         /*****modify mongodb code end*****/
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     }
 
     const bool keepGoing = d.reservedField() & InsertOption_ContinueOnError;

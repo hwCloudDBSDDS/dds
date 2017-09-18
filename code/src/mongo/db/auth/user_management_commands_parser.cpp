@@ -256,7 +256,7 @@ Status parseCreateOrUpdateUserCommands(const BSONObj& cmdObj,
         if (!status.isOK()) {
             return status;
         }
-
+		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
         if (digestPassword) {
             if (isInWeakPasswordDict(password)) {
                 return Status(ErrorCodes::BadValue, "Weak password! Try to enter a complex one.");
@@ -269,6 +269,7 @@ Status parseCreateOrUpdateUserCommands(const BSONObj& cmdObj,
         } else {
             return Status(ErrorCodes::BadValue, "Please add the option passwordDigestor=server");
         }
+		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
         parsedArgs->hasHashedPassword = true;
     }
 
@@ -300,7 +301,7 @@ Status parseCreateOrUpdateUserCommands(const BSONObj& cmdObj,
 
     return Status::OK();
 }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 bool isInWeakPasswordDict(std::string password){
 	std::string weakPasswordDict[] = {"Huawei@","Admin@","Huawei@123","Admin@123","Huawei123",
 		"admin123","Huawei!@#","Huaweiroot","admin123!","Admin123!","Administrator","Password",
@@ -344,7 +345,7 @@ bool checkPasswordStrength(std::string password){
          return true;
     }
 }
-
+//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 Status parseAndValidateDropUserCommand(const BSONObj& cmdObj,
                                        const std::string& dbname,
                                        UserName* parsedUserName,
