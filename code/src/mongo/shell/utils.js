@@ -159,6 +159,18 @@ print.captureAllOutput = function(fn, args) {
     return res;
 };
 
+var indentStr = function(indent, s) {
+    if (typeof(s) === "undefined") {
+        s = indent;
+        indent = 0;
+    }
+    if (indent > 0) {
+        indent = (new Array(indent + 1)).join(" ");
+        s = indent + s.replace(/\n/g, "\n" + indent);
+    }
+    return s;
+};
+
 if (typeof TestData == "undefined") {
     TestData = undefined;
 }
@@ -193,6 +205,7 @@ jsTestOptions = function() {
               setParameters: TestData.setParameters,
               setParametersMongos: TestData.setParametersMongos,
               storageEngine: TestData.storageEngine,
+              storageEngineCacheSizeGB: TestData.storageEngineCacheSizeGB,
               wiredTigerEngineConfigString: TestData.wiredTigerEngineConfigString,
               wiredTigerCollectionConfigString: TestData.wiredTigerCollectionConfigString,
               wiredTigerIndexConfigString: TestData.wiredTigerIndexConfigString,
@@ -279,10 +292,18 @@ jsTest.authenticate = function(conn) {
 };
 
 jsTest.authenticateNodes = function(nodes) {
-    assert.soon(function() {
+    assert.soonNoExcept(function() {
         for (var i = 0; i < nodes.length; i++) {
             // Don't try to authenticate to arbiters
-            res = nodes[i].getDB("admin").runCommand({replSetGetStatus: 1});
+            try {
+                res = nodes[i].getDB("admin").runCommand({replSetGetStatus: 1});
+            } catch (e) {
+                // ReplicaSet tests which don't use auth are allowed to have nodes crash during
+                // startup. To allow tests which use to behavior to work with auth,
+                // attempting authentication against a dead node should be non-fatal.
+                print("Caught exception getting replSetStatus while authenticating: " + e);
+                continue;
+            }
             if (res.myState == 7) {
                 continue;
             }

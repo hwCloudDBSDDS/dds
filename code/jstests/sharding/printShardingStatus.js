@@ -3,8 +3,11 @@
 // headings and the names of sharded collections and their shard keys.
 
 (function() {
+    'use strict';
 
     var st = new ShardingTest({shards: 1, mongos: 2, config: 1, other: {smallfiles: true}});
+
+    var standalone = MongoRunner.runMongod();
 
     var mongos = st.s0;
     var admin = mongos.getDB("admin");
@@ -84,9 +87,10 @@
     testBasicVerboseOnly(outputVerbose);
 
     // Take a copy of the config db, in order to test the harder-to-setup cases below.
+    // Copy into a standalone to also test running printShardingStatus() against a config dump.
     // TODO: Replace this manual copy with copydb once SERVER-13080 is fixed.
     var config = mongos.getDB("config");
-    var configCopy = mongos.getDB("configCopy");
+    var configCopy = standalone.getDB("configCopy");
     config.getCollectionInfos().forEach(function(c) {
         // Create collection with options.
         assert.commandWorked(configCopy.createCollection(c.name, c.options));
@@ -139,11 +143,11 @@
     configCopy.mongos.remove({});
 
     var output = grabStatusOutput(configCopy, false);
-    assertPresentInOutput(output, "most recently active mongoses:\n\tnone", "no mongoses");
+    assertPresentInOutput(output, "most recently active mongoses:\n        none", "no mongoses");
 
     var output = grabStatusOutput(configCopy, true);
     assertPresentInOutput(
-        output, "most recently active mongoses:\n\tnone", "no mongoses (verbose)");
+        output, "most recently active mongoses:\n        none", "no mongoses (verbose)");
 
     assert(mongos.getDB(dbName).dropDatabase());
 
@@ -232,6 +236,7 @@
 
     assert(mongos.getDB("test").dropDatabase());
 
-    st.stop();
+    MongoRunner.stopMongod(standalone);
 
+    st.stop();
 })();

@@ -72,8 +72,13 @@ public:
         if (_group)
             _group->noteKill();
     }
+    void interrupt() {}
+    const bool isKillPending() {
+        return killPending;
+    }
     TaskGroup* _group;
     uint64_t _killed;
+    bool killPending = false;
 };
 
 // single task expires before stopping the deadline
@@ -174,4 +179,13 @@ TEST(DeadlineMonitor, MultipleTasksExpireOrComplete) {
     }
 }
 
+TEST(DeadlineMonitor, IsKillPendingKills) {
+    DeadlineMonitor<Task> dm;
+    TaskGroup group;
+    Task task(&group);
+    dm.startDeadline(&task, -1);
+    task.killPending = true;
+    group.waitForKillCount(1);
+    ASSERT(task._killed);
+}
 }  // namespace mongo

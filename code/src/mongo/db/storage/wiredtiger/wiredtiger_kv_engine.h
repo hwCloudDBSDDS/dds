@@ -31,7 +31,7 @@
 
 #pragma once
 
-#include <set>
+#include <list>
 #include <string>
 
 #include <wiredtiger.h>
@@ -132,7 +132,9 @@ public:
     WT_CONNECTION* getConnection() {
         return _conn;
     }
-    void dropAllQueued();
+    void dropSomeQueuedIdents();
+    std::list<WiredTigerCachedCursor> filterCursorsWithQueuedDrops(
+        std::list<WiredTigerCachedCursor>* cache);
     bool haveDropsQueued() const;
 
     void syncSizeInfo(bool sync) const;
@@ -175,8 +177,9 @@ private:
     std::string _rsOptions;
     std::string _indexOptions;
 
+    mutable stdx::mutex _dropAllQueuesMutex;
     mutable stdx::mutex _identToDropMutex;
-    std::set<std::string> _identToDrop;
+    std::list<std::string> _identToDrop;
 
     mutable Date_t _previousCheckedDropsQueued;
 

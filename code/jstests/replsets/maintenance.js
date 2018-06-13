@@ -5,7 +5,7 @@ var conns = replTest.startSet({verbose: 1});
 var config = replTest.getReplSetConfig();
 config.members[0].priority = 2;
 replTest.initiate(config);
-replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY, 60000);
+replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY);
 
 // Make sure we have a master
 var master = replTest.getPrimary();
@@ -74,6 +74,10 @@ assert.soon(function() {
         printjson(im);
     return !im.secondary && !im.ismaster;
 });
+
+var recv = conns[1].getDB("admin").runCommand({find: "foo"});
+assert.commandFailed(recv);
+assert.eq(recv.errmsg, "node is recovering");
 
 print("now getmore shouldn't work");
 var ex = assert.throws(function() {

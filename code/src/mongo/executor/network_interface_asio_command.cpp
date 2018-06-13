@@ -48,6 +48,7 @@
 #include "mongo/rpc/request_builder_interface.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -60,6 +61,8 @@ namespace executor {
  */
 
 namespace {
+
+MONGO_FP_DECLARE(NetworkInterfaceASIOasyncRunCommandFail);
 
 using asio::ip::tcp;
 using ResponseStatus = TaskExecutor::ResponseStatus;
@@ -202,13 +205,10 @@ ResponseStatus NetworkInterfaceASIO::AsyncCommand::response(rpc::Protocol protoc
         case CommandType::kRPC: {
             return decodeRPC(&received, protocol, now - _start, _target, metadataHook);
         }
-        case CommandType::kDownConvertedFind: {
-            auto ns = DbMessage(_toSend).getns();
-            return upconvertLegacyQueryResponse(_toSend.header().getId(), ns, received);
-        }
+        case CommandType::kDownConvertedFind:
         case CommandType::kDownConvertedGetMore: {
             auto ns = DbMessage(_toSend).getns();
-            return upconvertLegacyGetMoreResponse(_toSend.header().getId(), ns, received);
+            return prepareOpReplyErrorResponse(_toSend.header().getId(), ns, &received);
         }
     }
     MONGO_UNREACHABLE;
@@ -235,7 +235,11 @@ void NetworkInterfaceASIO::_beginCommunication(AsyncOp* op) {
     // codepath.
 
     if (op->_inSetup) {
-        log() << "Successfully connected to " << op->request().target.toString();
+        auto host = op->request().target;
+        auto getConnectionDuration = now() - op->start();
+        log() << "Successfully connected to " << host << ", took " << getConnectionDuration << " ("
+              << _connectionPool.getNumConnectionsPerHost(host) << " connections now open to "
+              << host << ")";
         op->_inSetup = false;
         op->finish(RemoteCommandResponse());
         return;
@@ -283,7 +287,17 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, const ResponseStatus&
         invariant(!resp.isOK());
         // If we fail during connection, we won't be able to access any of our members after calling
         // op->finish().
-        LOG(1) << "Failed to connect to " << op->request().target << " - " << resp.getStatus();
+        log() << "Failed to connect to " << op->request().target << " - " << resp.getStatus();
+    }
+
+    if (op->_inRefresh) {
+        // If we are in refresh we should only be here if we failed to heartbeat.
+        invariant(!resp.isOK());
+        // If we fail during heartbeating, we won't be able to access any of op's members after
+        // calling finish(), so we return here.
+        log() << "Failed to heartbeat to " << op->request().target << " - " << resp.getStatus();
+        op->finish(resp);
+        return;
     }
 
     if (!resp.isOK()) {
@@ -333,6 +347,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, const ResponseStatus&
     if (!resp.isOK()) {
         asioConn->indicateFailure(resp.getStatus());
     } else {
+        asioConn->indicateUsed();
         asioConn->indicateSuccess();
     }
 
@@ -342,6 +357,12 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, const ResponseStatus&
 void NetworkInterfaceASIO::_asyncRunCommand(AsyncOp* op, NetworkOpHandler handler) {
     LOG(2) << "Starting asynchronous command " << op->request().id << " on host "
            << op->request().target.toString();
+
+    if (MONGO_FAIL_POINT(NetworkInterfaceASIOasyncRunCommandFail)) {
+        _validateAndRun(op, asio::error::basic_errors::network_unreachable, [] {});
+        return;
+    }
+
     // We invert the following steps below to run a command:
     // 1 - send the given command
     // 2 - receive a header for the response

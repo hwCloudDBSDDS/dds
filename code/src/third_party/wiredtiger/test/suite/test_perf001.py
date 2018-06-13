@@ -32,15 +32,16 @@
 import wiredtiger, wttest
 import random
 from time import clock, time
-from wtscenario import check_scenarios
+from wtscenario import make_scenarios
 
 # Test performance of inserting into a table with an index.
 class test_perf001(wttest.WiredTigerTestCase):
     table_name = 'test_perf001'
 
-    scenarios = check_scenarios([
+    scenarios = make_scenarios([
         #('file-file', dict(tabletype='file',indextype='file')),
-        ('file-lsm', dict(tabletype='file',indextype='lsm')),
+        ('file-lsm', dict(tabletype='file',indextype='lsm', cfg='',
+            conn_config="statistics=(fast),statistics_log=(wait=1)")),
         #('lsm-file', dict(tabletype='lsm',indextype='file')),
         #('lsm-lsm', dict(tabletype='lsm',indextype='lsm')),
     ])

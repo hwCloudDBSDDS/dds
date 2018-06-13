@@ -21,7 +21,7 @@ __txn_next_op(WT_SESSION_IMPL *session, WT_TXN_OP **opp)
 	txn = &session->txn;
 	*opp = NULL;
 
-	/* 
+	/*
 	 * We're about to perform an update.
 	 * Make sure we have allocated a transaction ID.
 	 */
@@ -62,7 +62,6 @@ __wt_txn_unmodify(WT_SESSION_IMPL *session)
 static inline int
 __wt_txn_modify(WT_SESSION_IMPL *session, WT_UPDATE *upd)
 {
-	WT_DECL_RET;
 	WT_TXN_OP *op;
 	WT_TXN *txn;
 
@@ -77,7 +76,7 @@ __wt_txn_modify(WT_SESSION_IMPL *session, WT_UPDATE *upd)
 	    WT_TXN_OP_INMEM : WT_TXN_OP_BASIC;
 	op->u.upd = upd;
 	upd->txnid = session->txn.id;
-	return (ret);
+	return (0);
 }
 
 /*
@@ -105,19 +104,30 @@ __wt_txn_oldest_id(WT_SESSION_IMPL *session)
 {
 	WT_BTREE *btree;
 	WT_TXN_GLOBAL *txn_global;
-	uint64_t checkpoint_gen, checkpoint_pinned, oldest_id;
+	uint64_t checkpoint_pinned, oldest_id;
+	bool include_checkpoint_txn;
 
 	txn_global = &S2C(session)->txn_global;
 	btree = S2BT_SAFE(session);
 
 	/*
+	 * The metadata is tracked specially because of optimizations for
+	 * checkpoints.
+	 */
+	if (session->dhandle != NULL && WT_IS_METADATA(session->dhandle))
+		return (txn_global->metadata_pinned);
+
+	/*
 	 * Take a local copy of these IDs in case they are updated while we are
-	 * checking visibility.  Only the generation needs to be carefully
-	 * ordered: if a checkpoint is starting and the generation is bumped,
-	 * we take the minimum of the other two IDs, which is what we want.
+	 * checking visibility.  The read of the transaction ID pinned by a
+	 * checkpoint needs to be carefully ordered: if a checkpoint is
+	 * starting and we have to start checking the pinned ID, we take the
+	 * minimum of it with the oldest ID, which is what we want.
 	 */
 	oldest_id = txn_global->oldest_id;
-	WT_ORDERED_READ(checkpoint_gen, txn_global->checkpoint_gen);
+	include_checkpoint_txn = btree == NULL ||
+	    btree->checkpoint_gen != txn_global->checkpoint_gen;
+	WT_READ_BARRIER();
 	checkpoint_pinned = txn_global->checkpoint_pinned;
 
 	/*
@@ -126,14 +136,12 @@ __wt_txn_oldest_id(WT_SESSION_IMPL *session)
 	 * if they are only required for the checkpoint and it has already
 	 * seen them.
 	 *
-	 * If there is no active checkpoint, this session is doing the
-	 * checkpoint, or this handle is up to date with the active checkpoint
-	 * then it's safe to ignore the checkpoint ID in the visibility check.
+	 * If there is no active checkpoint or this handle is up to date with
+	 * the active checkpoint then it's safe to ignore the checkpoint ID in
+	 * the visibility check.
 	 */
-	if (checkpoint_pinned == WT_TXN_NONE ||
-	    WT_TXNID_LT(oldest_id, checkpoint_pinned) ||
-	    WT_SESSION_IS_CHECKPOINT(session) ||
-	    (btree != NULL && btree->checkpoint_gen == checkpoint_gen))
+	if (!include_checkpoint_txn || checkpoint_pinned == WT_TXN_NONE ||
+	    WT_TXNID_LT(oldest_id, checkpoint_pinned))
 		return (oldest_id);
 
 	return (checkpoint_pinned);
@@ -261,7 +269,7 @@ __wt_txn_begin(WT_SESSION_IMPL *session, const char *cfg[])
 		 * eviction, it's better to do it beforehand.
 		 */
 		WT_RET(__wt_cache_eviction_check(session, false, NULL));
-		WT_RET(__wt_txn_get_snapshot(session));
+		__wt_txn_get_snapshot(session);
 	}
 
 	F_SET(txn, WT_TXN_RUNNING);
@@ -308,7 +316,7 @@ __wt_txn_idle_cache_check(WT_SESSION_IMPL *session)
 	 * WT_TXN_HAS_SNAPSHOT.
 	 */
 	if (F_ISSET(txn, WT_TXN_RUNNING) &&
-	    !F_ISSET(txn, WT_TXN_HAS_ID) && txn_state->snap_min == WT_TXN_NONE)
+	    !F_ISSET(txn, WT_TXN_HAS_ID) && txn_state->pinned_id == WT_TXN_NONE)
 		WT_RET(__wt_cache_eviction_check(session, false, NULL));
 
 	return (0);
@@ -413,7 +421,7 @@ __wt_txn_update_check(WT_SESSION_IMPL *session, WT_UPDATE *upd)
 	if (txn->isolation == WT_ISO_SNAPSHOT)
 		while (upd != NULL && !__wt_txn_visible(session, upd->txnid)) {
 			if (upd->txnid != WT_TXN_ABORTED) {
-				WT_STAT_FAST_DATA_INCR(
+				WT_STAT_DATA_INCR(
 				    session, txn_update_conflict);
 				return (WT_ROLLBACK);
 			}
@@ -450,7 +458,7 @@ __wt_txn_read_last(WT_SESSION_IMPL *session)
  * __wt_txn_cursor_op --
  *	Called for each cursor operation.
  */
-static inline int
+static inline void
 __wt_txn_cursor_op(WT_SESSION_IMPL *session)
 {
 	WT_TXN *txn;
@@ -479,12 +487,12 @@ __wt_txn_cursor_op(WT_SESSION_IMPL *session)
 	 * positioned on a value, it can't be freed.
 	 */
 	if (txn->isolation == WT_ISO_READ_UNCOMMITTED) {
-		if (txn_state->snap_min == WT_TXN_NONE)
-			txn_state->snap_min = txn_global->last_running;
+		if (txn_state->pinned_id == WT_TXN_NONE)
+			txn_state->pinned_id = txn_global->last_running;
+		if (txn_state->metadata_pinned == WT_TXN_NONE)
+			txn_state->metadata_pinned = txn_state->pinned_id;
 	} else if (!F_ISSET(txn, WT_TXN_HAS_SNAPSHOT))
-		WT_RET(__wt_txn_get_snapshot(session));
-
-	return (0);
+		__wt_txn_get_snapshot(session);
 }
 
 /*

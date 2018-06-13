@@ -8,20 +8,6 @@
 
 #include "wt_internal.h"
 
- /*
- * __wt_curindex_joined --
- *	Produce an error that this cursor is being used in a join call.
- */
-int
-__wt_curindex_joined(WT_CURSOR *cursor)
-{
-	WT_SESSION_IMPL *session;
-
-	session = (WT_SESSION_IMPL *)cursor->session;
-	__wt_errx(session, "index cursor is being used in a join");
-	return (ENOTSUP);
-}
-
 /*
  * __curindex_get_value --
  *	WT_CURSOR->get_value implementation for index cursors.
@@ -52,7 +38,9 @@ __curindex_set_value(WT_CURSOR *cursor, ...)
 	WT_SESSION_IMPL *session;
 
 	JOINABLE_CURSOR_API_CALL(cursor, session, set_value, NULL);
-	ret = ENOTSUP;
+	WT_ERR_MSG(session, ENOTSUP,
+	    "WT_CURSOR.set_value not supported for index cursors");
+
 err:	cursor->saved_err = ret;
 	F_CLR(cursor, WT_CURSTD_VALUE_SET);
 	API_END(session, ret);
@@ -252,7 +240,17 @@ __curindex_search(WT_CURSOR *cursor)
 	found_key = child->key;
 	if (found_key.size < cursor->key.size)
 		WT_ERR(WT_NOTFOUND);
-	found_key.size = cursor->key.size;
+
+	/*
+	 * Custom collators expect to see complete keys, pass an item containing
+	 * all the visible fields so it unpacks correctly.
+	 */
+	if (cindex->index->collator != NULL &&
+	    !F_ISSET(cursor, WT_CURSTD_RAW_SEARCH))
+		WT_ERR(__wt_struct_repack(session, child->key_format,
+		    cindex->iface.key_format, &child->key, &found_key));
+	else
+		found_key.size = cursor->key.size;
 
 	WT_ERR(__wt_compare(
 	    session, cindex->index->collator, &cursor->key, &found_key, &cmp));
@@ -277,19 +275,72 @@ err:		F_CLR(cursor, WT_CURSTD_KEY_INT | WT_CURSTD_VALUE_INT);
 static int
 __curindex_search_near(WT_CURSOR *cursor, int *exact)
 {
+	WT_CURSOR *child;
 	WT_CURSOR_INDEX *cindex;
 	WT_DECL_RET;
+	WT_ITEM found_key;
 	WT_SESSION_IMPL *session;
+	int cmp;
 
 	cindex = (WT_CURSOR_INDEX *)cursor;
-	JOINABLE_CURSOR_API_CALL(cursor, session, search_near, NULL);
-	__wt_cursor_set_raw_key(cindex->child, &cursor->key);
-	if ((ret = cindex->child->search_near(cindex->child, exact)) == 0)
-		ret = __curindex_move(cindex);
-	else
-		F_CLR(cursor, WT_CURSTD_KEY_INT | WT_CURSTD_VALUE_INT);
+	child = cindex->child;
+	JOINABLE_CURSOR_API_CALL(cursor, session, search, NULL);
 
-err:	API_END_RET(session, ret);
+	/*
+	 * We are searching using the application-specified key, which
+	 * (usually) doesn't contain the primary key, so it is just a prefix of
+	 * any matching index key.  That said, if there is an exact match, we
+	 * want to find the first matching index entry and set exact equal to
+	 * zero.
+	 *
+	 * Do a search_near, and if we find an entry that is too small, step to
+	 * the next one.  In the unlikely event of a search past the end of the
+	 * tree, go back to the last key.
+	 */
+	__wt_cursor_set_raw_key(child, &cursor->key);
+	WT_ERR(child->search_near(child, &cmp));
+
+	if (cmp < 0) {
+		if ((ret = child->next(child)) == WT_NOTFOUND)
+			ret = child->prev(child);
+		WT_ERR(ret);
+	}
+
+	/*
+	 * We expect partial matches, and want the smallest record with a key
+	 * greater than or equal to the search key.
+	 *
+	 * If the found key starts with the search key, we indicate a match by
+	 * setting exact equal to zero.
+	 *
+	 * The compare function expects application-supplied keys to come first
+	 * so we flip the sign of the result to match what callers expect.
+	 */
+	found_key = child->key;
+	if (found_key.size > cursor->key.size) {
+		/*
+		 * Custom collators expect to see complete keys, pass an item
+		 * containing all the visible fields so it unpacks correctly.
+		 */
+		if (cindex->index->collator != NULL)
+			WT_ERR(__wt_struct_repack(session,
+			    cindex->child->key_format, cindex->iface.key_format,
+			    &child->key, &found_key));
+		else
+			found_key.size = cursor->key.size;
+	}
+
+	WT_ERR(__wt_compare(
+	    session, cindex->index->collator, &cursor->key, &found_key, exact));
+	*exact = -*exact;
+
+	WT_ERR(__curindex_move(cindex));
+
+	if (0) {
+err:		F_CLR(cursor, WT_CURSTD_KEY_INT | WT_CURSTD_VALUE_INT);
+	}
+
+	API_END_RET(session, ret);
 }
 
 /*
@@ -462,7 +513,7 @@ __wt_curindex_open(WT_SESSION_IMPL *session,
 	if (WT_CURSOR_RECNO(cursor))
 		WT_ERR_MSG(session, WT_ERROR,
 		    "Column store indexes based on a record number primary "
-		    "key are not supported.");
+		    "key are not supported");
 
 	/* Handle projections. */
 	if (columns != NULL) {
@@ -489,8 +540,8 @@ __wt_curindex_open(WT_SESSION_IMPL *session,
 	WT_ERR(__curindex_open_colgroups(session, cindex, cfg));
 
 	if (F_ISSET(cursor, WT_CURSTD_DUMP_JSON))
-		WT_ERR(__wt_json_column_init(cursor, table->key_format,
-			&idx->colconf, &table->colconf));
+		__wt_json_column_init(cursor, uri, table->key_format,
+		    &idx->colconf, &table->colconf);
 
 	if (0) {
 err:		WT_TRET(__curindex_close(cursor));

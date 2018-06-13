@@ -46,8 +46,8 @@ namespace mozjs {
 
 const char* const BSONInfo::className = "BSON";
 
-const JSFunctionSpec BSONInfo::freeFunctions[2] = {
-    MONGO_ATTACH_JS_FUNCTION(bsonWoCompare), JS_FS_END,
+const JSFunctionSpec BSONInfo::freeFunctions[3] = {
+    MONGO_ATTACH_JS_FUNCTION(bsonWoCompare), MONGO_ATTACH_JS_FUNCTION(bsonBinaryEqual), JS_FS_END,
 };
 
 namespace {
@@ -59,13 +59,17 @@ namespace {
  * the appearance of mutable state on the read/write versions.
  */
 struct BSONHolder {
-    BSONHolder(const BSONObj& obj, const BSONObj* parent, std::size_t generation, bool ro)
+    BSONHolder(const BSONObj& obj, const BSONObj* parent, const MozJSImplScope* scope, bool ro)
         : _obj(obj),
-          _generation(generation),
+          _generation(scope->getGeneration()),
           _isOwned(obj.isOwned() || (parent && parent->isOwned())),
           _resolved(false),
           _readOnly(ro),
           _altered(false) {
+        uassert(
+            ErrorCodes::BadValue,
+            "Attempt to bind an unowned BSON Object to a JS scope marked as requiring ownership",
+            _isOwned || (!scope->requiresOwnedObjects()));
         if (parent) {
             _parent.emplace(*parent);
         }
@@ -107,7 +111,7 @@ void BSONInfo::make(
     auto scope = getScope(cx);
 
     scope->getProto<BSONInfo>().newObject(obj);
-    JS_SetPrivate(obj, new BSONHolder(bson, parent, scope->getGeneration(), ro));
+    JS_SetPrivate(obj, new BSONHolder(bson, parent, scope, ro));
 }
 
 void BSONInfo::finalize(JSFreeOp* fop, JSObject* obj) {
@@ -237,7 +241,7 @@ std::tuple<BSONObj*, bool> BSONInfo::originalBSON(JSContext* cx, JS::HandleObjec
 
 void BSONInfo::Functions::bsonWoCompare::call(JSContext* cx, JS::CallArgs args) {
     if (args.length() != 2)
-        uasserted(ErrorCodes::BadValue, "bsonWoCompare needs 2 argument");
+        uasserted(ErrorCodes::BadValue, "bsonWoCompare needs 2 arguments");
 
     if (!args.get(0).isObject())
         uasserted(ErrorCodes::BadValue, "first argument to bsonWoCompare must be an object");
@@ -249,6 +253,22 @@ void BSONInfo::Functions::bsonWoCompare::call(JSContext* cx, JS::CallArgs args) 
     BSONObj secondObject = ValueWriter(cx, args.get(1)).toBSON();
 
     args.rval().setInt32(firstObject.woCompare(secondObject));
+}
+
+void BSONInfo::Functions::bsonBinaryEqual::call(JSContext* cx, JS::CallArgs args) {
+    if (args.length() != 2)
+        uasserted(ErrorCodes::BadValue, "bsonBinaryEqual needs 2 arguments");
+
+    if (!args.get(0).isObject())
+        uasserted(ErrorCodes::BadValue, "first argument to bsonBinaryEqual must be an object");
+
+    if (!args.get(1).isObject())
+        uasserted(ErrorCodes::BadValue, "second argument to bsonBinaryEqual must be an object");
+
+    BSONObj firstObject = ValueWriter(cx, args.get(0)).toBSON();
+    BSONObj secondObject = ValueWriter(cx, args.get(1)).toBSON();
+
+    args.rval().setBoolean(firstObject.binaryEqual(secondObject));
 }
 
 void BSONInfo::postInstall(JSContext* cx, JS::HandleObject global, JS::HandleObject proto) {

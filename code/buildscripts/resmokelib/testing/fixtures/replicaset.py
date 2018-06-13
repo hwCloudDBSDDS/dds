@@ -104,23 +104,25 @@ class ReplicaSetFixture(interface.ReplFixture):
         # Wait for the primary to be elected.
         client = utils.new_mongo_client(port=self.port)
         while True:
+            self.logger.info("Waiting for primary on port %d to be elected.", self.port)
             is_master = client.admin.command("isMaster")["ismaster"]
             if is_master:
                 break
-            self.logger.info("Waiting for primary on port %d to be elected.", self.port)
             time.sleep(0.1)  # Wait a little bit before trying again.
+        self.logger.info("Primary on port %d successfully elected.", self.port)
 
         # Wait for the secondaries to become available.
         for secondary in self.get_secondaries():
             client = utils.new_mongo_client(port=secondary.port,
                                             read_preference=pymongo.ReadPreference.SECONDARY)
             while True:
+                self.logger.info("Waiting for secondary on port %d to become available.",
+                                 secondary.port)
                 is_secondary = client.admin.command("isMaster")["secondary"]
                 if is_secondary:
                     break
-                self.logger.info("Waiting for secondary on port %d to become available.",
-                                 secondary.port)
                 time.sleep(0.1)  # Wait a little bit before trying again.
+            self.logger.info("Secondary on port %d is now available.", secondary.port)
 
     def teardown(self):
         running_at_start = self.is_running()
@@ -150,33 +152,6 @@ class ReplicaSetFixture(interface.ReplFixture):
 
     def get_secondaries(self):
         return self.nodes[1:]
-
-    def await_repl(self):
-        client = utils.new_mongo_client(port=self.port)
-
-        self.logger.info("Starting fsync on primary on port %d to flush all pending writes",
-                         self.port)
-        client.fsync()
-        self.logger.info("fsync on primary completed")
-
-        self.logger.info("Awaiting replication of insert (w=%d, wtimeout=%d min) to primary on port"
-                         " %d", self.num_nodes, interface.ReplFixture.AWAIT_REPL_TIMEOUT_MINS,
-                         self.port)
-
-        # Keep retrying this until it times out waiting for replication.
-        def insert_fn(remaining_secs):
-            remaining_millis = int(round(remaining_secs * 1000))
-            write_concern = pymongo.WriteConcern(w=self.num_nodes, wtimeout=remaining_millis)
-            coll = client.resmoke.get_collection("await_repl", write_concern=write_concern)
-            coll.insert_one({"awaiting": "repl"})
-
-        try:
-            self.retry_until_wtimeout(insert_fn)
-        except pymongo.errors.WTimeoutError:
-            self.logger.info("Replication of write operation timed out.")
-            raise
-
-        self.logger.info("Replication of write operation completed.")
 
     def _new_mongod(self, index, replset_name):
         """

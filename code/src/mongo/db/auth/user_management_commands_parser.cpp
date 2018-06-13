@@ -249,27 +249,19 @@ Status parseCreateOrUpdateUserCommands(const BSONObj& cmdObj,
         if (password.empty()) {
             return Status(ErrorCodes::BadValue, "User passwords must not be empty");
         }
-  
+
         bool digestPassword;  // True if the server should digest the password
         status =
             bsonExtractBooleanFieldWithDefault(cmdObj, "digestPassword", true, &digestPassword);
         if (!status.isOK()) {
             return status;
         }
-		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-        if (digestPassword) {
-            if (isInWeakPasswordDict(password)) {
-                return Status(ErrorCodes::BadValue, "Weak password! Try to enter a complex one.");
-	        }
 
-            if (!checkPasswordStrength(password)) {
-                return Status(ErrorCodes::BadValue, "User passwords must be the combinations of Uppercase letters, lowercase letters, numbers and special characters. And the length must be greater than 8");
-	        }
+        if (digestPassword) {
             parsedArgs->hashedPassword = mongo::createPasswordDigest(userName, password);
         } else {
-            return Status(ErrorCodes::BadValue, "Please add the option passwordDigestor=server");
+            parsedArgs->hashedPassword = password;
         }
-		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
         parsedArgs->hasHashedPassword = true;
     }
 
@@ -301,51 +293,7 @@ Status parseCreateOrUpdateUserCommands(const BSONObj& cmdObj,
 
     return Status::OK();
 }
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-bool isInWeakPasswordDict(std::string password){
-	std::string weakPasswordDict[] = {"Huawei@","Admin@","Huawei@123","Admin@123","Huawei123",
-		"admin123","Huawei!@#","Huaweiroot","admin123!","Admin123!","Administrator","Password",
-		"Password123","Password@123","a123456","abc123","MongoDB@123","mongodb@123","Mongodb@123"};
-	
-	int length = sizeof(weakPasswordDict)/sizeof(weakPasswordDict[0]);
-	for(int i=0;i<length;i++){
-		if( password == weakPasswordDict[i]){
-			return true;
-		}
-	}
-	return false;
-}
 
-bool checkPasswordStrength(std::string password){	
-    std::string specialCharString = "-~@$#%_^!*+=?";
-    int i=0,size=0;
-    int lowerChar=0, upperChar=0, sepcialChar=0, number=0;
-    size = password.size();
-    if (size < 8 || size > 32) {   
-         return false;
-    }  
-    else {  
-         for(i=0; i < size; ++i) {
-              if(password[i] >= '0' && password[i] <= '9')  
-                   number++;    
-              else if(password[i] >= 'a' && password[i] <= 'z')    
-                   lowerChar++;   
-              else if(password[i] >= 'A' && password[i] <= 'Z')     
-                   upperChar++;  
-              else if(specialCharString.find(password[i]) != std::string::npos) 
-                   sepcialChar++;
-              else
-                   return false;
-         }    
-    }    
-    if (lowerChar==0 || upperChar==0 || sepcialChar==0 || number==0) {
-         return false;
-    }
-    else {		
-         return true;
-    }
-}
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 Status parseAndValidateDropUserCommand(const BSONObj& cmdObj,
                                        const std::string& dbname,
                                        UserName* parsedUserName,

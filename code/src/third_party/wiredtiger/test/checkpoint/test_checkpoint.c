@@ -32,16 +32,15 @@ GLOBAL g;
 
 static int  handle_error(WT_EVENT_HANDLER *, WT_SESSION *, int, const char *);
 static int  handle_message(WT_EVENT_HANDLER *, WT_SESSION *, const char *);
-static void onint(int);
-static int  cleanup(void);
+static void onint(int)
+    WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
+static void cleanup(void);
 static int  usage(void);
 static int  wt_connect(const char *);
 static int  wt_shutdown(void);
 
 extern int __wt_optind;
 extern char *__wt_optarg;
-
-void (*custom_die)(void) = NULL;
 
 int
 main(int argc, char *argv[])
@@ -51,18 +50,14 @@ main(int argc, char *argv[])
 	char *working_dir;
 	const char *config_open;
 
-	if ((g.progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		g.progname = argv[0];
-	else
-		++g.progname;
+	(void)testutil_set_progname(argv);
 
 	config_open = NULL;
 	ret = 0;
 	working_dir = NULL;
 	ttype = MIX;
 	g.checkpoint_name = "WiredTigerCheckpoint";
-	if ((g.home = malloc(512)) == NULL)
-		testutil_die(ENOMEM, "Unable to allocate memory");
+	g.home = dmalloc(512);
 	g.nkeys = 10000;
 	g.nops = 100000;
 	g.ntables = 3;
@@ -70,7 +65,7 @@ main(int argc, char *argv[])
 	runs = 1;
 
 	while ((ch = __wt_getopt(
-	    g.progname, argc, argv, "c:C:h:k:l:n:r:t:T:W:")) != EOF)
+	    progname, argc, argv, "c:C:h:k:l:n:r:t:T:W:")) != EOF)
 		switch (ch) {
 		case 'c':
 			g.checkpoint_name = __wt_optarg;
@@ -134,12 +129,12 @@ main(int argc, char *argv[])
 
 	testutil_work_dir_from_path(g.home, 512, working_dir);
 
-	printf("%s: process %" PRIu64 "\n", g.progname, (uint64_t)getpid());
+	printf("%s: process %" PRIu64 "\n", progname, (uint64_t)getpid());
 	for (cnt = 1; (runs == 0 || cnt <= runs) && g.status == 0; ++cnt) {
 		printf("    %d: %d workers, %d tables\n",
 		    cnt, g.nworkers, g.ntables);
 
-		(void)cleanup();		/* Clean up previous runs */
+		cleanup();			/* Clean up previous runs */
 
 		/* Setup a fresh set of cookies in the global array. */
 		if ((g.cookies = calloc(
@@ -204,11 +199,11 @@ wt_connect(const char *config_open)
 
 	testutil_make_work_dir(g.home);
 
-	snprintf(config, sizeof(config),
+	testutil_check(__wt_snprintf(config, sizeof(config),
 	    "create,statistics=(fast),error_prefix=\"%s\",cache_size=1GB%s%s",
-	    g.progname,
+	    progname,
 	    config_open == NULL ? "" : ",",
-	    config_open == NULL ? "" : config_open);
+	    config_open == NULL ? "" : config_open));
 
 	if ((ret = wiredtiger_open(
 	    g.home, &event_handler, config, &g.conn)) != 0)
@@ -240,14 +235,13 @@ wt_shutdown(void)
  * cleanup --
  *	Clean up from previous runs.
  */
-static int
+static void
 cleanup(void)
 {
 	g.running = 0;
 	g.ntables_created = 0;
 
 	testutil_clean_work_dir(g.home);
-	return (0);
 }
 
 static int
@@ -283,7 +277,7 @@ onint(int signo)
 {
 	WT_UNUSED(signo);
 
-	(void)cleanup();
+	cleanup();
 
 	fprintf(stderr, "\n");
 	exit(EXIT_FAILURE);
@@ -300,10 +294,10 @@ log_print_err(const char *m, int e, int fatal)
 		g.running = 0;
 		g.status = e;
 	}
-	fprintf(stderr, "%s: %s: %s\n", g.progname, m, wiredtiger_strerror(e));
+	fprintf(stderr, "%s: %s: %s\n", progname, m, wiredtiger_strerror(e));
 	if (g.logfp != NULL)
 		fprintf(g.logfp, "%s: %s: %s\n",
-		    g.progname, m, wiredtiger_strerror(e));
+		    progname, m, wiredtiger_strerror(e));
 	return (e);
 }
 
@@ -336,7 +330,7 @@ usage(void)
 	    "usage: %s "
 	    "[-S] [-C wiredtiger-config] [-k keys] [-l log]\n\t"
 	    "[-n ops] [-c checkpoint] [-r runs] [-t f|r|v] [-W workers]\n",
-	    g.progname);
+	    progname);
 	fprintf(stderr, "%s",
 	    "\t-C specify wiredtiger_open configuration arguments\n"
 	    "\t-c checkpoint name to used named checkpoints\n"

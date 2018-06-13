@@ -343,13 +343,19 @@ long long Helpers::removeRange(OperationContext* txn,
     while (1) {
         // Scoping for write lock.
         {
-            OldClientWriteContext ctx(txn, ns);
+            AutoGetCollection ctx(txn, NamespaceString(ns), MODE_IX);
             Collection* collection = ctx.getCollection();
             if (!collection)
                 break;
 
             IndexDescriptor* desc =
                 collection->getIndexCatalog()->findIndexByKeyPattern(txn, indexKeyPattern.toBSON());
+
+            if (!desc) {
+                warning(LogComponent::kSharding) << "shard key index " << indexKeyPattern.toBSON()
+                                                 << " on '" << ns << "' was dropped";
+                return -1;
+            }
 
             unique_ptr<PlanExecutor> exec(
                 InternalPlanner::indexScan(txn,
@@ -442,11 +448,12 @@ long long Helpers::removeRange(OperationContext* txn,
                     txn,
                     repl::ReplClientInfo::forClient(txn->getClient()).getLastOp(),
                     writeConcern);
-            if (replStatus.status.code() == ErrorCodes::ExceededTimeLimit) {
+            if (replStatus.status.code() == ErrorCodes::ExceededTimeLimit ||
+                replStatus.status.code() == ErrorCodes::WriteConcernFailed) {
                 warning(LogComponent::kSharding) << "replication to secondaries for removeRange at "
                                                     "least 60 seconds behind";
             } else {
-                massertStatusOK(replStatus.status);
+                uassertStatusOK(replStatus.status);
             }
             millisWaitingForReplication += replStatus.duration;
         }

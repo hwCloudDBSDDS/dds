@@ -44,12 +44,14 @@
 #include "mongo/scripting/mozjs/valuewriter.h"
 #include "mongo/scripting/mozjs/wrapconstrainedmethod.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/assert_util.h"
 
 namespace mongo {
 namespace mozjs {
 
 const JSFunctionSpec MongoBase::methods[] = {
-    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(auth, MongoLocalInfo, MongoExternalInfo),
+    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(auth, MongoExternalInfo),
+    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(close, MongoExternalInfo),
     MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(
         copyDatabaseWithSCRAM, MongoLocalInfo, MongoExternalInfo),
     MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(cursorFromId, MongoLocalInfo, MongoExternalInfo),
@@ -61,6 +63,8 @@ const JSFunctionSpec MongoBase::methods[] = {
     MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(
         getServerRPCProtocols, MongoLocalInfo, MongoExternalInfo),
     MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(insert, MongoLocalInfo, MongoExternalInfo),
+    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(
+        isReplicaSetConnection, MongoLocalInfo, MongoExternalInfo),
     MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(logout, MongoLocalInfo, MongoExternalInfo),
     MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(remove, MongoLocalInfo, MongoExternalInfo),
     MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(runCommand, MongoLocalInfo, MongoExternalInfo),
@@ -87,8 +91,11 @@ const JSFunctionSpec MongoExternalInfo::freeFunctions[4] = {
 
 namespace {
 DBClientBase* getConnection(JS::CallArgs& args) {
-    return static_cast<std::shared_ptr<DBClientBase>*>(JS_GetPrivate(args.thisv().toObjectOrNull()))
-        ->get();
+    auto ret = static_cast<std::shared_ptr<DBClientBase>*>(
+                   JS_GetPrivate(args.thisv().toObjectOrNull()))->get();
+    uassert(
+        ErrorCodes::BadValue, "Trying to get connection for closed Mongo object", ret != nullptr);
+    return ret;
 }
 
 void setCursor(JS::HandleObject target,
@@ -116,6 +123,17 @@ void MongoBase::finalize(JSFreeOp* fop, JSObject* obj) {
     if (conn) {
         delete conn;
     }
+}
+
+void MongoBase::Functions::close::call(JSContext* cx, JS::CallArgs args) {
+    getConnection(args);
+
+    auto thisv = args.thisv().toObjectOrNull();
+    auto conn = static_cast<std::shared_ptr<DBClientBase>*>(JS_GetPrivate(thisv));
+
+    conn->reset();
+
+    args.rval().setUndefined();
 }
 
 void MongoBase::Functions::runCommand::call(JSContext* cx, JS::CallArgs args) {
@@ -576,6 +594,16 @@ void MongoBase::Functions::getServerRPCProtocols::call(JSContext* cx, JS::CallAr
     auto protoStr = serverRPCProtocols.getValue().toString();
 
     ValueReader(cx, args.rval()).fromStringData(protoStr);
+}
+
+void MongoBase::Functions::isReplicaSetConnection::call(JSContext* cx, JS::CallArgs args) {
+    auto conn = getConnection(args);
+
+    if (args.length() != 0) {
+        uasserted(ErrorCodes::BadValue, "isReplicaSetConnection takes no args");
+    }
+
+    args.rval().setBoolean(conn->type() == ConnectionString::ConnectionType::SET);
 }
 
 void MongoLocalInfo::construct(JSContext* cx, JS::CallArgs args) {

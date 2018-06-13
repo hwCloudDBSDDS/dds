@@ -237,21 +237,25 @@ void ReplCoordTest::simulateSuccessfulDryRun() {
 }
 
 void ReplCoordTest::simulateSuccessfulV1Election() {
+    auto electionTimeoutWhen = getReplCoord()->getElectionTimeout_forTest();
+    ASSERT_NOT_EQUALS(Date_t(), electionTimeoutWhen);
+    log() << "Election timeout scheduled at " << electionTimeoutWhen << " (simulator time)";
+
+    simulateSuccessfulV1ElectionAt(electionTimeoutWhen);
+}
+
+void ReplCoordTest::simulateSuccessfulV1ElectionAt(Date_t electionTime) {
     OperationContextReplMock txn;
     ReplicationCoordinatorImpl* replCoord = getReplCoord();
     NetworkInterfaceMock* net = getNet();
-
-    auto electionTimeoutWhen = replCoord->getElectionTimeout_forTest();
-    ASSERT_NOT_EQUALS(Date_t(), electionTimeoutWhen);
-    log() << "Election timeout scheduled at " << electionTimeoutWhen << " (simulator time)";
 
     ReplicaSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
     ASSERT(replCoord->getMemberState().secondary()) << replCoord->getMemberState().toString();
     while (!replCoord->getMemberState().primary()) {
         log() << "Waiting on network in state " << replCoord->getMemberState();
         getNet()->enterNetwork();
-        if (net->now() < electionTimeoutWhen) {
-            net->runUntil(electionTimeoutWhen);
+        if (net->now() < electionTime) {
+            net->runUntil(electionTime);
         }
         const NetworkInterfaceMock::NetworkOperationIterator noi = net->getNextReadyRequest();
         const RemoteCommandRequest& request = noi->getRequest();
@@ -368,9 +372,10 @@ void ReplCoordTest::simulateSuccessfulElection() {
 }
 
 void ReplCoordTest::shutdown() {
+    OperationContextReplMock txn;
     invariant(_callShutdown);
     _net->exitNetwork();
-    _repl->shutdown();
+    _repl->shutdown(&txn);
     _callShutdown = false;
 }
 
@@ -412,6 +417,14 @@ void ReplCoordTest::replyToReceivedHeartbeatV1() {
     net->scheduleResponse(noi, net->now(), makeResponseStatus(respObj.obj()));
     net->runReadyNetworkOperations();
     getNet()->exitNetwork();
+}
+
+void ReplCoordTest::disableReadConcernMajoritySupport() {
+    _externalState->setIsReadCommittedEnabled(false);
+}
+
+void ReplCoordTest::disableSnapshots() {
+    _externalState->setAreSnapshotsEnabled(false);
 }
 
 }  // namespace repl

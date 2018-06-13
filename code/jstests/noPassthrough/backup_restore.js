@@ -68,6 +68,7 @@
             "    'auth_create_role.js'," + "    'auth_create_user.js'," +
             "    'auth_drop_role.js'," + "    'auth_drop_user.js'," +
             "    'reindex_background.js'," + "    'yield_sort.js'," +
+            "    'create_index_background.js'," +
             "].map(function(file) { return dir + '/' + file; });" + "Random.setRandomSeed();" +
             // run indefinitely
             "while (true) {" + "   try {" +
@@ -225,8 +226,8 @@
             rst.start(secondary.nodeId, {}, true);
         }
 
-        // Wait up to 60 seconds until restarted node is in state secondary
-        rst.waitForState(rst.getSecondaries(), ReplSetTest.State.SECONDARY, 60 * 1000);
+        // Wait up to 5 minutes until restarted node is in state secondary.
+        rst.waitForState(rst.getSecondaries(), ReplSetTest.State.SECONDARY);
 
         // Add new hidden node to replSetTest
         var hiddenCfg = {
@@ -262,8 +263,7 @@
 
         // Wait up to 60 seconds until the new hidden node is in state RECOVERING.
         rst.waitForState(rst.nodes[numNodes],
-                         [ReplSetTest.State.RECOVERING, ReplSetTest.State.SECONDARY],
-                         60 * 1000);
+                         [ReplSetTest.State.RECOVERING, ReplSetTest.State.SECONDARY]);
 
         // Stop CRUD client and FSM client.
         assert(checkProgram(crudPid), testName + ' CRUD client was not running at end of test');
@@ -271,8 +271,12 @@
         stopMongoProgramByPid(crudPid);
         stopMongoProgramByPid(fsmPid);
 
-        // Wait up to 60 seconds until the new hidden node is in state SECONDARY.
-        rst.waitForState(rst.nodes[numNodes], ReplSetTest.State.SECONDARY, 60 * 1000);
+        // Wait up to 5 minutes until the new hidden node is in state SECONDARY.
+        rst.waitForState(rst.nodes[numNodes], ReplSetTest.State.SECONDARY);
+
+        // Wait for secondaries to finish catching up before shutting down.
+        assert.writeOK(primary.getDB("test").foo.insert(
+            {}, {writeConcern: {w: rst.nodes.length, wtimeout: 10 * 60 * 1000}}));
 
         // Stop set.
         rst.stopSet();

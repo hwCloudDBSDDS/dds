@@ -89,6 +89,8 @@ public:
 
     void kill();
 
+    void interrupt();
+
     bool isKillPending() const override;
 
     OperationContext* getOpContext() const;
@@ -145,8 +147,7 @@ public:
 
     void injectNative(const char* field, NativeFunction func, void* data = 0) override;
 
-    ScriptingFunction _createFunction(const char* code,
-                                      ScriptingFunction functionNumber = 0) override;
+    ScriptingFunction _createFunction(const char* code) override;
 
     void newFunction(StringData code, JS::MutableHandleValue out);
 
@@ -304,14 +305,19 @@ public:
 
     void advanceGeneration() override;
 
+    void requireOwnedObjects() override;
+
+    bool requiresOwnedObjects() const;
+
     JS::HandleId getInternedStringId(InternedString name) {
         return _internedStrings.getInternedString(name);
     }
 
 private:
-    void _MozJSCreateFunction(const char* raw,
-                              ScriptingFunction functionNumber,
-                              JS::MutableHandleValue fun);
+    template <typename ImplScopeFunction>
+    auto _runSafely(ImplScopeFunction&& functionToRun) -> decltype(functionToRun());
+
+    void _MozJSCreateFunction(StringData raw, JS::MutableHandleValue fun);
 
     /**
      * This structure exists exclusively to construct the runtime and context
@@ -366,6 +372,7 @@ private:
     std::string _error;
     unsigned int _opId;        // op id for this scope
     OperationContext* _opCtx;  // Op context for DbEval
+    std::size_t _inOp;
     std::atomic<bool> _pendingGC;
     ConnectState _connectState;
     Status _status;
@@ -373,6 +380,7 @@ private:
     bool _quickExit;
     std::string _parentStack;
     std::size_t _generation;
+    bool _requireOwnedObjects;
     bool _hasOutOfMemoryException;
 
     WrapType<BinDataInfo> _binDataProto;

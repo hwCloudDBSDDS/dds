@@ -26,19 +26,9 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "test_util.h"
+
 #include <sys/wait.h>
-#include <errno.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#ifndef _WIN32
-#include <unistd.h>
-#endif
-
-#include <wiredtiger.h>
-
-#include "test_util.i"
 
 #define	HOME_SIZE	512
 static char home[HOME_SIZE];		/* Program working dir lock file */
@@ -49,7 +39,6 @@ static char home_rd[HOME_SIZE + sizeof(HOME_RD_SUFFIX)];
 #define	HOME_RD2_SUFFIX	".RDNOLOCK"	/* Read-only dir no lock file */
 static char home_rd2[HOME_SIZE + sizeof(HOME_RD2_SUFFIX)];
 
-static const char *progname;		/* Program name */
 static const char *saved_argv0;		/* Program command */
 static const char * const uri = "table:main";
 
@@ -67,6 +56,8 @@ static const char * const uri = "table:main";
 #define	OP_READ		0
 #define	OP_WRITE	1
 
+static void usage(void)
+    WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
 static void
 usage(void)
 {
@@ -129,6 +120,9 @@ run_child(const char *homedir, int op, int expect)
  * Child process opens both databases readonly.
  */
 static void
+open_dbs(int, const char *, const char *,
+    const char *, const char *) WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
+static void
 open_dbs(int op, const char *dir,
     const char *dir_wr, const char *dir_rd, const char *dir_rd2)
 {
@@ -163,8 +157,6 @@ open_dbs(int op, const char *dir,
 extern int __wt_optind;
 extern char *__wt_optarg;
 
-void (*custom_die)(void) = NULL;
-
 int
 main(int argc, char *argv[])
 {
@@ -179,10 +171,8 @@ main(int argc, char *argv[])
 	char cmd[512];
 	uint8_t buf[MAX_VAL];
 
-	if ((progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		progname = argv[0];
-	else
-		++progname;
+	(void)testutil_set_progname(argv);
+
 	/*
 	 * Needed unaltered for system command later.
 	 */
@@ -216,10 +206,12 @@ main(int argc, char *argv[])
 	 * Set up all the directory names.
 	 */
 	testutil_work_dir_from_path(home, sizeof(home), working_dir);
-	(void)snprintf(home_wr, sizeof(home_wr), "%s%s", home, HOME_WR_SUFFIX);
-	(void)snprintf(home_rd, sizeof(home_rd), "%s%s", home, HOME_RD_SUFFIX);
-	(void)snprintf(
-	    home_rd2, sizeof(home_rd2), "%s%s", home, HOME_RD2_SUFFIX);
+	testutil_check(__wt_snprintf(
+	    home_wr, sizeof(home_wr), "%s%s", home, HOME_WR_SUFFIX));
+	testutil_check(__wt_snprintf(
+	    home_rd, sizeof(home_rd), "%s%s", home, HOME_RD_SUFFIX));
+	testutil_check(__wt_snprintf(
+	    home_rd2, sizeof(home_rd2), "%s%s", home, HOME_RD2_SUFFIX));
 	if (!child) {
 		testutil_make_work_dir(home);
 		testutil_make_work_dir(home_wr);
@@ -278,21 +270,24 @@ main(int argc, char *argv[])
 	 * Copy the database.  Remove any lock file from one copy
 	 * and chmod the copies to be read-only permissions.
 	 */
-	(void)snprintf(cmd, sizeof(cmd),
+	testutil_check(__wt_snprintf(cmd, sizeof(cmd),
 	    "cp -rp %s/* %s; rm -f %s/WiredTiger.lock",
-	    home, home_wr, home_wr);
-	(void)system(cmd);
+	    home, home_wr, home_wr));
+	if ((status = system(cmd)) < 0)
+		testutil_die(status, "system: %s", cmd);
 
-	(void)snprintf(cmd, sizeof(cmd),
+	testutil_check(__wt_snprintf(cmd, sizeof(cmd),
 	    "cp -rp %s/* %s; chmod 0555 %s; chmod -R 0444 %s/*",
-	    home, home_rd, home_rd, home_rd);
-	(void)system(cmd);
+	    home, home_rd, home_rd, home_rd));
+	if ((status = system(cmd)) < 0)
+		testutil_die(status, "system: %s", cmd);
 
-	(void)snprintf(cmd, sizeof(cmd),
+	testutil_check(__wt_snprintf(cmd, sizeof(cmd),
 	    "cp -rp %s/* %s; rm -f %s/WiredTiger.lock; "
 	    "chmod 0555 %s; chmod -R 0444 %s/*",
-	    home, home_rd2, home_rd2, home_rd2, home_rd2);
-	(void)system(cmd);
+	    home, home_rd2, home_rd2, home_rd2, home_rd2));
+	if ((status = system(cmd)) < 0)
+		testutil_die(status, "system: %s", cmd);
 
 	/*
 	 * Run four scenarios.  Sometimes expect errors, sometimes success.
@@ -331,27 +326,25 @@ main(int argc, char *argv[])
 	 * same memory image.  Therefore the WT process structure is set in
 	 * the child even though it should not be.  So use 'system' to spawn
 	 * an entirely new process.
-	 */
-	(void)snprintf(
-	    cmd, sizeof(cmd), "%s -h %s -R", saved_argv0, working_dir);
-	if ((status = system(cmd)) < 0)
-		testutil_die(status, "system");
-	/*
+	 *
 	 * The child will exit with success if its test passes.
 	 */
+	testutil_check(__wt_snprintf(
+	    cmd, sizeof(cmd), "%s -h %s -R", saved_argv0, working_dir));
+	if ((status = system(cmd)) < 0)
+		testutil_die(status, "system: %s", cmd);
 	if (WEXITSTATUS(status) != 0)
-		testutil_die(WEXITSTATUS(status), "system");
+		testutil_die(WEXITSTATUS(status), "system: %s", cmd);
 
 	/*
 	 * Scenario 2.  Run child with writable config.
 	 */
-	(void)snprintf(
-	    cmd, sizeof(cmd), "%s -h %s -W", saved_argv0, working_dir);
+	testutil_check(__wt_snprintf(
+	    cmd, sizeof(cmd), "%s -h %s -W", saved_argv0, working_dir));
 	if ((status = system(cmd)) < 0)
-		testutil_die(status, "system");
-
+		testutil_die(status, "system: %s", cmd);
 	if (WEXITSTATUS(status) != 0)
-		testutil_die(WEXITSTATUS(status), "system");
+		testutil_die(WEXITSTATUS(status), "system: %s", cmd);
 
 	/*
 	 * Reopen the two writable directories and rerun the child.
@@ -367,22 +360,22 @@ main(int argc, char *argv[])
 	/*
 	 * Scenario 3.  Child read-only.
 	 */
-	(void)snprintf(
-	    cmd, sizeof(cmd), "%s -h %s -R", saved_argv0, working_dir);
+	testutil_check(__wt_snprintf(
+	    cmd, sizeof(cmd), "%s -h %s -R", saved_argv0, working_dir));
 	if ((status = system(cmd)) < 0)
-		testutil_die(status, "system");
+		testutil_die(status, "system: %s", cmd);
 	if (WEXITSTATUS(status) != 0)
-		testutil_die(WEXITSTATUS(status), "system");
+		testutil_die(WEXITSTATUS(status), "system: %s", cmd);
 
 	/*
 	 * Scenario 4.  Run child with writable config.
 	 */
-	(void)snprintf(
-	    cmd, sizeof(cmd), "%s -h %s -W", saved_argv0, working_dir);
+	testutil_check(__wt_snprintf(
+	    cmd, sizeof(cmd), "%s -h %s -W", saved_argv0, working_dir));
 	if ((status = system(cmd)) < 0)
-		testutil_die(status, "system");
+		testutil_die(status, "system: %s", cmd);
 	if (WEXITSTATUS(status) != 0)
-		testutil_die(WEXITSTATUS(status), "system");
+		testutil_die(WEXITSTATUS(status), "system: %s", cmd);
 
 	/*
 	 * Clean-up.
@@ -399,11 +392,14 @@ main(int argc, char *argv[])
 	 * We need to chmod the read-only databases back so that they can
 	 * be removed by scripts.
 	 */
-	(void)snprintf(cmd, sizeof(cmd), "chmod 0777 %s %s", home_rd, home_rd2);
-	(void)system(cmd);
-	(void)snprintf(cmd, sizeof(cmd), "chmod -R 0666 %s/* %s/*",
-	    home_rd, home_rd2);
-	(void)system(cmd);
+	testutil_check(__wt_snprintf(
+	    cmd, sizeof(cmd), "chmod 0777 %s %s", home_rd, home_rd2));
+	if ((status = system(cmd)) < 0)
+		testutil_die(status, "system: %s", cmd);
+	testutil_check(__wt_snprintf(
+	    cmd, sizeof(cmd), "chmod -R 0666 %s/* %s/*", home_rd, home_rd2));
+	if ((status = system(cmd)) < 0)
+		testutil_die(status, "system: %s", cmd);
 	printf(" *** Readonly test successful ***\n");
 	return (EXIT_SUCCESS);
 }

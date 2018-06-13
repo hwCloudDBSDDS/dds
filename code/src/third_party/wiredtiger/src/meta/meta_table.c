@@ -9,18 +9,6 @@
 #include "wt_internal.h"
 
 /*
- * __wt_metadata_init --
- *	Metadata initialization.
- */
-void
-__wt_metadata_init(WT_SESSION_IMPL *session)
-{
-	/* We cache the metadata file's URI hash for fast detection. */
-	S2C(session)->meta_uri_hash =
-	    __wt_hash_city64(WT_METAFILE_URI, strlen(WT_METAFILE_URI));
-}
-
-/*
  * __metadata_turtle --
  *	Return if a key's value should be taken from the turtle file.
  */
@@ -66,7 +54,7 @@ __wt_metadata_cursor_open(
 	 */
 	btree = ((WT_CURSOR_BTREE *)(*cursorp))->btree;
 
-	/* 
+	/*
 	 * Special settings for metadata: skew eviction so metadata almost
 	 * always stays in cache and make sure metadata is logged if possible.
 	 *
@@ -168,10 +156,10 @@ __wt_metadata_insert(
 	WT_CURSOR *cursor;
 	WT_DECL_RET;
 
-	WT_RET(__wt_verbose(session, WT_VERB_METADATA,
+	__wt_verbose(session, WT_VERB_METADATA,
 	    "Insert: key: %s, value: %s, tracking: %s, %s" "turtle",
 	    key, value, WT_META_TRACKING(session) ? "true" : "false",
-	    __metadata_turtle(key) ? "" : "not "));
+	    __metadata_turtle(key) ? "" : "not ");
 
 	if (__metadata_turtle(key))
 		WT_RET_MSG(session, EINVAL,
@@ -198,13 +186,13 @@ __wt_metadata_update(
 	WT_CURSOR *cursor;
 	WT_DECL_RET;
 
-	WT_RET(__wt_verbose(session, WT_VERB_METADATA,
+	__wt_verbose(session, WT_VERB_METADATA,
 	    "Update: key: %s, value: %s, tracking: %s, %s" "turtle",
 	    key, value, WT_META_TRACKING(session) ? "true" : "false",
-	    __metadata_turtle(key) ? "" : "not "));
+	    __metadata_turtle(key) ? "" : "not ");
 
 	if (__metadata_turtle(key)) {
-		WT_WITH_TURTLE_LOCK(session, ret,
+		WT_WITH_TURTLE_LOCK(session,
 		    ret = __wt_turtle_update(session, key, value));
 		return (ret);
 	}
@@ -233,10 +221,10 @@ __wt_metadata_remove(WT_SESSION_IMPL *session, const char *key)
 	WT_CURSOR *cursor;
 	WT_DECL_RET;
 
-	WT_RET(__wt_verbose(session, WT_VERB_METADATA,
+	__wt_verbose(session, WT_VERB_METADATA,
 	    "Remove: key: %s, tracking: %s, %s" "turtle",
 	    key, WT_META_TRACKING(session) ? "true" : "false",
-	    __metadata_turtle(key) ? "" : "not "));
+	    __metadata_turtle(key) ? "" : "not ");
 
 	if (__metadata_turtle(key))
 		WT_RET_MSG(session, EINVAL,
@@ -266,13 +254,22 @@ __wt_metadata_search(WT_SESSION_IMPL *session, const char *key, char **valuep)
 
 	*valuep = NULL;
 
-	WT_RET(__wt_verbose(session, WT_VERB_METADATA,
+	__wt_verbose(session, WT_VERB_METADATA,
 	    "Search: key: %s, tracking: %s, %s" "turtle",
 	    key, WT_META_TRACKING(session) ? "true" : "false",
-	    __metadata_turtle(key) ? "" : "not "));
+	    __metadata_turtle(key) ? "" : "not ");
 
-	if (__metadata_turtle(key))
-		return (__wt_turtle_read(session, key, valuep));
+	if (__metadata_turtle(key)) {
+		/*
+		 * The returned value should only be set if ret is non-zero, but
+		 * Coverity is convinced otherwise. The code path is used enough
+		 * that Coverity complains a lot, add an error check to get some
+		 * peace and quiet.
+		 */
+		if ((ret = __wt_turtle_read(session, key, valuep)) != 0)
+			__wt_free(session, *valuep);
+		return (ret);
+	}
 
 	/*
 	 * All metadata reads are at read-uncommitted isolation.  That's

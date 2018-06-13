@@ -31,15 +31,15 @@
 #include <map>
 
 #include "mongo/base/init.h"
-#include "mongo/executor/task_executor_test_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/replication_executor.h"
 #include "mongo/db/repl/replication_executor_test_fixture.h"
 #include "mongo/db/repl/storage_interface_mock.h"
 #include "mongo/executor/network_interface_mock.h"
-#include "mongo/stdx/memory.h"
+#include "mongo/executor/task_executor_test_common.h"
 #include "mongo/stdx/functional.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/barrier.h"
 #include "mongo/unittest/unittest.h"
@@ -52,6 +52,8 @@ namespace repl {
 namespace {
 
 using executor::NetworkInterfaceMock;
+using executor::RemoteCommandResponse;
+using unittest::assertGet;
 
 const int64_t prngSeed = 1;
 
@@ -169,6 +171,179 @@ TEST_F(ReplicationExecutorTest, CancelBeforeRunningFutureWork) {
 
     ASSERT_EQUALS(0, executor.getDiagnosticBSON().getFieldDotted("queues.sleepers").Int());
     ASSERT_EQUALS(1, executor.getDiagnosticBSON().getFieldDotted("queues.ready").Int());
+}
+
+// Equivalent to EventChainAndWaitingTest::onGo
+TEST_F(ReplicationExecutorTest, ScheduleCallbackOnFutureEvent) {
+    launchExecutorThread();
+    getNet()->exitNetwork();
+
+    ReplicationExecutor& executor = getReplExecutor();
+    // We signal this "ping" event and the executor will signal "pong" event in return.
+    auto ping = assertGet(executor.makeEvent());
+    auto pong = assertGet(executor.makeEvent());
+    auto fn = [&executor, pong](const ReplicationExecutor::CallbackArgs& cbData) {
+        ASSERT_OK(cbData.status);
+        executor.signalEvent(pong);
+    };
+
+    // Wait for a future event.
+    executor.onEvent(ping, fn);
+    ASSERT_EQUALS(0, executor.getDiagnosticBSON().getFieldDotted("queues.ready").Int());
+    executor.signalEvent(ping);
+    executor.waitForEvent(pong);
+}
+
+// Equivalent to EventChainAndWaitingTest::onGoAfterTriggered
+TEST_F(ReplicationExecutorTest, ScheduleCallbackOnSignaledEvent) {
+    launchExecutorThread();
+    getNet()->exitNetwork();
+
+    ReplicationExecutor& executor = getReplExecutor();
+    // We signal this "ping" event and the executor will signal "pong" event in return.
+    auto ping = assertGet(executor.makeEvent());
+    auto pong = assertGet(executor.makeEvent());
+    auto fn = [&executor, pong](const ReplicationExecutor::CallbackArgs& cbData) {
+        ASSERT_OK(cbData.status);
+        executor.signalEvent(pong);
+    };
+
+    // Wait for a signaled event.
+    executor.signalEvent(ping);
+    executor.onEvent(ping, fn);
+    executor.waitForEvent(pong);
+}
+
+TEST_F(ReplicationExecutorTest, ScheduleCallbackAtNow) {
+    launchExecutorThread();
+    getNet()->exitNetwork();
+
+    ReplicationExecutor& executor = getReplExecutor();
+    auto finishEvent = assertGet(executor.makeEvent());
+    auto fn = [&executor, finishEvent](const ReplicationExecutor::CallbackArgs& cbData) {
+        ASSERT_OK(cbData.status);
+        executor.signalEvent(finishEvent);
+    };
+
+    auto cb = executor.scheduleWorkAt(getNet()->now(), fn);
+    executor.waitForEvent(finishEvent);
+}
+
+TEST_F(ReplicationExecutorTest, ScheduleCallbackInPast) {
+    launchExecutorThread();
+    getNet()->exitNetwork();
+
+    ReplicationExecutor& executor = getReplExecutor();
+    auto finishEvent = assertGet(executor.makeEvent());
+    auto fn = [&executor, finishEvent](const ReplicationExecutor::CallbackArgs& cbData) {
+        ASSERT_OK(cbData.status);
+        executor.signalEvent(finishEvent);
+    };
+
+    auto cb = executor.scheduleWorkAt(getNet()->now() - Milliseconds(1000), fn);
+    executor.waitForEvent(finishEvent);
+}
+
+TEST_F(ReplicationExecutorTest, ScheduleCallbackAtAFutureTime) {
+    launchExecutorThread();
+    getNet()->exitNetwork();
+
+    ReplicationExecutor& executor = getReplExecutor();
+    auto finishEvent = assertGet(executor.makeEvent());
+    auto fn = [&executor, finishEvent](const ReplicationExecutor::CallbackArgs& cbData) {
+        ASSERT_OK(cbData.status);
+        executor.signalEvent(finishEvent);
+    };
+
+    auto now = getNet()->now();
+    now += Milliseconds(1000);
+    auto cb = executor.scheduleWorkAt(now, fn);
+
+    getNet()->enterNetwork();
+    getNet()->runUntil(now);
+    getNet()->exitNetwork();
+
+    executor.waitForEvent(finishEvent);
+}
+
+
+TEST_F(ReplicationExecutorTest, TestForCancelRace) {
+    launchExecutorThread();
+    getNet()->exitNetwork();
+
+    unittest::Barrier enterCallback(2U), runCallback(2U);
+
+    ReplicationExecutor& executor = getReplExecutor();
+    bool firstEventDone = false;
+    bool firstEventCanceled = false;
+    auto fn = [&executor, &enterCallback, &runCallback, &firstEventDone, &firstEventCanceled](
+        const executor::TaskExecutor::RemoteCommandCallbackArgs& cbData) {
+        // This barrier lets the test code wait until we're in the callback.
+        enterCallback.countDownAndWait();
+        // This barrier lets the test code keep us in the callback until it has run the cancel.
+        runCallback.countDownAndWait();
+        firstEventCanceled = !cbData.response.getStatus().isOK();
+        firstEventDone = true;
+    };
+
+    // First, schedule a network event to run.
+    const executor::RemoteCommandRequest request(
+        HostAndPort("test1", 1234), "mydb", BSON("nothing" << 0));
+    auto firstCallback = assertGet(executor.scheduleRemoteCommand(request, fn));
+
+    // Now let the request happen.
+    // We need to run the network on another thread, because the test
+    // fixture will hang waiting for the callbacks to complete.
+    auto timeThread = stdx::thread([this] {
+        getNet()->enterNetwork();
+        ASSERT(getNet()->hasReadyRequests());
+        auto noi = getNet()->getNextReadyRequest();
+        getNet()->scheduleResponse(noi, getNet()->now(), RemoteCommandResponse());
+        getNet()->runReadyNetworkOperations();
+        getNet()->exitNetwork();
+    });
+
+    // Wait until we're in the callback.
+    enterCallback.countDownAndWait();
+
+    // Schedule a different network event to run.
+    bool secondEventDone = false;
+    bool secondEventCanceled = false;
+    auto fn2 = [&executor, &secondEventDone, &secondEventCanceled](
+        const executor::TaskExecutor::RemoteCommandCallbackArgs& cbData) {
+        secondEventCanceled = !cbData.response.getStatus().isOK();
+        secondEventDone = true;
+    };
+    auto secondCallback = assertGet(executor.scheduleRemoteCommand(request, fn2));
+    ASSERT_FALSE(firstEventDone);  // The first event should be stuck at runCallback barrier.
+    // Cancel the first callback.  This cancel should have no effect as the callback has
+    // already been started.
+    executor.cancel(firstCallback);
+
+    // Let the first callback continue to completion.
+    runCallback.countDownAndWait();
+
+    // Now the time thread can continue.
+    timeThread.join();
+
+    // The first event should be done, the second event should be pending.
+    ASSERT(firstEventDone);
+    ASSERT_FALSE(secondEventDone);
+
+    // Run the network thread, which should run the second request.
+    {
+        getNet()->enterNetwork();
+        // The second request should be ready.
+        ASSERT(getNet()->hasReadyRequests()) << "Second request is not ready (cancelled?)";
+        auto noi = getNet()->getNextReadyRequest();
+        getNet()->scheduleResponse(noi, getNet()->now(), RemoteCommandResponse());
+        getNet()->runReadyNetworkOperations();
+        getNet()->exitNetwork();
+    }
+
+    // The second callback should have run without being canceled.
+    ASSERT_TRUE(secondEventDone);
+    ASSERT_FALSE(secondEventCanceled);
 }
 
 }  // namespace

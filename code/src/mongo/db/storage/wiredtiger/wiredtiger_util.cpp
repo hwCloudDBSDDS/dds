@@ -251,6 +251,11 @@ Status WiredTigerUtil::checkTableCreationOptions(const BSONElement& configElem) 
     ErrorAccumulator eventHandler(&errors);
 
     StringData config = configElem.valueStringData();
+    // Do NOT allow embedded null characters
+    if (config.size() != strlen(config.rawData())) {
+        return {ErrorCodes::FailedToParse, "malformed 'configString' value."};
+    }
+
     Status status = wtRCToStatus(
         wiredtiger_config_validate(nullptr, &eventHandler, "WT_SESSION.create", config.rawData()));
     if (!status.isOK()) {
@@ -391,9 +396,9 @@ int WiredTigerUtil::verifyTable(OperationContext* txn,
     ErrorAccumulator eventHandler(errors);
 
     // Try to close as much as possible to avoid EBUSY errors.
-    WiredTigerRecoveryUnit::get(txn)->getSession(txn)->closeAllCursors();
+    WiredTigerRecoveryUnit::get(txn)->getSession(txn)->closeAllCursors(uri);
     WiredTigerSessionCache* sessionCache = WiredTigerRecoveryUnit::get(txn)->getSessionCache();
-    sessionCache->closeAll();
+    sessionCache->closeAllCursors(uri);
 
     // Open a new session with custom error handlers.
     WT_CONNECTION* conn = WiredTigerRecoveryUnit::get(txn)->getSessionCache()->conn();

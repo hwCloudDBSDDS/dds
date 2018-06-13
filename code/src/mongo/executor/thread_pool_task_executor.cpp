@@ -42,10 +42,16 @@
 #include "mongo/executor/network_interface.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/util/concurrency/thread_pool_interface.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 namespace executor {
+
+namespace {
+MONGO_FP_DECLARE(scheduleIntoPoolSpinsUntilThreadPoolShutsDown);
+}
 
 class ThreadPoolTaskExecutor::CallbackState : public TaskExecutor::CallbackState {
     MONGO_DISALLOW_COPYING(CallbackState);
@@ -147,7 +153,6 @@ void ThreadPoolTaskExecutor::shutdown() {
         cbState->canceled.store(1);
     }
     scheduleIntoPool_inlock(&pending, std::move(lk));
-    _net->signalWorkAvailable();
     _pool->shutdown();
 }
 
@@ -167,7 +172,16 @@ void ThreadPoolTaskExecutor::join() {
     _net->shutdown();
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-    invariant(_poolInProgressQueue.empty());
+    // The _poolInProgressQueue may not be empty if the network interface attempted to schedule work
+    // into _pool after _pool->shutdown(). Because _pool->join() has returned, we know that any
+    // items left in _poolInProgressQueue will never be processed by another thread, so we process
+    // them now.
+    while (!_poolInProgressQueue.empty()) {
+        auto cbState = _poolInProgressQueue.front();
+        lk.unlock();
+        runCallback(std::move(cbState));
+        lk.lock();
+    }
     invariant(_networkInProgressQueue.empty());
     invariant(_sleepersQueue.empty());
     invariant(_unsignaledEvents.empty());
@@ -259,6 +273,9 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWorkAt(
                        }
                        invariant(now() >= when);
                        stdx::unique_lock<stdx::mutex> lk(_mutex);
+                       if (cbState->canceled.load()) {
+                           return;
+                       }
                        scheduleIntoPool_inlock(&_sleepersQueue, cbState->iter, std::move(lk));
                    });
 
@@ -438,28 +455,42 @@ void ThreadPoolTaskExecutor::scheduleIntoPool_inlock(WorkQueue* fromQueue,
 
     lk.unlock();
 
+    if (MONGO_FAIL_POINT(scheduleIntoPoolSpinsUntilThreadPoolShutsDown)) {
+        scheduleIntoPoolSpinsUntilThreadPoolShutsDown.setMode(FailPoint::off);
+        while (_pool->schedule([] {}) != ErrorCodes::ShutdownInProgress) {
+            sleepmillis(100);
+        }
+    }
+
     for (const auto& cbState : todo) {
-        fassert(28735, _pool->schedule([this, cbState] { runCallback(std::move(cbState)); }));
+        const auto status = _pool->schedule([this, cbState] { runCallback(std::move(cbState)); });
+        if (status == ErrorCodes::ShutdownInProgress)
+            break;
+        fassert(28735, status);
     }
     _net->signalWorkAvailable();
 }
 
 void ThreadPoolTaskExecutor::runCallback(std::shared_ptr<CallbackState> cbStateArg) {
-    auto cbStatePtr = cbStateArg.get();
     CallbackHandle cbHandle;
-    setCallbackForHandle(&cbHandle, std::move(cbStateArg));
+    setCallbackForHandle(&cbHandle, cbStateArg);
     CallbackArgs args(this,
                       std::move(cbHandle),
-                      cbStatePtr->canceled.load()
+                      cbStateArg->canceled.load()
                           ? Status({ErrorCodes::CallbackCanceled, "Callback canceled"})
                           : Status::OK());
-    cbStatePtr->callback(std::move(args));
-    cbStatePtr->isFinished.store(true);
+    invariant(!cbStateArg->isFinished.load());
+    cbStateArg->callback(std::move(args));
+    cbStateArg->isFinished.store(true);
     stdx::lock_guard<stdx::mutex> lk(_mutex);
-    _poolInProgressQueue.erase(cbStatePtr->iter);
-    if (cbStatePtr->finishedCondition) {
-        cbStatePtr->finishedCondition->notify_all();
+    _poolInProgressQueue.erase(cbStateArg->iter);
+    if (cbStateArg->finishedCondition) {
+        cbStateArg->finishedCondition->notify_all();
     }
+}
+
+void ThreadPoolTaskExecutor::dropConnections(const HostAndPort& hostAndPort) {
+    _net->dropConnections(hostAndPort);
 }
 
 }  // namespace executor

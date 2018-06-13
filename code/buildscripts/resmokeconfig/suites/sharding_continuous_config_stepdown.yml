@@ -6,6 +6,7 @@ selector:
     exclude_files:
     # Auth tests require authentication on the stepdown thread's connection
     - jstests/sharding/auth*.js
+    - jstests/sharding/replset_config/auth*.js
     - jstests/sharding/cleanup_orphaned_auth.js
     - jstests/sharding/localhostAuthBypass.js
     - jstests/sharding/mongos_rs_auth_shard_failure_tolerance.js
@@ -13,7 +14,7 @@ selector:
     # Count/write/aggregate/group commands against the config shard do not support retries yet
     - jstests/sharding/addshard1.js
     - jstests/sharding/addshard2.js
-    - jstests/sharding/auto1.js
+    - jstests/sharding/autosplit.js
     - jstests/sharding/auto_rebalance.js
     - jstests/sharding/autosplit_heuristics.js
     - jstests/sharding/balance_tags1.js
@@ -71,12 +72,13 @@ selector:
     - jstests/sharding/printShardingStatus.js
     # Balancer writes (direct write to config database with no retries)
     - jstests/sharding/remove2.js
-    - jstests/sharding/auto2.js
+    - jstests/sharding/autosplit_with_balancer.js
     - jstests/sharding/features3.js
     - jstests/sharding/in_memory_sort_limit.js
     - jstests/sharding/parallel.js
     - jstests/sharding/migrateBig.js
     - jstests/sharding/sharding_rs1.js
+    - jstests/sharding/jumbo1.js
     # Calls the config server primary directly (not through mongos)
     - jstests/sharding/moveprimary_ignore_sharded.js
     - jstests/sharding/min_optime_recovery.js
@@ -86,6 +88,14 @@ selector:
     # for this command
     - jstests/sharding/major_version_check.js
     - jstests/sharding/replset_config/ssv_config_check.js
+    # Runs replSetGetStatus -- via awaitLastOpCommitted -- directly against the config server:
+    # retries aren't supported.
+    - jstests/sharding/coll_epoch_test1.js
+    - jstests/sharding/move_stale_mongos.js
+    - jstests/sharding/shard4.js
+    - jstests/sharding/shard5.js
+    - jstests/sharding/split_stale_mongos.js
+    - jstests/sharding/zero_shard_version.js
     # Already stop or blackholes the primary of the CSRS config shard
     - jstests/sharding/all_config_hosts_down.js
     - jstests/sharding/all_config_servers_blackholed_from_mongos.js

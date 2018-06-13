@@ -34,6 +34,8 @@
 
 #include <utility>
 
+#include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/index_catalog_entry.h"
 #include "mongo/db/index/2d_access_method.h"
 #include "mongo/db/index/btree_access_method.h"
@@ -300,6 +302,9 @@ Status MMAPV1DatabaseCatalogEntry::renameCollection(OperationContext* txn,
             if (!s.isOK())
                 return s;
         }
+        // Invalidate index record for the old collection.
+        invalidateSystemCollectionRecord(
+            txn, NamespaceString(name(), "system.indexes"), record->id);
 
         systemIndexRecordStore->deleteRecord(txn, record->id);
     }
@@ -366,6 +371,10 @@ Status MMAPV1DatabaseCatalogEntry::_renameSingleNamespace(OperationContext* txn,
 
     RecordId rid = _addNamespaceToNamespaceCollection(txn, toNS, newSpec.isEmpty() ? 0 : &newSpec);
 
+    // Invalidate old namespace record
+    invalidateSystemCollectionRecord(
+        txn, NamespaceString(name(), "system.namespaces"), oldSpecLocation);
+
     _getNamespaceRecordStore()->deleteRecord(txn, oldSpecLocation);
 
     Entry*& entry = _collections[toNS.toString()];
@@ -376,6 +385,17 @@ Status MMAPV1DatabaseCatalogEntry::_renameSingleNamespace(OperationContext* txn,
     _insertInCache(txn, toNS, rid, entry);
 
     return Status::OK();
+}
+
+void MMAPV1DatabaseCatalogEntry::invalidateSystemCollectionRecord(
+    OperationContext* txn, NamespaceString systemCollectionNamespace, RecordId record) {
+    // Having to go back up through the DatabaseHolder is a bit of a layering
+    // violation, but at this point we're not going to add more MMAPv1 specific interfaces.
+    StringData dbName = systemCollectionNamespace.db();
+    invariant(txn->lockState()->isDbLockedForMode(dbName, MODE_X));
+    Database* db = dbHolder().get(txn, dbName);
+    Collection* systemCollection = db->getCollection(systemCollectionNamespace);
+    systemCollection->getCursorManager()->invalidateDocument(txn, record, INVALIDATION_DELETION);
 }
 
 void MMAPV1DatabaseCatalogEntry::appendExtraStats(OperationContext* opCtx,
@@ -789,7 +809,12 @@ void MMAPV1DatabaseCatalogEntry::_removeNamespaceFromNamespaceCollection(Operati
     RecordStoreV1Base* rs = _getNamespaceRecordStore();
     invariant(rs);
 
-    rs->deleteRecord(txn, entry->second->catalogEntry->getNamespacesRecordId());
+    // Invalidate old namespace record
+    RecordId oldSpecLocation = entry->second->catalogEntry->getNamespacesRecordId();
+    invalidateSystemCollectionRecord(
+        txn, NamespaceString(name(), "system.namespaces"), oldSpecLocation);
+
+    rs->deleteRecord(txn, oldSpecLocation);
 }
 
 CollectionOptions MMAPV1DatabaseCatalogEntry::getCollectionOptions(OperationContext* txn,
@@ -826,4 +851,46 @@ CollectionOptions MMAPV1DatabaseCatalogEntry::getCollectionOptions(OperationCont
     }
     return options;
 }
+
+Status MMAPV1DatabaseCatalogEntry::requireDataFileCompatibilityWithPriorRelease(
+    OperationContext* txn) {
+    if (_extentManager.numFiles() == 0) {
+        return Status::OK();
+    }
+
+    // Determine whether collation metadata is present in the catalog.
+    DataFileVersion version = _extentManager.getFileFormat(txn);
+    if (!version.getMayHaveCollationMetadata()) {
+        // Since the feature bit isn't set, we can be sure that the collation feature is not in use.
+        return Status::OK();
+    }
+
+    std::list<std::string> collectionNamespaces;
+    getCollectionNamespaces(&collectionNamespaces);
+
+    bool hasCollationMetadata = false;
+    for (auto&& collectionNamespace : collectionNamespaces) {
+        log() << "Checking collection '" << collectionNamespace << "' for collation metadata...";
+        if (_collections[collectionNamespace]->catalogEntry->hasCollationMetadata(
+                txn, collectionNamespace)) {
+            hasCollationMetadata = true;
+        }
+        log() << "Done checking collection '" << collectionNamespace << "' for collation metadata";
+    }
+
+    if (hasCollationMetadata) {
+        return {ErrorCodes::MustUpgrade,
+                "The data files use the collation feature, "
+                "which is not supported by this version of mongod"};
+    }
+
+    // Clear the collation feature bit.
+    version.clearMayHaveCollationMetadata();
+    WriteUnitOfWork wunit(txn);
+    _extentManager.setFileFormat(txn, version);
+    wunit.commit();
+
+    return Status::OK();
+}
+
 }  // namespace mongo

@@ -26,25 +26,12 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <sys/wait.h>
-#include <errno.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#ifndef _WIN32
-#include <unistd.h>
-#endif
-
-#include <wiredtiger.h>
-
-#include "test_util.i"
+#include "test_util.h"
 
 #define	HOME_SIZE	512
-#define	HOME_BASE	"WT_HOME"
+#define	HOME_BASE	"WT_TEST"
 static char home[HOME_SIZE];		/* Base home directory */
 static char hometmp[HOME_SIZE];		/* Each conn home directory */
-static const char *progname;		/* Program name */
 static const char * const uri = "table:main";
 
 #define	WTOPEN_CFG_COMMON					\
@@ -67,6 +54,8 @@ static const char * const uri = "table:main";
 #define	MAX_KV		100
 #define	MAX_VAL		128
 
+static void usage(void)
+    WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
 static void
 usage(void)
 {
@@ -78,12 +67,10 @@ usage(void)
 extern int __wt_optind;
 extern char *__wt_optarg;
 
-void (*custom_die)(void) = NULL;
-
-WT_CONNECTION **connections = NULL;
-WT_CURSOR **cursors = NULL;
-WT_RAND_STATE rnd;
-WT_SESSION **sessions = NULL;
+static WT_CONNECTION **connections = NULL;
+static WT_CURSOR **cursors = NULL;
+static WT_RAND_STATE rnd;
+static WT_SESSION **sessions = NULL;
 
 static int
 get_stat(WT_SESSION *stat_session, int stat_field, uint64_t *valuep)
@@ -103,7 +90,7 @@ get_stat(WT_SESSION *stat_session, int stat_field, uint64_t *valuep)
 	return (ret);
 }
 
-static int
+static void
 run_ops(int dbs)
 {
 	WT_ITEM data;
@@ -129,7 +116,6 @@ run_ops(int dbs)
 			testutil_check(cursors[db]->insert(cursors[db]));
 		}
 	}
-	return (0);
 }
 
 int
@@ -142,10 +128,8 @@ main(int argc, char *argv[])
 	const char *working_dir, *wt_cfg;
 	char cmd[128];
 
-	if ((progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		progname = argv[0];
-	else
-		++progname;
+	(void)testutil_set_progname(argv);
+
 	dbs = MAX_DBS;
 	working_dir = HOME_BASE;
 	idle = false;
@@ -172,17 +156,10 @@ main(int argc, char *argv[])
 	 * Allocate arrays for connection handles, sessions, statistics
 	 * cursors and, if needed, data cursors.
 	 */
-	if ((connections = calloc(
-	    (size_t)dbs, sizeof(WT_CONNECTION *))) == NULL)
-		testutil_die(ENOMEM, "connection array malloc");
-	if ((sessions = calloc(
-	    (size_t)dbs, sizeof(WT_SESSION *))) == NULL)
-		testutil_die(ENOMEM, "session array malloc");
-	if ((cond_reset_orig = calloc((size_t)dbs, sizeof(uint64_t))) == NULL)
-		testutil_die(ENOMEM, "orig stat malloc");
-	if (!idle && ((cursors = calloc(
-	    (size_t)dbs, sizeof(WT_CURSOR *))) == NULL))
-		testutil_die(ENOMEM, "cursor array malloc");
+	connections = dcalloc((size_t)dbs, sizeof(WT_CONNECTION *));
+	sessions = dcalloc((size_t)dbs, sizeof(WT_SESSION *));
+	cond_reset_orig = dcalloc((size_t)dbs, sizeof(uint64_t));
+	cursors = idle ? NULL : dcalloc((size_t)dbs, sizeof(WT_CURSOR *));
 	memset(cmd, 0, sizeof(cmd));
 	/*
 	 * Set up all the directory names.
@@ -191,7 +168,8 @@ main(int argc, char *argv[])
 	testutil_make_work_dir(home);
 	__wt_random_init(&rnd);
 	for (i = 0; i < dbs; ++i) {
-		snprintf(hometmp, HOME_SIZE, "%s/%s.%d", home, HOME_BASE, i);
+		testutil_check(__wt_snprintf(
+		    hometmp, HOME_SIZE, "%s/%s.%d", home, HOME_BASE, i));
 		testutil_make_work_dir(hometmp);
 		/*
 		 * Open each database.  Rotate different configurations
@@ -228,7 +206,7 @@ main(int argc, char *argv[])
 		    WT_STAT_CONN_COND_AUTO_WAIT_RESET, &cond_reset_orig[i]));
 	for (i = 0; i < MAX_IDLE_TIME; i += IDLE_INCR) {
 		if (!idle)
-			testutil_check(run_ops(dbs));
+			run_ops(dbs);
 		printf("Sleep %d (%d of %d)\n", IDLE_INCR, i, MAX_IDLE_TIME);
 		sleep(IDLE_INCR);
 	}
@@ -257,8 +235,7 @@ main(int argc, char *argv[])
 	free(connections);
 	free(sessions);
 	free(cond_reset_orig);
-	if (!idle)
-		free(cursors);
+	free(cursors);
 
 	return (EXIT_SUCCESS);
 }

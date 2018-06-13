@@ -37,12 +37,30 @@
 #define	WT_SESSION_META_DHANDLE(s)					\
 	(((WT_CURSOR_BTREE *)((s)->meta_cursor))->btree->dhandle)
 
+#define	WT_DHANDLE_ACQUIRE(dhandle)					\
+    (void)__wt_atomic_add32(&(dhandle)->session_ref, 1)
+
+#define	WT_DHANDLE_RELEASE(dhandle)					\
+    (void)__wt_atomic_sub32(&(dhandle)->session_ref, 1)
+
+#define	WT_DHANDLE_NEXT(session, dhandle, head, field) do {		\
+	WT_ASSERT(session, F_ISSET(session, WT_SESSION_LOCKED_HANDLE_LIST));\
+	if ((dhandle) == NULL)						\
+		(dhandle) = TAILQ_FIRST(head);				\
+	else {								\
+		    WT_DHANDLE_RELEASE(dhandle);			\
+		    (dhandle) = TAILQ_NEXT(dhandle, field);		\
+	}								\
+	if ((dhandle) != NULL)						\
+		    WT_DHANDLE_ACQUIRE(dhandle);			\
+} while (0)
+
 /*
  * WT_DATA_HANDLE --
  *	A handle for a generic named data source.
  */
 struct __wt_data_handle {
-	WT_RWLOCK *rwlock;		/* Lock for shared/exclusive ops */
+	WT_RWLOCK rwlock;		/* Lock for shared/exclusive ops */
 	TAILQ_ENTRY(__wt_data_handle) q;
 	TAILQ_ENTRY(__wt_data_handle) hashq;
 
@@ -62,6 +80,8 @@ struct __wt_data_handle {
 	const char *checkpoint;		/* Checkpoint name (or NULL) */
 	const char **cfg;		/* Configuration information */
 
+	bool compact_skip;		/* If the handle failed to compact */
+
 	WT_DATA_SOURCE *dsrc;		/* Data source for this handle */
 	void *handle;			/* Generic handle */
 
@@ -75,14 +95,15 @@ struct __wt_data_handle {
 
 					/* Data-source statistics */
 	WT_DSRC_STATS *stats[WT_COUNTER_SLOTS];
-	WT_DSRC_STATS  stat_array[WT_COUNTER_SLOTS];
+	WT_DSRC_STATS *stat_array;
 
 	/* Flags values over 0xff are reserved for WT_BTREE_* */
 #define	WT_DHANDLE_DEAD		        0x01	/* Dead, awaiting discard */
 #define	WT_DHANDLE_DISCARD	        0x02	/* Discard on release */
 #define	WT_DHANDLE_DISCARD_FORCE	0x04	/* Force discard on release */
 #define	WT_DHANDLE_EXCLUSIVE	        0x08	/* Need exclusive access */
-#define	WT_DHANDLE_LOCK_ONLY	        0x10	/* Handle only used as a lock */
-#define	WT_DHANDLE_OPEN		        0x20	/* Handle is open */
+#define	WT_DHANDLE_IS_METADATA		0x10	/* Metadata handle */
+#define	WT_DHANDLE_LOCK_ONLY	        0x20	/* Handle only used as a lock */
+#define	WT_DHANDLE_OPEN		        0x40	/* Handle is open */
 	uint32_t flags;
 };

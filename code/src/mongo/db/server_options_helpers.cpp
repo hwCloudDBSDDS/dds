@@ -292,12 +292,7 @@ Status addGeneralServerOptions(moe::OptionSection* options) {
     options->addOptionChaining(
                  "net.http.port", "", moe::Switch, "port to listen on for http interface")
         .setSources(moe::SourceYAMLConfig);
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    options->addOptionChaining("security.limitVerifyTimes",
-                               "limitverifytimes",
-                               moe::Switch,
-                               "enable limit verify times");
-   
+
     options->addOptionChaining(
                  "security.clusterAuthMode",
                  "clusterAuthMode",
@@ -546,6 +541,18 @@ Status validateServerOptions(const moe::Environment& params) {
         if (authMechParameter != parameters.end() && authMechParameter->second.empty()) {
             haveAuthenticationMechanisms = false;
         }
+
+        // Make sure 'internalLookupStageBatchSize' can only be set if test commands are enabled.
+        auto lookupBatchSizeParameter = parameters.find("internalLookupStageBatchSize");
+        auto enableTestCommandsParameter = parameters.find("enableTestCommands");
+        if (lookupBatchSizeParameter != parameters.end()) {
+            if (enableTestCommandsParameter == parameters.end() ||
+                enableTestCommandsParameter->second != "1") {
+                return Status(
+                    ErrorCodes::BadValue,
+                    "internalLookupStageBatchSize can only be set if test commands are enabled.");
+            }
+        }
     }
     if ((params.count("security.authorization") &&
          params["security.authorization"].as<std::string>() == "enabled") ||
@@ -790,11 +797,6 @@ Status storeServerOptions(const moe::Environment& params, const std::vector<std:
     if (params.count("net.http.enabled")) {
         serverGlobalParams.isHttpInterfaceEnabled = params["net.http.enabled"].as<bool>();
     }
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-	if (params.count("security.limitVerifyTimes")) {
-        serverGlobalParams.limitVerifyTimes = params["security.limitVerifyTimes"].as<bool>();
-    }
-	
 
     if (params.count("security.clusterAuthMode")) {
         std::string clusterAuthMode = params["security.clusterAuthMode"].as<std::string>();

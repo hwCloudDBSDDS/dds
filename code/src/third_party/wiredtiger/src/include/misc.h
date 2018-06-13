@@ -11,6 +11,13 @@
  * and unused function return values.
  */
 #define	WT_UNUSED(var)		(void)(var)
+#define	WT_IGNORE_RET(call) do {					\
+	int __ignored_ret;						\
+	__ignored_ret = (call);						\
+	WT_UNUSED(__ignored_ret);					\
+} while (0)
+
+#define	WT_DIVIDER	"=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-="
 
 /* Basic constants. */
 #define	WT_THOUSAND	(1000)
@@ -31,12 +38,12 @@
  */
 #define	WT_STORE_SIZE(s)	((uint32_t)(s))
 #define	WT_PTRDIFF(end, begin)						\
-	((size_t)((uint8_t *)(end) - (uint8_t *)(begin)))
+	((size_t)((const uint8_t *)(end) - (const uint8_t *)(begin)))
 #define	WT_PTRDIFF32(end, begin)					\
 	WT_STORE_SIZE(WT_PTRDIFF((end), (begin)))
 #define	WT_BLOCK_FITS(p, len, begin, maxlen)				\
-	((uint8_t *)(p) >= (uint8_t *)(begin) &&			\
-	((uint8_t *)(p) + (len) <= (uint8_t *)(begin) + (maxlen)))
+	((const uint8_t *)(p) >= (const uint8_t *)(begin) &&		\
+	((const uint8_t *)(p) + (len) <= (const uint8_t *)(begin) + (maxlen)))
 #define	WT_PTR_IN_RANGE(p, begin, maxlen)				\
 	WT_BLOCK_FITS((p), 1, (begin), (maxlen))
 
@@ -56,7 +63,7 @@
 #define	WT_MAX(a, b)	((a) < (b) ? (b) : (a))
 
 /* Elements in an array. */
-#define	WT_ELEMENTS(a)	(sizeof(a) / sizeof(a[0]))
+#define	WT_ELEMENTS(a)	(sizeof(a) / sizeof((a)[0]))
 
 /* 10 level skip lists, 1/4 have a link to the next element. */
 #define	WT_SKIP_MAXDEPTH	10
@@ -96,8 +103,9 @@
  * the caller remember to put the & operator on the pointer.
  */
 #define	__wt_free(session, p) do {					\
-	if ((p) != NULL)						\
-		__wt_free_int(session, (void *)&(p));			\
+	void *__p = &(p);						\
+	if (*(void **)__p != NULL)					\
+		__wt_free_int(session, __p);				\
 } while (0)
 #ifdef HAVE_DIAGNOSTIC
 #define	__wt_overwrite_and_free(session, p) do {			\
@@ -132,6 +140,7 @@
 
 #define	F_CLR(p, mask)		        FLD_CLR((p)->flags, mask)
 #define	F_ISSET(p, mask)	        FLD_ISSET((p)->flags, mask)
+#define	F_ISSET_ALL(p, mask)	        (FLD_MASK((p)->flags, mask) == (mask))
 #define	F_MASK(p, mask)	                FLD_MASK((p)->flags, mask)
 #define	F_SET(p, mask)		        FLD_SET((p)->flags, mask)
 
@@ -172,14 +181,14 @@
  */
 #define	WT_BINARY_SEARCH(key, arrayp, n, found) do {			\
 	uint32_t __base, __indx, __limit;				\
-	found = false;							\
+	(found) = false;						\
 	for (__base = 0, __limit = (n); __limit != 0; __limit >>= 1) {	\
 		__indx = __base + (__limit >> 1);			\
-		if ((arrayp)[__indx] < key) {				\
+		if ((arrayp)[__indx] < (key)) {				\
 			__base = __indx + 1;				\
 			--__limit;					\
-		} else if ((arrayp)[__indx] == key) {			\
-			found = true;					\
+		} else if ((arrayp)[__indx] == (key)) {			\
+			(found) = true;					\
 			break;						\
 		}							\
 	}								\
@@ -198,8 +207,8 @@
 
 /* Check if a string matches a prefix. */
 #define	WT_PREFIX_MATCH(str, pfx)					\
-	(((const char *)(str))[0] == ((const char *)pfx)[0] &&		\
-	    strncmp((str), (pfx), strlen(pfx)) == 0)
+	(((const char *)(str))[0] == ((const char *)(pfx))[0] &&	\
+	    strncmp(str, pfx, strlen(pfx)) == 0)
 
 /* Check if a string matches a prefix, and move past it. */
 #define	WT_PREFIX_SKIP(str, pfx)					\
@@ -216,8 +225,8 @@
 
 /* Check if a string matches a byte string of len bytes. */
 #define	WT_STRING_MATCH(str, bytes, len)				\
-	(((const char *)str)[0] == ((const char *)bytes)[0] &&		\
-	    strncmp(str, bytes, len) == 0 && (str)[(len)] == '\0')
+	(((const char *)(str))[0] == ((const char *)(bytes))[0] &&	\
+	    strncmp(str, bytes, len) == 0 && (str)[len] == '\0')
 
 /*
  * Macro that produces a string literal that isn't wrapped in quotes, to avoid
@@ -267,6 +276,3 @@ union __wt_rand_state {
 		uint32_t w, z;
 	} x;
 };
-
-/* Shared array for converting to hex */
-extern const u_char __wt_hex[];

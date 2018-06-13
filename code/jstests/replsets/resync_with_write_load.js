@@ -19,7 +19,7 @@ var config = {
     ]
 };
 var r = replTest.initiate(config);
-replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY, 60 * 1000);
+replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY);
 // Make sure we have a master
 var master = replTest.getPrimary();
 var a_conn = conns[0];
@@ -66,7 +66,7 @@ var loadGen = startParallelShell(work, replTest.ports[0]);
 // wait for document to appear to continue
 assert.soon(function() {
     try {
-        return 1 == master.getDB("test")["timeToStartTrigger"].count();
+        return 1 == master.getDB("test")["timeToStartTrigger"].find().itcount();
     } catch (e) {
         print(e);
         return false;
@@ -90,7 +90,7 @@ print("waiting for load generation to finish");
 loadGen();
 
 // load must stop before we await replication.
-replTest.awaitReplication(60 * 1000);
+replTest.awaitReplication(240 * 1000);
 
 // Make sure oplogs match
 try {

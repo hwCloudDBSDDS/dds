@@ -202,7 +202,9 @@ public:
 
         using Sorter = mongo::Sorter<BSONObj, RecordId>;
 
-        BulkBuilder(const IndexAccessMethod* index, const IndexDescriptor* descriptor);
+        BulkBuilder(const IndexAccessMethod* index,
+                    const IndexDescriptor* descriptor,
+                    size_t maxMemoryUsageBytes);
 
         std::unique_ptr<Sorter> _sorter;
         const IndexAccessMethod* _real;
@@ -216,8 +218,11 @@ public:
      * This can return NULL, meaning bulk mode is not available.
      *
      * It is only legal to initiate bulk when the index is new and empty.
+     *
+     * maxMemoryUsageBytes: amount of memory consumed before the external sorter starts spilling to
+     *                      disk
      */
-    std::unique_ptr<BulkBuilder> initiateBulk();
+    std::unique_ptr<BulkBuilder> initiateBulk(size_t maxMemoryUsageBytes);
 
     /**
      * Call this when you are ready to finish your bulk work.
@@ -238,6 +243,17 @@ public:
      * Fills 'keys' with the keys that should be generated for 'obj' on this index.
      */
     virtual void getKeys(const BSONObj& obj, BSONObjSet* keys) const = 0;
+
+    /**
+     * Splits the sets 'left' and 'right' into two vectors, the first containing the elements that
+     * only appeared in 'left', and the second containing only elements that appeared in 'right'.
+     *
+     * Note this considers objects which are not identical as distinct objects. For example,
+     * setDifference({BSON("a" << 0.0)}, {BSON("a" << 0LL)}) would result in the pair
+     * ( {BSON("a" << 0.0)}, {BSON("a" << 0LL)} ).
+     */
+    static std::pair<std::vector<BSONObj>, std::vector<BSONObj>> setDifference(
+        const BSONObjSet& left, const BSONObjSet& right);
 
 protected:
     // Determines whether it's OK to ignore ErrorCodes::KeyTooLong for this OperationContext
@@ -269,9 +285,8 @@ private:
     BSONObjSet oldKeys;
     BSONObjSet newKeys;
 
-    // These point into the sets oldKeys and newKeys.
-    std::vector<BSONObj*> removed;
-    std::vector<BSONObj*> added;
+    std::vector<BSONObj> removed;
+    std::vector<BSONObj> added;
 
     RecordId loc;
     bool dupsAllowed;

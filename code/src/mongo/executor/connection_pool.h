@@ -67,9 +67,12 @@ public:
 
     using GetConnectionCallback = stdx::function<void(StatusWith<ConnectionHandle>)>;
 
-    static const Milliseconds kDefaultRefreshTimeout;
-    static const Milliseconds kDefaultRefreshRequirement;
     static const Milliseconds kDefaultHostTimeout;
+    static const size_t kDefaultMaxConns;
+    static const size_t kDefaultMinConns;
+    static const Milliseconds kDefaultRefreshRequirement;
+    static const Milliseconds kDefaultRefreshTimeout;
+    static const size_t kDefaultMaxConnecting;
 
     static const Status kConnectionStateUnknown;
 
@@ -80,14 +83,21 @@ public:
          * The minimum number of connections to keep alive while the pool is in
          * operation
          */
-        size_t minConnections = 1;
+        size_t minConnections = kDefaultMinConns;
 
         /**
          * The maximum number of connections to spawn for a host. This includes
          * pending connections in setup and connections checked out of the pool
          * as well as the obvious live connections in the pool.
          */
-        size_t maxConnections = std::numeric_limits<size_t>::max();
+        size_t maxConnections = kDefaultMaxConns;
+
+        /**
+         * The maximum number of processing connections for a host.  This includes pending
+         * connections in setup/refresh. It's designed to rate limit connection storms rather than
+         * steady state processing (as maxConnections does).
+         */
+        size_t maxConnecting = kDefaultMaxConnecting;
 
         /**
          * Amount of time to wait before timing out a refresh attempt
@@ -109,6 +119,7 @@ public:
     };
 
     explicit ConnectionPool(std::unique_ptr<DependentTypeFactoryInterface> impl,
+                            std::string name,
                             Options options = Options{});
 
     ~ConnectionPool();
@@ -119,8 +130,12 @@ public:
 
     void appendConnectionStats(ConnectionPoolStats* stats) const;
 
+    size_t getNumConnectionsPerHost(const HostAndPort& hostAndPort) const;
+
 private:
     void returnConnection(ConnectionInterface* connection);
+
+    std::string _name;
 
     // Options are set at startup and never changed at run time, so these are
     // accessed outside the lock
@@ -188,7 +203,6 @@ class ConnectionPool::ConnectionInterface : public TimerInterface {
 
 public:
     ConnectionInterface() = default;
-
     virtual ~ConnectionInterface() = default;
 
     /**

@@ -59,23 +59,18 @@ ops_start(SHARED_CONFIG *cfg)
 	total_nops = 0;
 
 	/* Create per-thread structures. */
-	if ((run_info = calloc(
-	    (size_t)(cfg->reverse_scanners + cfg->append_inserters),
-	    sizeof(*run_info))) == NULL)
-		testutil_die(errno, "calloc");
-
-	if ((tids = calloc(
-	    (size_t)(cfg->reverse_scanners + cfg->append_inserters),
-	    sizeof(*tids))) == NULL)
-		testutil_die(errno, "calloc");
+	run_info = dcalloc((size_t)
+	    (cfg->reverse_scanners + cfg->append_inserters), sizeof(*run_info));
+	tids = dcalloc((size_t)
+	    (cfg->reverse_scanners + cfg->append_inserters), sizeof(*tids));
 
 	/* Create the files and load the initial records. */
 	for (i = 0; i < cfg->append_inserters; ++i) {
 		run_info[i].cfg = cfg;
 		if (i == 0 || cfg->multiple_files) {
-			if ((run_info[i].name = malloc(64)) == NULL)
-				testutil_die(errno, "malloc");
-			snprintf(run_info[i].name, 64, FNAME, (int)i);
+			run_info[i].name = dmalloc(64);
+			testutil_check(__wt_snprintf(
+			    run_info[i].name, 64, FNAME, (int)i));
 
 			/* Vary by orders of magnitude */
 			if (cfg->vary_nops)
@@ -96,12 +91,11 @@ ops_start(SHARED_CONFIG *cfg)
 		offset = i + cfg->append_inserters;
 		run_info[offset].cfg = cfg;
 		if (cfg->multiple_files) {
-			if ((run_info[offset].name = malloc(64)) == NULL)
-				testutil_die(errno, "malloc");
+			run_info[offset].name = dmalloc(64);
 			/* Have reverse scans read from tables with writes. */
 			name_index = i % cfg->append_inserters;
-			snprintf(
-			    run_info[offset].name, 64, FNAME, (int)name_index);
+			testutil_check(__wt_snprintf(
+			    run_info[offset].name, 64, FNAME, (int)name_index));
 
 			/* Vary by orders of magnitude */
 			if (cfg->vary_nops)
@@ -137,7 +131,8 @@ ops_start(SHARED_CONFIG *cfg)
 	seconds = (stop.tv_sec - start.tv_sec) +
 	    (stop.tv_usec - start.tv_usec) * 1e-6;
 	fprintf(stderr, "timer: %.2lf seconds (%d ops/second)\n",
-	    seconds, (int)(((cfg->reverse_scanners + cfg->append_inserters) *
+	    seconds, (int)
+	    (((double)(cfg->reverse_scanners + cfg->append_inserters) *
 	    total_nops) / seconds));
 
 	/* Verify the files. */
@@ -237,7 +232,7 @@ reverse_scan(void *arg)
 	id = (uintmax_t)arg;
 	s = &run_info[id];
 	cfg = s->cfg;
-	__wt_thread_id(tid, sizeof(tid));
+	testutil_check(__wt_thread_id(tid, sizeof(tid)));
 	__wt_random_init(&s->rnd);
 
 	printf(" reverse scan thread %2" PRIuMAX
@@ -278,6 +273,7 @@ append_insert_op(
 {
 	WT_ITEM *value, _value;
 	uint64_t keyno;
+	size_t len;
 	int ret;
 	char keybuf[64], valuebuf[64];
 
@@ -287,7 +283,8 @@ append_insert_op(
 
 	keyno = __wt_atomic_add64(&cfg->key_range, 1);
 	if (cfg->ftype == ROW) {
-		snprintf(keybuf, sizeof(keybuf), "%016u", (u_int)keyno);
+		testutil_check(__wt_snprintf(
+		    keybuf, sizeof(keybuf), "%016" PRIu64, keyno));
 		cursor->set_key(cursor, keybuf);
 	} else
 		cursor->set_key(cursor, (uint32_t)keyno);
@@ -297,8 +294,9 @@ append_insert_op(
 	if (cfg->ftype == FIX)
 		cursor->set_value(cursor, 0x10);
 	else {
-		value->size = (uint32_t)snprintf(
-		    valuebuf, sizeof(valuebuf), "XXX %37u", (u_int)keyno);
+		testutil_check(__wt_snprintf_len_set(
+		    valuebuf, sizeof(valuebuf), &len, "XXX %37" PRIu64, keyno));
+		value->size = (uint32_t)len;
 		cursor->set_value(cursor, value);
 	}
 	if ((ret = cursor->insert(cursor)) != 0)
@@ -324,7 +322,7 @@ append_insert(void *arg)
 	id = (uintmax_t)arg;
 	s = &run_info[id];
 	cfg = s->cfg;
-	__wt_thread_id(tid, sizeof(tid));
+	testutil_check(__wt_thread_id(tid, sizeof(tid)));
 	__wt_random_init(&s->rnd);
 
 	printf("write thread %2" PRIuMAX " starting: tid: %s, file: %s\n",

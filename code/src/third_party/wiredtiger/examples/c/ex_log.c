@@ -291,16 +291,16 @@ main(void)
 	char cmd_buf[256], k[16], v[16];
 
 	count_min = 0;
-	snprintf(cmd_buf, sizeof(cmd_buf), "rm -rf %s %s && mkdir %s %s",
-	    home1, home2, home1, home2);
+	(void)snprintf(cmd_buf, sizeof(cmd_buf),
+	    "rm -rf %s %s && mkdir %s %s", home1, home2, home1, home2);
 	if ((ret = system(cmd_buf)) != 0) {
 		fprintf(stderr, "%s: failed ret %d\n", cmd_buf, ret);
-		return (ret);
+		return (EXIT_FAILURE);
 	}
 	if ((ret = wiredtiger_open(home1, NULL, CONN_CONFIG, &wt_conn)) != 0) {
 		fprintf(stderr, "Error connecting to %s: %s\n",
 		    home1, wiredtiger_strerror(ret));
-		return (ret);
+		return (EXIT_FAILURE);
 	}
 
 	ret = wt_conn->open_session(wt_conn, NULL, NULL, &session);
@@ -312,8 +312,8 @@ main(void)
 	 * Perform some operations with individual auto-commit transactions.
 	 */
 	for (record_count = 0, i = 0; i < MAX_KEYS; i++, record_count++) {
-		snprintf(k, sizeof(k), "key%d", i);
-		snprintf(v, sizeof(v), "value%d", i);
+		(void)snprintf(k, sizeof(k), "key%d", i);
+		(void)snprintf(v, sizeof(v), "value%d", i);
 		cursor->set_key(cursor, k);
 		cursor->set_value(cursor, v);
 		ret = cursor->insert(cursor);
@@ -324,8 +324,8 @@ main(void)
 	 * Perform some operations within a single transaction.
 	 */
 	for (i = MAX_KEYS; i < MAX_KEYS+5; i++, record_count++) {
-		snprintf(k, sizeof(k), "key%d", i);
-		snprintf(v, sizeof(v), "value%d", i);
+		(void)snprintf(k, sizeof(k), "key%d", i);
+		(void)snprintf(v, sizeof(v), "value%d", i);
 		cursor->set_key(cursor, k);
 		cursor->set_value(cursor, v);
 		ret = cursor->insert(cursor);
@@ -348,12 +348,13 @@ main(void)
 	if ((ret = wiredtiger_open(home1, NULL, CONN_CONFIG, &wt_conn)) != 0) {
 		fprintf(stderr, "Error connecting to %s: %s\n",
 		    home1, wiredtiger_strerror(ret));
-		return (ret);
+		return (EXIT_FAILURE);
 	}
 
 	ret = wt_conn->open_session(wt_conn, NULL, NULL, &session);
 	ret = simple_walk_log(session, count_min);
 	ret = walk_log(session);
 	ret = wt_conn->close(wt_conn, NULL);
-	return (ret);
+
+	return (ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }

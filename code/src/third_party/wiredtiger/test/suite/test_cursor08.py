@@ -33,7 +33,7 @@
 import fnmatch, os, shutil, run, time
 from suite_subprocess import suite_subprocess
 from wiredtiger import stat, WiredTigerError
-from wtscenario import multiply_scenarios, number_scenarios, check_scenarios
+from wtscenario import make_scenarios
 import wttest
 
 class test_cursor08(wttest.WiredTigerTestCase, suite_subprocess):
@@ -42,36 +42,26 @@ class test_cursor08(wttest.WiredTigerTestCase, suite_subprocess):
     uri = 'table:' + tablename
     nkeys = 500
 
-    reopens = check_scenarios([
+    reopens = [
         ('regular', dict(reopen=False)),
         ('reopen', dict(reopen=True))
-    ])
-    compress = check_scenarios([
+    ]
+    compress = [
         ('nop', dict(compress='nop')),
         ('snappy', dict(compress='snappy')),
         ('zlib', dict(compress='zlib')),
         ('none', dict(compress='none')),
-    ])
-    scenarios = number_scenarios(multiply_scenarios('.', reopens, compress))
+    ]
+    scenarios = make_scenarios(reopens, compress)
     # Load the compression extension, and enable it for logging.
-    def conn_config(self, dir):
+    def conn_config(self):
         return 'log=(archive=false,enabled,file_max=%s,' % self.logmax + \
             'compressor=%s),' % self.compress + \
-            'transaction_sync="(method=dsync,enabled)",' + \
-            self.extensionArg(self.compress)
+            'transaction_sync="(method=dsync,enabled)"'
 
-    # Return the wiredtiger_open extension argument for a shared library.
-    def extensionArg(self, name):
-        if name == None or name == 'none':
-            return ''
-
-        testdir = os.path.dirname(__file__)
-        extdir = os.path.join(run.wt_builddir, 'ext/compressors')
-        extfile = os.path.join(
-            extdir, name, '.libs', 'libwiredtiger_' + name + '.so')
-        if not os.path.exists(extfile):
-            self.skipTest('compression extension "' + extfile + '" not built')
-        return ',extensions=["' + extfile + '"]'
+    def conn_extensions(self, extlist):
+        extlist.skip_if_missing = True
+        extlist.extension('compressors', self.compress)
 
     def test_log_cursor(self):
         # print "Creating %s with config '%s'" % (self.uri, self.create_params)

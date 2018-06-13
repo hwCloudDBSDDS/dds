@@ -50,7 +50,8 @@ namespace mongo {
 
 using std::shared_ptr;
 using std::string;
-using mongoutils::str::stream;
+using std::unique_ptr;
+using str::stream;
 
 static Status runApplyOpsCmd(OperationContext* txn,
                              const std::vector<ChunkType>&,
@@ -226,14 +227,16 @@ bool mergeChunks(OperationContext* txn,
         }
     }
 
+    // Ensure that the newly applied chunks would result in a correct metadata state
+    string mergeErrMsg;
+    unique_ptr<CollectionMetadata> cloned(
+        metadata->cloneMerge(minKey, maxKey, mergeVersion, &mergeErrMsg));
+    uassert(ErrorCodes::IllegalOperation, mergeErrMsg, cloned.get());
+
     //
     // Run apply ops command
     //
-    Status applyOpsStatus = runApplyOpsCmd(txn, chunksToMerge, shardVersion, mergeVersion);
-    if (!applyOpsStatus.isOK()) {
-        warning() << applyOpsStatus;
-        return false;
-    }
+    uassertStatusOK(runApplyOpsCmd(txn, chunksToMerge, metadata->getCollVersion(), mergeVersion));
 
     //
     // Install merged chunk metadata
@@ -244,7 +247,7 @@ bool mergeChunks(OperationContext* txn,
         Lock::DBLock writeLk(txn->lockState(), nss.db(), MODE_IX);
         Lock::CollectionLock collLock(txn->lockState(), nss.ns(), MODE_X);
 
-        shardingState->mergeChunks(txn, nss.ns(), minKey, maxKey, mergeVersion);
+        shardingState->exchangeCollectionMetadata(txn, nss, std::move(cloned));
     }
 
     //
@@ -313,7 +316,7 @@ BSONObj buildOpRemoveChunk(const ChunkType& chunkToRemove) {
 
 BSONArray buildOpPrecond(const string& ns,
                          const string& shardName,
-                         const ChunkVersion& shardVersion) {
+                         const ChunkVersion& collectionVersion) {
     BSONArrayBuilder preCond;
     BSONObjBuilder condB;
     condB.append("ns", ChunkType::ConfigNS);
@@ -322,7 +325,7 @@ BSONArray buildOpPrecond(const string& ns,
                               << BSON(ChunkType::DEPRECATED_lastmod() << -1)));
     {
         BSONObjBuilder resB(condB.subobjStart("res"));
-        shardVersion.addToBSON(resB, ChunkType::DEPRECATED_lastmod());
+        collectionVersion.addToBSON(resB, ChunkType::DEPRECATED_lastmod());
         resB.done();
     }
     preCond.append(condB.obj());
@@ -331,7 +334,7 @@ BSONArray buildOpPrecond(const string& ns,
 
 Status runApplyOpsCmd(OperationContext* txn,
                       const std::vector<ChunkType>& chunksToMerge,
-                      const ChunkVersion& currShardVersion,
+                      const ChunkVersion& collectionVersion,
                       const ChunkVersion& newMergedVersion) {
     BSONArrayBuilder updatesB;
 
@@ -353,9 +356,11 @@ Status runApplyOpsCmd(OperationContext* txn,
         updatesB.append(buildOpRemoveChunk(chunkToMerge));
     }
 
-    BSONArray preCond = buildOpPrecond(firstChunk.getNS(), firstChunk.getShard(), currShardVersion);
+    BSONArray preCond =
+        buildOpPrecond(firstChunk.getNS(), firstChunk.getShard(), collectionVersion);
 
     return grid.catalogManager(txn)->applyChunkOpsDeprecated(
         txn, updatesB.arr(), preCond, firstChunk.getNS(), newMergedVersion);
 }
-}
+
+}  // namespace mongo

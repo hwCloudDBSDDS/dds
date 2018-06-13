@@ -80,8 +80,8 @@ util_load(WT_SESSION *session, int argc, char *argv[])
 		if (no_overwrite)
 			flags |= LOAD_JSON_NO_OVERWRITE;
 		return (util_load_json(session, filename, flags));
-	} else
-		return (load_dump(session));
+	}
+	return (load_dump(session));
 }
 
 /*
@@ -120,13 +120,15 @@ load_dump(WT_SESSION *session)
 		goto err;
 
 	/* Open the insert cursor. */
-	(void)snprintf(config, sizeof(config),
+	if ((ret = __wt_snprintf(config, sizeof(config),
 	    "dump=%s%s%s",
 	    hex ? "hex" : "print",
-	    append ? ",append" : "", no_overwrite ? ",overwrite=false" : "");
+	    append ? ",append" : "",
+	    no_overwrite ? ",overwrite=false" : "")) != 0)
+		return (util_err(session, ret, NULL));
 	if ((ret = session->open_cursor(
 	    session, uri, NULL, config, &cursor)) != 0) {
-		ret = util_err(session, ret, "%s: session.open", uri);
+		ret = util_err(session, ret, "%s: session.open_cursor", uri);
 		goto err;
 	}
 
@@ -211,6 +213,8 @@ config_list_free(CONFIG_LIST *clp)
 			free(*entry);
 	free(clp->list);
 	clp->list = NULL;
+	clp->entry = 0;
+	clp->max_entry = 0;
 }
 
 /*
@@ -366,6 +370,7 @@ config_update(WT_SESSION *session, char **list)
 			if (WT_PREFIX_MATCH(*listp, "colgroup:") ||
 			    WT_PREFIX_MATCH(*listp, "file:") ||
 			    WT_PREFIX_MATCH(*listp, "index:") ||
+			    WT_PREFIX_MATCH(*listp, "lsm:") ||
 			    WT_PREFIX_MATCH(*listp, "table:"))
 				if (config_rename(session, listp, cmdname))
 					return (1);
@@ -469,6 +474,7 @@ config_update(WT_SESSION *session, char **list)
 static int
 config_rename(WT_SESSION *session, char **urip, const char *name)
 {
+	WT_DECL_RET;
 	size_t len;
 	char *buf, *p;
 
@@ -487,7 +493,9 @@ config_rename(WT_SESSION *session, char **urip, const char *name)
 	}
 	*p = '\0';
 	p = strchr(p + 1, ':');
-	snprintf(buf, len, "%s:%s%s", *urip, name, p == NULL ? "" : p);
+	if ((ret = __wt_snprintf(
+	    buf, len, "%s:%s%s", *urip, name, p == NULL ? "" : p)) != 0)
+		return (util_err(session, ret, NULL));
 	*urip = buf;
 
 	return (0);

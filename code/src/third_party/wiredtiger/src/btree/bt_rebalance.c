@@ -65,10 +65,10 @@ __rebalance_leaf_append(WT_SESSION_IMPL *session,
 	WT_ADDR *copy_addr;
 	WT_REF *copy;
 
-	WT_RET(__wt_verbose(session, WT_VERB_REBALANCE,
+	__wt_verbose(session, WT_VERB_REBALANCE,
 	    "rebalance leaf-list append %s, %s",
 	    __wt_buf_set_printable(session, key, key_len, rs->tmp2),
-	    __wt_addr_string(session, addr, addr_len, rs->tmp1)));
+	    __wt_addr_string(session, addr, addr_len, rs->tmp1));
 
 	/* Allocate and initialize a new leaf page reference. */
 	WT_RET(__wt_realloc_def(
@@ -90,7 +90,7 @@ __rebalance_leaf_append(WT_SESSION_IMPL *session,
 	if (recno == WT_RECNO_OOB)
 		WT_RET(__wt_row_ikey(session, 0, key, key_len, copy));
 	else
-		copy->key.recno = recno;
+		copy->ref_recno = recno;
 
 	copy->page_del = NULL;
 	return (0);
@@ -147,8 +147,7 @@ __rebalance_internal(WT_SESSION_IMPL *session, WT_REBALANCE_STUFF *rs)
 	leaf_next = (uint32_t)rs->leaf_next;
 
 	/* Allocate a row-store root (internal) page and fill it in. */
-	WT_RET(__wt_page_alloc(session, rs->type,
-	    rs->type == WT_PAGE_COL_INT ? 1 : 0, leaf_next, false, &page));
+	WT_RET(__wt_page_alloc(session, rs->type, leaf_next, false, &page));
 	page->pg_intl_parent_ref = &btree->root;
 	WT_ERR(__wt_page_modify_init(session, page));
 	__wt_page_modify_set(session, page);
@@ -180,10 +179,10 @@ __rebalance_free_original(WT_SESSION_IMPL *session, WT_REBALANCE_STUFF *rs)
 	for (i = 0; i < rs->fl_next; ++i) {
 		addr = &rs->fl[i];
 
-		WT_RET(__wt_verbose(session, WT_VERB_REBALANCE,
+		__wt_verbose(session, WT_VERB_REBALANCE,
 		    "rebalance discarding %s",
 		    __wt_addr_string(
-		    session, addr->addr, addr->size, rs->tmp1)));
+		    session, addr->addr, addr->size, rs->tmp1));
 
 		WT_RET(__wt_btree_block_free(session, addr->addr, addr->size));
 	}
@@ -226,10 +225,10 @@ __rebalance_col_walk(
 			WT_ERR(__wt_bt_read(
 			    session, buf, unpack.data, unpack.size));
 			WT_ERR(__rebalance_col_walk(session, buf->data, rs));
-			WT_ERR(__wt_verbose(session, WT_VERB_REBALANCE,
+			__wt_verbose(session, WT_VERB_REBALANCE,
 			    "free-list append internal page: %s",
 			    __wt_addr_string(
-			    session, unpack.data, unpack.size, rs->tmp1)));
+			    session, unpack.data, unpack.size, rs->tmp1));
 			WT_ERR(__rebalance_fl_append(
 			    session, unpack.data, unpack.size, rs));
 			break;
@@ -266,7 +265,7 @@ __rebalance_row_leaf_key(WT_SESSION_IMPL *session,
 	 */
 	WT_RET(__wt_bt_read(session, rs->tmp1, addr, addr_len));
 	WT_RET(__wt_page_inmem(session, NULL, rs->tmp1->data, 0, 0, &page));
-	ret = __wt_row_leaf_key_copy(session, page, &page->pg_row_d[0], key);
+	ret = __wt_row_leaf_key_copy(session, page, &page->pg_row[0], key);
 	__wt_page_out(session, &page);
 	return (ret);
 }
@@ -322,10 +321,10 @@ __rebalance_row_walk(
 			 * that's more work to get reconciliation to understand
 			 * and overflow keys are (well, should be), uncommon.
 			 */
-			WT_ERR(__wt_verbose(session, WT_VERB_REBALANCE,
+			__wt_verbose(session, WT_VERB_REBALANCE,
 			    "free-list append overflow key: %s",
 			    __wt_addr_string(
-			    session, unpack.data, unpack.size, rs->tmp1)));
+			    session, unpack.data, unpack.size, rs->tmp1));
 
 			WT_ERR(__rebalance_fl_append(
 			    session, unpack.data, unpack.size, rs));
@@ -343,10 +342,10 @@ __rebalance_row_walk(
 			break;
 		case WT_CELL_ADDR_INT:
 			/* An internal page, schedule its blocks to be freed. */
-			WT_ERR(__wt_verbose(session, WT_VERB_REBALANCE,
+			__wt_verbose(session, WT_VERB_REBALANCE,
 			    "free-list append internal page: %s",
 			    __wt_addr_string(
-			    session, unpack.data, unpack.size, rs->tmp1)));
+			    session, unpack.data, unpack.size, rs->tmp1));
 			WT_ERR(__rebalance_fl_append(
 			    session, unpack.data, unpack.size, rs));
 
@@ -407,12 +406,10 @@ __wt_bt_rebalance(WT_SESSION_IMPL *session, const char *cfg[])
 	WT_BTREE *btree;
 	WT_DECL_RET;
 	WT_REBALANCE_STUFF *rs, _rstuff;
-	bool evict_reset;
 
 	WT_UNUSED(cfg);
 
 	btree = S2BT(session);
-	evict_reset = false;
 
 	/*
 	 * If the tree has never been written to disk, we're done, rebalance
@@ -433,14 +430,6 @@ __wt_bt_rebalance(WT_SESSION_IMPL *session, const char *cfg[])
 
 	/* Set the internal page tree type. */
 	rs->type = btree->root.page->type;
-
-	/*
-	 * Get exclusive access to the file. (Not required, the only page in the
-	 * cache is the root page, and that cannot be evicted; however, this way
-	 * eviction ignores the tree entirely.)
-	 */
-	WT_ERR(__wt_evict_file_exclusive_on(session));
-	evict_reset = true;
 
 	/* Recursively walk the tree. */
 	switch (rs->type) {
@@ -472,10 +461,7 @@ __wt_bt_rebalance(WT_SESSION_IMPL *session, const char *cfg[])
 	btree->root.page = rs->root;
 	rs->root = NULL;
 
-err:	if (evict_reset)
-	    __wt_evict_file_exclusive_off(session);
-
-	/* Discard any leftover root page we created. */
+err:	/* Discard any leftover root page we created. */
 	if (rs->root != NULL) {
 		__wt_page_modify_clear(session, rs->root);
 		__wt_page_out(session, &rs->root);

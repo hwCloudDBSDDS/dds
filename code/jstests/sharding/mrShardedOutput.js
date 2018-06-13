@@ -4,11 +4,11 @@
 // collection input twice the size of the first and outputs it to the new sharded
 // collection created in the first pass.
 
-var st = new ShardingTest({shards: 2, other: {chunkSize: 1}});
+var st = new ShardingTest({shards: 2, other: {chunkSize: 1, enableAutoSplit: true}});
 
 var config = st.getDB("config");
 st.adminCommand({enablesharding: "test"});
-st.getDB("admin").runCommand({movePrimary: "test", to: "shard0001"});
+st.ensurePrimaryShard("test", "shard0001");
 st.adminCommand({shardcollection: "test.foo", key: {"a": 1}});
 
 var testDB = st.getDB("test");

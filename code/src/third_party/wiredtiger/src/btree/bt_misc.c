@@ -14,6 +14,7 @@
  */
 const char *
 __wt_page_type_string(u_int type)
+    WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
 {
 	switch (type) {
 	case WT_PAGE_INVALID:
@@ -124,22 +125,6 @@ __wt_addr_string(WT_SESSION_IMPL *session,
 		buf->size = strlen("[NoAddr]");
 	} else if (btree == NULL || (bm = btree->bm) == NULL ||
 	    bm->addr_string(bm, session, buf, addr, addr_size) != 0) {
-		buf->data = "[Error]";
-		buf->size = strlen("[Error]");
-	}
-	return (buf->data);
-}
-
-/*
- * __wt_buf_set_printable --
- *	Set the contents of the buffer to a printable representation of a
- * byte string.
- */
-const char *
-__wt_buf_set_printable(
-    WT_SESSION_IMPL *session, const void *p, size_t size, WT_ITEM *buf)
-{
-	if (__wt_raw_to_esc_hex(session, p, size, buf)) {
 		buf->data = "[Error]";
 		buf->size = strlen("[Error]");
 	}

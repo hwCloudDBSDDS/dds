@@ -31,7 +31,7 @@
 
 import fnmatch, os, time
 from suite_subprocess import suite_subprocess
-from helper import simple_populate
+from wtdataset import SimpleDataSet
 import wttest
 
 class test_txn11(wttest.WiredTigerTestCase, suite_subprocess):
@@ -44,7 +44,7 @@ class test_txn11(wttest.WiredTigerTestCase, suite_subprocess):
     uri = 'table:' + tablename
 
     # Turn on logging for this test.
-    def conn_config(self, dir):
+    def conn_config(self):
         return 'log=(archive=%s,' % self.archive + \
             'enabled,file_max=%s,prealloc=false),' % self.logmax + \
             'transaction_sync=(enabled=false),'
@@ -62,10 +62,9 @@ class test_txn11(wttest.WiredTigerTestCase, suite_subprocess):
             checkpoints += 1
         return
 
-
     def test_ops(self):
         # Populate a table
-        simple_populate(self, self.source_uri, 'key_format=S', self.nrows)
+        SimpleDataSet(self, self.source_uri, self.nrows).populate()
 
         # Run forced checkpoints
         self.run_checkpoints()

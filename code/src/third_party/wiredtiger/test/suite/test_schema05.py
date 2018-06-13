@@ -28,7 +28,7 @@
 
 import os
 import wiredtiger, wttest, run
-from wtscenario import check_scenarios, number_scenarios
+from wtscenario import make_scenarios
 
 # test_schema05.py
 #    Test indices using a custom extractor.
@@ -51,39 +51,15 @@ class test_schema05(wttest.WiredTigerTestCase):
     nentries = 1000
     nindices = 6
 
-    scenarios = number_scenarios([
+    scenarios = make_scenarios([
         ('index-before', { 'create_index' : 0 }),
         ('index-during', { 'create_index' : 1 }),
         ('index-after', { 'create_index' : 2 }),
     ])
 
-    # Return the wiredtiger_open extension argument for a shared library.
-    def extensionArg(self, exts):
-        extfiles = []
-        for ext in exts:
-            (dirname, name, libname) = ext
-            if name != None and name != 'none':
-                testdir = os.path.dirname(__file__)
-                extdir = os.path.join(run.wt_builddir, 'ext', dirname)
-                extfile = os.path.join(
-                    extdir, name, '.libs', 'libwiredtiger_' + libname + '.so')
-                if not os.path.exists(extfile):
-                    self.skipTest('extension "' + extfile + '" not built')
-                if not extfile in extfiles:
-                    extfiles.append(extfile)
-        if len(extfiles) == 0:
-            return ''
-        else:
-            return ',extensions=["' + '","'.join(extfiles) + '"]'
-
-    # Override WiredTigerTestCase, we have extensions.
-    def setUpConnectionOpen(self, dir):
-        extarg = self.extensionArg([('extractors', 'csv', 'csv_extractor')])
-        connarg = 'create,error_prefix="{0}: ",{1}'.format(
-            self.shortid(), extarg)
-        conn = self.wiredtiger_open(dir, connarg)
-        self.pr(`conn`)
-        return conn
+    def conn_extensions(self, extlist):
+        extlist.skip_if_missing = True
+        extlist.extension('extractors', 'csv')
 
     def create_indices(self):
         # Create self.nindices index files, each with a column from the CSV
@@ -168,7 +144,6 @@ class test_schema05(wttest.WiredTigerTestCase):
         self.drop_indices()
         self.create_indices()
         self.check_entries()
-
 
 if __name__ == '__main__':
     wttest.run()

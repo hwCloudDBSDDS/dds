@@ -17,7 +17,8 @@ static int __col_insert_alloc(
  */
 int
 __wt_col_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
-    uint64_t recno, WT_ITEM *value, WT_UPDATE *upd_arg, bool is_remove)
+    uint64_t recno, WT_ITEM *value,
+    WT_UPDATE *upd_arg, bool is_remove, bool exclusive)
 {
 	WT_BTREE *btree;
 	WT_DECL_RET;
@@ -55,7 +56,8 @@ __wt_col_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 		 */
 		if (recno == WT_RECNO_OOB ||
 		    recno > (btree->type == BTREE_COL_VAR ?
-		    __col_var_last_recno(page) : __col_fix_last_recno(page)))
+		    __col_var_last_recno(cbt->ref) :
+		    __col_fix_last_recno(cbt->ref)))
 			append = true;
 	}
 
@@ -102,22 +104,21 @@ __wt_col_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 
 		/* Serialize the update. */
 		WT_ERR(__wt_update_serial(
-		    session, page, &cbt->ins->upd, &upd, upd_size));
+		    session, page, &cbt->ins->upd, &upd, upd_size, false));
 	} else {
 		/* Allocate the append/update list reference as necessary. */
 		if (append) {
 			WT_PAGE_ALLOC_AND_SWAP(session,
-			    page, mod->mod_append, ins_headp, 1);
-			ins_headp = &mod->mod_append[0];
+			    page, mod->mod_col_append, ins_headp, 1);
+			ins_headp = &mod->mod_col_append[0];
 		} else if (page->type == WT_PAGE_COL_FIX) {
 			WT_PAGE_ALLOC_AND_SWAP(session,
-			    page, mod->mod_update, ins_headp, 1);
-			ins_headp = &mod->mod_update[0];
+			    page, mod->mod_col_update, ins_headp, 1);
+			ins_headp = &mod->mod_col_update[0];
 		} else {
-			WT_PAGE_ALLOC_AND_SWAP(session,
-			    page, mod->mod_update, ins_headp,
-			    page->pg_var_entries);
-			ins_headp = &mod->mod_update[cbt->slot];
+			WT_PAGE_ALLOC_AND_SWAP(session, page,
+			    mod->mod_col_update, ins_headp, page->entries);
+			ins_headp = &mod->mod_col_update[cbt->slot];
 		}
 
 		/* Allocate the WT_INSERT_HEAD structure as necessary. */
@@ -142,8 +143,9 @@ __wt_col_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 		 * it's easy (as opposed to in row-store) and a difficult bug to
 		 * otherwise diagnose.
 		 */
-		WT_ASSERT(session, mod->mod_split_recno == WT_RECNO_OOB ||
-		    (recno != WT_RECNO_OOB && mod->mod_split_recno > recno));
+		WT_ASSERT(session, mod->mod_col_split_recno == WT_RECNO_OOB ||
+		    (recno != WT_RECNO_OOB &&
+		    mod->mod_col_split_recno > recno));
 
 		if (upd_arg == NULL) {
 			WT_ERR(
@@ -184,11 +186,11 @@ __wt_col_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 		if (append)
 			WT_ERR(__wt_col_append_serial(
 			    session, page, cbt->ins_head, cbt->ins_stack,
-			    &ins, ins_size, &cbt->recno, skipdepth));
+			    &ins, ins_size, &cbt->recno, skipdepth, exclusive));
 		else
 			WT_ERR(__wt_insert_serial(
 			    session, page, cbt->ins_head, cbt->ins_stack,
-			    &ins, ins_size, skipdepth));
+			    &ins, ins_size, skipdepth, exclusive));
 	}
 
 	/* If the update was successful, add it to the in-memory log. */

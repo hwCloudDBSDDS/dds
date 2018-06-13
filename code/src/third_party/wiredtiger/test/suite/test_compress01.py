@@ -32,7 +32,7 @@
 
 import os, run
 import wiredtiger, wttest
-from wtscenario import multiply_scenarios, number_scenarios
+from wtscenario import make_scenarios
 
 # Test basic compression
 class test_compress01(wttest.WiredTigerTestCase):
@@ -46,27 +46,15 @@ class test_compress01(wttest.WiredTigerTestCase):
         ('snappy', dict(compress='snappy')),
         ('none', dict(compress=None)),
     ]
-    scenarios = number_scenarios(multiply_scenarios('.', types, compress))
+    scenarios = make_scenarios(types, compress)
 
     nrecords = 10000
     bigvalue = "abcdefghij" * 1000
 
-    # Load the compression extension, compression is enabled elsewhere.
-    def conn_config(self, dir):
-        return self.extensionArg(self.compress)
-
-    # Return the wiredtiger_open extension argument for a shared library.
-    def extensionArg(self, name):
-        if name == None:
-            return ''
-
-        testdir = os.path.dirname(__file__)
-        extdir = os.path.join(run.wt_builddir, 'ext/compressors')
-        extfile = os.path.join(
-            extdir, name, '.libs', 'libwiredtiger_' + name + '.so')
-        if not os.path.exists(extfile):
-            self.skipTest('compression extension "' + extfile + '" not built')
-        return ',extensions=["' + extfile + '"]'
+    # Load the compression extension, skip the test if missing
+    def conn_extensions(self, extlist):
+        extlist.skip_if_missing = True
+        extlist.extension('compressors', self.compress)
 
     # Create a table, add keys with both big and small values, then verify them.
     def test_compress(self):
@@ -100,7 +88,6 @@ class test_compress01(wttest.WiredTigerTestCase):
             else:
                 self.assertEquals(cursor.get_value(), `idx` + "abcdefg")
         cursor.close()
-
 
 if __name__ == '__main__':
     wttest.run()

@@ -128,12 +128,10 @@ static inline int
 __cursor_fix_append_prev(WT_CURSOR_BTREE *cbt, bool newpage)
 {
 	WT_ITEM *val;
-	WT_PAGE *page;
 	WT_SESSION_IMPL *session;
 	WT_UPDATE *upd;
 
 	session = (WT_SESSION_IMPL *)cbt->iface.session;
-	page = cbt->ref->page;
 	val = &cbt->iface.value;
 
 	if (newpage) {
@@ -176,8 +174,8 @@ __cursor_fix_append_prev(WT_CURSOR_BTREE *cbt, bool newpage)
 		 * to a record number matching the first record on the page.
 		 */
 		if (cbt->ins == NULL &&
-		    (cbt->recno == page->pg_fix_recno ||
-		    __col_fix_last_recno(page) != 0))
+		    (cbt->recno == cbt->ref->ref_recno ||
+		    __col_fix_last_recno(cbt->ref) != 0))
 			return (WT_NOTFOUND);
 	}
 
@@ -234,7 +232,7 @@ __cursor_fix_prev(WT_CURSOR_BTREE *cbt, bool newpage)
 
 	/* Initialize for each new page. */
 	if (newpage) {
-		cbt->last_standard_recno = __col_fix_last_recno(page);
+		cbt->last_standard_recno = __col_fix_last_recno(cbt->ref);
 		if (cbt->last_standard_recno == 0)
 			return (WT_NOTFOUND);
 		__cursor_set_recno(cbt, cbt->last_standard_recno);
@@ -242,7 +240,7 @@ __cursor_fix_prev(WT_CURSOR_BTREE *cbt, bool newpage)
 	}
 
 	/* Move to the previous entry and return the item. */
-	if (cbt->recno == page->pg_fix_recno)
+	if (cbt->recno == cbt->ref->ref_recno)
 		return (WT_NOTFOUND);
 	__cursor_set_recno(cbt, cbt->recno - 1);
 
@@ -255,7 +253,7 @@ new_page:
 		cbt->ins = NULL;
 	upd = cbt->ins == NULL ? NULL : __wt_txn_read(session, cbt->ins->upd);
 	if (upd == NULL) {
-		cbt->v = __bit_getv_recno(page, cbt->recno, btree->bitcnt);
+		cbt->v = __bit_getv_recno(cbt->ref, cbt->recno, btree->bitcnt);
 		val->data = &cbt->v;
 	} else
 		val->data = WT_UPDATE_DATA(upd);
@@ -327,10 +325,11 @@ __cursor_var_prev(WT_CURSOR_BTREE *cbt, bool newpage)
 
 	/* Initialize for each new page. */
 	if (newpage) {
-		cbt->last_standard_recno = __col_var_last_recno(page);
+		cbt->last_standard_recno = __col_var_last_recno(cbt->ref);
 		if (cbt->last_standard_recno == 0)
 			return (WT_NOTFOUND);
 		__cursor_set_recno(cbt, cbt->last_standard_recno);
+		cbt->cip_saved = NULL;
 		goto new_page;
 	}
 
@@ -338,12 +337,12 @@ __cursor_var_prev(WT_CURSOR_BTREE *cbt, bool newpage)
 	for (;;) {
 		__cursor_set_recno(cbt, cbt->recno - 1);
 
-new_page:	if (cbt->recno < page->pg_var_recno)
+new_page:	if (cbt->recno < cbt->ref->ref_recno)
 			return (WT_NOTFOUND);
 
 		/* Find the matching WT_COL slot. */
 		if ((cip =
-		    __col_var_search(page, cbt->recno, &rle_start)) == NULL)
+		    __col_var_search(cbt->ref, cbt->recno, &rle_start)) == NULL)
 			return (WT_NOTFOUND);
 		cbt->slot = WT_COL_SLOT(page, cip);
 
@@ -449,7 +448,7 @@ __cursor_row_prev(WT_CURSOR_BTREE *cbt, bool newpage)
 	 * WT_INSERT_HEAD[0], and so on.  This means WT_INSERT lists are
 	 * odd-numbered slots, and WT_ROW array slots are even-numbered slots.
 	 *
-	 * New page configuration.
+	 * Initialize for each new page.
 	 */
 	if (newpage) {
 		/*
@@ -459,13 +458,14 @@ __cursor_row_prev(WT_CURSOR_BTREE *cbt, bool newpage)
 		if (!F_ISSET_ATOMIC(page, WT_PAGE_BUILD_KEYS))
 			WT_RET(__wt_row_leaf_keys(session, page));
 
-		if (page->pg_row_entries == 0)
+		if (page->entries == 0)
 			cbt->ins_head = WT_ROW_INSERT_SMALLEST(page);
 		else
 			cbt->ins_head =
-			    WT_ROW_INSERT_SLOT(page, page->pg_row_entries - 1);
+			    WT_ROW_INSERT_SLOT(page, page->entries - 1);
 		cbt->ins = WT_SKIP_LAST(cbt->ins_head);
-		cbt->row_iteration_slot = page->pg_row_entries * 2 + 1;
+		cbt->row_iteration_slot = page->entries * 2 + 1;
+		cbt->rip_saved = NULL;
 		goto new_insert;
 	}
 
@@ -515,7 +515,7 @@ new_insert:	if ((ins = cbt->ins) != NULL) {
 		cbt->ins = NULL;
 
 		cbt->slot = cbt->row_iteration_slot / 2 - 1;
-		rip = &page->pg_row_d[cbt->slot];
+		rip = &page->pg_row[cbt->slot];
 		upd = __wt_txn_read(session, WT_ROW_UPDATE(page, rip));
 		if (upd != NULL && WT_UPDATE_DELETED_ISSET(upd)) {
 			if (__wt_txn_visible_all(session, upd->txnid))
@@ -535,20 +535,20 @@ new_insert:	if ((ins = cbt->ins) != NULL) {
 int
 __wt_btcur_prev(WT_CURSOR_BTREE *cbt, bool truncating)
 {
+	WT_CURSOR *cursor;
 	WT_DECL_RET;
 	WT_PAGE *page;
 	WT_SESSION_IMPL *session;
 	uint32_t flags;
 	bool newpage;
 
+	cursor = &cbt->iface;
 	session = (WT_SESSION_IMPL *)cbt->iface.session;
 
-	WT_STAT_FAST_CONN_INCR(session, cursor_prev);
-	WT_STAT_FAST_DATA_INCR(session, cursor_prev);
+	WT_STAT_CONN_INCR(session, cursor_prev);
+	WT_STAT_DATA_INCR(session, cursor_prev);
 
-	flags = WT_READ_PREV | WT_READ_SKIP_INTL;	/* Tree walk flags. */
-	if (truncating)
-		LF_SET(WT_READ_TRUNCATE);
+	F_CLR(cursor, WT_CURSTD_KEY_SET | WT_CURSTD_VALUE_SET);
 
 	WT_RET(__cursor_func_init(cbt, false));
 
@@ -564,6 +564,9 @@ __wt_btcur_prev(WT_CURSOR_BTREE *cbt, bool truncating)
 	 * found.  Then, move to the previous page, until we reach the start
 	 * of the file.
 	 */
+	flags = WT_READ_PREV | WT_READ_SKIP_INTL;	/* tree walk flags */
+	if (truncating)
+		LF_SET(WT_READ_TRUNCATE);
 	for (newpage = false;; newpage = true) {
 		page = cbt->ref == NULL ? NULL : cbt->ref->page;
 
@@ -621,7 +624,7 @@ __wt_btcur_prev(WT_CURSOR_BTREE *cbt, bool truncating)
 		if (page != NULL &&
 		    (cbt->page_deleted_count > WT_BTREE_DELETE_THRESHOLD ||
 		    (newpage && cbt->page_deleted_count > 0)))
-			__wt_page_evict_soon(page);
+			__wt_page_evict_soon(session, cbt->ref);
 		cbt->page_deleted_count = 0;
 
 		WT_ERR(__wt_tree_walk(session, &cbt->ref, flags));
@@ -631,6 +634,8 @@ __wt_btcur_prev(WT_CURSOR_BTREE *cbt, bool truncating)
 	if (ret == 0)
 		WT_ERR(__wt_cursor_key_order_check(session, cbt, false));
 #endif
+	if (ret == 0)
+		F_SET(cursor, WT_CURSTD_KEY_INT | WT_CURSTD_VALUE_INT);
 
 err:	if (ret != 0)
 		WT_TRET(__cursor_reset(cbt));

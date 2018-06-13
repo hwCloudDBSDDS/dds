@@ -114,6 +114,24 @@ void KVCollectionCatalogEntry::removePathLevelMultikeyInfoFromAllIndexes(Operati
     }
 }
 
+bool KVCollectionCatalogEntry::hasCollationMetadata(OperationContext* txn) const {
+    MetaData md = _getMetaData(txn);
+    if (!md.options.collation.isEmpty()) {
+        log() << "Collection " << md.ns << " has a default collation: " << md.options.collation;
+        return true;
+    }
+
+    bool indexWithCollationFound = false;
+    for (auto&& imd : md.indexes) {
+        if (imd.spec["collation"]) {
+            log() << "Collection " << md.ns << " has an index with a collation: " << imd.spec;
+            indexWithCollationFound = true;
+        }
+    }
+
+    return indexWithCollationFound;
+}
+
 void KVCollectionCatalogEntry::setIndexHead(OperationContext* txn,
                                             StringData indexName,
                                             const RecordId& newHead) {
@@ -197,19 +215,7 @@ void KVCollectionCatalogEntry::updateValidator(OperationContext* txn,
     md.options.validationAction = validationAction.toString();
     _catalog->putMetaData(txn, ns().toString(), md);
 }
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-void KVCollectionCatalogEntry::updateCappedSize(OperationContext* txn, long long cappedSize) {
-    MetaData md = _getMetaData(txn);
-    md.options.cappedSize = cappedSize;
-    _catalog->putMetaData(txn, ns().toString(), md);
-}
 
-void KVCollectionCatalogEntry::updateCappedMaxDocs(OperationContext* txn, long long cappedMaxDocs) {
-    MetaData md = _getMetaData(txn);
-    md.options.cappedMaxDocs = cappedMaxDocs;
-    _catalog->putMetaData(txn, ns().toString(), md);
-}
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 BSONCollectionCatalogEntry::MetaData KVCollectionCatalogEntry::_getMetaData(
     OperationContext* txn) const {
     return _catalog->getMetaData(txn, ns().toString());

@@ -312,6 +312,12 @@ Status Command::parseCommandCursorOptions(const BSONObj& cmdObj,
     return Status::OK();
 }
 
+Status Command::checkAuthForOperation(OperationContext* txn,
+                                      const std::string& dbname,
+                                      const BSONObj& cmdObj) {
+    return checkAuthForCommand(txn->getClient(), dbname, cmdObj);
+}
+
 Status Command::checkAuthForCommand(ClientBasic* client,
                                     const std::string& dbname,
                                     const BSONObj& cmdObj) {
@@ -339,83 +345,19 @@ void Command::logIfSlow(const Timer& timer, const string& msg) {
         log() << msg << " took " << ms << " ms." << endl;
     }
 }
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-/*****modify mongodb code start*****/
 
-namespace {
-const std::string CUSTOM_USER = "rwuser@admin";
-}  // namespace
-
-/*check if allow commands against admin/config database*/
-static bool _checkIfAllowedCommands(const std::string& cmdname) {
-    if (cmdname == "isMaster" || cmdname == "listCollections" ||
-        cmdname == "getLastError" || cmdname == "resetError" ||
-        cmdname == "logout" || cmdname == "updateUser" ||
-        cmdname == "authenticate" || cmdname == "saslStart" ||
-        cmdname == "saslContinue" || cmdname == "buildInfo" ||
-        cmdname == "serverStatus" || cmdname == "listDatabases" ||
-        cmdname == "ping") {
-        return true;
-    }
-    return false;
-}
-
-static Status _checkAuthForUser(Command* c,
-                                ClientBasic* client,
-                                const std::string& dbname,
-                                const BSONObj& cmdObj) {
-    std::string username;
-    UserNameIterator nameIter = AuthorizationSession::get(client)->getAuthenticatedUserNames();
-    if (nameIter.more()) {
-        username = nameIter->getFullName();
-    }
-
-    if (username == CUSTOM_USER) { //check if consumer
-        std::string cmdname = c->name;
-        LOG(4) << "Mongodb consumer run command " << dbname << ".$cmd" << ' '
-               << cmdname;
-        if (_checkIfAllowedCommands(cmdname)) { //check if allowed commands
-            LOG(4) << "Allow Mongodb consumer run command " << cmdname << "against the "
-                   << dbname << " database.";
-            } else {
-            /*forbid consumer run command upon admin database except adminonly commands*/
-            if (dbname == "admin" && !(c->adminOnly())) {
-                return Status(ErrorCodes::Unauthorized, "unauthorized");
-            }
-
-            /*forbid consumer run command upon config database directly or undirectly*/
-            std::string ns = c->parseNs(dbname, cmdObj);
-            if (dbname == "config" ) {
-				if(!(cmdname == "find") &&
-				!(cmdname == "aggregate") &&
-				!(cmdname == "update" && (ns.find("config.tags",0) == 0 || ns.find("config.shards",0) == 0))&&
-				!(cmdname == "remove" && ns.find("config.tags",0) == 0)){					
-                return Status(ErrorCodes::Unauthorized, "unauthorized");
-				}
-            }
-            
-            /*forbid consumer run command upon local database directly or undirectly*/
-            if (dbname == "local" || (dbname == "admin" && ns.find("admin.local.", 0) == 0)
-				||(dbname == "admin" && ns.find("admin.config.", 0) == 0)) {
-                return Status(ErrorCodes::Unauthorized, "unauthorized");
-            }
-        }
-    }
-
-    return Status::OK();
-}
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 static Status _checkAuthorizationImpl(Command* c,
-                                      ClientBasic* client,
+                                      OperationContext* txn,
                                       const std::string& dbname,
                                       const BSONObj& cmdObj) {
     namespace mmb = mutablebson;
+    auto client = txn->getClient();
     if (c->adminOnly() && dbname != "admin") {
         return Status(ErrorCodes::Unauthorized,
                       str::stream() << c->name << " may only be run against the admin database.");
     }
     if (AuthorizationSession::get(client)->getAuthorizationManager().isAuthEnabled()) {
-        Status status = c->checkAuthForCommand(client, dbname, cmdObj);
+        Status status = c->checkAuthForOperation(txn, dbname, cmdObj);
         if (status == ErrorCodes::Unauthorized) {
             mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
             c->redactForLogging(&cmdToLog);
@@ -426,38 +368,25 @@ static Status _checkAuthorizationImpl(Command* c,
         if (!status.isOK()) {
             return status;
         }
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-        status = _checkAuthForUser(c, client, dbname, cmdObj);
-        if (status == ErrorCodes::Unauthorized) {
-            mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
-            c->redactForLogging(&cmdToLog);
-            return Status(ErrorCodes::Unauthorized,
-                          str::stream() << "not authorized on " << dbname << " to execute command "
-                                        << cmdToLog.toString());
-        }
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     } else if (c->adminOnly() && c->localHostOnlyIfNoAuth(cmdObj) &&
                !client->getIsLocalHostConnection()) {
         return Status(ErrorCodes::Unauthorized,
                       str::stream() << c->name
                                     << " must run from localhost when running db without auth");
     }
-
     return Status::OK();
 }
 
-/*****modify mongodb code end*****/
-
-Status Command::_checkAuthorization(Command* c,
-                                    ClientBasic* client,
-                                    const std::string& dbname,
-                                    const BSONObj& cmdObj) {
+Status Command::checkAuthorization(Command* c,
+                                   OperationContext* txn,
+                                   const std::string& dbname,
+                                   const BSONObj& cmdObj) {
     namespace mmb = mutablebson;
-    Status status = _checkAuthorizationImpl(c, client, dbname, cmdObj);
+    Status status = _checkAuthorizationImpl(c, txn, dbname, cmdObj);
     if (!status.isOK()) {
-        log(LogComponent::kAccessControl) << status << std::endl;
+        log(LogComponent::kAccessControl) << status;
     }
-    audit::logCommandAuthzCheck(client, dbname, cmdObj, c, status.code());
+    audit::logCommandAuthzCheck(txn->getClient(), dbname, cmdObj, c, status.code());
     return status;
 }
 

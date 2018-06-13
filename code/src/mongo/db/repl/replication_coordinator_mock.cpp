@@ -52,7 +52,7 @@ void ReplicationCoordinatorMock::startReplication(OperationContext* txn) {
     // TODO
 }
 
-void ReplicationCoordinatorMock::shutdown() {
+void ReplicationCoordinatorMock::shutdown(OperationContext* txn) {
     // TODO
 }
 
@@ -236,7 +236,8 @@ void ReplicationCoordinatorMock::processReplSetGetConfig(BSONObjBuilder* result)
     // TODO
 }
 
-void ReplicationCoordinatorMock::processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata) {}
+void ReplicationCoordinatorMock::processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata,
+                                                        bool advanceCommitPoint) {}
 
 void ReplicationCoordinatorMock::cancelAndRescheduleElectionTimeout() {}
 
@@ -381,9 +382,8 @@ Status ReplicationCoordinatorMock::processReplSetDeclareElectionWinner(
     return Status::OK();
 }
 
-void ReplicationCoordinatorMock::prepareReplResponseMetadata(const rpc::RequestInterface& request,
-                                                             const OpTime& lastOpTimeFromClient,
-                                                             BSONObjBuilder* builder) {}
+void ReplicationCoordinatorMock::prepareReplMetadata(const OpTime& lastOpTimeFromClient,
+                                                     BSONObjBuilder* builder) const {}
 
 Status ReplicationCoordinatorMock::processHeartbeatV1(const ReplSetHeartbeatArgsV1& args,
                                                       ReplSetHeartbeatResponse* response) {
@@ -414,11 +414,13 @@ SnapshotName ReplicationCoordinatorMock::reserveSnapshotName(OperationContext* t
 
 void ReplicationCoordinatorMock::forceSnapshotCreation() {}
 
-void ReplicationCoordinatorMock::onSnapshotCreate(OpTime timeOfSnapshot, SnapshotName name) {}
+void ReplicationCoordinatorMock::createSnapshot(OperationContext* txn,
+                                                OpTime timeOfSnapshot,
+                                                SnapshotName name){};
 
 void ReplicationCoordinatorMock::dropAllSnapshots() {}
 
-OpTime ReplicationCoordinatorMock::getCurrentCommittedSnapshotOpTime() {
+OpTime ReplicationCoordinatorMock::getCurrentCommittedSnapshotOpTime() const {
     return OpTime();
 }
 

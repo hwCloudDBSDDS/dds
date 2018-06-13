@@ -36,8 +36,8 @@ static void
 salvage(void)
 {
 	WT_CONNECTION *conn;
+	WT_DECL_RET;
 	WT_SESSION *session;
-	int ret;
 
 	conn = g.wts_conn;
 	track("salvage", 0ULL, NULL);
@@ -70,29 +70,31 @@ corrupt(void)
 	 * It's a little tricky: if the data source is a file, we're looking
 	 * for "wt", if the data source is a table, we're looking for "wt.wt".
 	 */
-	(void)snprintf(buf, sizeof(buf), "%s/%s", g.home, WT_NAME);
+	testutil_check(__wt_snprintf(
+	    buf, sizeof(buf), "%s/%s", g.home, WT_NAME));
 	if ((fd = open(buf, O_RDWR)) != -1) {
 #ifdef _WIN32
-		(void)snprintf(copycmd, sizeof(copycmd),
+		testutil_check(__wt_snprintf(copycmd, sizeof(copycmd),
 		    "copy %s\\%s %s\\slvg.copy\\%s.corrupted",
-		    g.home, WT_NAME, g.home, WT_NAME);
+		    g.home, WT_NAME, g.home, WT_NAME));
 #else
-		(void)snprintf(copycmd, sizeof(copycmd),
+		testutil_check(__wt_snprintf(copycmd, sizeof(copycmd),
 		    "cp %s/%s %s/slvg.copy/%s.corrupted",
-		    g.home, WT_NAME, g.home, WT_NAME);
+		    g.home, WT_NAME, g.home, WT_NAME));
 #endif
 		goto found;
 	}
-	(void)snprintf(buf, sizeof(buf), "%s/%s.wt", g.home, WT_NAME);
+	testutil_check(__wt_snprintf(
+	    buf, sizeof(buf), "%s/%s.wt", g.home, WT_NAME));
 	if ((fd = open(buf, O_RDWR)) != -1) {
 #ifdef _WIN32
-		(void)snprintf(copycmd, sizeof(copycmd),
+		testutil_check(__wt_snprintf(copycmd, sizeof(copycmd),
 		    "copy %s\\%s.wt %s\\slvg.copy\\%s.wt.corrupted",
-		    g.home, WT_NAME, g.home, WT_NAME);
+		    g.home, WT_NAME, g.home, WT_NAME));
 #else
-		(void)snprintf(copycmd, sizeof(copycmd),
+		testutil_check(__wt_snprintf(copycmd, sizeof(copycmd),
 		    "cp %s/%s.wt %s/slvg.copy/%s.wt.corrupted",
-		    g.home, WT_NAME, g.home, WT_NAME);
+		    g.home, WT_NAME, g.home, WT_NAME));
 #endif
 		goto found;
 	}
@@ -103,11 +105,12 @@ found:	if (fstat(fd, &sb) == -1)
 
 	offset = mmrand(NULL, 0, (u_int)sb.st_size);
 	len = (size_t)(20 + (sb.st_size / 100) * 2);
-	(void)snprintf(buf, sizeof(buf), "%s/slvg.corrupt", g.home);
+	testutil_check(__wt_snprintf(
+	    buf, sizeof(buf), "%s/slvg.corrupt", g.home));
 	if ((fp = fopen(buf, "w")) == NULL)
 		testutil_die(errno, "salvage-corrupt: open: %s", buf);
 	(void)fprintf(fp,
-	    "salvage-corrupt: offset %" PRIuMAX ", length " SIZET_FMT "\n",
+	    "salvage-corrupt: offset %" PRIuMAX ", length %" WT_SIZET_FMT "\n",
 	    (uintmax_t)offset, len);
 	fclose_and_clear(&fp);
 
@@ -141,7 +144,7 @@ found:	if (fstat(fd, &sb) == -1)
 void
 wts_salvage(void)
 {
-	int ret;
+	WT_DECL_RET;
 
 	/* Some data-sources don't support salvage. */
 	if (DATASOURCE("helium") || DATASOURCE("kvsbdb"))
@@ -158,7 +161,7 @@ wts_salvage(void)
 		testutil_die(ret, "salvage copy step failed");
 
 	/* Salvage, then verify. */
-	wts_open(g.home, 1, &g.wts_conn);
+	wts_open(g.home, true, &g.wts_conn);
 	salvage();
 	wts_verify("post-salvage verify");
 	wts_close();
@@ -174,7 +177,7 @@ wts_salvage(void)
 
 	/* Corrupt the file randomly, salvage, then verify. */
 	if (corrupt()) {
-		wts_open(g.home, 1, &g.wts_conn);
+		wts_open(g.home, true, &g.wts_conn);
 		salvage();
 		wts_verify("post-corrupt-salvage verify");
 		wts_close();

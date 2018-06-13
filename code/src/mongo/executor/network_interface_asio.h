@@ -42,8 +42,8 @@
 #include "mongo/base/system_error.h"
 #include "mongo/executor/async_stream_factory_interface.h"
 #include "mongo/executor/async_stream_interface.h"
-#include "mongo/executor/connection_pool.h"
 #include "mongo/executor/async_timer_interface.h"
+#include "mongo/executor/connection_pool.h"
 #include "mongo/executor/network_connection_hook.h"
 #include "mongo/executor/network_interface.h"
 #include "mongo/executor/remote_command_request.h"
@@ -120,6 +120,8 @@ public:
     bool onNetworkThread() override;
 
     bool inShutdown() const;
+
+    void dropConnections(const HostAndPort& hostAndPort) override;
 
 private:
     using ResponseStatus = TaskExecutor::ResponseStatus;
@@ -226,6 +228,7 @@ private:
      */
     class AsyncOp {
         friend class NetworkInterfaceASIO;
+        friend class connection_pool_asio::ASIOConnection;
 
     public:
         AsyncOp(NetworkInterfaceASIO* net,
@@ -339,6 +342,7 @@ private:
          */
         boost::optional<AsyncCommand> _command;
         bool _inSetup;
+        bool _inRefresh;
 
         /**
          * The explicit strand that all operations for this op must run on.

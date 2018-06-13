@@ -39,20 +39,30 @@
 #include "mongo/db/storage/capped_callback.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/platform/atomic_word.h"
+#include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/synchronization.h"
+#include "mongo/stdx/thread.h"
 #include "mongo/util/fail_point_service.h"
 
 /**
  * Either executes the specified operation and returns it's value or randomly throws a write
- * conflict exception if the WTWriteConflictException failpoint is enabled.
+ * conflict exception if the WTWriteConflictException failpoint is enabled. This is only checked
+ * on cursor methods that make modifications.
  */
 #define WT_OP_CHECK(x) (((MONGO_FAIL_POINT(WTWriteConflictException))) ? (WT_ROLLBACK) : (x))
+
+/**
+ * Identical to WT_OP_CHECK except this is checked on cursor seeks/advancement.
+ */
+#define WT_READ_CHECK(x) \
+    (((MONGO_FAIL_POINT(WTWriteConflictExceptionForReads))) ? (WT_ROLLBACK) : (x))
 
 namespace mongo {
 
 class RecoveryUnit;
 class WiredTigerCursor;
+class WiredTigerSessionCache;
 class WiredTigerRecoveryUnit;
 class WiredTigerSizeStorer;
 
@@ -193,6 +203,9 @@ public:
                                         long long numRecords,
                                         long long dataSize);
 
+
+    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* txn) const override;
+
     bool isOplog() const {
         return _isOplog;
     }
@@ -201,21 +214,13 @@ public:
     }
 
     void setCappedCallback(CappedCallback* cb) {
+        stdx::lock_guard<stdx::mutex> lk(_cappedCallbackMutex);
         _cappedCallback = cb;
     }
+
     int64_t cappedMaxDocs() const;
     int64_t cappedMaxSize() const;
-    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    virtual bool setCappedSize(long long cappedSize) {
-         _cappedMaxSize = cappedSize;
-	  return true;
-    }
-	
-    virtual bool setCappedMaxDocs(long long cappedMaxDocs) {
-        _cappedMaxDocs = cappedMaxDocs;
-        return true;
-    }
-	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
     const std::string& getURI() const {
         return _uri;
     }
@@ -265,8 +270,8 @@ private:
     static int64_t _makeKey(const RecordId& id);
     static RecordId _fromKey(int64_t k);
 
-    void _dealtWithCappedId(SortedRecordIds::iterator it);
-    void _addUncommitedRecordId_inlock(OperationContext* txn, const RecordId& id);
+    void _dealtWithCappedId(SortedRecordIds::iterator it, bool didCommit);
+    void _addUncommittedRecordId_inlock(OperationContext* txn, RecordId id);
 
     RecordId _nextId();
     void _setId(RecordId id);
@@ -275,6 +280,7 @@ private:
     void _increaseDataSize(OperationContext* txn, int64_t amount);
     RecordData _getData(const WiredTigerCursor& cursor) const;
     void _oplogSetStartHack(WiredTigerRecoveryUnit* wru) const;
+    void _oplogJournalThreadLoop(WiredTigerSessionCache* sessionCache);
 
     const std::string _uri;
     const uint64_t _tableId;  // not persisted
@@ -287,15 +293,14 @@ private:
     const bool _isEphemeral;
     // True if the namespace of this record store starts with "local.oplog.", and false otherwise.
     const bool _isOplog;
-	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    int64_t _cappedMaxSize;
+    const int64_t _cappedMaxSize;
     const int64_t _cappedMaxSizeSlack;  // when to start applying backpressure
-    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-	int64_t _cappedMaxDocs;
+    const int64_t _cappedMaxDocs;
     RecordId _cappedFirstRecord;
     AtomicInt64 _cappedSleep;
     AtomicInt64 _cappedSleepMS;
     CappedCallback* _cappedCallback;
+    stdx::mutex _cappedCallbackMutex;  // guards _cappedCallback.
 
     // See comment in ::cappedDeleteAsNeeded
     int _cappedDeleteCheckCount;
@@ -304,7 +309,6 @@ private:
     const bool _useOplogHack;
 
     SortedRecordIds _uncommittedRecordIds;
-    RecordId _oplog_visibleTo;
     RecordId _oplog_highestSeen;
     mutable stdx::mutex _uncommittedRecordIdsMutex;
 
@@ -319,8 +323,20 @@ private:
 
     // Non-null if this record store is underlying the active oplog.
     std::shared_ptr<OplogStones> _oplogStones;
+
+    // These use the _uncommittedRecordIdsMutex and are only used when _isOplog is true.
+    stdx::condition_variable _opsWaitingForJournalCV;
+    mutable stdx::condition_variable _opsBecameVisibleCV;
+    std::vector<SortedRecordIds::iterator> _opsWaitingForJournal;
+    stdx::thread _oplogJournalThread;
 };
 
 // WT failpoint to throw write conflict exceptions randomly
 MONGO_FP_FORWARD_DECLARE(WTWriteConflictException);
+MONGO_FP_FORWARD_DECLARE(WTWriteConflictExceptionForReads);
+
+// Prevents oplog writes from being considered durable on the primary. Once activated, new writes
+// will not be considered durable until deactivated. It is unspecified whether writes that commit
+// before activation will become visible while active.
+MONGO_FP_FORWARD_DECLARE(WTPausePrimaryOplogDurabilityLoop);
 }

@@ -37,13 +37,12 @@
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/auth/authorization_session.h"
-#include "mongo/db/auth/privilege.h"
-#include "mongo/db/auth/resource_pattern.h"
 #include "mongo/db/catalog/apply_ops.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/dbhash.h"
+#include "mongo/db/commands/apply_ops_cmd_common.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/dbdirectclient.h"
@@ -78,18 +77,21 @@ public:
         help << "internal (sharding)\n{ applyOps : [ ] , preCondition : [ { ns : ... , q : ... , "
                 "res : ... } ] }";
     }
-    virtual void addRequiredPrivileges(const std::string& dbname,
-                                       const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
-        // applyOps can do pretty much anything, so require all privileges.
-        RoleGraph::generateUniversalPrivileges(out);
+
+    virtual Status checkAuthForOperation(OperationContext* txn,
+                                         const std::string& dbname,
+                                         const BSONObj& cmdObj) final {
+        return checkAuthForApplyOpsCommand(txn, dbname, cmdObj);
     }
+
     virtual bool run(OperationContext* txn,
                      const string& dbname,
                      BSONObj& cmdObj,
                      int,
                      string& errmsg,
                      BSONObjBuilder& result) {
+        validateApplyOpsCommand(cmdObj);
+
         boost::optional<DisableDocumentValidation> maybeDisableValidation;
         if (shouldBypassDocumentValidationForCommand(cmdObj))
             maybeDisableValidation.emplace(txn);
@@ -119,22 +121,31 @@ public:
         txn->setWriteConcern(wcResult.getValue());
         setupSynchronousCommit(txn);
 
+        auto applyOpsRes = [&]() {
+            try {
+                // Note: this scope guard must go out of scope before the waitForWriteConcern below!
+                auto client = txn->getClient();
+                auto lastOpAtOperationStart = repl::ReplClientInfo::forClient(client).getLastOp();
+                ScopeGuard lastOpSetterGuard =
+                    MakeObjGuard(repl::ReplClientInfo::forClient(client),
+                                 &repl::ReplClientInfo::setLastOpToSystemLastOpTime,
+                                 txn);
 
-        auto client = txn->getClient();
-        auto lastOpAtOperationStart = repl::ReplClientInfo::forClient(client).getLastOp();
-        ScopeGuard lastOpSetterGuard =
-            MakeObjGuard(repl::ReplClientInfo::forClient(client),
-                         &repl::ReplClientInfo::setLastOpToSystemLastOpTime,
-                         txn);
+                auto res = appendCommandStatus(result, applyOps(txn, dbname, cmdObj, &result));
 
-        auto applyOpsStatus = appendCommandStatus(result, applyOps(txn, dbname, cmdObj, &result));
+                if (repl::ReplClientInfo::forClient(client).getLastOp() != lastOpAtOperationStart) {
+                    // If this operation has already generated a new lastOp, don't bother setting it
+                    // here. No-op applyOps will not generate a new lastOp, so we still need the
+                    // guard to fire in that case.
+                    lastOpSetterGuard.Dismiss();
+                }
 
-        if (repl::ReplClientInfo::forClient(client).getLastOp() != lastOpAtOperationStart) {
-            // If this operation has already generated a new lastOp, don't bother setting it
-            // here. No-op applyOps will not generate a new lastOp, so we still need the guard to
-            // fire in that case.
-            lastOpSetterGuard.Dismiss();
-        }
+                return res;
+            } catch (const DBException& e) {
+                appendCommandStatus(result, e.toStatus());
+                return false;
+            }
+        }();
 
         WriteConcernResult res;
         auto waitForWCStatus =
@@ -144,7 +155,7 @@ public:
                                 &res);
         appendCommandWCStatus(result, waitForWCStatus);
 
-        return applyOpsStatus;
+        return applyOpsRes;
     }
 
 private:

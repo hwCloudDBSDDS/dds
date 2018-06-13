@@ -52,13 +52,14 @@ public:
 
     ReplicationCoordinatorExternalStateMock();
     virtual ~ReplicationCoordinatorExternalStateMock();
-    virtual void startThreads(const ReplSettings& settings) override;
+    virtual void startThreads(const ReplSettings& settings,
+                              ReplicationCoordinator* replCoord) override;
     virtual void startMasterSlave(OperationContext*);
-    virtual void shutdown();
+    virtual void shutdown(OperationContext*);
     virtual Status initializeReplSetStorage(OperationContext* txn,
                                             const BSONObj& config,
                                             bool updateReplOpTime);
-    virtual void logTransitionToPrimaryToOplog(OperationContext* txn);
+    OpTime onTransitionToPrimary(OperationContext* txn, bool isV1ElectionProtocol) override;
     virtual void forwardSlaveProgress();
     virtual OID ensureMe(OperationContext*);
     virtual bool isSelf(const HostAndPort& host);
@@ -80,6 +81,7 @@ public:
     virtual void dropAllTempCollections(OperationContext* txn);
     virtual void dropAllSnapshots();
     virtual void updateCommittedSnapshot(SnapshotName newCommitPoint);
+    virtual void createSnapshot(OperationContext* txn, SnapshotName name);
     virtual void forceSnapshotCreation();
     virtual bool snapshotsEnabled() const;
     virtual void notifyOplogMetadataWaiters();
@@ -146,6 +148,16 @@ public:
      */
     bool threadsStarted() const;
 
+    /**
+     * Sets if the storage engine is configured to support ReadConcern::Majority (committed point).
+     */
+    void setIsReadCommittedEnabled(bool val);
+
+    /**
+     * Sets if we are taking snapshots for read concern majority use.
+     */
+    void setAreSnapshotsEnabled(bool val);
+
 private:
     StatusWith<BSONObj> _localRsConfigDocument;
     StatusWith<LastVote> _localRsLastVoteDocument;
@@ -166,6 +178,8 @@ private:
     bool _connectionsClosed;
     HostAndPort _clientHostAndPort;
     bool _threadsStarted;
+    bool _isReadCommittedSupported = true;
+    bool _areSnapshotsEnabled = true;
 };
 
 }  // namespace repl

@@ -59,16 +59,16 @@ main(void)
 	char cmd_buf[256], k[16], v[16];
 	const char *conf;
 
-	snprintf(cmd_buf, sizeof(cmd_buf), "rm -rf %s && mkdir %s",
-	    home, home);
+	(void)snprintf(cmd_buf, sizeof(cmd_buf),
+	    "rm -rf %s && mkdir %s", home, home);
 	if ((ret = system(cmd_buf)) != 0) {
 		fprintf(stderr, "%s: failed ret %d\n", cmd_buf, ret);
-		return (ret);
+		return (EXIT_FAILURE);
 	}
 	if ((ret = wiredtiger_open(home, NULL, CONN_CONFIG, &wt_conn)) != 0) {
 		fprintf(stderr, "Error connecting to %s: %s\n",
 		    home, wiredtiger_strerror(ret));
-		return (ret);
+		return (EXIT_FAILURE);
 	}
 
 	ret = wt_conn->open_session(wt_conn, NULL, NULL, &session);
@@ -98,8 +98,8 @@ main(void)
 			ret = session->commit_transaction(session, conf);
 			ret = session->begin_transaction(session, NULL);
 		}
-		snprintf(k, sizeof(k), "key%d", i);
-		snprintf(v, sizeof(v), "value%d", i);
+		(void)snprintf(k, sizeof(k), "key%d", i);
+		(void)snprintf(v, sizeof(v), "value%d", i);
 		cursor->set_key(cursor, k);
 		cursor->set_value(cursor, v);
 		ret = cursor->insert(cursor);
@@ -113,8 +113,8 @@ main(void)
 	 * Perform some operations within a single transaction.
 	 */
 	for (i = MAX_KEYS; i < MAX_KEYS+5; i++, record_count++) {
-		snprintf(k, sizeof(k), "key%d", i);
-		snprintf(v, sizeof(v), "value%d", i);
+		(void)snprintf(k, sizeof(k), "key%d", i);
+		(void)snprintf(v, sizeof(v), "value%d", i);
 		cursor->set_key(cursor, k);
 		cursor->set_value(cursor, v);
 		ret = cursor->insert(cursor);
@@ -129,8 +129,8 @@ main(void)
 	 * Demonstrate using log_flush to force the log to disk.
 	 */
 	for (i = 0; i < MAX_KEYS; i++, record_count++) {
-		snprintf(k, sizeof(k), "key%d", record_count);
-		snprintf(v, sizeof(v), "value%d", record_count);
+		(void)snprintf(k, sizeof(k), "key%d", record_count);
+		(void)snprintf(v, sizeof(v), "value%d", record_count);
 		cursor->set_key(cursor, k);
 		cursor->set_value(cursor, v);
 		ret = cursor->insert(cursor);
@@ -138,8 +138,8 @@ main(void)
 	ret = session->log_flush(session, "sync=on");
 
 	for (i = 0; i < MAX_KEYS; i++, record_count++) {
-		snprintf(k, sizeof(k), "key%d", record_count);
-		snprintf(v, sizeof(v), "value%d", record_count);
+		(void)snprintf(k, sizeof(k), "key%d", record_count);
+		(void)snprintf(v, sizeof(v), "value%d", record_count);
 		cursor->set_key(cursor, k);
 		cursor->set_value(cursor, v);
 		ret = cursor->insert(cursor);
@@ -149,5 +149,6 @@ main(void)
 	ret = session->log_flush(session, "sync=on");
 
 	ret = wt_conn->close(wt_conn, NULL);
-	return (ret);
+
+	return (ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }

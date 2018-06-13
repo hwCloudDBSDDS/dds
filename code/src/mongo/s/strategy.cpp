@@ -80,33 +80,7 @@ using std::set;
 using std::string;
 using std::stringstream;
 using std::vector;
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-namespace {
-const std::string CUSTOM_USER = "rwuser@admin";
-}  // namespace
 
-static Status _checkQueryOPAuthForUser(ClientBasic* client,
-                                       const NamespaceString& ns) {
-    if (AuthorizationSession::get(client)->getAuthorizationManager().isAuthEnabled()) {
-        std::string username;
-        UserNameIterator nameIter = AuthorizationSession::get(client)->getAuthenticatedUserNames();
-        if (nameIter.more()) {
-            username = nameIter->getFullName();
-        }
-
-        if (username == CUSTOM_USER) { //check if consumer
-            LOG(4) << "Mongodb consumer run command " << ns.getCommandNS() << " query";
-            /*forbid consumer run command upon admin/config database*/
-            if (NamespaceString::internalDb(ns.db())) {
-                return Status(ErrorCodes::Unauthorized,
-                              str::stream() << "not authorized for query on " << ns.ns());
-            }
-        }
-    }
-
-    return Status::OK();
-}
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 void Strategy::queryOp(OperationContext* txn, Request& request) {
     verify(!NamespaceString(request.getns()).isCommand());
 
@@ -118,18 +92,9 @@ void Strategy::queryOp(OperationContext* txn, Request& request) {
     ClientBasic* client = txn->getClient();
     AuthorizationSession* authSession = AuthorizationSession::get(client);
     Status status = authSession->checkAuthForFind(ns, false);
-	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    /*****modify mongodb code start*****/
-    if (MONGO_unlikely(!status.isOK())) {
-        audit::logQueryAuthzCheck(client, ns, q.query, status.code());
-    }
-    uassertStatusOK(status);
-
-    status = _checkQueryOPAuthForUser(client, ns);
     audit::logQueryAuthzCheck(client, ns, q.query, status.code());
     uassertStatusOK(status);
-    /*****modify mongodb code end*****/
-	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
     LOG(3) << "query: " << q.ns << " " << q.query << " ntoreturn: " << q.ntoreturn
            << " options: " << q.queryOptions;
 
@@ -269,7 +234,6 @@ void Strategy::clientCommandOp(OperationContext* txn, Request& request) {
             OpQueryReplyBuilder reply;
             {
                 BSONObjBuilder builder(reply.bufBuilderForResults());
-                /*here already call runCommands, no need recheck custom user privileges*/
                 Command::runAgainstRegistered(txn, q.ns, cmdObj, builder, q.queryOptions);
             }
             reply.sendCommandReply(request.p(), request.m());
@@ -497,7 +461,6 @@ void Strategy::writeOp(OperationContext* txn, int op, Request& request) {
         {
             // Disable the last error object for the duration of the write cmd
             LastError::Disabled disableLastError(&LastError::get(cc()));
-            /*here already call runCommands, no need recheck custom user privileges*/
             Command::runAgainstRegistered(txn, cmdNS.c_str(), requestBSON, builder, 0);
         }
 

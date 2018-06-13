@@ -40,16 +40,14 @@
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/auth_index_d.h"
 #include "mongo/db/background.h"
-#include "mongo/db/clientcursor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/clientcursor.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/dbhelpers.h"
-#include "mongo/db/service_context.h"
-#include "mongo/db/service_context_d.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/instance.h"
 #include "mongo/db/introspect.h"
@@ -57,10 +55,12 @@
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/server_parameters.h"
+#include "mongo/db/service_context.h"
+#include "mongo/db/service_context_d.h"
 #include "mongo/db/stats/top.h"
-#include "mongo/db/storage/storage_options.h"
-#include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/recovery_unit.h"
+#include "mongo/db/storage/storage_engine.h"
+#include "mongo/db/storage/storage_options.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -215,35 +215,6 @@ Database::Database(OperationContext* txn, StringData name, DatabaseCatalogEntry*
     }
 }
 
-
-/*static*/
-string Database::duplicateUncasedName(const string& name, set<string>* duplicates) {
-    if (duplicates) {
-        duplicates->clear();
-    }
-
-    set<string> allShortNames;
-    dbHolder().getAllShortNames(allShortNames);
-
-    for (const auto& dbname : allShortNames) {
-        if (strcasecmp(dbname.c_str(), name.c_str()))
-            continue;
-
-        if (strcmp(dbname.c_str(), name.c_str()) == 0)
-            continue;
-
-        if (duplicates) {
-            duplicates->insert(dbname);
-        } else {
-            return dbname;
-        }
-    }
-    if (duplicates) {
-        return duplicates->empty() ? "" : *duplicates->begin();
-    }
-    return "";
-}
-
 void Database::clearTmpCollections(OperationContext* txn) {
     invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
 
@@ -344,14 +315,8 @@ void Database::getStats(OperationContext* opCtx, BSONObjBuilder* output, double 
 }
 
 Status Database::dropCollection(OperationContext* txn, StringData fullns) {
-    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
-
-    LOG(1) << "dropCollection: " << fullns << endl;
-    massertNamespaceNotIndex(fullns, "dropCollection");
-
-    Collection* collection = getCollection(fullns);
-    if (!collection) {
-        // collection doesn't exist
+    if (!getCollection(fullns)) {
+        // Collection doesn't exist so don't bother validating if it can be dropped.
         return Status::OK();
     }
 
@@ -370,9 +335,24 @@ Status Database::dropCollection(OperationContext* txn, StringData fullns) {
         }
     }
 
+    return dropCollectionEvenIfSystem(txn, nss);
+}
+
+Status Database::dropCollectionEvenIfSystem(OperationContext* txn, const NamespaceString& fullns) {
+    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
+
+    LOG(1) << "dropCollection: " << fullns;
+
+    Collection* collection = getCollection(fullns);
+    if (!collection) {
+        return Status::OK();  // Post condition already met.
+    }
+
+    massertNamespaceNotIndex(fullns.toString(), "dropCollection");
+
     BackgroundOperation::assertNoBgOpInProgForNs(fullns);
 
-    audit::logDropCollection(&cc(), fullns);
+    audit::logDropCollection(&cc(), fullns.toString());
 
     Status s = collection->getIndexCatalog()->dropAllIndexes(txn, true);
     if (!s.isOK()) {
@@ -384,12 +364,13 @@ Status Database::dropCollection(OperationContext* txn, StringData fullns) {
     verify(collection->_details->getTotalIndexCount(txn) == 0);
     LOG(1) << "\t dropIndexes done" << endl;
 
-    Top::get(txn->getClient()->getServiceContext()).collectionDropped(fullns);
+    Top::get(txn->getClient()->getServiceContext()).collectionDropped(fullns.toString());
 
-    s = _dbEntry->dropCollection(txn, fullns);
+    // We want to destroy the Collection object before telling the StorageEngine to destroy the
+    // RecordStore.
+    _clearCollectionCache(txn, fullns.toString(), "collection dropped");
 
-    // we want to do this always
-    _clearCollectionCache(txn, fullns, "collection dropped");
+    s = _dbEntry->dropCollection(txn, fullns.toString());
 
     if (!s.isOK())
         return s;
@@ -406,7 +387,7 @@ Status Database::dropCollection(OperationContext* txn, StringData fullns) {
         }
     }
 
-    getGlobalServiceContext()->getOpObserver()->onDropCollection(txn, nss);
+    getGlobalServiceContext()->getOpObserver()->onDropCollection(txn, fullns);
     return Status::OK();
 }
 
@@ -505,12 +486,10 @@ Collection* Database::createCollection(OperationContext* txn,
 
     audit::logCreateCollection(&cc(), ns);
 
-    txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, ns));
-
     Status status = _dbEntry->createCollection(txn, ns, options, true /*allocateDefaultSpace*/);
     massertNoTraceStatusOK(status);
 
-
+    txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, ns));
     Collection* collection = _getOrCreateCollectionInstance(txn, ns);
     invariant(collection);
     _collections[ns] = collection;

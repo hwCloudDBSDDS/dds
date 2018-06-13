@@ -9,19 +9,84 @@
 #include "wt_internal.h"
 
 static int __log_openfile(
-	WT_SESSION_IMPL *, bool, WT_FH **, const char *, uint32_t);
+	WT_SESSION_IMPL *, WT_FH **, const char *, uint32_t, uint32_t);
 static int __log_write_internal(
 	WT_SESSION_IMPL *, WT_ITEM *, WT_LSN *, uint32_t);
 
 #define	WT_LOG_COMPRESS_SKIP	(offsetof(WT_LOG_RECORD, record))
 #define	WT_LOG_ENCRYPT_SKIP	(offsetof(WT_LOG_RECORD, record))
 
+/* Flags to __log_openfile */
+#define	WT_LOG_OPEN_CREATE_OK	0x01
+#define	WT_LOG_OPEN_VERIFY	0x02
+
+/*
+ * __log_wait_for_earlier_slot --
+ *	Wait for write_lsn to catch up to this slot.
+ */
+static int
+__log_wait_for_earlier_slot(WT_SESSION_IMPL *session, WT_LOGSLOT *slot)
+{
+	WT_CONNECTION_IMPL *conn;
+	WT_LOG *log;
+	int yield_count;
+
+	conn = S2C(session);
+	log = conn->log;
+	yield_count = 0;
+
+	while (__wt_log_cmp(&log->write_lsn, &slot->slot_release_lsn) != 0) {
+		/*
+		 * If we're on a locked path and the write LSN is not advancing,
+		 * unlock in case an earlier thread is trying to switch its
+		 * slot and complete its operation.
+		 */
+		WT_RET(WT_SESSION_CHECK_PANIC(session));
+		if (F_ISSET(session, WT_SESSION_LOCKED_SLOT))
+			__wt_spin_unlock(session, &log->log_slot_lock);
+		__wt_cond_signal(session, conn->log_wrlsn_cond);
+		if (++yield_count < WT_THOUSAND)
+			__wt_yield();
+		else
+			__wt_cond_wait(session, log->log_write_cond, 200, NULL);
+		if (F_ISSET(session, WT_SESSION_LOCKED_SLOT))
+			__wt_spin_lock(session, &log->log_slot_lock);
+	}
+	return (0);
+}
+
+/*
+ * __log_fs_write --
+ *	Wrapper when writing to a log file.  If we're writing to a new log
+ *	file for the first time wait for writes to the previous log file.
+ */
+static int
+__log_fs_write(WT_SESSION_IMPL *session,
+    WT_LOGSLOT *slot, wt_off_t offset, size_t len, const void *buf)
+{
+	WT_DECL_RET;
+
+	/*
+	 * If we're writing into a new log file, we have to wait for all
+	 * writes to the previous log file to complete otherwise there could
+	 * be a hole at the end of the previous log file that we cannot detect.
+	 */
+	if (slot->slot_release_lsn.l.file < slot->slot_start_lsn.l.file) {
+		WT_RET(__log_wait_for_earlier_slot(session, slot));
+		WT_RET(__wt_log_force_sync(session, &slot->slot_release_lsn));
+	}
+	if ((ret = __wt_write(session, slot->slot_fh, offset, len, buf)) != 0)
+		WT_PANIC_MSG(session, ret,
+		    "%s: fatal log failure", slot->slot_fh->name);
+	return (ret);
+}
+
 /*
  * __wt_log_ckpt --
  *	Record the given LSN as the checkpoint LSN and signal the archive
  *	thread as needed.
  */
-int
+void
 __wt_log_ckpt(WT_SESSION_IMPL *session, WT_LSN *ckp_lsn)
 {
 	WT_CONNECTION_IMPL *conn;
@@ -31,8 +96,7 @@ __wt_log_ckpt(WT_SESSION_IMPL *session, WT_LSN *ckp_lsn)
 	log = conn->log;
 	log->ckpt_lsn = *ckp_lsn;
 	if (conn->log_cond != NULL)
-		WT_RET(__wt_cond_auto_signal(session, conn->log_cond));
-	return (0);
+		__wt_cond_signal(session, conn->log_cond);
 }
 
 /*
@@ -48,8 +112,9 @@ __wt_log_flush_lsn(WT_SESSION_IMPL *session, WT_LSN *lsn, bool start)
 
 	conn = S2C(session);
 	log = conn->log;
+	WT_RET(WT_SESSION_CHECK_PANIC(session));
 	WT_RET(__wt_log_force_write(session, 1, NULL));
-	WT_RET(__wt_log_wrlsn(session, NULL));
+	__wt_log_wrlsn(session, NULL);
 	if (start)
 		*lsn = log->write_start_lsn;
 	else
@@ -62,7 +127,7 @@ __wt_log_flush_lsn(WT_SESSION_IMPL *session, WT_LSN *lsn, bool start)
  *	Record the given LSN as the background LSN and signal the
  *	thread as needed.
  */
-int
+void
 __wt_log_background(WT_SESSION_IMPL *session, WT_LSN *lsn)
 {
 	WT_CONNECTION_IMPL *conn;
@@ -74,7 +139,7 @@ __wt_log_background(WT_SESSION_IMPL *session, WT_LSN *lsn)
 	 * If a thread already set the LSN to a bigger LSN, we're done.
 	 */
 	if (__wt_log_cmp(&session->bg_sync_lsn, lsn) > 0)
-		return (0);
+		return;
 	session->bg_sync_lsn = *lsn;
 
 	/*
@@ -85,7 +150,7 @@ __wt_log_background(WT_SESSION_IMPL *session, WT_LSN *lsn)
 	if (__wt_log_cmp(lsn, &log->bg_sync_lsn) > 0)
 		log->bg_sync_lsn = *lsn;
 	__wt_spin_unlock(session, &log->log_sync_lock);
-	return (__wt_cond_signal(session, conn->log_file_cond));
+	__wt_cond_signal(session, conn->log_file_cond);
 }
 
 /*
@@ -95,11 +160,14 @@ __wt_log_background(WT_SESSION_IMPL *session, WT_LSN *lsn)
 int
 __wt_log_force_sync(WT_SESSION_IMPL *session, WT_LSN *min_lsn)
 {
+	struct timespec fsync_start, fsync_stop;
 	WT_DECL_RET;
 	WT_FH *log_fh;
 	WT_LOG *log;
+	uint64_t fsync_duration_usecs;
 
 	log = S2C(session)->log;
+	log_fh = NULL;
 
 	/*
 	 * We need to wait for the previous log file to get written
@@ -109,9 +177,9 @@ __wt_log_force_sync(WT_SESSION_IMPL *session, WT_LSN *min_lsn)
 	 * log file ready to close.
 	 */
 	while (log->sync_lsn.l.file < min_lsn->l.file) {
-		WT_ERR(__wt_cond_signal(session,
-		    S2C(session)->log_file_cond));
-		WT_ERR(__wt_cond_wait(session, log->log_sync_cond, 10000));
+		WT_RET(WT_SESSION_CHECK_PANIC(session));
+		__wt_cond_signal(session, S2C(session)->log_file_cond);
+		__wt_cond_wait(session, log->log_sync_cond, 10000, NULL);
 	}
 	__wt_spin_lock(session, &log->log_sync_lock);
 	WT_ASSERT(session, log->log_dir_fh != NULL);
@@ -120,13 +188,18 @@ __wt_log_force_sync(WT_SESSION_IMPL *session, WT_LSN *min_lsn)
 	 * into the directory.
 	 */
 	if (log->sync_dir_lsn.l.file < min_lsn->l.file) {
-		WT_ERR(__wt_verbose(session, WT_VERB_LOG,
+		__wt_verbose(session, WT_VERB_LOG,
 		    "log_force_sync: sync directory %s to LSN %" PRIu32
 		    "/%" PRIu32,
-		    log->log_dir_fh->name, min_lsn->l.file, min_lsn->l.offset));
-		WT_ERR(__wt_directory_sync_fh(session, log->log_dir_fh));
+		    log->log_dir_fh->name, min_lsn->l.file, min_lsn->l.offset);
+		__wt_epoch(session, &fsync_start);
+		WT_ERR(__wt_fsync(session, log->log_dir_fh, true));
+		__wt_epoch(session, &fsync_stop);
+		fsync_duration_usecs = WT_TIMEDIFF_US(fsync_stop, fsync_start);
 		log->sync_dir_lsn = *min_lsn;
-		WT_STAT_FAST_CONN_INCR(session, log_sync_dir);
+		WT_STAT_CONN_INCR(session, log_sync_dir);
+		WT_STAT_CONN_INCRV(session,
+		    log_sync_dir_duration, fsync_duration_usecs);
 	}
 	/*
 	 * Sync the log file if needed.
@@ -139,18 +212,24 @@ __wt_log_force_sync(WT_SESSION_IMPL *session, WT_LSN *min_lsn)
 		 * file than we want.
 		 */
 		WT_ERR(__log_openfile(session,
-		    false, &log_fh, WT_LOG_FILENAME, min_lsn->l.file));
-		WT_ERR(__wt_verbose(session, WT_VERB_LOG,
+		    &log_fh, WT_LOG_FILENAME, min_lsn->l.file, 0));
+		__wt_verbose(session, WT_VERB_LOG,
 		    "log_force_sync: sync %s to LSN %" PRIu32 "/%" PRIu32,
-		    log_fh->name, min_lsn->l.file, min_lsn->l.offset));
+		    log_fh->name, min_lsn->l.file, min_lsn->l.offset);
+		__wt_epoch(session, &fsync_start);
 		WT_ERR(__wt_fsync(session, log_fh, true));
+		__wt_epoch(session, &fsync_stop);
+		fsync_duration_usecs = WT_TIMEDIFF_US(fsync_stop, fsync_start);
 		log->sync_lsn = *min_lsn;
-		WT_STAT_FAST_CONN_INCR(session, log_sync);
-		WT_ERR(__wt_close(session, &log_fh));
-		WT_ERR(__wt_cond_signal(session, log->log_sync_cond));
+		WT_STAT_CONN_INCR(session, log_sync);
+		WT_STAT_CONN_INCRV(session,
+		    log_sync_duration, fsync_duration_usecs);
+		__wt_cond_signal(session, log->log_sync_cond);
 	}
 err:
 	__wt_spin_unlock(session, &log->log_sync_lock);
+	if (log_fh != NULL)
+		WT_TRET(__wt_close(session, &log_fh));
 	return (ret);
 }
 
@@ -230,14 +309,11 @@ void
 __wt_log_written_reset(WT_SESSION_IMPL *session)
 {
 	WT_CONNECTION_IMPL *conn;
-	WT_LOG *log;
 
 	conn = S2C(session);
-	if (!FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED))
-		return;
-	log = conn->log;
-	log->log_written = 0;
-	return;
+
+	if (FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED))
+		conn->log->log_written = 0;
 }
 
 /*
@@ -258,14 +334,15 @@ __log_get_files(WT_SESSION_IMPL *session,
 	log_path = conn->log_path;
 	if (log_path == NULL)
 		log_path = "";
-	return (__wt_dirlist(session, log_path, file_prefix,
-	    WT_DIRLIST_INCLUDE, filesp, countp));
+	return (__wt_fs_directory_list(
+	    session, log_path, file_prefix, filesp, countp));
 }
 
 /*
  * __wt_log_get_all_files --
  *	Retrieve the list of log files, either all of them or only the active
- *	ones (those that are not candidates for archiving).
+ *	ones (those that are not candidates for archiving).  The caller is
+ *	responsible for freeing the directory list returned.
  */
 int
 __wt_log_get_all_files(WT_SESSION_IMPL *session,
@@ -276,6 +353,9 @@ __wt_log_get_all_files(WT_SESSION_IMPL *session,
 	char **files;
 	uint32_t id, max;
 	u_int count, i;
+
+	*filesp = NULL;
+	*countp = 0;
 
 	id = 0;
 	log = S2C(session)->log;
@@ -292,6 +372,10 @@ __wt_log_get_all_files(WT_SESSION_IMPL *session,
 	for (max = 0, i = 0; i < count; ) {
 		WT_ERR(__wt_log_extract_lognum(session, files[i], &id));
 		if (active_only && id < log->ckpt_lsn.l.file) {
+			/*
+			 * Any files not being returned are individually freed
+			 * and the array adjusted.
+			 */
 			__wt_free(session, files[i]);
 			files[i] = files[count - 1];
 			files[--count] = NULL;
@@ -306,24 +390,14 @@ __wt_log_get_all_files(WT_SESSION_IMPL *session,
 	*filesp = files;
 	*countp = count;
 
+	/*
+	 * Only free on error.  The caller is responsible for calling free
+	 * once it is done using the returned list.
+	 */
 	if (0) {
-err:		__wt_log_files_free(session, files, count);
+err:		WT_TRET(__wt_fs_directory_list_free(session, &files, count));
 	}
 	return (ret);
-}
-
-/*
- * __wt_log_files_free --
- *	Free memory associated with a log file list.
- */
-void
-__wt_log_files_free(WT_SESSION_IMPL *session, char **files, u_int count)
-{
-	u_int i;
-
-	for (i = 0; i < count; i++)
-		__wt_free(session, files[i]);
-	__wt_free(session, files);
 }
 
 /*
@@ -358,8 +432,6 @@ __wt_log_extract_lognum(
     WT_SESSION_IMPL *session, const char *name, uint32_t *id)
 {
 	const char *p;
-
-	WT_UNUSED(session);
 
 	if (id == NULL || name == NULL)
 		return (WT_ERROR);
@@ -398,7 +470,7 @@ __log_zero(WT_SESSION_IMPL *session,
 		bufsz = (uint32_t)conn->log_file_max;
 	WT_RET(__wt_scr_alloc(session, bufsz, &zerobuf));
 	memset(zerobuf->mem, 0, zerobuf->memsize);
-	WT_STAT_FAST_CONN_INCR(session, log_zero_fills);
+	WT_STAT_CONN_INCR(session, log_zero_fills);
 
 	/*
 	 * Read in a chunk starting at the end of the file.  Keep going until
@@ -443,21 +515,22 @@ __log_prealloc(WT_SESSION_IMPL *session, WT_FH *fh)
 
 	conn = S2C(session);
 	log = conn->log;
-	ret = 0;
+
 	/*
 	 * If the user configured zero filling, pre-allocate the log file
-	 * manually.  Otherwise use either fallocate or ftruncate to create
+	 * manually.  Otherwise use the file extension method to create
 	 * and zero the log file based on what is available.
 	 */
 	if (FLD_ISSET(conn->log_flags, WT_CONN_LOG_ZERO_FILL))
-		ret = __log_zero(session, fh,
-		    WT_LOG_FIRST_RECORD, conn->log_file_max);
-	else if (fh->fallocate_available == WT_FALLOCATE_NOT_AVAILABLE ||
-	    (ret = __wt_fallocate(session, fh,
-	    WT_LOG_FIRST_RECORD, conn->log_file_max)) == ENOTSUP)
-		ret = __wt_ftruncate(session, fh,
-		    WT_LOG_FIRST_RECORD + conn->log_file_max);
-	return (ret);
+		return (__log_zero(session, fh,
+		    WT_LOG_FIRST_RECORD, conn->log_file_max));
+
+	/*
+	 * We have exclusive access to the log file and there are no other
+	 * writes happening concurrently, so there are no locking issues.
+	 */
+	ret = __wt_fextend(session, fh, conn->log_file_max);
+	return (ret == EBUSY || ret == ENOTSUP ? 0 : ret);
 }
 
 /*
@@ -563,11 +636,11 @@ __log_fill(WT_SESSION_IMPL *session,
 		/*
 		 * If this is a force or unbuffered write, write it now.
 		 */
-		WT_ERR(__wt_write(session, myslot->slot->slot_fh,
+		WT_ERR(__log_fs_write(session, myslot->slot,
 		    myslot->offset + myslot->slot->slot_start_offset,
 		    record->size, record->mem));
 
-	WT_STAT_FAST_CONN_INCRV(session, log_bytes_written, record->size);
+	WT_STAT_CONN_INCRV(session, log_bytes_written, record->size);
 	if (lsnp != NULL) {
 		*lsnp = myslot->slot->slot_start_lsn;
 		lsnp->l.offset += (uint32_t)myslot->offset;
@@ -627,7 +700,7 @@ __log_file_header(
 	logrec->len = log->allocsize;
 	logrec->checksum = 0;
 	__wt_log_record_byteswap(logrec);
-	logrec->checksum = __wt_cksum(logrec, log->allocsize);
+	logrec->checksum = __wt_checksum(logrec, log->allocsize);
 #ifdef WORDS_BIGENDIAN
 	logrec->checksum = __wt_bswap32(logrec->checksum);
 #endif
@@ -667,31 +740,40 @@ err:	__wt_scr_free(session, &buf);
  */
 static int
 __log_openfile(WT_SESSION_IMPL *session,
-    bool ok_create, WT_FH **fhp, const char *file_prefix, uint32_t id)
+    WT_FH **fhp, const char *file_prefix, uint32_t id, uint32_t flags)
 {
+	WT_CONNECTION_IMPL *conn;
 	WT_DECL_ITEM(buf);
 	WT_DECL_RET;
 	WT_LOG *log;
 	WT_LOG_DESC *desc;
 	WT_LOG_RECORD *logrec;
 	uint32_t allocsize;
+	u_int wtopen_flags;
 
-	log = S2C(session)->log;
+	conn = S2C(session);
+	log = conn->log;
 	if (log == NULL)
 		allocsize = WT_LOG_ALIGN;
 	else
 		allocsize = log->allocsize;
 	WT_RET(__wt_scr_alloc(session, 0, &buf));
 	WT_ERR(__log_filename(session, id, file_prefix, buf));
-	WT_ERR(__wt_verbose(session, WT_VERB_LOG,
-	    "opening log %s", (const char *)buf->data));
-	WT_ERR(__wt_open(session, buf->data,
-	    WT_FILE_TYPE_LOG, ok_create ? WT_OPEN_CREATE : 0, fhp));
+	__wt_verbose(session, WT_VERB_LOG,
+	    "opening log %s", (const char *)buf->data);
+	wtopen_flags = 0;
+	if (LF_ISSET(WT_LOG_OPEN_CREATE_OK))
+		FLD_SET(wtopen_flags, WT_FS_OPEN_CREATE);
+	if (FLD_ISSET(conn->direct_io, WT_DIRECT_IO_LOG))
+		FLD_SET(wtopen_flags, WT_FS_OPEN_DIRECTIO);
+	WT_ERR(__wt_open(
+	    session, buf->data, WT_FS_OPEN_FILE_TYPE_LOG, wtopen_flags, fhp));
+
 	/*
 	 * If we are not creating the log file but opening it for reading,
 	 * check that the magic number and versions are correct.
 	 */
-	if (!ok_create) {
+	if (LF_ISSET(WT_LOG_OPEN_VERIFY)) {
 		WT_ERR(__wt_buf_grow(session, buf, allocsize));
 		memset(buf->mem, 0, allocsize);
 		WT_ERR(__wt_read(session, *fhp, 0, allocsize, buf->mem));
@@ -701,8 +783,8 @@ __log_openfile(WT_SESSION_IMPL *session,
 		__wt_log_desc_byteswap(desc);
 		if (desc->log_magic != WT_LOG_MAGIC)
 			WT_PANIC_RET(session, WT_ERROR,
-			   "log file %s corrupted: Bad magic number %" PRIu32,
-			   (*fhp)->name, desc->log_magic);
+			    "log file %s corrupted: Bad magic number %" PRIu32,
+			    (*fhp)->name, desc->log_magic);
 		if (desc->majorv > WT_LOG_MAJOR_VERSION ||
 		    (desc->majorv == WT_LOG_MAJOR_VERSION &&
 		    desc->minorv > WT_LOG_MINOR_VERSION))
@@ -749,20 +831,19 @@ __log_alloc_prealloc(WT_SESSION_IMPL *session, uint32_t to_num)
 	WT_ERR(__wt_scr_alloc(session, 0, &to_path));
 	WT_ERR(__log_filename(session, from_num, WT_LOG_PREPNAME, from_path));
 	WT_ERR(__log_filename(session, to_num, WT_LOG_FILENAME, to_path));
-	WT_ERR(__wt_verbose(session, WT_VERB_LOG,
+	__wt_verbose(session, WT_VERB_LOG,
 	    "log_alloc_prealloc: rename log %s to %s",
-	    (char *)from_path->data, (char *)to_path->data));
-	WT_STAT_FAST_CONN_INCR(session, log_prealloc_used);
+	    (const char *)from_path->data, (const char *)to_path->data);
+	WT_STAT_CONN_INCR(session, log_prealloc_used);
 	/*
 	 * All file setup, writing the header and pre-allocation was done
 	 * before.  We only need to rename it.
 	 */
-	WT_ERR(__wt_rename(session, from_path->data, to_path->data));
+	WT_ERR(__wt_fs_rename(session, from_path->data, to_path->data, false));
 
 err:	__wt_scr_free(session, &from_path);
 	__wt_scr_free(session, &to_path);
-	if (logfiles != NULL)
-		__wt_log_files_free(session, logfiles, logcount);
+	WT_TRET(__wt_fs_directory_list_free(session, &logfiles, logcount));
 	return (ret);
 }
 
@@ -775,16 +856,15 @@ __log_newfile(WT_SESSION_IMPL *session, bool conn_open, bool *created)
 {
 	WT_CONNECTION_IMPL *conn;
 	WT_DECL_RET;
+	WT_FH *log_fh;
 	WT_LOG *log;
 	WT_LSN end_lsn;
-	int yield_cnt;
+	u_int yield_cnt;
 	bool create_log;
 
 	conn = S2C(session);
 	log = conn->log;
 
-	create_log = true;
-	yield_cnt = 0;
 	/*
 	 * Set aside the log file handle to be closed later.  Other threads
 	 * may still be using it to write to the log.  If the log file size
@@ -792,9 +872,9 @@ __log_newfile(WT_SESSION_IMPL *session, bool conn_open, bool *created)
 	 * Wait for that to close.
 	 */
 	WT_ASSERT(session, F_ISSET(session, WT_SESSION_LOCKED_SLOT));
-	while (log->log_close_fh != NULL) {
-		WT_STAT_FAST_CONN_INCR(session, log_close_yields);
-		WT_RET(__wt_log_wrlsn(session, NULL));
+	for (yield_cnt = 0; log->log_close_fh != NULL;) {
+		WT_STAT_CONN_INCR(session, log_close_yields);
+		__wt_log_wrlsn(session, NULL);
 		if (++yield_cnt > 10000)
 			return (EBUSY);
 		__wt_yield();
@@ -812,31 +892,38 @@ __log_newfile(WT_SESSION_IMPL *session, bool conn_open, bool *created)
 	 * Make sure everything we set above is visible.
 	 */
 	WT_FULL_BARRIER();
-	/*
-	 * If we're pre-allocating log files, look for one.  If there aren't any
-	 * or we're not pre-allocating, or a backup cursor is open, then
-	 * create one.
-	 */
-	if (conn->log_prealloc > 0 && !conn->hot_backup) {
-		ret = __log_alloc_prealloc(session, log->fileid);
-		/*
-		 * If ret is 0 it means we found a pre-allocated file.
-		 * If ret is non-zero but not WT_NOTFOUND, we return the error.
-		 * If ret is WT_NOTFOUND, we leave create_log set and create
-		 * the new log file.
-		 */
-		if (ret == 0)
-			create_log = false;
-		/*
-		 * If we get any error other than WT_NOTFOUND, return it.
-		 */
-		WT_RET_NOTFOUND_OK(ret);
 
-		if (create_log) {
-			WT_STAT_FAST_CONN_INCR(session, log_prealloc_missed);
-			if (conn->log_cond != NULL)
-				WT_RET(__wt_cond_auto_signal(
-				    session, conn->log_cond));
+	/*
+	 * If pre-allocating log files look for one; otherwise, or if we don't
+	 * find one create a log file. We can't use pre-allocated log files in
+	 * while a hot backup is in progress: applications can copy the files
+	 * in any way they choose, and a log file rename might confuse things.
+	 */
+	create_log = true;
+	if (conn->log_prealloc > 0 && !conn->hot_backup) {
+		__wt_readlock(session, &conn->hot_backup_lock);
+		if (conn->hot_backup)
+			__wt_readunlock(session, &conn->hot_backup_lock);
+		else {
+			ret = __log_alloc_prealloc(session, log->fileid);
+			__wt_readunlock(session, &conn->hot_backup_lock);
+
+			/*
+			 * If ret is 0 it means we found a pre-allocated file.
+			 * If ret is WT_NOTFOUND, create the new log file and
+			 * signal the server, we missed our pre-allocation.
+			 * If ret is non-zero but not WT_NOTFOUND, return the
+			 * error.
+			 */
+			WT_RET_NOTFOUND_OK(ret);
+			if (ret == 0)
+				create_log = false;
+			else {
+				WT_STAT_CONN_INCR(session, log_prealloc_missed);
+				if (conn->log_cond != NULL)
+					__wt_cond_signal(
+					    session, conn->log_cond);
+			}
 		}
 	}
 	/*
@@ -847,8 +934,15 @@ __log_newfile(WT_SESSION_IMPL *session, bool conn_open, bool *created)
 		WT_RET(__wt_log_allocfile(
 		    session, log->fileid, WT_LOG_FILENAME));
 	}
+	/*
+	 * Since the file system clears the output file handle pointer before
+	 * searching the handle list and filling in the new file handle,
+	 * we must pass in a local file handle.  Otherwise there is a wide
+	 * window where another thread could see a NULL log file handle.
+	 */
 	WT_RET(__log_openfile(session,
-	    false, &log->log_fh, WT_LOG_FILENAME, log->fileid));
+	    &log_fh, WT_LOG_FILENAME, log->fileid, 0));
+	WT_PUBLISH(log->log_fh, log_fh);
 	/*
 	 * We need to setup the LSNs.  Set the end LSN and alloc LSN to
 	 * the end of the header.
@@ -924,6 +1018,39 @@ __wt_log_acquire(WT_SESSION_IMPL *session, uint64_t recsize, WT_LOGSLOT *slot)
 }
 
 /*
+ * __log_truncate_file --
+ *	Truncate a log file to the specified offset.
+ *
+ *	If the underlying file system doesn't support truncate then we need to
+ *	zero out the rest of the file, doing an effective truncate.
+ */
+static int
+__log_truncate_file(WT_SESSION_IMPL *session, WT_FH *log_fh, wt_off_t offset)
+{
+	WT_CONNECTION_IMPL *conn;
+	WT_DECL_RET;
+	WT_LOG *log;
+
+	conn = S2C(session);
+	log = conn->log;
+
+	if (!F_ISSET(log, WT_LOG_TRUNCATE_NOTSUP) && !conn->hot_backup) {
+		__wt_readlock(session, &conn->hot_backup_lock);
+		if (conn->hot_backup)
+			__wt_readunlock(session, &conn->hot_backup_lock);
+		else {
+			ret = __wt_ftruncate(session, log_fh, offset);
+			__wt_readunlock(session, &conn->hot_backup_lock);
+			if (ret != ENOTSUP)
+				return (ret);
+			F_SET(log, WT_LOG_TRUNCATE_NOTSUP);
+		}
+	}
+
+	return (__log_zero(session, log_fh, offset, conn->log_file_max));
+}
+
+/*
  * __log_truncate --
  *	Truncate the log to the given LSN.  If this_log is set, it will only
  *	truncate the log file indicated in the given LSN.  If not set,
@@ -953,10 +1080,15 @@ __log_truncate(WT_SESSION_IMPL *session,
 
 	/*
 	 * Truncate the log file to the given LSN.
+	 *
+	 * It's possible the underlying file system doesn't support truncate
+	 * (there are existing examples), which is fine, but we don't want to
+	 * repeatedly do the setup work just to find that out every time. Check
+	 * before doing work, and if there's a not-supported error, turn off
+	 * future truncates.
 	 */
-	WT_ERR(__log_openfile(session,
-	    false, &log_fh, file_prefix, lsn->l.file));
-	WT_ERR(__wt_ftruncate(session, log_fh, lsn->l.offset));
+	WT_ERR(__log_openfile(session, &log_fh, file_prefix, lsn->l.file, 0));
+	WT_ERR(__log_truncate_file(session, log_fh, lsn->l.offset));
 	WT_ERR(__wt_fsync(session, log_fh, true));
 	WT_ERR(__wt_close(session, &log_fh));
 
@@ -972,20 +1104,19 @@ __log_truncate(WT_SESSION_IMPL *session,
 		if (lognum > lsn->l.file &&
 		    lognum < log->trunc_lsn.l.file) {
 			WT_ERR(__log_openfile(session,
-			    false, &log_fh, file_prefix, lognum));
+			    &log_fh, file_prefix, lognum, 0));
 			/*
 			 * If there are intervening files pre-allocated,
 			 * truncate them to the end of the log file header.
 			 */
-			WT_ERR(__wt_ftruncate(session,
-			    log_fh, WT_LOG_FIRST_RECORD));
+			WT_ERR(__log_truncate_file(
+			    session, log_fh, WT_LOG_FIRST_RECORD));
 			WT_ERR(__wt_fsync(session, log_fh, true));
 			WT_ERR(__wt_close(session, &log_fh));
 		}
 	}
 err:	WT_TRET(__wt_close(session, &log_fh));
-	if (logfiles != NULL)
-		__wt_log_files_free(session, logfiles, logcount);
+	WT_TRET(__wt_fs_directory_list_free(session, &logfiles, logcount));
 	return (ret);
 }
 
@@ -1025,19 +1156,19 @@ __wt_log_allocfile(
 	/*
 	 * Set up the temporary file.
 	 */
-	WT_ERR(__log_openfile(session, true, &log_fh, WT_LOG_TMPNAME, tmp_id));
+	WT_ERR(__log_openfile(session,
+	    &log_fh, WT_LOG_TMPNAME, tmp_id, WT_LOG_OPEN_CREATE_OK));
 	WT_ERR(__log_file_header(session, log_fh, NULL, true));
-	WT_ERR(__wt_ftruncate(session, log_fh, WT_LOG_FIRST_RECORD));
 	WT_ERR(__log_prealloc(session, log_fh));
 	WT_ERR(__wt_fsync(session, log_fh, true));
 	WT_ERR(__wt_close(session, &log_fh));
-	WT_ERR(__wt_verbose(session, WT_VERB_LOG,
+	__wt_verbose(session, WT_VERB_LOG,
 	    "log_prealloc: rename %s to %s",
-	    (char *)from_path->data, (char *)to_path->data));
+	    (const char *)from_path->data, (const char *)to_path->data);
 	/*
 	 * Rename it into place and make it available.
 	 */
-	WT_ERR(__wt_rename(session, from_path->data, to_path->data));
+	WT_ERR(__wt_fs_rename(session, from_path->data, to_path->data, false));
 
 err:	__wt_scr_free(session, &from_path);
 	__wt_scr_free(session, &to_path);
@@ -1058,9 +1189,9 @@ __wt_log_remove(WT_SESSION_IMPL *session,
 
 	WT_RET(__wt_scr_alloc(session, 0, &path));
 	WT_ERR(__log_filename(session, lognum, file_prefix, path));
-	WT_ERR(__wt_verbose(session, WT_VERB_LOG,
-	    "log_remove: remove log %s", (char *)path->data));
-	WT_ERR(__wt_remove(session, path->data));
+	__wt_verbose(session, WT_VERB_LOG,
+	    "log_remove: remove log %s", (const char *)path->data);
+	WT_ERR(__wt_fs_remove(session, path->data, false));
 err:	__wt_scr_free(session, &path);
 	return (ret);
 }
@@ -1093,10 +1224,10 @@ __wt_log_open(WT_SESSION_IMPL *session)
 	 * Open up a file handle to the log directory if we haven't.
 	 */
 	if (log->log_dir_fh == NULL) {
-		WT_RET(__wt_verbose(session, WT_VERB_LOG,
-		    "log_open: open fh to directory %s", conn->log_path));
+		__wt_verbose(session, WT_VERB_LOG,
+		    "log_open: open fh to directory %s", conn->log_path);
 		WT_RET(__wt_open(session, conn->log_path,
-		    WT_FILE_TYPE_DIRECTORY, 0, &log->log_dir_fh));
+		    WT_FS_OPEN_FILE_TYPE_DIRECTORY, 0, &log->log_dir_fh));
 	}
 
 	if (!F_ISSET(conn, WT_CONN_READONLY)) {
@@ -1113,9 +1244,8 @@ __wt_log_open(WT_SESSION_IMPL *session)
 			WT_ERR(__wt_log_remove(
 			    session, WT_LOG_TMPNAME, lognum));
 		}
-		__wt_log_files_free(session, logfiles, logcount);
-		logfiles = NULL;
-		logcount = 0;
+		WT_ERR(
+		    __wt_fs_directory_list_free(session, &logfiles, logcount));
 		WT_ERR(__log_get_files(session,
 		    WT_LOG_PREPNAME, &logfiles, &logcount));
 		for (i = 0; i < logcount; i++) {
@@ -1124,8 +1254,8 @@ __wt_log_open(WT_SESSION_IMPL *session)
 			WT_ERR(__wt_log_remove(
 			    session, WT_LOG_PREPNAME, lognum));
 		}
-		__wt_log_files_free(session, logfiles, logcount);
-		logfiles = NULL;
+		WT_ERR(
+		    __wt_fs_directory_list_free(session, &logfiles, logcount));
 	}
 
 	/*
@@ -1138,9 +1268,9 @@ __wt_log_open(WT_SESSION_IMPL *session)
 		firstlog = WT_MIN(firstlog, lognum);
 	}
 	log->fileid = lastlog;
-	WT_ERR(__wt_verbose(session, WT_VERB_LOG,
+	__wt_verbose(session, WT_VERB_LOG,
 	    "log_open: first log %" PRIu32 " last log %" PRIu32,
-	    firstlog, lastlog));
+	    firstlog, lastlog);
 	if (firstlog == UINT32_MAX) {
 		WT_ASSERT(session, logcount == 0);
 		WT_INIT_LSN(&log->first_lsn);
@@ -1152,7 +1282,7 @@ __wt_log_open(WT_SESSION_IMPL *session)
 	 * where the previous log file ends.
 	 */
 	if (!F_ISSET(conn, WT_CONN_READONLY)) {
-		WT_WITH_SLOT_LOCK(session, log, ret,
+		WT_WITH_SLOT_LOCK(session, log,
 		    ret = __log_newfile(session, true, NULL));
 		WT_ERR(ret);
 	}
@@ -1163,8 +1293,9 @@ __wt_log_open(WT_SESSION_IMPL *session)
 		FLD_SET(conn->log_flags, WT_CONN_LOG_EXISTED);
 	}
 
-err:	if (logfiles != NULL)
-		__wt_log_files_free(session, logfiles, logcount);
+err:	WT_TRET(__wt_fs_directory_list_free(session, &logfiles, logcount));
+	if (ret == 0)
+		F_SET(log, WT_LOG_OPENED);
 	return (ret);
 }
 
@@ -1182,29 +1313,29 @@ __wt_log_close(WT_SESSION_IMPL *session)
 	log = conn->log;
 
 	if (log->log_close_fh != NULL && log->log_close_fh != log->log_fh) {
-		WT_RET(__wt_verbose(session, WT_VERB_LOG,
-		    "closing old log %s", log->log_close_fh->name));
+		__wt_verbose(session, WT_VERB_LOG,
+		    "closing old log %s", log->log_close_fh->name);
 		if (!F_ISSET(conn, WT_CONN_READONLY))
 			WT_RET(__wt_fsync(session, log->log_close_fh, true));
 		WT_RET(__wt_close(session, &log->log_close_fh));
 	}
 	if (log->log_fh != NULL) {
-		WT_RET(__wt_verbose(session, WT_VERB_LOG,
-		    "closing log %s", log->log_fh->name));
+		__wt_verbose(session, WT_VERB_LOG,
+		    "closing log %s", log->log_fh->name);
 		if (!F_ISSET(conn, WT_CONN_READONLY))
 			WT_RET(__wt_fsync(session, log->log_fh, true));
 		WT_RET(__wt_close(session, &log->log_fh));
 		log->log_fh = NULL;
 	}
 	if (log->log_dir_fh != NULL) {
-		WT_RET(__wt_verbose(session, WT_VERB_LOG,
-		    "closing log directory %s", log->log_dir_fh->name));
+		__wt_verbose(session, WT_VERB_LOG,
+		    "closing log directory %s", log->log_dir_fh->name);
 		if (!F_ISSET(conn, WT_CONN_READONLY))
-			WT_RET(
-			    __wt_directory_sync_fh(session, log->log_dir_fh));
+			WT_RET(__wt_fsync(session, log->log_dir_fh, true));
 		WT_RET(__wt_close(session, &log->log_dir_fh));
 		log->log_dir_fh = NULL;
 	}
+	F_CLR(log, WT_LOG_OPENED);
 	return (0);
 }
 
@@ -1274,22 +1405,21 @@ err:	__wt_free(session, buf);
 int
 __wt_log_release(WT_SESSION_IMPL *session, WT_LOGSLOT *slot, bool *freep)
 {
+	struct timespec fsync_start, fsync_stop;
 	WT_CONNECTION_IMPL *conn;
 	WT_DECL_RET;
 	WT_LOG *log;
 	WT_LSN sync_lsn;
 	int64_t release_buffered, release_bytes;
-	int yield_count;
+	uint64_t fsync_duration_usecs;
 	bool locked;
 
 	conn = S2C(session);
 	log = conn->log;
 	locked = false;
-	yield_count = 0;
 	if (freep != NULL)
 		*freep = 1;
-	release_buffered =
-	    WT_LOG_SLOT_RELEASED_BUFFERED(slot->slot_state);
+	release_buffered = WT_LOG_SLOT_RELEASED_BUFFERED(slot->slot_state);
 	release_bytes = release_buffered + slot->slot_unbuffered;
 
 	/*
@@ -1302,13 +1432,12 @@ __wt_log_release(WT_SESSION_IMPL *session, WT_LOGSLOT *slot, bool *freep)
 	 */
 	if (WT_CKPT_LOGSIZE(conn)) {
 		log->log_written += (wt_off_t)release_bytes;
-		WT_RET(__wt_checkpoint_signal(session, log->log_written));
+		__wt_checkpoint_signal(session, log->log_written);
 	}
 
 	/* Write the buffered records */
 	if (release_buffered != 0)
-		WT_ERR(__wt_write(session,
-		    slot->slot_fh, slot->slot_start_offset,
+		WT_ERR(__log_fs_write(session, slot, slot->slot_start_offset,
 		    (size_t)release_buffered, slot->slot_buf.mem));
 
 	/*
@@ -1338,37 +1467,21 @@ __wt_log_release(WT_SESSION_IMPL *session, WT_LOGSLOT *slot, bool *freep)
 	 * Wait for earlier groups to finish, otherwise there could
 	 * be holes in the log file.
 	 */
-	WT_STAT_FAST_CONN_INCR(session, log_release_write_lsn);
-	while (__wt_log_cmp(&log->write_lsn, &slot->slot_release_lsn) != 0) {
-		/*
-		 * If we're on a locked path and the write LSN is not advancing,
-		 * unlock in case an earlier thread is trying to switch its
-		 * slot and complete its operation.
-		 */
-		if (F_ISSET(session, WT_SESSION_LOCKED_SLOT))
-			__wt_spin_unlock(session, &log->log_slot_lock);
-		WT_ERR(__wt_cond_auto_signal(session, conn->log_wrlsn_cond));
-		if (++yield_count < WT_THOUSAND)
-			__wt_yield();
-		else
-			ret = __wt_cond_wait(session, log->log_write_cond, 200);
-		if (F_ISSET(session, WT_SESSION_LOCKED_SLOT))
-			__wt_spin_lock(session, &log->log_slot_lock);
-		WT_ERR(ret);
-	}
+	WT_STAT_CONN_INCR(session, log_release_write_lsn);
+	WT_ERR(__log_wait_for_earlier_slot(session, slot));
 
 	log->write_start_lsn = slot->slot_start_lsn;
 	log->write_lsn = slot->slot_end_lsn;
 
 	WT_ASSERT(session, slot != log->active_slot);
-	WT_ERR(__wt_cond_signal(session, log->log_write_cond));
+	__wt_cond_signal(session, log->log_write_cond);
 	F_CLR(slot, WT_SLOT_FLUSH);
 
 	/*
 	 * Signal the close thread if needed.
 	 */
 	if (F_ISSET(slot, WT_SLOT_CLOSEFH))
-		WT_ERR(__wt_cond_signal(session, conn->log_file_cond));
+		__wt_cond_signal(session, conn->log_file_cond);
 
 	/*
 	 * Try to consolidate calls to fsync to wait less.  Acquire a spin lock
@@ -1376,6 +1489,7 @@ __wt_log_release(WT_SESSION_IMPL *session, WT_LOGSLOT *slot, bool *freep)
 	 * current fsync completes and advance log->sync_lsn.
 	 */
 	while (F_ISSET(slot, WT_SLOT_SYNC | WT_SLOT_SYNC_DIR)) {
+		WT_ERR(WT_SESSION_CHECK_PANIC(session));
 		/*
 		 * We have to wait until earlier log files have finished their
 		 * sync operations.  The most recent one will set the LSN to the
@@ -1383,8 +1497,8 @@ __wt_log_release(WT_SESSION_IMPL *session, WT_LOGSLOT *slot, bool *freep)
 		 */
 		if (log->sync_lsn.l.file < slot->slot_end_lsn.l.file ||
 		    __wt_spin_trylock(session, &log->log_sync_lock) != 0) {
-			WT_ERR(__wt_cond_wait(
-			    session, log->log_sync_cond, 10000));
+			__wt_cond_wait(
+			    session, log->log_sync_cond, 10000, NULL);
 			continue;
 		}
 		locked = true;
@@ -1403,15 +1517,20 @@ __wt_log_release(WT_SESSION_IMPL *session, WT_LOGSLOT *slot, bool *freep)
 		if (F_ISSET(slot, WT_SLOT_SYNC_DIR) &&
 		    (log->sync_dir_lsn.l.file < sync_lsn.l.file)) {
 			WT_ASSERT(session, log->log_dir_fh != NULL);
-			WT_ERR(__wt_verbose(session, WT_VERB_LOG,
+			__wt_verbose(session, WT_VERB_LOG,
 			    "log_release: sync directory %s to LSN %" PRIu32
 			    "/%" PRIu32,
 			    log->log_dir_fh->name,
-			    sync_lsn.l.file, sync_lsn.l.offset));
-			WT_ERR(__wt_directory_sync_fh(
-			    session, log->log_dir_fh));
+			    sync_lsn.l.file, sync_lsn.l.offset);
+			__wt_epoch(session, &fsync_start);
+			WT_ERR(__wt_fsync(session, log->log_dir_fh, true));
+			__wt_epoch(session, &fsync_stop);
+			fsync_duration_usecs =
+			    WT_TIMEDIFF_US(fsync_stop, fsync_start);
 			log->sync_dir_lsn = sync_lsn;
-			WT_STAT_FAST_CONN_INCR(session, log_sync_dir);
+			WT_STAT_CONN_INCR(session, log_sync_dir);
+			WT_STAT_CONN_INCRV(session,
+			    log_sync_dir_duration, fsync_duration_usecs);
 		}
 
 		/*
@@ -1419,15 +1538,21 @@ __wt_log_release(WT_SESSION_IMPL *session, WT_LOGSLOT *slot, bool *freep)
 		 */
 		if (F_ISSET(slot, WT_SLOT_SYNC) &&
 		    __wt_log_cmp(&log->sync_lsn, &slot->slot_end_lsn) < 0) {
-			WT_ERR(__wt_verbose(session, WT_VERB_LOG,
+			__wt_verbose(session, WT_VERB_LOG,
 			    "log_release: sync log %s to LSN %" PRIu32
 			    "/%" PRIu32,
 			    log->log_fh->name,
-			    sync_lsn.l.file, sync_lsn.l.offset));
-			WT_STAT_FAST_CONN_INCR(session, log_sync);
+			    sync_lsn.l.file, sync_lsn.l.offset);
+			WT_STAT_CONN_INCR(session, log_sync);
+			__wt_epoch(session, &fsync_start);
 			WT_ERR(__wt_fsync(session, log->log_fh, true));
+			__wt_epoch(session, &fsync_stop);
+			fsync_duration_usecs =
+			    WT_TIMEDIFF_US(fsync_stop, fsync_start);
+			WT_STAT_CONN_INCRV(session,
+			    log_sync_duration, fsync_duration_usecs);
 			log->sync_lsn = sync_lsn;
-			WT_ERR(__wt_cond_signal(session, log->log_sync_cond));
+			__wt_cond_signal(session, log->log_sync_cond);
 		}
 		/*
 		 * Clear the flags before leaving the loop.
@@ -1465,7 +1590,7 @@ __wt_log_scan(WT_SESSION_IMPL *session, WT_LSN *lsnp, uint32_t flags,
 	WT_LSN end_lsn, next_lsn, rd_lsn, start_lsn;
 	wt_off_t log_size;
 	uint32_t allocsize, firstlog, lastlog, lognum, rdup_len, reclen;
-	uint32_t cksum_calculate, cksum_tmp;
+	uint32_t checksum_calculate, checksum_tmp;
 	u_int i, logcount;
 	int firstrecord;
 	bool eol, partial_record;
@@ -1487,9 +1612,9 @@ __wt_log_scan(WT_SESSION_IMPL *session, WT_LSN *lsnp, uint32_t flags,
 		return (0);
 
 	if (LF_ISSET(WT_LOGSCAN_RECOVER))
-		WT_RET(__wt_verbose(session, WT_VERB_LOG,
+		__wt_verbose(session, WT_VERB_LOG,
 		    "__wt_log_scan truncating to %" PRIu32 "/%" PRIu32,
-		    log->trunc_lsn.l.file, log->trunc_lsn.l.offset));
+		    log->trunc_lsn.l.file, log->trunc_lsn.l.offset);
 
 	if (log != NULL) {
 		allocsize = log->allocsize;
@@ -1538,10 +1663,7 @@ __wt_log_scan(WT_SESSION_IMPL *session, WT_LSN *lsnp, uint32_t flags,
 		WT_RET(__log_get_files(session,
 		    WT_LOG_FILENAME, &logfiles, &logcount));
 		if (logcount == 0)
-			/*
-			 * Return it is not supported if none don't exist.
-			 */
-			return (ENOTSUP);
+			WT_RET_MSG(session, ENOTSUP, "no log files found");
 		for (i = 0; i < logcount; i++) {
 			WT_ERR(__wt_log_extract_lognum(session, logfiles[i],
 			    &lognum));
@@ -1550,13 +1672,17 @@ __wt_log_scan(WT_SESSION_IMPL *session, WT_LSN *lsnp, uint32_t flags,
 		}
 		WT_SET_LSN(&start_lsn, firstlog, 0);
 		WT_SET_LSN(&end_lsn, lastlog, 0);
-		__wt_log_files_free(session, logfiles, logcount);
-		logfiles = NULL;
+		WT_ERR(
+		    __wt_fs_directory_list_free(session, &logfiles, logcount));
 	}
-	WT_ERR(__log_openfile(
-	    session, false, &log_fh, WT_LOG_FILENAME, start_lsn.l.file));
+	WT_ERR(__log_openfile(session,
+	    &log_fh, WT_LOG_FILENAME, start_lsn.l.file, WT_LOG_OPEN_VERIFY));
 	WT_ERR(__wt_filesize(session, log_fh, &log_size));
 	rd_lsn = start_lsn;
+	if (LF_ISSET(WT_LOGSCAN_RECOVER))
+		__wt_verbose(session, WT_VERB_RECOVERY_PROGRESS,
+		    "Recovering log %" PRIu32 " through %" PRIu32,
+		    rd_lsn.l.file, end_lsn.l.file);
 
 	WT_ERR(__wt_scr_alloc(session, WT_LOG_ALIGN, &buf));
 	WT_ERR(__wt_scr_alloc(session, 0, &decryptitem));
@@ -1603,7 +1729,13 @@ advance:
 			if (rd_lsn.l.file > end_lsn.l.file)
 				break;
 			WT_ERR(__log_openfile(session,
-			    false, &log_fh, WT_LOG_FILENAME, rd_lsn.l.file));
+			    &log_fh, WT_LOG_FILENAME,
+			    rd_lsn.l.file, WT_LOG_OPEN_VERIFY));
+			if (LF_ISSET(WT_LOGSCAN_RECOVER))
+				__wt_verbose(session, WT_VERB_RECOVERY_PROGRESS,
+				    "Recovering log %" PRIu32
+				    " through %" PRIu32,
+				    rd_lsn.l.file, end_lsn.l.file);
 			WT_ERR(__wt_filesize(session, log_fh, &log_size));
 			eol = false;
 			continue;
@@ -1640,9 +1772,8 @@ advance:
 			if (eol)
 				/* Found a hole. This LSN is the end. */
 				break;
-			else
-				/* Last record in log.  Look for more. */
-				goto advance;
+			/* Last record in log.  Look for more. */
+			goto advance;
 		}
 		rdup_len = __wt_rduppo2(reclen, allocsize);
 		if (reclen > allocsize) {
@@ -1662,7 +1793,7 @@ advance:
 			WT_ERR(__wt_buf_grow(session, buf, rdup_len));
 			WT_ERR(__wt_read(session, log_fh,
 			    rd_lsn.l.offset, (size_t)rdup_len, buf->mem));
-			WT_STAT_FAST_CONN_INCR(session, log_scan_rereads);
+			WT_STAT_CONN_INCR(session, log_scan_rereads);
 		}
 		/*
 		 * We read in the record, verify checksum.
@@ -1676,12 +1807,12 @@ advance:
 		 */
 		buf->size = reclen;
 		logrec = (WT_LOG_RECORD *)buf->mem;
-		cksum_tmp = logrec->checksum;
+		checksum_tmp = logrec->checksum;
 		logrec->checksum = 0;
-		cksum_calculate = __wt_cksum(logrec, reclen);
-		logrec->checksum = cksum_tmp;
+		checksum_calculate = __wt_checksum(logrec, reclen);
+		logrec->checksum = checksum_tmp;
 		__wt_log_record_byteswap(logrec);
-		if (logrec->checksum != cksum_calculate) {
+		if (logrec->checksum != checksum_calculate) {
 			/*
 			 * A checksum mismatch means we have reached the end of
 			 * the useful part of the log.  This should be found on
@@ -1704,7 +1835,7 @@ advance:
 		 * We have a valid log record.  If it is not the log file
 		 * header, invoke the callback.
 		 */
-		WT_STAT_FAST_CONN_INCR(session, log_scan_records);
+		WT_STAT_CONN_INCR(session, log_scan_records);
 		next_lsn = rd_lsn;
 		next_lsn.l.offset += rdup_len;
 		if (rd_lsn.l.offset != 0) {
@@ -1745,10 +1876,24 @@ advance:
 		WT_ERR(__log_truncate(session,
 		    &rd_lsn, WT_LOG_FILENAME, 0));
 
-err:	WT_STAT_FAST_CONN_INCR(session, log_scans);
+err:	WT_STAT_CONN_INCR(session, log_scans);
+	/*
+	 * If the first attempt to read a log record results in
+	 * an error recovery is likely going to fail.  Try to provide
+	 * a helpful failure message.
+	 */
+	if (ret != 0 && firstrecord) {
+		__wt_errx(session,
+		    "WiredTiger is unable to read the recovery log.");
+		__wt_errx(session, "This may be due to the log"
+		    " files being encrypted, being from an older"
+		    " version or due to corruption on disk");
+		__wt_errx(session, "You should confirm that you have"
+		    " opened the database with the correct options including"
+		    " all encryption and compression options");
+	}
 
-	if (logfiles != NULL)
-		__wt_log_files_free(session, logfiles, logcount);
+	WT_TRET(__wt_fs_directory_list_free(session, &logfiles, logcount));
 
 	__wt_scr_free(session, &buf);
 	__wt_scr_free(session, &decryptitem);
@@ -1774,22 +1919,14 @@ __wt_log_force_write(WT_SESSION_IMPL *session, bool retry, bool *did_work)
 {
 	WT_LOG *log;
 	WT_MYSLOT myslot;
-	uint32_t joined;
 
 	log = S2C(session)->log;
 	memset(&myslot, 0, sizeof(myslot));
-	WT_STAT_FAST_CONN_INCR(session, log_force_write);
+	WT_STAT_CONN_INCR(session, log_force_write);
 	if (did_work != NULL)
 		*did_work = true;
 	myslot.slot = log->active_slot;
-	joined = WT_LOG_SLOT_JOINED(log->active_slot->slot_state);
-	if (joined == 0) {
-		WT_STAT_FAST_CONN_INCR(session, log_force_write_skip);
-		if (did_work != NULL)
-			*did_work = false;
-		return (0);
-	}
-	return (__wt_log_slot_switch(session, &myslot, retry, true));
+	return (__wt_log_slot_switch(session, &myslot, retry, true, did_work));
 }
 
 /*
@@ -1818,14 +1955,15 @@ __wt_log_write(WT_SESSION_IMPL *session, WT_ITEM *record, WT_LSN *lsnp,
 	/*
 	 * An error during opening the logging subsystem can result in it
 	 * being enabled, but without an open log file.  In that case,
-	 * just return.
+	 * just return.  We can also have logging opened for reading in a
+	 * read-only database and attempt to write a record on close.
 	 */
-	if (log->log_fh == NULL)
+	if (!F_ISSET(log, WT_LOG_OPENED) || F_ISSET(conn, WT_CONN_READONLY))
 		return (0);
 	ip = record;
 	if ((compressor = conn->log_compressor) != NULL &&
 	    record->size < log->allocsize) {
-		WT_STAT_FAST_CONN_INCR(session, log_compress_small);
+		WT_STAT_CONN_INCR(session, log_compress_small);
 	} else if (compressor != NULL) {
 		/* Skip the log header */
 		src = (uint8_t *)record->mem + WT_LOG_COMPRESS_SKIP;
@@ -1870,13 +2008,13 @@ __wt_log_write(WT_SESSION_IMPL *session, WT_ITEM *record, WT_LSN *lsnp,
 		if (compression_failed ||
 		    result_len / log->allocsize >=
 		    record->size / log->allocsize)
-			WT_STAT_FAST_CONN_INCR(session,
+			WT_STAT_CONN_INCR(session,
 			    log_compress_write_fails);
 		else {
-			WT_STAT_FAST_CONN_INCR(session, log_compress_writes);
-			WT_STAT_FAST_CONN_INCRV(session, log_compress_mem,
+			WT_STAT_CONN_INCR(session, log_compress_writes);
+			WT_STAT_CONN_INCRV(session, log_compress_mem,
 			    record->size);
-			WT_STAT_FAST_CONN_INCRV(session, log_compress_len,
+			WT_STAT_CONN_INCRV(session, log_compress_len,
 			    result_len);
 
 			/*
@@ -1958,7 +2096,7 @@ __log_write_internal(WT_SESSION_IMPL *session, WT_ITEM *record, WT_LSN *lsnp,
 	 * that we can write the full amount.  Do this whether or not
 	 * direct_io is in use because it makes the reading code cleaner.
 	 */
-	WT_STAT_FAST_CONN_INCRV(session, log_bytes_payload, record->size);
+	WT_STAT_CONN_INCRV(session, log_bytes_payload, record->size);
 	rdup_len = __wt_rduppo2((uint32_t)record->size, log->allocsize);
 	WT_ERR(__wt_buf_grow(session, record, rdup_len));
 	WT_ASSERT(session, record->data == record->mem);
@@ -1980,14 +2118,18 @@ __log_write_internal(WT_SESSION_IMPL *session, WT_ITEM *record, WT_LSN *lsnp,
 	logrec->len = (uint32_t)record->size;
 	logrec->checksum = 0;
 	__wt_log_record_byteswap(logrec);
-	logrec->checksum = __wt_cksum(logrec, record->size);
+	logrec->checksum = __wt_checksum(logrec, record->size);
 #ifdef WORDS_BIGENDIAN
 	logrec->checksum = __wt_bswap32(logrec->checksum);
 #endif
 
-	WT_STAT_FAST_CONN_INCR(session, log_writes);
+	WT_STAT_CONN_INCR(session, log_writes);
 
-	__wt_log_slot_join(session, rdup_len, flags, &myslot);
+	/*
+	 * The only time joining a slot should ever return an error is if it
+	 * detects a panic.
+	 */
+	WT_ERR(__wt_log_slot_join(session, rdup_len, flags, &myslot));
 	/*
 	 * If the addition of this record crosses the buffer boundary,
 	 * switch in a new slot.
@@ -1996,7 +2138,7 @@ __log_write_internal(WT_SESSION_IMPL *session, WT_ITEM *record, WT_LSN *lsnp,
 	ret = 0;
 	if (myslot.end_offset >= WT_LOG_SLOT_BUF_MAX ||
 	    F_ISSET(&myslot, WT_MYSLOT_UNBUFFERED) || force)
-		ret = __wt_log_slot_switch(session, &myslot, true, false);
+		ret = __wt_log_slot_switch(session, &myslot, true, false, NULL);
 	if (ret == 0)
 		ret = __log_fill(session, &myslot, false, record, &lsn);
 	release_size = __wt_log_slot_release(
@@ -2021,7 +2163,7 @@ __log_write_internal(WT_SESSION_IMPL *session, WT_ITEM *record, WT_LSN *lsnp,
 		 * XXX I've seen times when conditions are NULL.
 		 */
 		if (conn->log_cond != NULL) {
-			WT_ERR(__wt_cond_auto_signal(session, conn->log_cond));
+			__wt_cond_signal(session, conn->log_cond);
 			__wt_yield();
 		} else
 			WT_ERR(__wt_log_force_write(session, 1, NULL));
@@ -2029,22 +2171,26 @@ __log_write_internal(WT_SESSION_IMPL *session, WT_ITEM *record, WT_LSN *lsnp,
 	if (LF_ISSET(WT_LOG_FLUSH)) {
 		/* Wait for our writes to reach the OS */
 		while (__wt_log_cmp(&log->write_lsn, &lsn) <= 0 &&
-		    myslot.slot->slot_error == 0)
-			(void)__wt_cond_wait(
-			    session, log->log_write_cond, 10000);
+		    myslot.slot->slot_error == 0) {
+			WT_ERR(WT_SESSION_CHECK_PANIC(session));
+			__wt_cond_wait(
+			    session, log->log_write_cond, 10000, NULL);
+		}
 	} else if (LF_ISSET(WT_LOG_FSYNC)) {
 		/* Wait for our writes to reach disk */
 		while (__wt_log_cmp(&log->sync_lsn, &lsn) <= 0 &&
-		    myslot.slot->slot_error == 0)
-			(void)__wt_cond_wait(
-			    session, log->log_sync_cond, 10000);
+		    myslot.slot->slot_error == 0) {
+			WT_ERR(WT_SESSION_CHECK_PANIC(session));
+			__wt_cond_wait(
+			    session, log->log_sync_cond, 10000, NULL);
+		}
 	}
 
 	/*
 	 * Advance the background sync LSN if needed.
 	 */
 	if (LF_ISSET(WT_LOG_BACKGROUND))
-		WT_ERR(__wt_log_background(session, &lsn));
+		__wt_log_background(session, &lsn);
 
 err:
 	if (ret == 0 && lsnp != NULL)
@@ -2062,12 +2208,12 @@ err:
 
 	/*
 	 * If one of the sync flags is set, assert the proper LSN has moved to
-	 * match.
+	 * match on success.
 	 */
-	WT_ASSERT(session, !LF_ISSET(WT_LOG_FLUSH) ||
+	WT_ASSERT(session, ret != 0 || !LF_ISSET(WT_LOG_FLUSH) ||
 	    __wt_log_cmp(&log->write_lsn, &lsn) >= 0);
-	WT_ASSERT(session,
-	    !LF_ISSET(WT_LOG_FSYNC) || __wt_log_cmp(&log->sync_lsn, &lsn) >= 0);
+	WT_ASSERT(session, ret != 0 || !LF_ISSET(WT_LOG_FSYNC) ||
+	    __wt_log_cmp(&log->sync_lsn, &lsn) >= 0);
 	return (ret);
 }
 
@@ -2092,8 +2238,10 @@ __wt_log_vprintf(WT_SESSION_IMPL *session, const char *fmt, va_list ap)
 		return (0);
 
 	va_copy(ap_copy, ap);
-	len = (size_t)vsnprintf(NULL, 0, fmt, ap_copy) + 1;
+	len = 1;
+	ret = __wt_vsnprintf_len_incr(NULL, 0, &len, fmt, ap_copy);
 	va_end(ap_copy);
+	WT_RET(ret);
 
 	WT_RET(
 	    __wt_logrec_alloc(session, sizeof(WT_LOG_RECORD) + len, &logrec));
@@ -2110,10 +2258,11 @@ __wt_log_vprintf(WT_SESSION_IMPL *session, const char *fmt, va_list ap)
 	    rec_fmt, rectype));
 	logrec->size += (uint32_t)header_size;
 
-	(void)vsnprintf((char *)logrec->data + logrec->size, len, fmt, ap);
+	WT_ERR(__wt_vsnprintf(
+	    (char *)logrec->data + logrec->size, len, fmt, ap));
 
-	WT_ERR(__wt_verbose(session, WT_VERB_LOG,
-	    "log_printf: %s", (char *)logrec->data + logrec->size));
+	__wt_verbose(session, WT_VERB_LOG,
+	    "log_printf: %s", (char *)logrec->data + logrec->size);
 
 	logrec->size += len;
 	WT_ERR(__wt_log_write(session, logrec, NULL, 0));
@@ -2159,16 +2308,16 @@ __wt_log_flush(WT_SESSION_IMPL *session, uint32_t flags)
 	while (__wt_log_cmp(&last_lsn, &lsn) > 0)
 		WT_RET(__wt_log_flush_lsn(session, &lsn, false));
 
-	WT_RET(__wt_verbose(session, WT_VERB_LOG,
+	__wt_verbose(session, WT_VERB_LOG,
 	    "log_flush: flags %#" PRIx32 " LSN %" PRIu32 "/%" PRIu32,
-	    flags, lsn.l.file, lsn.l.offset));
+	    flags, lsn.l.file, lsn.l.offset);
 	/*
 	 * If the user wants write-no-sync, there is nothing more to do.
 	 * If the user wants background sync, set the LSN and we're done.
 	 * If the user wants sync, force it now.
 	 */
 	if (LF_ISSET(WT_LOG_BACKGROUND))
-		WT_RET(__wt_log_background(session, &lsn));
+		__wt_log_background(session, &lsn);
 	else if (LF_ISSET(WT_LOG_FSYNC))
 		WT_RET(__wt_log_force_sync(session, &lsn));
 	return (0);

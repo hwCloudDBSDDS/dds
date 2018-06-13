@@ -29,10 +29,10 @@
 
 #include <memory>
 
-#include "mongo/executor/connection_pool.h"
-#include "mongo/executor/network_interface_asio.h"
-#include "mongo/executor/network_interface.h"
 #include "mongo/executor/async_stream_interface.h"
+#include "mongo/executor/connection_pool.h"
+#include "mongo/executor/network_interface.h"
+#include "mongo/executor/network_interface_asio.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {
@@ -70,8 +70,10 @@ private:
 class ASIOConnection final : public ConnectionPool::ConnectionInterface {
 public:
     ASIOConnection(const HostAndPort& hostAndPort, size_t generation, ASIOImpl* global);
+    ~ASIOConnection();
 
     void indicateSuccess() override;
+    void indicateUsed() override;
     void indicateFailure(Status status) override;
     const HostAndPort& getHostAndPort() const override;
 
@@ -81,7 +83,6 @@ public:
     bool isHealthy() override;
 
 private:
-    void indicateUsed() override;
     Date_t getLastUsed() const override;
     const Status& getStatus() const override;
 

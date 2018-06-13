@@ -77,6 +77,8 @@ public:
  */
 class BackgroundSync : public BackgroundSyncInterface {
 public:
+    static const NamespaceString kLocalOplogNss;
+
     // Allow index prefetching to be turned on/off
     enum IndexPrefetchConfig {
         UNINITIALIZED = 0,
@@ -168,7 +170,7 @@ private:
 
     // Production thread
     void _producerThread();
-    void _produce(OperationContext* txn);
+    void _produce();
 
     /**
      * Signals to the applier that we have no new data,
@@ -187,7 +189,16 @@ private:
                           OpTime lastOpTimeFetched,
                           long long lastFetchedHash,
                           Milliseconds fetcherMaxTimeMS,
-                          Status* returnStatus);
+                          Status* returnStatus,
+                          int rbid);
+
+    /**
+     * A callback to a Fetcher that checks that the remote last applied OpTime is newer than the
+     * local last fetched OpTime.
+     */
+    void _lastAppliedFetcherCallback(const StatusWith<Fetcher::QueryResponse>& result,
+                                     OpTime lastOpTimeFetched,
+                                     Status* returnStatus);
 
     /**
      * Executes a rollback.
@@ -195,6 +206,7 @@ private:
      */
     void _rollback(OperationContext* txn,
                    const HostAndPort& source,
+                   boost::optional<int> requiredRBID,
                    stdx::function<DBClientBase*()> getConnection);
 
     /**

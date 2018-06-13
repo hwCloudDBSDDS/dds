@@ -141,10 +141,15 @@ void exitCleanly(ExitCode code) {
             txn = uniqueTxn.get();
         }
 
-        auto cursorManager = grid.getCursorManager();
-        cursorManager->shutdown();
-        grid.shardRegistry()->shutdown();
-        grid.catalogManager(txn)->shutDown(txn);
+        if (auto cursorManager = grid.getCursorManager()) {
+            cursorManager->shutdown();
+        }
+        if (auto shardRegistry = grid.shardRegistry()) {
+            shardRegistry->shutdown();
+        }
+        if (auto catalogManager = grid.catalogManager(txn)) {
+            catalogManager->shutDown(txn);
+        }
     }
 
     dbexit(code);
@@ -296,6 +301,12 @@ static ExitCode runMongosServer() {
                 return EXIT_CLEAN;
             }
             error() << "Error initializing sharding system: " << status;
+
+            // Exit gracefully if this mongos is being used incorrectly in a mixed 3.2/3.4 cluster.
+            if (status == ErrorCodes::MustUpgrade) {
+                dbexit(EXIT_SHARDING_ERROR);
+            }
+
             return EXIT_SHARDING_ERROR;
         }
 

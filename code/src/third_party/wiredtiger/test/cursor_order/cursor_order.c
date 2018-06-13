@@ -29,12 +29,12 @@
 #include "cursor_order.h"
 
 static char home[512];				/* Program working dir */
-static char *progname;				/* Program name */
 static FILE *logfp;				/* Log file */
 
 static int  handle_error(WT_EVENT_HANDLER *, WT_SESSION *, int, const char *);
 static int  handle_message(WT_EVENT_HANDLER *, WT_SESSION *, const char *);
-static void onint(int);
+static void onint(int)
+    WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
 static void shutdown(void);
 static int  usage(void);
 static void wt_connect(SHARED_CONFIG *, char *);
@@ -43,8 +43,6 @@ static void wt_shutdown(SHARED_CONFIG *);
 extern int __wt_optind;
 extern char *__wt_optarg;
 
-void (*custom_die)(void) = NULL;
-
 int
 main(int argc, char *argv[])
 {
@@ -52,10 +50,7 @@ main(int argc, char *argv[])
 	int ch, cnt, runs;
 	char *config_open, *working_dir;
 
-	if ((progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		progname = argv[0];
-	else
-		++progname;
+	(void)testutil_set_progname(argv);
 
 	cfg = &_cfg;
 	config_open = NULL;
@@ -186,19 +181,15 @@ wt_connect(SHARED_CONFIG *cfg, char *config_open)
 	};
 	int ret;
 	char config[512];
-	size_t print_count;
 
 	testutil_clean_work_dir(home);
 	testutil_make_work_dir(home);
 
-	print_count = (size_t)snprintf(config, sizeof(config),
+	testutil_check(__wt_snprintf(config, sizeof(config),
 	    "create,statistics=(all),error_prefix=\"%s\",%s%s",
 	    progname,
 	    config_open == NULL ? "" : ",",
-	    config_open == NULL ? "" : config_open);
-
-	if (print_count >= sizeof(config))
-		testutil_die(EINVAL, "Config string too long");
+	    config_open == NULL ? "" : config_open));
 
 	if ((ret = wiredtiger_open(
 	    home, &event_handler, config, &cfg->conn)) != 0)

@@ -25,7 +25,7 @@ var b_conn = conns[1];
 var AID = replTest.getNodeId(a_conn);
 var BID = replTest.getNodeId(b_conn);
 
-replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY, 60 * 1000);
+replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY);
 
 // get master and do an initial write
 var master = replTest.getPrimary();
@@ -44,7 +44,7 @@ replTest.stop(AID);
 master = replTest.getPrimary();
 assert(b_conn.host === master.host, "b_conn assumed to be master");
 b_conn.getDB(name).dropDatabase();
-assert.eq(0, b_conn.getDB(name).foo.count(), "dropping database failed");
+assert.eq(0, b_conn.getDB(name).foo.find().itcount(), "dropping database failed");
 
 // shut down B and bring back the original master
 replTest.stop(BID);

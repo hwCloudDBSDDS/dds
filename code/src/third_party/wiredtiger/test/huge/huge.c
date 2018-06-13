@@ -26,18 +26,9 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <errno.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#ifndef _WIN32
-#include <unistd.h>
-#endif
-
-#include "test_util.i"
+#include "test_util.h"
 
 static char home[512];				/* Program working dir */
-static const char *progname;			/* Program name */
 static uint8_t *big;				/* Big key/value buffer */
 
 #define	GIGABYTE	(1073741824)
@@ -73,13 +64,13 @@ static size_t lengths[] = {
     0
 };
 
+static void usage(void)
+    WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
 static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s [-s]\n", progname);
-	fprintf(stderr, "%s",
-	    "\t-s small run, only test up to 1GB\n");
-
+	fprintf(stderr, "%s", "\t-s small run, only test up to 1GB\n");
 	exit(EXIT_FAILURE);
 }
 
@@ -167,8 +158,6 @@ run(CONFIG *cp, int bigkey, size_t bytes)
 extern int __wt_optind;
 extern char *__wt_optarg;
 
-void (*custom_die)(void) = NULL;
-
 int
 main(int argc, char *argv[])
 {
@@ -177,14 +166,10 @@ main(int argc, char *argv[])
 	int ch, small;
 	char *working_dir;
 
-	if ((progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		progname = argv[0];
-	else
-		++progname;
+	(void)testutil_set_progname(argv);
 
 	small = 0;
 	working_dir = NULL;
-
 	while ((ch = __wt_getopt(progname, argc, argv, "h:s")) != EOF)
 		switch (ch) {
 		case 'h':
@@ -205,8 +190,7 @@ main(int argc, char *argv[])
 
 	/* Allocate a buffer to use. */
 	len = small ? ((size_t)SMALL_MAX) : ((size_t)4 * GIGABYTE);
-	if ((big = malloc(len)) == NULL)
-		testutil_die(errno, "");
+	big = dmalloc(len);
 	memset(big, 'a', len);
 
 	/* Make sure the configurations all work. */

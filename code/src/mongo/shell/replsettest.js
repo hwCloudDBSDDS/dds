@@ -89,6 +89,8 @@ var ReplSetTest = function(opts) {
     var _unbridgedPorts;
     var _unbridgedNodes;
 
+    this.kDefaultTimeoutMS = 10 * 60 * 1000;
+
     // Publicly exposed variables
 
     /**
@@ -115,11 +117,16 @@ var ReplSetTest = function(opts) {
     function _callIsMaster() {
         _clearLiveNodes();
 
+        var twoPrimaries = false;
         self.nodes.forEach(function(node) {
             try {
                 var n = node.getDB('admin').runCommand({ismaster: 1});
                 if (n.ismaster == true) {
-                    self.liveNodes.master = node;
+                    if (self.liveNodes.master) {
+                        twoPrimaries = true;
+                    } else {
+                        self.liveNodes.master = node;
+                    }
                 } else {
                     node.setSlaveOk();
                     self.liveNodes.slaves.push(node);
@@ -128,6 +135,9 @@ var ReplSetTest = function(opts) {
                 print("ReplSetTest Could not call ismaster on node " + node + ": " + tojson(err));
             }
         });
+        if (twoPrimaries) {
+            return false;
+        }
 
         return self.liveNodes.master || false;
     }
@@ -153,7 +163,7 @@ var ReplSetTest = function(opts) {
             return;
         }
 
-        timeout = timeout || 30000;
+        timeout = timeout || self.kDefaultTimeoutMS;
 
         if (!node.getDB) {
             node = self.nodes[node];
@@ -171,7 +181,7 @@ var ReplSetTest = function(opts) {
         var currTime = new Date().getTime();
         var status;
 
-        assert.soon(function() {
+        assert.soonNoExcept(function() {
             try {
                 var conn = _callIsMaster();
                 if (!conn) {
@@ -393,9 +403,9 @@ var ReplSetTest = function(opts) {
      * Blocks until the secondary nodes have completed recovery and their roles are known.
      */
     this.awaitSecondaryNodes = function(timeout) {
-        timeout = timeout || 60000;
+        timeout = timeout || self.kDefaultTimeoutMS;
 
-        assert.soon(function() {
+        assert.soonNoExcept(function() {
             // Reload who the current slaves are
             self.getPrimary(timeout);
 
@@ -414,14 +424,93 @@ var ReplSetTest = function(opts) {
     };
 
     /**
+     * Blocks until the specified node says it's syncing from the given upstream node.
+     */
+    this.awaitSyncSource = function(node, upstreamNode, timeout) {
+        print("Waiting for node " + node.name + " to start syncing from " + upstreamNode.name);
+        var status = null;
+        assert.soonNoExcept(
+            function() {
+                status = node.getDB("admin").runCommand({replSetGetStatus: 1});
+                for (var j = 0; j < status.members.length; j++) {
+                    if (status.members[j].self) {
+                        return status.members[j].syncingTo === upstreamNode.host;
+                    }
+                }
+                return false;
+            },
+            "Awaiting node " + node + " syncing from " + upstreamNode + ": " + tojson(status),
+            timeout);
+    };
+
+    /**
+     * Blocks until all nodes agree on who the primary is.
+     * If 'expectedPrimaryNodeId' is provided, ensure that every node is seeing this node as the
+     * primary. Otherwise, ensure that all the nodes in the set agree with the first node on the
+     * identity of the primary.
+     */
+    this.awaitNodesAgreeOnPrimary = function(timeout, nodes, expectedPrimaryNodeId) {
+        timeout = timeout || self.kDefaultTimeoutMS;
+        nodes = nodes || self.nodes;
+        expectedPrimaryNodeId = expectedPrimaryNodeId || -1;
+        if (expectedPrimaryNodeId === -1) {
+            print("AwaitNodesAgreeOnPrimary: Waiting for nodes to agree on any primary.");
+        } else {
+            print("AwaitNodesAgreeOnPrimary: Waiting for nodes to agree on " +
+                  nodes[expectedPrimaryNodeId].name + " as primary.");
+        }
+
+        assert.soonNoExcept(function() {
+            var primary = expectedPrimaryNodeId;
+
+            for (var i = 0; i < nodes.length; i++) {
+                var replSetGetStatus = nodes[i].getDB("admin").runCommand({replSetGetStatus: 1});
+                var nodesPrimary = -1;
+                for (var j = 0; j < replSetGetStatus.members.length; j++) {
+                    if (replSetGetStatus.members[j].state === ReplSetTest.State.PRIMARY) {
+                        // Node sees two primaries.
+                        if (nodesPrimary !== -1) {
+                            print("AwaitNodesAgreeOnPrimary: Retrying because " + nodes[i].name +
+                                  " thinks both " + nodes[nodesPrimary].name + " and " +
+                                  nodes[j].name + " are primary.");
+
+                            return false;
+                        }
+                        nodesPrimary = j;
+                    }
+                }
+                // Node doesn't see a primary.
+                if (nodesPrimary < 0) {
+                    print("AwaitNodesAgreeOnPrimary: Retrying because " + nodes[i].name +
+                          " does not see a primary.");
+                    return false;
+                }
+
+                if (primary < 0) {
+                    // If we haven't seen a primary yet, set it to this.
+                    primary = nodesPrimary;
+                } else if (primary !== nodesPrimary) {
+                    print("AwaitNodesAgreeOnPrimary: Retrying because " + nodes[i].name +
+                          " thinks the primary is " + nodes[nodesPrimary].name + " instead of " +
+                          nodes[primary].name);
+                    return false;
+                }
+            }
+
+            print("AwaitNodesAgreeOnPrimary: Nodes agreed on primary " + nodes[primary].name);
+            return true;
+        }, "Awaiting nodes to agree on primary", timeout);
+    };
+
+    /**
      * Blocking call, which will wait for a primary to be elected for some pre-defined timeout and
      * if primary is available will return a connection to it. Otherwise throws an exception.
      */
     this.getPrimary = function(timeout) {
-        timeout = timeout || 60000;
+        timeout = timeout || self.kDefaultTimeoutMS;
         var primary = null;
 
-        assert.soon(function() {
+        assert.soonNoExcept(function() {
             primary = _callIsMaster();
             return primary;
         }, "Finding primary", timeout);
@@ -431,9 +520,9 @@ var ReplSetTest = function(opts) {
 
     this.awaitNoPrimary = function(msg, timeout) {
         msg = msg || "Timed out waiting for there to be no primary in replset: " + this.name;
-        timeout = timeout || 30000;
+        timeout = timeout || self.kDefaultTimeoutMS;
 
-        assert.soon(function() {
+        assert.soonNoExcept(function() {
             return _callIsMaster() == false;
         }, msg, timeout);
     };
@@ -500,7 +589,7 @@ var ReplSetTest = function(opts) {
         var config = cfg || this.getReplSetConfig();
         var cmd = {};
         var cmdKey = initCmd || 'replSetInitiate';
-        timeout = timeout || 120000;
+        timeout = timeout || self.kDefaultTimeoutMS;
         if (jsTestOptions().useLegacyReplicationProtocol &&
             !config.hasOwnProperty("protocolVersion")) {
             config.protocolVersion = 0;
@@ -516,6 +605,49 @@ var ReplSetTest = function(opts) {
             master = this.getPrimary();
             jsTest.authenticateNodes(this.nodes);
         }
+    };
+
+    /**
+     * Steps up 'node' as primary.
+     * Waits for all nodes to reach the same optime before each election.
+     * Calls awaitReplication() which requires all connections in 'nodes' to be authenticated.
+     */
+    this.stepUp = function(node) {
+        this.awaitReplication();
+        this.awaitNodesAgreeOnPrimary();
+        if (this.getPrimary() === node) {
+            print("Node " + node.host + " is already primary, no need to step it up.");
+            return;
+        }
+        print("Stepping up node " + node.host);
+
+        // Ensure the specified node is primary.
+        for (var i = 0; i < this.nodes.length; i++) {
+            var primary = this.getPrimary();
+            if (primary === node) {
+                break;
+            }
+            try {
+                // Make sure the nodes do not step back up for 10 minutes.
+                assert.commandWorked(primary.adminCommand({replSetStepDown: 10 * 60, force: true}));
+            } catch (ex) {
+                print("Caught exception while stepping down node '" + tojson(node.host) + "': " +
+                      tojson(ex));
+            }
+            this.awaitReplication();
+            this.awaitNodesAgreeOnPrimary();
+        }
+
+        // Reset the rest of the nodes so they can run for election during the test.
+        for (var i = 0; i < this.nodes.length; i++) {
+            // Cannot call replSetFreeze on the primary.
+            if (this.nodes[i] === node) {
+                continue;
+            }
+            assert.commandWorked(this.nodes[i].adminCommand({replSetFreeze: 0}));
+        }
+
+        assert.eq(this.getPrimary(), node, node.host + " was not primary after stepUp");
     };
 
     /**
@@ -554,6 +686,28 @@ var ReplSetTest = function(opts) {
     };
 
     /**
+     * Blocks until all nodes in the replica set have the same config version as the primary.
+     **/
+    this.awaitNodesAgreeOnConfigVersion = function(timeout) {
+        timeout = timeout || this.kDefaultTimeoutMS;
+
+        assert.soonNoExcept(function() {
+            var primaryVersion = self.getPrimary().adminCommand({ismaster: 1}).setVersion;
+
+            for (var i = 0; i < self.nodes.length; i++) {
+                var version = self.nodes[i].adminCommand({ismaster: 1}).setVersion;
+                assert.eq(version,
+                          primaryVersion,
+                          "waiting for secondary node " + self.nodes[i].host +
+                              " with config version of " + version +
+                              " to match the version of the primary " + primaryVersion);
+            }
+
+            return true;
+        }, "Awaiting nodes to agree on config version", timeout);
+    };
+
+    /**
      * Waits for the last oplog entry on the primary to be visible in the committed snapshop view
      * of the oplog on *all* secondaries.
      * Returns last oplog entry.
@@ -584,7 +738,7 @@ var ReplSetTest = function(opts) {
         print("Waiting for op with OpTime " + tojson(opTime) +
               " to be committed on all secondaries");
 
-        assert.soon(function() {
+        assert.soonNoExcept(function() {
             for (var i = 0; i < rst.nodes.length; i++) {
                 var node = rst.nodes[i];
 
@@ -618,14 +772,14 @@ var ReplSetTest = function(opts) {
     };
 
     this.awaitReplication = function(timeout) {
-        timeout = timeout || 30000;
+        timeout = timeout || self.kDefaultTimeoutMS;
 
         var masterLatestOpTime;
 
         // Blocking call, which will wait for the last optime written on the master to be available
         var awaitLastOpTimeWrittenFn = function() {
             var master = self.getPrimary();
-            assert.soon(function() {
+            assert.soonNoExcept(function() {
                 try {
                     masterLatestOpTime = _getLastOpTime(master);
                 } catch (e) {
@@ -634,7 +788,7 @@ var ReplSetTest = function(opts) {
                 }
 
                 return true;
-            }, "awaiting oplog query", 30000);
+            }, "awaiting oplog query", timeout);
         };
 
         awaitLastOpTimeWrittenFn();
@@ -662,7 +816,7 @@ var ReplSetTest = function(opts) {
               ", is " + tojson(masterLatestOpTime) + ", last oplog entry is " +
               tojsononeline(masterOpTime));
 
-        assert.soon(function() {
+        assert.soonNoExcept(function() {
             try {
                 print("ReplSetTest awaitReplication: checking secondaries against timestamp " +
                       tojson(masterLatestOpTime));
@@ -680,7 +834,7 @@ var ReplSetTest = function(opts) {
                               ", but expected config version #" + configVersion);
 
                         if (slaveConfigVersion > configVersion) {
-                            master = this.getPrimary();
+                            master = self.getPrimary();
                             configVersion =
                                 master.getDB("local")['system.replset'].findOne().version;
                             masterOpTime = _getLastOpTime(master);
@@ -749,8 +903,12 @@ var ReplSetTest = function(opts) {
         this.getPrimary();
         var res = {};
         res.master = this.liveNodes.master.getDB(db).runCommand("dbhash");
-        res.slaves = this.liveNodes.slaves.map(function(z) {
-            return z.getDB(db).runCommand("dbhash");
+        res.slaves = [];
+        this.liveNodes.slaves.forEach(function(node) {
+            var isArbiter = node.getDB('admin').isMaster('admin').arbiterOnly;
+            if (!isArbiter) {
+                res.slaves.push(node.getDB(db).runCommand("dbhash"));
+            }
         });
         return res;
     };
@@ -860,6 +1018,12 @@ var ReplSetTest = function(opts) {
         this.nodes[n].nodeId = n;
 
         printjson(this.nodes);
+
+        // Clean up after noReplSet to ensure it doesn't effect future restarts.
+        if (options.noReplSet) {
+            this.nodes[n].fullOptions.replSet = defaults.replSet;
+            delete this.nodes[n].fullOptions.noReplSet;
+        }
 
         wait = wait || false;
         if (!wait.toFixed) {
@@ -1087,7 +1251,7 @@ var ReplSetTest = function(opts) {
      */
     this.waitForMaster = function(timeout) {
         var master;
-        assert.soon(function() {
+        assert.soonNoExcept(function() {
             return (master = self.getPrimary());
         }, "waiting for master", timeout);
 
@@ -1206,7 +1370,7 @@ ReplSetTest.awaitRSClientHosts = function(conn, host, hostOk, rs, timeout) {
         return;
     }
 
-    timeout = timeout || 60000;
+    timeout = timeout || 5 * 60 * 1000;
 
     if (hostOk == undefined)
         hostOk = {
@@ -1221,7 +1385,7 @@ ReplSetTest.awaitRSClientHosts = function(conn, host, hostOk, rs, timeout) {
 
     var tests = 0;
 
-    assert.soon(function() {
+    assert.soonNoExcept(function() {
         var rsClientHosts = conn.adminCommand('connPoolStats').replicaSets;
         if (tests++ % 10 == 0) {
             printjson(rsClientHosts);

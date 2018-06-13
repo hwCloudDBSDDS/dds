@@ -305,7 +305,8 @@ bool MigrationSourceManager::transferMods(OperationContext* txn,
     long long size = 0;
 
     {
-        AutoGetCollectionForRead ctx(txn, _getNS());
+        ScopedTransaction scopedXact(txn, MODE_IS);
+        AutoGetCollection autoColl(txn, _getNS(), MODE_IS);
 
         stdx::lock_guard<stdx::mutex> sl(_mutex);
 
@@ -324,9 +325,13 @@ bool MigrationSourceManager::transferMods(OperationContext* txn,
             return false;
         }
 
-        // TODO: fix SERVER-16540 race
-        _xfer(txn, _nss.ns(), ctx.getDb(), &_deleted, b, "deleted", size, false);
-        _xfer(txn, _nss.ns(), ctx.getDb(), &_reload, b, "reload", size, true);
+        if (!autoColl.getCollection()) {
+            errmsg = str::stream() << "collection " << _nss.toString() << " does not exist";
+            return false;
+        }
+
+        _xfer(txn, _nss.ns(), autoColl.getDb(), &_deleted, b, "deleted", size, false);
+        _xfer(txn, _nss.ns(), autoColl.getDb(), &_reload, b, "reload", size, true);
     }
 
     b.append("size", size);
@@ -338,6 +343,7 @@ bool MigrationSourceManager::storeCurrentLocs(OperationContext* txn,
                                               long long maxChunkSize,
                                               string& errmsg,
                                               BSONObjBuilder& result) {
+    ScopedTransaction scopedXact(txn, MODE_IS);
     AutoGetCollection autoColl(txn, _getNS(), MODE_IS);
 
     Collection* collection = autoColl.getCollection();
@@ -460,9 +466,31 @@ bool MigrationSourceManager::storeCurrentLocs(OperationContext* txn,
 
     log() << "moveChunk number of documents: " << cloneLocsRemaining() << migrateLog;
 
-    txn->recoveryUnit()->abandonSnapshot();
     return true;
 }
+
+namespace {
+
+static bool stillSameSession(boost::optional<MigrationSessionId> const& memberSessionId,
+                             MigrationSessionId const& argSessionId,
+                             std::string& errmsg) {
+    if (!memberSessionId) {
+        errmsg = "not active";
+        return false;
+    }
+
+    // A mongod version < v3.2 will not have sessionId, in which case it is empty and
+    // ignored.
+    if (!argSessionId.isEmpty() && !memberSessionId->matches(argSessionId)) {
+        errmsg = str::stream() << "migration session id changed from " << argSessionId.toString()
+                               << " to " << memberSessionId->toString()
+                               << " while initial clone was active";
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
 
 bool MigrationSourceManager::clone(OperationContext* txn,
                                    const MigrationSessionId& sessionId,
@@ -473,20 +501,12 @@ bool MigrationSourceManager::clone(OperationContext* txn,
     int allocSize = 0;
 
     {
+        ScopedTransaction scopedXact(txn, MODE_IS);
         AutoGetCollection autoColl(txn, _getNS(), MODE_IS);
 
         stdx::lock_guard<stdx::mutex> sl(_mutex);
 
-        if (!_sessionId) {
-            errmsg = "not active";
-            return false;
-        }
-
-        // A mongod version < v3.2 will not have sessionId, in which case it is empty and ignored.
-        if (!sessionId.isEmpty() && !_sessionId->matches(sessionId)) {
-            errmsg = str::stream() << "requested migration session id " << sessionId.toString()
-                                   << " does not match active session id "
-                                   << _sessionId->toString();
+        if (!stillSameSession(_sessionId, sessionId, errmsg)) {
             return false;
         }
 
@@ -501,37 +521,46 @@ bool MigrationSourceManager::clone(OperationContext* txn,
             static_cast<int>((12 + collection->averageObjectSize(txn)) * cloneLocsRemaining()));
     }
 
-    bool isBufferFilled = false;
     BSONArrayBuilder clonedDocsArrayBuilder(allocSize);
+    std::vector<RecordId> cloneLocsTemp;
+
+    // We carve off a limited number of records to look up per externally-visible iteration
+    // so that, for very big collections, progress meters register activity.
+    cloneLocsTemp.reserve(1000);
+
+    bool isBufferFilled = false;
     while (!isBufferFilled) {
+        ScopedTransaction scopedXact(txn, MODE_IS);
         AutoGetCollection autoColl(txn, _getNS(), MODE_IS);
-
-        stdx::lock_guard<stdx::mutex> sl(_mutex);
-
-        if (!_sessionId) {
-            errmsg = "not active";
-            return false;
-        }
-
-        // A mongod version < v3.2 will not have sessionId, in which case it is empty and ignored.
-        if (!sessionId.isEmpty() && !_sessionId->matches(sessionId)) {
-            errmsg = str::stream() << "migration session id changed from " << sessionId.toString()
-                                   << " to " << _sessionId->toString()
-                                   << " while initial clone was active";
-            return false;
-        }
-
-        // TODO: fix SERVER-16540 race
         Collection* collection = autoColl.getCollection();
+
         if (!collection) {
-            errmsg = str::stream() << "collection " << _nss.toString() << " does not exist";
+            errmsg = str::stream() << "collection " << _getNS().toString() << " does not exist";
             return false;
         }
 
-        stdx::lock_guard<stdx::mutex> lk(_cloneLocsMutex);
+        {
+            stdx::lock_guard<stdx::mutex> sl(_mutex);
 
-        std::set<RecordId>::iterator cloneLocsIter = _cloneLocs.begin();
-        for (; cloneLocsIter != _cloneLocs.end(); ++cloneLocsIter) {
+            if (!stillSameSession(_sessionId, sessionId, errmsg)) {
+                return false;
+            }
+
+            {
+                stdx::lock_guard<stdx::mutex> lk(_cloneLocsMutex);
+
+                for (RecordId const& cloneLoc : _cloneLocs) {
+                    cloneLocsTemp.push_back(cloneLoc);
+                    if (cloneLocsTemp.size() == cloneLocsTemp.capacity()) {
+                        break;  // enough for now
+                    }
+                }
+            }
+        }
+
+        // release locks during find ops
+        auto cloneLocsIter = cloneLocsTemp.begin();
+        for (; cloneLocsIter != cloneLocsTemp.end(); ++cloneLocsIter) {
             if (tracker.intervalHasElapsed())  // should I yield?
                 break;
 
@@ -555,12 +584,23 @@ bool MigrationSourceManager::clone(OperationContext* txn,
             clonedDocsArrayBuilder.append(doc.value());
         }
 
-        _cloneLocs.erase(_cloneLocs.begin(), cloneLocsIter);
+        // reclaim locks and record progress
 
-        // Note: must be holding _cloneLocsMutex, don't move this inside while condition!
-        if (_cloneLocs.empty()) {
-            break;
+        stdx::lock_guard<stdx::mutex> sl(_mutex);
+
+        if (!stillSameSession(_sessionId, sessionId, errmsg)) {
+            return false;
         }
+
+        stdx::lock_guard<stdx::mutex> lk(_cloneLocsMutex);
+
+        std::for_each(cloneLocsTemp.begin(),
+                      cloneLocsIter,
+                      [&](RecordId const& loc) { _cloneLocs.erase(loc); });
+        if (_cloneLocs.empty()) {
+            break;  // and return
+        }
+        cloneLocsTemp.clear();
     }
 
     result.appendArray("objects", clonedDocsArrayBuilder.arr());

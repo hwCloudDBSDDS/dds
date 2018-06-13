@@ -125,7 +125,8 @@ void ReplicationCoordinatorImpl::_startElectSelf() {
 
     if (lastOpTimeApplied.isNull()) {
         log() << "not trying to elect self, "
-                 "do not yet have a complete set of data from any point in time";
+                 "do not yet have a complete set of data from any point in time"
+                 " -- lastAppliedOpTime is null";
         return;
     }
 
@@ -201,7 +202,11 @@ void ReplicationCoordinatorImpl::_onFreshnessCheckComplete() {
             return;
     }
 
-    log() << "running for election";
+    log() << "running for election"
+          << (abortReason == FreshnessChecker::FreshnessTie
+                  ? "; slept last election, so running regardless of possible tie"
+                  : "");
+
     // Secure our vote for ourself first
     if (!_topCoord->voteForMyself(now)) {
         return;
@@ -276,8 +281,11 @@ void ReplicationCoordinatorImpl::_recoverFromElectionTie(
     }
     auto now = _replExecutor.now();
     auto lastOpApplied = getMyLastAppliedOpTime();
-    if (_topCoord->checkShouldStandForElection(now, lastOpApplied)) {
-        fassert(28817, _topCoord->becomeCandidateIfElectable(now, lastOpApplied));
+    const auto status = _topCoord->checkShouldStandForElection(now, lastOpApplied);
+    if (!status.isOK()) {
+        LOG(2) << "ReplicationCoordinatorImpl::_recoverFromElectionTie -- " << status.reason();
+    } else {
+        fassertStatusOK(28817, _topCoord->becomeCandidateIfElectable(now, lastOpApplied));
         _startElectSelf();
     }
 }

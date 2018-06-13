@@ -133,7 +133,7 @@ public:
      * components of the replication system to shut down and stop any threads they are using,
      * blocking until all replication-related shutdown tasks are complete.
      */
-    virtual void shutdown() = 0;
+    virtual void shutdown(OperationContext* txn) = 0;
 
     /**
      * Returns a pointer to the ReplicationExecutor.
@@ -466,14 +466,13 @@ public:
     virtual void processReplSetGetConfig(BSONObjBuilder* result) = 0;
 
     /**
-     * Processes the ReplSetMetadata returned from a command run against another replica set
-     * member and updates protocol version 1 information (most recent optime that is committed,
-     * member id of the current PRIMARY, the current config version and the current term).
-     *
-     * TODO(dannenberg): Move this method to be testing only if it does not end up being used
-     * to process the find and getmore metadata responses from the DataReplicator.
+     * Processes the ReplSetMetadata returned from a command run against another
+     * replica set member and so long as the config version in the metadata matches the replica set
+     * config version this node currently has, updates the current term and optionally updates
+     * this node's notion of the commit point.
      */
-    virtual void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata) = 0;
+    virtual void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata,
+                                        bool advanceCommitPoint) = 0;
 
     /**
      * Elections under protocol version 1 are triggered by a timer.
@@ -685,9 +684,8 @@ public:
     /**
      * Prepares a metadata object describing the current term, primary, and lastOp information.
      */
-    virtual void prepareReplResponseMetadata(const rpc::RequestInterface& request,
-                                             const OpTime& lastOpTimeFromClient,
-                                             BSONObjBuilder* builder) = 0;
+    virtual void prepareReplMetadata(const OpTime& lastOpTimeFromClient,
+                                     BSONObjBuilder* builder) const = 0;
 
     /**
      * Returns true if the V1 election protocol is being used and false otherwise.
@@ -745,9 +743,12 @@ public:
     virtual void forceSnapshotCreation() = 0;
 
     /**
-     * Called when a new snapshot is created.
+     * Creates a new snapshot in the storage engine and registers it for use in the replication
+     * coordinator.
      */
-    virtual void onSnapshotCreate(OpTime timeOfSnapshot, SnapshotName name) = 0;
+    virtual void createSnapshot(OperationContext* txn,
+                                OpTime timeOfSnapshot,
+                                SnapshotName name) = 0;
 
     /**
      * Blocks until either the current committed snapshot is at least as high as 'untilSnapshot',
@@ -765,7 +766,7 @@ public:
     /**
      * Gets the latest OpTime of the currentCommittedSnapshot.
      */
-    virtual OpTime getCurrentCommittedSnapshotOpTime() = 0;
+    virtual OpTime getCurrentCommittedSnapshotOpTime() const = 0;
 
     /**
      * Appends connection information to the provided BSONObjBuilder.

@@ -55,114 +55,12 @@
 #include "mongo/util/sequence_util.h"
 #include "mongo/util/stringutils.h"
 
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-#include <mutex>
-#include "mongo/util/time_support.h"
-#include <time.h>
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-
 namespace mongo {
 namespace {
 
 using std::stringstream;
 
 const bool autoAuthorizeDefault = true;
-
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-using ::std::mutex;
-using ::std::lock_guard;
-using ::std::make_pair;
-using ::std::pair;
-
-class LimitVerifyTimes {
-public:
-   
-    LimitVerifyTimes(){};
-    ~LimitVerifyTimes(){};
-
-    struct VerifiedInfo {
-        time_t  recoredTime;
-        int failedTimes;
-
-        VerifiedInfo(){failedTimes = 1;recoredTime = time(NULL);}	    
-
-    };    
-    bool upsertVerifiedInfo(const std::string key){
-		stdx::lock_guard<stdx::mutex> lk(m);
-		VerifyFailedMap::iterator it = _verifyMap.find(key);
-        if (it == _verifyMap.end()){
-			VerifiedInfo initInfo;
-			_verifyMap.insert(make_pair(key,initInfo));
-			return true;
-		}
-		it->second.failedTimes++;
-		it->second.recoredTime = time(NULL);
-		return true;
-		
-    }
-    bool canPassVerify(const std::string& key) {
-        stdx::lock_guard<stdx::mutex> lk(m);
-
-		VerifyFailedMap::iterator it = _verifyMap.find(key);
-        if (it == _verifyMap.end())
-            return true;
-
-		if(it->second.failedTimes<FAILEDtIMES){
-            return true;
-		}
-		
-		time_t  now = time(NULL);
-		int diff = now - it->second.recoredTime;
-        if(diff<DURATION){
-			log()<<"canPassVerify fail"<<"key:"<<it->first<<",recoredTime:"<<it->second.recoredTime<<",failedTimes:"<<it->second.failedTimes<<std::endl;                   
-            return false;
-		}
-		
-		_verifyMap.erase(it);	
-		return true;
-	}
-
-	void cleanVerifiedInfo(const std::string key){
-		stdx::lock_guard<stdx::mutex> lk(m);
-		VerifyFailedMap::iterator it = _verifyMap.find(key);
-        if (it == _verifyMap.end()){
-			return ;
-		}
-		_verifyMap.erase(it);	
-    }
-
-    std::string generateVerifiedKey(const ClientBasic* client,SaslAuthenticationSession* session){
-		verify(client != NULL);
-		verify(session != NULL);
-		
-		std::string userName = session->getPrincipalId();
-		const SockAddr clientAddr = client->port()->remoteAddr();
-		std::string key = clientAddr.getAddr() + "_" + userName;
-		return key;
-	}
-
-	inline std::string getSaslAdminAuthUserName(){
-		return "root";
-	}
-	
-    
-
-
-private:
-    typedef std::map<std::string, VerifiedInfo> VerifyFailedMap;
-	const int FAILEDtIMES = 5;
-    const int DURATION = 10;
-    stdx::mutex m;
-    VerifyFailedMap _verifyMap;
-
-};
-
-
-
-LimitVerifyTimes limitVerifyInfo;
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-
-
 
 class CmdSaslStart : public Command {
 public:
@@ -280,19 +178,6 @@ Status doSaslStep(const ClientBasic* client,
                   BSONObjBuilder* result) {
     std::string payload;
     BSONType type = EOO;
-	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    if(serverGlobalParams.limitVerifyTimes){
-		if(session->getPrincipalId() == limitVerifyInfo.getSaslAdminAuthUserName()){
-			std::string key = limitVerifyInfo.generateVerifiedKey(client,session);
-            bool pass = limitVerifyInfo.canPassVerify(key);
-		    if(!pass){
-				log()<<"doSaslStep:"<<"canPassVerify fail "<<std::endl;
-			    return Status(ErrorCodes::Unauthorized, "Password error 5 times ,account locked, please try after 10 second");
-		    }
-		}	
-	}
-    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-	
     Status status = saslExtractPayload(cmdObj, &payload, &type);
     if (!status.isOK())
         return status;
@@ -303,27 +188,13 @@ Status doSaslStep(const ClientBasic* client,
 
     if (!status.isOK()) {
         const SockAddr clientAddr = client->port()->remoteAddr();
-		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-        /*****modify mongodb code start*****/
-        status = Status(ErrorCodes::AuthenticationFailed, "Authentication failed.");
         log() << session->getMechanism() << " authentication failed for "
               << session->getPrincipalId() << " on " << session->getAuthenticationDatabase()
               << " from client " << clientAddr.getAddr() << " ; " << status.toString() << std::endl;
 
         sleepmillis(saslGlobalParams.authFailedDelay);
-
-        if(serverGlobalParams.limitVerifyTimes){
-		    if(session->getPrincipalId() == limitVerifyInfo.getSaslAdminAuthUserName()){            
-		        std::string key = limitVerifyInfo.generateVerifiedKey(client,session);
-                limitVerifyInfo.upsertVerifiedInfo(key);	            
-		    }	
-	    }
-
-		
         // All the client needs to know is that authentication has failed.
-        return status;
-        /*****modify mongodb code end*****/
-		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+        return Status(ErrorCodes::AuthenticationFailed, "Authentication failed.");
     }
 
     status = buildResponse(session, responsePayload, type, result);
@@ -337,16 +208,9 @@ Status doSaslStep(const ClientBasic* client,
         if (!status.isOK()) {
             return status;
         }
-		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-		if(serverGlobalParams.limitVerifyTimes){            
-		    if(session->getPrincipalId() == limitVerifyInfo.getSaslAdminAuthUserName()){            
-		        std::string key = limitVerifyInfo.generateVerifiedKey(client,session);
-                limitVerifyInfo.cleanVerifiedInfo(key);	            
-		    }	
-		}
-        //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
         if (!serverGlobalParams.quiet) {
-            log() << "Successfully authenticated as principal" << session->getPrincipalId()
+            log() << "Successfully authenticated as principal " << session->getPrincipalId()
                   << " on " << session->getAuthenticationDatabase();
         }
     }

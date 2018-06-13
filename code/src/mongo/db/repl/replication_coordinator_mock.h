@@ -54,7 +54,7 @@ public:
 
     virtual void startReplication(OperationContext* txn);
 
-    virtual void shutdown();
+    virtual void shutdown(OperationContext* txn);
 
     virtual ReplicationExecutor* getExecutor() override {
         return nullptr;
@@ -150,7 +150,8 @@ public:
 
     virtual void processReplSetGetConfig(BSONObjBuilder* result);
 
-    virtual void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata);
+    void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata,
+                                bool advanceCommitPoint) override;
 
     virtual void cancelAndRescheduleElectionTimeout() override;
 
@@ -217,9 +218,8 @@ public:
     virtual Status processReplSetDeclareElectionWinner(const ReplSetDeclareElectionWinnerArgs& args,
                                                        long long* responseTerm);
 
-    void prepareReplResponseMetadata(const rpc::RequestInterface& request,
-                                     const OpTime& lastOpTimeFromClient,
-                                     BSONObjBuilder* builder) override;
+    void prepareReplMetadata(const OpTime& lastOpTimeFromClient,
+                             BSONObjBuilder* builder) const override;
 
     virtual Status processHeartbeatV1(const ReplSetHeartbeatArgsV1& args,
                                       ReplSetHeartbeatResponse* response);
@@ -238,11 +238,13 @@ public:
 
     virtual void forceSnapshotCreation() override;
 
-    virtual void onSnapshotCreate(OpTime timeOfSnapshot, SnapshotName name);
+    virtual void createSnapshot(OperationContext* txn,
+                                OpTime timeOfSnapshot,
+                                SnapshotName name) override;
 
     virtual void dropAllSnapshots() override;
 
-    virtual OpTime getCurrentCommittedSnapshotOpTime() override;
+    virtual OpTime getCurrentCommittedSnapshotOpTime() const override;
 
     virtual void waitUntilSnapshotCommitted(OperationContext* txn,
                                             const SnapshotName& untilSnapshot) override;

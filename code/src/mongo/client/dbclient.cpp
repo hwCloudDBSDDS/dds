@@ -536,7 +536,7 @@ void DBClientWithCommands::_auth(const BSONObj& params) {
 
     auth::authenticateClient(
         params,
-        HostAndPort(getServerAddress()).host(),
+        HostAndPort(getServerAddress()),
         clientName,
         [this](RemoteCommandRequest request, auth::AuthCompletionHandler handler) {
             BSONObj info;
@@ -678,9 +678,11 @@ bool DBClientWithCommands::eval(const string& dbname, const string& jscode) {
 
 list<string> DBClientWithCommands::getDatabaseNames() {
     BSONObj info;
-    uassert(10005,
-            "listdatabases failed",
-            runCommand("admin", BSON("listDatabases" << 1), info, QueryOption_SlaveOk));
+    uassert(
+        10005,
+        "listdatabases failed",
+        runCommand(
+            "admin", BSON("listDatabases" << 1 << "nameOnly" << true), info, QueryOption_SlaveOk));
     uassert(10006, "listDatabases.databases not array", info["databases"].type() == Array);
 
     list<string> names;
@@ -920,6 +922,12 @@ Status DBClientConnection::connect(const HostAndPort& serverAddress) {
     if (!swIsMasterReply.isOK()) {
         _failed = true;
         return swIsMasterReply.getStatus();
+    }
+
+    // Ensure that the isMaster response is "ok:1".
+    auto isMasterStatus = getStatusFromCommandResult(swIsMasterReply.getValue().data);
+    if (!isMasterStatus.isOK()) {
+        return isMasterStatus;
     }
 
     auto swProtocolSet = rpc::parseProtocolSetFromIsMasterReply(swIsMasterReply.getValue().data);
@@ -1542,12 +1550,12 @@ void DBClientConnection::handleNotMasterResponse(const BSONElement& elemToCheck)
         return;
     }
 
-    MONGO_LOG_COMPONENT(1, logger::LogComponent::kReplication)
-        << "got not master from: " << _serverAddress << " of repl set: " << _parentReplSetName;
-
     ReplicaSetMonitorPtr monitor = ReplicaSetMonitor::get(_parentReplSetName);
     if (monitor) {
-        monitor->failedHost(_serverAddress);
+        monitor->failedHost(_serverAddress,
+                            {ErrorCodes::NotMaster,
+                             str::stream() << "got not master from: " << _serverAddress
+                                           << " of repl set: " << _parentReplSetName});
     }
 
     _failed = true;

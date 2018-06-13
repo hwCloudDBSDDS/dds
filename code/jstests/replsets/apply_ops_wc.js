@@ -28,7 +28,7 @@
 
     function dropTestCollection() {
         coll.drop();
-        assert.eq(0, coll.find().count(), "test collection not empty");
+        assert.eq(0, coll.find().itcount(), "test collection not empty");
     }
 
     dropTestCollection();
@@ -127,5 +127,9 @@
     }
 
     majorityWriteConcerns.forEach(testMajorityWriteConcerns);
+
+    // Allow clean shutdown
+    secondaries[0].getDB('admin').runCommand({configureFailPoint: 'rsSyncApplyStop', mode: 'off'});
+    secondaries[1].getDB('admin').runCommand({configureFailPoint: 'rsSyncApplyStop', mode: 'off'});
 
 })();

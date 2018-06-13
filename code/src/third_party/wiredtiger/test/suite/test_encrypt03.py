@@ -32,7 +32,7 @@
 
 import os, run, random
 import wiredtiger, wttest
-from wtscenario import multiply_scenarios, number_scenarios
+from wtscenario import make_scenarios
 
 # Test basic encryption
 class test_encrypt03(wttest.WiredTigerTestCase):
@@ -48,39 +48,16 @@ class test_encrypt03(wttest.WiredTigerTestCase):
         #('noname', dict( sys_encrypt='rotn', sys_encrypt_args=',keyid=11',
         #    file_encrypt='none', file_encrypt_args=',keyid=13')),
     ]
-    scenarios = number_scenarios(multiply_scenarios('.', types, encrypt))
+    scenarios = make_scenarios(types, encrypt)
 
-    # Override WiredTigerTestCase, we have extensions.
-    def setUpConnectionOpen(self, dir):
-        encarg = 'encryption=(name={0}{1}),'.format(
+    def conn_extensions(self, extlist):
+        extlist.skip_if_missing = True
+        extlist.extension('encryptors', self.sys_encrypt)
+        extlist.extension('encryptors', self.file_encrypt)
+
+    def conn_config(self):
+        return 'encryption=(name={0}{1}),'.format(
             self.sys_encrypt, self.sys_encrypt_args)
-        extarg = self.extensionArg([('encryptors', self.sys_encrypt),
-            ('encryptors', self.file_encrypt)])
-        self.pr('encarg = ' + encarg + ' extarg = ' + extarg)
-        conn = self.wiredtiger_open(dir,
-            'create,error_prefix="{0}: ",{1}{2}'.format(
-                self.shortid(), encarg, extarg))
-        self.pr(`conn`)
-        return conn
-
-    # Return the wiredtiger_open extension argument for a shared library.
-    def extensionArg(self, exts):
-        extfiles = []
-        for ext in exts:
-            (dirname, name) = ext
-            if name != None and name != 'none':
-                testdir = os.path.dirname(__file__)
-                extdir = os.path.join(run.wt_builddir, 'ext', dirname)
-                extfile = os.path.join(
-                    extdir, name, '.libs', 'libwiredtiger_' + name + '.so')
-                if not os.path.exists(extfile):
-                    self.skipTest('extension "' + extfile + '" not built')
-                if not extfile in extfiles:
-                    extfiles.append(extfile)
-        if len(extfiles) == 0:
-            return ''
-        else:
-            return ',extensions=["' + '","'.join(extfiles) + '"]'
 
     # Create a table with encryption values that are in error.
     def test_encrypt(self):
@@ -96,7 +73,6 @@ class test_encrypt03(wttest.WiredTigerTestCase):
 
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError, lambda:
             self.session.create(self.uri, params), msg)
-
 
 if __name__ == '__main__':
     wttest.run()

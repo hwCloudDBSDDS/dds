@@ -104,6 +104,7 @@ NetworkInterfaceASIO::AsyncOp::AsyncOp(NetworkInterfaceASIO* const owner,
       _timedOut(0),
       _access(std::make_shared<AsyncOp::AccessControl>()),
       _inSetup(true),
+      _inRefresh(false),
       _strand(owner->_io_service) {}
 
 void NetworkInterfaceASIO::AsyncOp::cancel() {
@@ -203,6 +204,9 @@ NetworkInterfaceASIO::AsyncCommand* NetworkInterfaceASIO::AsyncOp::command() {
 }
 
 void NetworkInterfaceASIO::AsyncOp::finish(const ResponseStatus& status) {
+    LOG(2) << "Request " << _request.id << " finished with response: "
+           << (status.getStatus().isOK() ? status.getValue().data.toString()
+                                         : status.getStatus().toString());
     _onFinish(status);
 }
 

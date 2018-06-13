@@ -377,35 +377,7 @@ void receivedPseudoCommand(OperationContext* txn,
 }
 
 }  // namespace
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-namespace {
-const std::string CUSTOM_USER = "rwuser@admin";
-}  // namespace
 
-static Status _checkOPAuthForUser(ClientBasic* client,
-                                  const NamespaceString& ns,
-                                  const std::string& opname) {
-    if (AuthorizationSession::get(client)->getAuthorizationManager().isAuthEnabled()) {
-        std::string username;
-        UserNameIterator nameIter = AuthorizationSession::get(client)->getAuthenticatedUserNames();
-        if (nameIter.more()) {
-            username = nameIter->getFullName();
-        }
-
-        if (username == CUSTOM_USER) { //check if consumer
-            LOG(4) << "Mongodb consumer run command " << opname << ns.getCommandNS();
-            /*forbid consumer run command upon admin/local database*/
-            if (NamespaceString::internalDb(ns.db())) {
-                return Status(ErrorCodes::Unauthorized,
-                              str::stream() << "not authorized for " <<  opname << 
-                              " on" << ns.ns());
-            }
-        }
-    }
-
-    return Status::OK();
-}
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
 static void receivedQuery(OperationContext* txn,
                           const NamespaceString& nss,
                           Client& c,
@@ -419,27 +391,19 @@ static void receivedQuery(OperationContext* txn,
     QueryMessage q(d);
 
     CurOp& op = *CurOp::get(txn);
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
     try {
         Client* client = txn->getClient();
         Status status = AuthorizationSession::get(client)->checkAuthForFind(nss, false);
-        /*****modify mongodb code start*****/
-        if (MONGO_unlikely(!status.isOK())) {
-            audit::logQueryAuthzCheck(client, nss, q.query, status.code());
-        }
-        uassertStatusOK(status);
-        
-        status = _checkOPAuthForUser(client, nss, "opQuery");
         audit::logQueryAuthzCheck(client, nss, q.query, status.code());
         uassertStatusOK(status);
-        /*****modify mongodb code end*****/
 
         dbResponse.exhaustNS = runQuery(txn, q, nss, dbResponse.response);
     } catch (const AssertionException& exception) {
         dbResponse.response.reset();
         generateLegacyQueryErrorResponse(&exception, q, &op, &dbResponse.response);
     }
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
     op.debug().responseLength = dbResponse.response.header().dataLen();
     dbResponse.responseTo = responseTo;
 }
@@ -705,20 +669,11 @@ void receivedUpdate(OperationContext* txn, const NamespaceString& nsString, Mess
         op.setQuery_inlock(query);
     }
 
-    Status status =
-        AuthorizationSession::get(client)->checkAuthForUpdate(nsString, query, toupdate, upsert);
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    /*****modify mongodb code start*****/
-    if (MONGO_unlikely(!status.isOK())) {
-        audit::logUpdateAuthzCheck(client, nsString, query, toupdate, upsert, multi, status.code());
-    }
-    uassertStatusOK(status);
-    
-    status = _checkOPAuthForUser(client, nsString, "opUpdate");
+    Status status = AuthorizationSession::get(client)
+                        ->checkAuthForUpdate(txn, nsString, query, toupdate, upsert);
     audit::logUpdateAuthzCheck(client, nsString, query, toupdate, upsert, multi, status.code());
     uassertStatusOK(status);
-    /*****modify mongodb code end*****/
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
     UpdateRequest request(nsString);
     request.setUpsert(upsert);
     request.setMulti(multi);
@@ -863,19 +818,10 @@ void receivedDelete(OperationContext* txn, const NamespaceString& nsString, Mess
         op.setNS_inlock(nsString.ns());
     }
 
-    Status status = AuthorizationSession::get(client)->checkAuthForDelete(nsString, pattern);
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    /*****modify mongodb code start*****/
-    if (MONGO_unlikely(!status.isOK())) {
-        audit::logDeleteAuthzCheck(client, nsString, pattern, status.code());
-    }
-    uassertStatusOK(status);
-
-    status = _checkOPAuthForUser(client, nsString, "opDelete");
+    Status status = AuthorizationSession::get(client)->checkAuthForDelete(txn, nsString, pattern);
     audit::logDeleteAuthzCheck(client, nsString, pattern, status.code());
     uassertStatusOK(status);
-    /*****modify mongodb code end*****/
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
     DeleteRequest request(nsString);
     request.setQuery(pattern);
     request.setMulti(!justOne);
@@ -940,7 +886,7 @@ bool receivedGetMore(OperationContext* txn, DbResponse& dbresponse, Message& m, 
     curop.debug().cursorid = cursorid;
 
     {
-        stdx::lock_guard<Client>(*txn->getClient());
+        stdx::lock_guard<Client> lk(*txn->getClient());
         CurOp::get(txn)->setNS_inlock(ns);
     }
 
@@ -1212,7 +1158,7 @@ void receivedInsert(OperationContext* txn, const NamespaceString& nsString, Mess
     DbMessage d(m);
     const char* ns = d.getns();
     {
-        stdx::lock_guard<Client>(*txn->getClient());
+        stdx::lock_guard<Client> lk(*txn->getClient());
         CurOp::get(txn)->setNS_inlock(nsString.ns());
     }
 
@@ -1235,19 +1181,9 @@ void receivedInsert(OperationContext* txn, const NamespaceString& nsString, Mess
         // Check auth for insert (also handles checking if this is an index build and checks
         // for the proper privileges in that case).
         Status status =
-            AuthorizationSession::get(txn->getClient())->checkAuthForInsert(nsString, obj);
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-        /*****modify mongodb code start*****/
-        if (MONGO_unlikely(!status.isOK())) {
-            audit::logInsertAuthzCheck(txn->getClient(), nsString, obj, status.code());
-        }
-        uassertStatusOK(status);
-
-        status = _checkOPAuthForUser(txn->getClient(), nsString, "opInsert");
+            AuthorizationSession::get(txn->getClient())->checkAuthForInsert(txn, nsString, obj);
         audit::logInsertAuthzCheck(txn->getClient(), nsString, obj, status.code());
         uassertStatusOK(status);
-        /*****modify mongodb code end*****/
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
     }
 
     const bool keepGoing = d.reservedField() & InsertOption_ContinueOnError;
@@ -1309,13 +1245,18 @@ static void shutdownServer() {
 stdx::mutex shutdownLock;
 
 void signalShutdown() {
-    // Notify all threads shutdown has started
+    // This call chain uses its own locker directly because it isn't always called in a context that
+    // already has one, and is illegal to call while holding any locks.
+    DefaultLockerImpl locker;
+
+    // Notify all threads shutdown has started. This is done while holding the PBWM lock to
+    // ensure that replication isn't mid-batch to avoid SERVER-24933.
+    Lock::ResourceLock pbwm(&locker, resourceIdParallelBatchWriterMode, MODE_IS);
     shutdownInProgress.fetchAndAdd(1);
 }
 
 void exitCleanly(ExitCode code) {
-    // Notify all threads shutdown has started
-    shutdownInProgress.fetchAndAdd(1);
+    signalShutdown();
 
     // Grab the shutdown lock to prevent concurrent callers
     stdx::lock_guard<stdx::mutex> lockguard(shutdownLock);
@@ -1332,8 +1273,6 @@ void exitCleanly(ExitCode code) {
 
     getGlobalServiceContext()->setKillAllOperations();
 
-    repl::getGlobalReplicationCoordinator()->shutdown();
-
     Client& client = cc();
     ServiceContext::UniqueOperationContext uniqueTxn;
     OperationContext* txn = client.getOperationContext();
@@ -1342,6 +1281,8 @@ void exitCleanly(ExitCode code) {
         txn = uniqueTxn.get();
     }
 
+
+    repl::getGlobalReplicationCoordinator()->shutdown(txn);
     ShardingState::get(txn)->shutDown(txn);
 
     // We should always be able to acquire the global lock at shutdown.

@@ -19,10 +19,10 @@ util_list(WT_SESSION *session, int argc, char *argv[])
 	WT_DECL_RET;
 	int ch;
 	bool cflag, vflag;
-	char *name;
+	char *uri;
 
 	cflag = vflag = false;
-	name = NULL;
+	uri = NULL;
 	while ((ch = __wt_getopt(progname, argc, argv, "cv")) != EOF)
 		switch (ch) {
 		case 'c':
@@ -42,17 +42,16 @@ util_list(WT_SESSION *session, int argc, char *argv[])
 	case 0:
 		break;
 	case 1:
-		if ((name = util_name(session, *argv, "table")) == NULL)
+		if ((uri = util_uri(session, *argv, "table")) == NULL)
 			return (1);
 		break;
 	default:
 		return (usage());
 	}
 
-	ret = list_print(session, name, cflag, vflag);
+	ret = list_print(session, uri, cflag, vflag);
 
-	free(name);
-
+	free(uri);
 	return (ret);
 }
 
@@ -67,33 +66,29 @@ list_get_allocsize(WT_SESSION *session, const char *key, size_t *allocsize)
 	WT_CONFIG_PARSER *parser;
 	WT_DECL_RET;
 	WT_EXTENSION_API *wt_api;
+	int tret;
 	char *config;
 
 	wt_api = session->connection->get_extension_api(session->connection);
-	if ((ret =
-	    wt_api->metadata_search(wt_api, session, key, &config)) != 0) {
-		fprintf(stderr, "%s: %s: extension_api.metadata_search: %s\n",
-		    progname, key, session->strerror(session, ret));
-		return (ret);
-	}
+	if ((ret = wt_api->metadata_search(wt_api, session, key, &config)) != 0)
+		return (util_err(
+		    session, ret, "%s: WT_EXTENSION_API.metadata_search", key));
 	if ((ret = wt_api->config_parser_open(wt_api, session, config,
-	    strlen(config), &parser)) != 0) {
-		fprintf(stderr, "%s: extension_api.config_parser_open: %s\n",
-		    progname, session->strerror(session, ret));
-		return (ret);
-	}
+	    strlen(config), &parser)) != 0)
+		return (util_err(
+		    session, ret, "WT_EXTENSION_API.config_parser_open"));
 	if ((ret = parser->get(parser, "allocation_size", &szvalue)) != 0) {
-		if (ret != WT_NOTFOUND)
-			fprintf(stderr, "%s: config_parser.get: %s\n",
-			    progname, session->strerror(session, ret));
-		(void)parser->close(parser);
+		if (ret == WT_NOTFOUND) {
+			*allocsize = 0;
+			ret = 0;
+		} else
+			ret = util_err(session, ret, "WT_CONFIG_PARSER.get");
+		if ((tret = parser->close(parser)) != 0)
+			(void)util_err(session, tret, "WT_CONFIG_PARSER.close");
 		return (ret);
 	}
-	if ((ret = parser->close(parser)) != 0) {
-		fprintf(stderr, "%s: config_parser.close: %s\n",
-		    progname, session->strerror(session, ret));
-		return (ret);
-	}
+	if ((ret = parser->close(parser)) != 0)
+		return (util_err(session, ret, "WT_CONFIG_PARSER.close"));
 	*allocsize = (size_t)szvalue.val;
 	return (0);
 }
@@ -103,7 +98,7 @@ list_get_allocsize(WT_SESSION *session, const char *key, size_t *allocsize)
  *	List the high-level objects in the database.
  */
 static int
-list_print(WT_SESSION *session, const char *name, bool cflag, bool vflag)
+list_print(WT_SESSION *session, const char *uri, bool cflag, bool vflag)
 {
 	WT_CURSOR *cursor;
 	WT_DECL_RET;
@@ -120,12 +115,11 @@ list_print(WT_SESSION *session, const char *name, bool cflag, bool vflag)
 		if (ret == ENOENT)
 			return (0);
 
-		fprintf(stderr, "%s: %s: session.open_cursor: %s\n",
-		    progname, WT_METADATA_URI, session->strerror(session, ret));
-		return (1);
+		return (util_err(session,
+		    ret, "%s: WT_SESSION.open_cursor", WT_METADATA_URI));
 	}
 
-	found = name == NULL;
+	found = uri == NULL;
 	while ((ret = cursor->next(cursor)) == 0) {
 		/* Get the key. */
 		if ((ret = cursor->get_key(cursor, &key)) != 0)
@@ -134,8 +128,8 @@ list_print(WT_SESSION *session, const char *name, bool cflag, bool vflag)
 		/*
 		 * If a name is specified, only show objects that match.
 		 */
-		if (name != NULL) {
-			if (!WT_PREFIX_MATCH(key, name))
+		if (uri != NULL) {
+			if (!WT_PREFIX_MATCH(key, uri))
 				continue;
 			found = true;
 		}
@@ -166,7 +160,7 @@ list_print(WT_SESSION *session, const char *name, bool cflag, bool vflag)
 	if (ret != WT_NOTFOUND)
 		return (util_cerr(cursor, "next", ret));
 	if (!found) {
-		fprintf(stderr, "%s: %s: not found\n", progname, name);
+		fprintf(stderr, "%s: %s: not found\n", progname, uri);
 		return (1);
 	}
 
@@ -196,12 +190,8 @@ list_print_checkpoint(WT_SESSION *session, const char *key)
 		return (ret == WT_NOTFOUND ? 0 : ret);
 
 	/* We need the allocation size for decoding the checkpoint addr */
-	if ((ret = list_get_allocsize(session, key, &allocsize)) != 0) {
-		if (ret == WT_NOTFOUND)
-			allocsize = 0;
-		else
-			return (ret);
-	}
+	if ((ret = list_get_allocsize(session, key, &allocsize)) != 0)
+		return (ret);
 
 	/* Find the longest name, so we can pretty-print. */
 	len = 0;
@@ -214,8 +204,7 @@ list_print_checkpoint(WT_SESSION *session, const char *key)
 	WT_CKPT_FOREACH(ckptbase, ckpt) {
 		if (allocsize != 0 && (ret = __wt_block_ckpt_decode(
 		    session, allocsize, ckpt->raw.data, &ci)) != 0) {
-			fprintf(stderr, "%s: __wt_block_buffer_to_ckpt: %s\n",
-			    progname, session->strerror(session, ret));
+			(void)util_err(session, ret, "__wt_block_ckpt_decode");
 			/* continue if damaged */
 			ci.root_size = 0;
 		}
@@ -248,7 +237,7 @@ list_print_checkpoint(WT_SESSION *session, const char *key)
 			    ci.root_size, ci.root_size);
 			printf("\t\t" "root checksum: %" PRIu32
 			    " (0x%" PRIx32 ")\n",
-			    ci.root_cksum, ci.root_cksum);
+			    ci.root_checksum, ci.root_checksum);
 		}
 	}
 

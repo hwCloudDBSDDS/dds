@@ -44,9 +44,9 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_options_helpers.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
-#include "mongo/s/catalog/catalog_manager.h"
 #include "mongo/logger/console_appender.h"
 #include "mongo/logger/message_event_utf8_encoder.h"
+#include "mongo/s/catalog/catalog_manager.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/ssl_options.h"
@@ -156,13 +156,7 @@ Status addMongodOptions(moe::OptionSection* options) {
                         "operationProfiling.mode", "", moe::String, "(off/slowOp/all)")
         .setSources(moe::SourceYAMLConfig)
         .format("(:?off)|(:?slowOp)|(:?all)", "(off/slowOp/all)");
-	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    general_options.addOptionChaining("operationProfiling.profileSizeMB",
-                                      "profilesize",
-                                      moe::Int,
-                                      "value of profile collection size")
-        .setDefault(moe::Value(1));
-	
+
     general_options.addOptionChaining(
                         "cpu", "cpu", moe::Switch, "periodically show cpu and iowait utilization")
         .setSources(moe::SourceAllLegacy);
@@ -338,12 +332,12 @@ Status addMongodOptions(moe::OptionSection* options) {
                                       "storage.mmapv1.journal.commitIntervalMs");
 
     // Deprecated option that we don't want people to use for performance reasons
-    storage_options.addOptionChaining("nopreallocj",
+    storage_options.addOptionChaining("storage.mmapv1.journal.nopreallocj",
                                       "nopreallocj",
                                       moe::Switch,
                                       "don't preallocate journal files")
         .hidden()
-        .setSources(moe::SourceAllLegacy);
+        .setSources(moe::SourceAll);
 
 #if defined(__linux__)
     general_options.addOptionChaining(
@@ -997,11 +991,7 @@ Status storeMongodOptions(const moe::Environment& params, const std::vector<std:
     if (params.count("operationProfiling.slowOpThresholdMs")) {
         serverGlobalParams.slowMS = params["operationProfiling.slowOpThresholdMs"].as<int>();
     }
-    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    if (params.count("operationProfiling.profileSizeMB")) {
-        serverGlobalParams.profileSizeMB = params["operationProfiling.profileSizeMB"].as<int>();
-    }
-	
+
     if (params.count("storage.syncPeriodSecs")) {
         storageGlobalParams.syncdelay = params["storage.syncPeriodSecs"].as<double>();
     }
@@ -1042,8 +1032,8 @@ Status storeMongodOptions(const moe::Environment& params, const std::vector<std:
     if (params.count("storage.mmapv1.journal.debugFlags")) {
         mmapv1GlobalOptions.journalOptions = params["storage.mmapv1.journal.debugFlags"].as<int>();
     }
-    if (params.count("nopreallocj")) {
-        mmapv1GlobalOptions.preallocj = !params["nopreallocj"].as<bool>();
+    if (params.count("storage.mmapv1.journal.nopreallocj")) {
+        mmapv1GlobalOptions.preallocj = !params["storage.mmapv1.journal.nopreallocj"].as<bool>();
     }
 
     if (params.count("net.http.RESTInterfaceEnabled")) {

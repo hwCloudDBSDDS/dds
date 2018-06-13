@@ -86,6 +86,7 @@ NetworkInterfaceASIO::NetworkInterfaceASIO(Options options)
       _timerFactory(std::move(_options.timerFactory)),
       _streamFactory(std::move(_options.streamFactory)),
       _connectionPool(stdx::make_unique<connection_pool_asio::ASIOImpl>(this),
+                      _options.instanceName,
                       _options.connectionPoolOptions),
       _isExecutorRunnable(false),
       _strand(_io_service) {}
@@ -113,7 +114,12 @@ void NetworkInterfaceASIO::startup() {
             try {
                 LOG(2) << "The NetworkInterfaceASIO worker thread is spinning up";
                 asio::io_service::work work(_io_service);
-                _io_service.run();
+                std::error_code ec;
+                _io_service.run(ec);
+                if (ec) {
+                    severe() << "Failure in _io_service.run(): " << ec.message();
+                    fassertFailed(40335);
+                }
             } catch (...) {
                 severe() << "Uncaught exception in NetworkInterfaceASIO IO "
                             "worker thread of type: " << exceptionToStatus();
@@ -259,10 +265,12 @@ void NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHa
                     // timeout duration - but make no stronger assumption. It is thus possible that
                     // we have already exceeded the timeout. In this case we timeout the operation
                     // manually.
-                    return _completeOperation(op,
-                                              {ErrorCodes::ExceededTimeLimit,
-                                               "Remote command timed out while waiting to get a "
-                                               "connection from the pool."});
+                    std::stringstream msg;
+                    msg << "Remote command timed out while waiting to get a connection from the "
+                        << "pool, took " << getConnectionDuration << ", timeout was set to "
+                        << op->_request.timeout;
+                    auto rs = ResponseStatus(ErrorCodes::ExceededTimeLimit, msg.str());
+                    return _completeOperation(op, rs);
                 }
 
                 // The above conditional guarantees that the adjusted timeout will never underflow.
@@ -270,7 +278,13 @@ void NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHa
                 const auto adjustedTimeout = op->_request.timeout - getConnectionDuration;
                 const auto requestId = op->_request.id;
 
-                op->_timeoutAlarm = op->_owner->_timerFactory->make(&op->_strand, adjustedTimeout);
+                try {
+                    op->_timeoutAlarm =
+                        op->_owner->_timerFactory->make(&op->_strand, adjustedTimeout);
+                } catch (std::system_error& e) {
+                    severe() << "Failed to construct timer for AsyncOp: " << e.what();
+                    fassertFailed(40334);
+                }
 
                 std::shared_ptr<AsyncOp::AccessControl> access;
                 std::size_t generation;
@@ -348,7 +362,15 @@ void NetworkInterfaceASIO::cancelAllCommands() {
 
 void NetworkInterfaceASIO::setAlarm(Date_t when, const stdx::function<void()>& action) {
     // "alarm" must stay alive until it expires, hence the shared_ptr.
-    auto alarm = std::make_shared<asio::steady_timer>(_io_service, when - now());
+    std::shared_ptr<asio::steady_timer> alarm;
+
+    try {
+        alarm = std::make_shared<asio::steady_timer>(_io_service, when - now());
+    } catch (std::system_error& e) {
+        severe() << "setAlarm() could not construct a timer" << e.what();
+        fassertFailed(40337);
+    }
+
     alarm->async_wait([alarm, this, action](std::error_code ec) {
         if (!ec) {
             return action();
@@ -369,6 +391,10 @@ bool NetworkInterfaceASIO::onNetworkThread() {
     return std::any_of(_serviceRunners.begin(),
                        _serviceRunners.end(),
                        [id](const stdx::thread& thread) { return id == thread.get_id(); });
+}
+
+void NetworkInterfaceASIO::dropConnections(const HostAndPort& hostAndPort) {
+    _connectionPool.dropConnections(hostAndPort);
 }
 
 }  // namespace executor

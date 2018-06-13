@@ -952,6 +952,15 @@ var ShardingTest = function(params) {
     var numMongos = otherParams.hasOwnProperty('mongos') ? otherParams.mongos : 1;
     var numConfigs = otherParams.hasOwnProperty('config') ? otherParams.config : 3;
 
+    // Default enableBalancer to false.
+    otherParams.enableBalancer =
+        ("enableBalancer" in otherParams) && (otherParams.enableBalancer === true);
+
+    // Let autosplit behavior match that of the balancer if autosplit is not explicitly set.
+    if (!("enableAutoSplit" in otherParams)) {
+        otherParams.enableAutoSplit = otherParams.enableBalancer;
+    }
+
     // Allow specifying mixed-type options like this:
     // { mongos : [ { noprealloc : "" } ],
     //   config : [ { smallfiles : "" } ],
@@ -1051,6 +1060,8 @@ var ShardingTest = function(params) {
             rsDefaults = Object.merge(rsDefaults, otherParams.rsOptions);
             rsDefaults = Object.merge(rsDefaults, otherParams["rs" + i]);
             rsDefaults.nodes = rsDefaults.nodes || otherParams.numReplicas;
+            var rsSettings = rsDefaults.settings;
+            delete rsDefaults.settings;
 
             var numReplicas = rsDefaults.nodes || 3;
             delete rsDefaults.nodes;
@@ -1068,7 +1079,8 @@ var ShardingTest = function(params) {
                 bridgeOptions: otherParams.bridgeOptions,
                 keyFile: keyFile,
                 protocolVersion: protocolVersion,
-                shardSvr: true
+                shardSvr: true,
+                settings: rsSettings
             });
 
             this._rs[i] = {
@@ -1343,6 +1355,11 @@ var ShardingTest = function(params) {
         options = Object.merge(options, otherParams["s" + i]);
 
         options.port = options.port || allocatePort();
+
+        // Disable autosplitting unless it is explicitly turned on.
+        if (!otherParams.enableAutoSplit) {
+            options.noAutoSplit = "";
+        }
 
         if (otherParams.useBridge) {
             var bridgeOptions =

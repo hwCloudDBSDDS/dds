@@ -32,7 +32,7 @@
 
 import os, run, random
 import wiredtiger, wttest
-from wtscenario import multiply_scenarios, number_scenarios
+from wtscenario import make_scenarios
 
 # Test basic encryption
 class test_encrypt01(wttest.WiredTigerTestCase):
@@ -57,50 +57,29 @@ class test_encrypt01(wttest.WiredTigerTestCase):
         ('lz4', dict(log_compress='lz4', block_compress='lz4')),
         ('snappy', dict(log_compress='snappy', block_compress='snappy')),
         ('zlib', dict(log_compress='zlib', block_compress='zlib')),
+        ('zstd', dict(log_compress='zstd', block_compress='zstd')),
         ('none-snappy', dict(log_compress=None, block_compress='snappy')),
         ('snappy-lz4', dict(log_compress='snappy', block_compress='lz4')),
     ]
-    scenarios = number_scenarios(multiply_scenarios('.', types,
-                                                    encrypt, compress))
+    scenarios = make_scenarios(types, encrypt, compress)
 
     nrecords = 5000
     bigvalue = "abcdefghij" * 1001    # len(bigvalue) = 10010
 
-    # Override WiredTigerTestCase, we have extensions.
-    def setUpConnectionOpen(self, dir):
+    def conn_extensions(self, extlist):
+        extlist.skip_if_missing = True
+        extlist.extension('encryptors', self.sys_encrypt)
+        extlist.extension('encryptors', self.file_encrypt)
+        extlist.extension('compressors', self.block_compress)
+        extlist.extension('compressors', self.log_compress)
+
+    def conn_config(self):
         encarg = 'encryption=(name={0}{1}),'.format(
             self.sys_encrypt, self.sys_encrypt_args)
         comparg = ''
         if self.log_compress != None:
             comparg='log=(compressor={0}),'.format(self.log_compress)
-        extarg = self.extensionArg([('encryptors', self.sys_encrypt),
-            ('encryptors', self.file_encrypt),
-            ('compressors', self.block_compress),
-            ('compressors', self.log_compress)])
-        conn = self.wiredtiger_open(dir,
-            'create,error_prefix="{0}: ",{1}{2}{3}'.format(
-                self.shortid(), encarg, comparg, extarg))
-        self.pr(`conn`)
-        return conn
-
-    # Return the wiredtiger_open extension argument for a shared library.
-    def extensionArg(self, exts):
-        extfiles = []
-        for ext in exts:
-            (dirname, name) = ext
-            if name != None and name != 'none':
-                testdir = os.path.dirname(__file__)
-                extdir = os.path.join(run.wt_builddir, 'ext', dirname)
-                extfile = os.path.join(
-                    extdir, name, '.libs', 'libwiredtiger_' + name + '.so')
-                if not os.path.exists(extfile):
-                    self.skipTest('extension "' + extfile + '" not built')
-                if not extfile in extfiles:
-                    extfiles.append(extfile)
-        if len(extfiles) == 0:
-            return ''
-        else:
-            return ',extensions=["' + '","'.join(extfiles) + '"]'
+        return encarg + comparg
 
     # Create a table, add keys with both big and small values, then verify them.
     def test_encrypt(self):
@@ -138,7 +117,6 @@ class test_encrypt01(wttest.WiredTigerTestCase):
             self.assertEqual(cursor.search(), 0)
             self.assertEquals(cursor.get_value(), val)
         cursor.close()
-
 
 if __name__ == '__main__':
     wttest.run()

@@ -200,7 +200,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
     ss << "create,";
     ss << "cache_size=" << cacheSizeGB << "G,";
     ss << "session_max=20000,";
-    ss << "eviction=(threads_max=4),";
+    ss << "eviction=(threads_min=4,threads_max=4),";
     ss << "config_base=false,";
     ss << "statistics=(fast),";
     // The setting may have a later setting override it if not using the journal.  We make it
@@ -212,6 +212,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
     ss << "checkpoint=(wait=" << wiredTigerGlobalOptions.checkpointDelaySecs;
     ss << ",log_size=2GB),";
     ss << "statistics_log=(wait=" << wiredTigerGlobalOptions.statisticsLogDelaySecs << "),";
+    ss << "verbose=(recovery_progress),";
     ss << WiredTigerCustomizationHooks::get(getGlobalServiceContext())->getOpenConfig("system");
     ss << extraOpenOptions;
     if (!_durable) {
@@ -345,11 +346,12 @@ int64_t WiredTigerKVEngine::getIdentSize(OperationContext* opCtx, StringData ide
 
 Status WiredTigerKVEngine::repairIdent(OperationContext* opCtx, StringData ident) {
     WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession(opCtx);
-    session->closeAllCursors();
+    string uri = _uri(ident);
+    session->closeAllCursors(uri);
+    _sessionCache->closeAllCursors(uri);
     if (isEphemeral()) {
         return Status::OK();
     }
-    string uri = _uri(ident);
     return _salvageIfNeeded(uri.c_str());
 }
 
@@ -530,10 +532,12 @@ Status WiredTigerKVEngine::dropIdent(OperationContext* opCtx, StringData ident) 
 bool WiredTigerKVEngine::_drop(StringData ident) {
     string uri = _uri(ident);
 
+    _sessionCache->closeAllCursors(uri);
+
     WiredTigerSession session(_conn);
 
-    int ret =
-        session.getSession()->drop(session.getSession(), uri.c_str(), "force,lock_wait=false");
+    int ret = session.getSession()->drop(
+        session.getSession(), uri.c_str(), "force,checkpoint_wait=false");
     LOG(1) << "WT drop of  " << uri << " res " << ret;
 
     if (ret == 0) {
@@ -545,14 +549,36 @@ bool WiredTigerKVEngine::_drop(StringData ident) {
         // this is expected, queue it up
         {
             stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
-            _identToDrop.insert(uri);
+            _identToDrop.push_front(uri);
         }
-        _sessionCache->closeAll();
+        _sessionCache->closeCursorsForQueuedDrops();
         return false;
     }
 
     invariantWTOK(ret);
     return false;
+}
+
+std::list<WiredTigerCachedCursor> WiredTigerKVEngine::filterCursorsWithQueuedDrops(
+    std::list<WiredTigerCachedCursor>* cache) {
+    std::list<WiredTigerCachedCursor> toDrop;
+
+    stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
+    if (_identToDrop.empty())
+        return toDrop;
+
+    for (auto i = cache->begin(); i != cache->end();) {
+        if (!i->_cursor ||
+            std::find(_identToDrop.begin(), _identToDrop.end(), std::string(i->_cursor->uri)) ==
+                _identToDrop.end()) {
+            ++i;
+            continue;
+        }
+        toDrop.push_back(*i);
+        i = cache->erase(i);
+    }
+
+    return toDrop;
 }
 
 bool WiredTigerKVEngine::haveDropsQueued() const {
@@ -565,50 +591,50 @@ bool WiredTigerKVEngine::haveDropsQueued() const {
     }
 
     // We only want to check the queue max once per second or we'll thrash
-    // This is done in haveDropsQueued, not dropAllQueued so we skip the mutex
     if (delta < Milliseconds(1000))
         return false;
 
     _previousCheckedDropsQueued = now;
-    stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
-    return !_identToDrop.empty();
+
+    // Don't wait for the mutex: if we can't get it, report that no drops are queued.
+    stdx::unique_lock<stdx::mutex> lk(_identToDropMutex, stdx::defer_lock);
+    return lk.try_lock() && !_identToDrop.empty();
 }
 
-void WiredTigerKVEngine::dropAllQueued() {
-    set<string> mine;
+void WiredTigerKVEngine::dropSomeQueuedIdents() {
+    int numInQueue;
+
+    WiredTigerSession session(_conn);
+
     {
         stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
-        mine = _identToDrop;
+        numInQueue = _identToDrop.size();
     }
 
-    set<string> deleted;
+    int numToDelete = 10;
+    int tenPercentQueue = numInQueue * 0.1;
+    if (tenPercentQueue > 10)
+        numToDelete = tenPercentQueue;
 
-    {
-        WiredTigerSession session(_conn);
-        for (set<string>::const_iterator it = mine.begin(); it != mine.end(); ++it) {
-            string uri = *it;
-            int ret = session.getSession()->drop(
-                session.getSession(), uri.c_str(), "force,lock_wait=false");
-            LOG(1) << "WT queued drop of  " << uri << " res " << ret;
-
-            if (ret == 0) {
-                deleted.insert(uri);
-                continue;
-            }
-
-            if (ret == EBUSY) {
-                // leave in qeuue
-                continue;
-            }
-
-            invariantWTOK(ret);
+    LOG(1) << "WT Queue is: " << numInQueue << " attempting to drop: " << numToDelete << " tables";
+    for (int i = 0; i < numToDelete; i++) {
+        string uri;
+        {
+            stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
+            if (_identToDrop.empty())
+                break;
+            uri = _identToDrop.front();
+            _identToDrop.pop_front();
         }
-    }
+        int ret = session.getSession()->drop(
+            session.getSession(), uri.c_str(), "force,checkpoint_wait=false");
+        LOG(1) << "WT queued drop of  " << uri << " res " << ret;
 
-    {
-        stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
-        for (set<string>::const_iterator it = deleted.begin(); it != deleted.end(); ++it) {
-            _identToDrop.erase(*it);
+        if (ret == EBUSY) {
+            stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
+            _identToDrop.push_back(uri);
+        } else {
+            invariantWTOK(ret);
         }
     }
 }

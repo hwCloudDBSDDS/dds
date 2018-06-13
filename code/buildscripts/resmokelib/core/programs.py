@@ -43,6 +43,11 @@ def mongod_program(logger, executable=None, process_kwargs=None, **kwargs):
         "wiredTigerIndexConfigString": config.WT_INDEX_CONFIG,
     }
 
+    if config.STORAGE_ENGINE == "rocksdb":
+        shortcut_opts["rocksdbCacheSizeGB"] = config.STORAGE_ENGINE_CACHE_SIZE
+    elif config.STORAGE_ENGINE == "wiredTiger" or config.STORAGE_ENGINE is None:
+        shortcut_opts["wiredTigerCacheSizeGB"] = config.STORAGE_ENGINE_CACHE_SIZE
+
     # These options are just flags, so they should not take a value.
     opts_without_vals = ("nojournal", "nopreallocj")
 
@@ -126,6 +131,7 @@ def mongo_shell_program(logger, executable=None, filename=None, process_kwargs=N
         "noJournal": (config.NO_JOURNAL, False),
         "noJournalPrealloc": (config.NO_PREALLOC_JOURNAL, False),
         "storageEngine": (config.STORAGE_ENGINE, ""),
+        "storageEngineCacheSizeGB": (config.STORAGE_ENGINE_CACHE_SIZE, ""),
         "testName": (os.path.splitext(os.path.basename(filename))[0], ""),
         "wiredTigerCollectionConfigString": (config.WT_COLL_CONFIG, ""),
         "wiredTigerEngineConfigString": (config.WT_ENGINE_CONFIG, ""),

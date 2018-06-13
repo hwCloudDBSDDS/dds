@@ -33,7 +33,7 @@
 import fnmatch, os, shutil, run, time
 from suite_subprocess import suite_subprocess
 from wiredtiger import stat
-from wtscenario import check_scenarios
+from wtscenario import make_scenarios
 import wttest
 
 class test_cursor07(wttest.WiredTigerTestCase, suite_subprocess):
@@ -44,12 +44,12 @@ class test_cursor07(wttest.WiredTigerTestCase, suite_subprocess):
     # test that scenario for log cursors.
     nkeys = 7000
 
-    scenarios = check_scenarios([
+    scenarios = make_scenarios([
         ('regular', dict(reopen=False)),
         ('reopen', dict(reopen=True))
     ])
     # Enable logging for this test.
-    def conn_config(self, dir):
+    def conn_config(self):
         return 'log=(archive=false,enabled,file_max=%s),' % self.logmax + \
             'transaction_sync="(method=dsync,enabled)"'
 

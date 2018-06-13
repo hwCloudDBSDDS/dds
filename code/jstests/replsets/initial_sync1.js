@@ -40,7 +40,7 @@ for (var i = 0; i < 100; i++) {
     bulk.insert({date: new Date(), x: i, str: "all the talk on the market"});
 }
 assert.writeOK(bulk.execute());
-print("total in foo: " + foo.bar.count());
+print("total in foo: " + foo.bar.find().itcount());
 
 print("4. Make sure synced");
 replTest.awaitReplication();
@@ -77,9 +77,7 @@ wait(function() {
     return config2.version == config.version && (config3 && config3.version == config.version);
 });
 
-replTest.waitForState(slave2,
-                      [ReplSetTest.State.SECONDARY, ReplSetTest.State.RECOVERING],
-                      60 * 1000);
+replTest.waitForState(slave2, [ReplSetTest.State.SECONDARY, ReplSetTest.State.RECOVERING]);
 
 print("7. Kill the secondary in the middle of syncing");
 replTest.stop(slave1);
@@ -91,7 +89,7 @@ replTest.waitForState(slave2, ReplSetTest.State.SECONDARY, 60 * 1000);
 print("9. Bring the secondary back up");
 replTest.start(slave1, {}, true);
 reconnect(slave1);
-replTest.waitForState(slave1, [ReplSetTest.State.PRIMARY, ReplSetTest.State.SECONDARY], 60 * 1000);
+replTest.waitForState(slave1, [ReplSetTest.State.PRIMARY, ReplSetTest.State.SECONDARY]);
 
 print("10. Insert some stuff");
 master = replTest.getPrimary();

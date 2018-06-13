@@ -45,11 +45,17 @@ ReplSetTest.prototype.upgradeNode = function(node, opts, user, pwd) {
     if (user != undefined) {
         assert.eq(1, node.getDB("admin").auth(user, pwd));
     }
+    jsTest.authenticate(node);
 
     var isMaster = node.getDB('admin').runCommand({isMaster: 1});
 
     if (!isMaster.arbiterOnly) {
-        assert.commandWorked(node.adminCommand("replSetMaintenance"));
+        // Must retry this command, as it might return "currently running for election" and fail.
+        // Node might still be running for an election that will fail because it lost the election
+        // race with another node, at test initialization.  See SERVER-23133.
+        assert.soon(function() {
+            return (node.adminCommand("replSetMaintenance").ok);
+        });
         this.waitForState(node, ReplSetTest.State.RECOVERING);
     }
 
@@ -71,7 +77,7 @@ ReplSetTest.prototype.stepdown = function(nodeId) {
     var node = this.nodes[nodeId];
 
     try {
-        node.getDB("admin").runCommand({replSetStepDown: 50, force: true});
+        node.getDB("admin").runCommand({replSetStepDown: 300, secondaryCatchUpPeriodSecs: 60});
         assert(false);
     } catch (ex) {
         print('Caught exception after stepDown cmd: ' + tojson(ex));

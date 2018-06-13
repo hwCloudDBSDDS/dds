@@ -14,6 +14,18 @@
  * of instructions.
  */
 
+/*
+ * __spin_init_internal --
+ *      Initialize the WT portion of a spinlock.
+ */
+static inline void
+__spin_init_internal(WT_SPINLOCK *t, const char *name)
+{
+	t->name = name;
+	t->stat_count_off = t->stat_app_usecs_off = t->stat_int_usecs_off = -1;
+	t->initialized = 1;
+}
+
 #if SPINLOCK_TYPE == SPINLOCK_GCC
 
 /* Default to spinning 1000 times before yielding. */
@@ -29,9 +41,9 @@ static inline int
 __wt_spin_init(WT_SESSION_IMPL *session, WT_SPINLOCK *t, const char *name)
 {
 	WT_UNUSED(session);
-	WT_UNUSED(name);
 
 	t->lock = 0;
+	__spin_init_internal(t, name);
 	return (0);
 }
 
@@ -109,9 +121,7 @@ __wt_spin_init(WT_SESSION_IMPL *session, WT_SPINLOCK *t, const char *name)
 #else
 	WT_RET(pthread_mutex_init(&t->lock, NULL));
 #endif
-
-	t->name = name;
-	t->initialized = 1;
+	__spin_init_internal(t, name);
 
 	WT_UNUSED(session);
 	return (0);
@@ -154,9 +164,10 @@ __wt_spin_trylock(WT_SESSION_IMPL *session, WT_SPINLOCK *t)
 static inline void
 __wt_spin_lock(WT_SESSION_IMPL *session, WT_SPINLOCK *t)
 {
-	WT_UNUSED(session);
+	WT_DECL_RET;
 
-	(void)pthread_mutex_lock(&t->lock);
+	if ((ret = pthread_mutex_lock(&t->lock)) != 0)
+		WT_PANIC_MSG(session, ret, "pthread_mutex_lock: %s", t->name);
 }
 #endif
 
@@ -167,15 +178,13 @@ __wt_spin_lock(WT_SESSION_IMPL *session, WT_SPINLOCK *t)
 static inline void
 __wt_spin_unlock(WT_SESSION_IMPL *session, WT_SPINLOCK *t)
 {
-	WT_UNUSED(session);
+	WT_DECL_RET;
 
-	(void)pthread_mutex_unlock(&t->lock);
+	if ((ret = pthread_mutex_unlock(&t->lock)) != 0)
+		WT_PANIC_MSG(session, ret, "pthread_mutex_unlock: %s", t->name);
 }
 
 #elif SPINLOCK_TYPE == SPINLOCK_MSVC
-
-#define	WT_SPINLOCK_REGISTER		-1
-#define	WT_SPINLOCK_REGISTER_FAILED	-2
 
 /*
  * __wt_spin_init --
@@ -184,13 +193,17 @@ __wt_spin_unlock(WT_SESSION_IMPL *session, WT_SPINLOCK *t)
 static inline int
 __wt_spin_init(WT_SESSION_IMPL *session, WT_SPINLOCK *t, const char *name)
 {
-	WT_UNUSED(session);
+	DWORD windows_error;
 
-	t->name = name;
-	t->initialized = 1;
+	if (InitializeCriticalSectionAndSpinCount(&t->lock, 4000) == 0) {
+		windows_error = __wt_getlasterror();
+		__wt_errx(session,
+		    "%s: InitializeCriticalSectionAndSpinCount: %s",
+		    name, __wt_formatmessage(session, windows_error));
+		return (__wt_map_windows_error(windows_error));
+	}
 
-	InitializeCriticalSectionAndSpinCount(&t->lock, 4000);
-
+	__spin_init_internal(t, name);
 	return (0);
 }
 
@@ -253,101 +266,63 @@ __wt_spin_unlock(WT_SESSION_IMPL *session, WT_SPINLOCK *t)
 #endif
 
 /*
- * __wt_fair_trylock --
- *	Try to get a lock - give up if it is not immediately available.
+ * WT_SPIN_INIT_TRACKED --
+ *	Spinlock initialization, with tracking.
+ *
+ * Implemented as a macro so we can pass in a statistics field and convert
+ * it into a statistics structure array offset.
  */
-static inline int
-__wt_fair_trylock(WT_SESSION_IMPL *session, WT_FAIR_LOCK *lock)
-{
-	WT_FAIR_LOCK new, old;
-
-	WT_UNUSED(session);
-
-	old = new = *lock;
-
-	/* Exit early if there is no chance we can get the lock. */
-	if (old.fair_lock_waiter != old.fair_lock_owner)
-		return (EBUSY);
-
-	/* The replacement lock value is a result of allocating a new ticket. */
-	++new.fair_lock_waiter;
-	return (__wt_atomic_cas32(
-	    &lock->u.lock, old.u.lock, new.u.lock) ? 0 : EBUSY);
-}
+#define	WT_SPIN_INIT_TRACKED(session, t, name) do {			\
+	WT_RET(__wt_spin_init(session, t, #name));			\
+	(t)->stat_count_off = (int16_t)WT_STATS_FIELD_TO_OFFSET(	\
+	    S2C(session)->stats, lock_##name##_count);			\
+	(t)->stat_app_usecs_off = (int16_t)WT_STATS_FIELD_TO_OFFSET(	\
+	    S2C(session)->stats, lock_##name##_wait_application);	\
+	(t)->stat_int_usecs_off = (int16_t)WT_STATS_FIELD_TO_OFFSET(	\
+	    S2C(session)->stats, lock_##name##_wait_internal);		\
+} while (0)
 
 /*
- * __wt_fair_lock --
- *	Get a lock.
+ * __wt_spin_lock_track --
+ *	Spinlock acquisition, with tracking.
  */
-static inline int
-__wt_fair_lock(WT_SESSION_IMPL *session, WT_FAIR_LOCK *lock)
+static inline void
+__wt_spin_lock_track(WT_SESSION_IMPL *session, WT_SPINLOCK *t)
 {
-	uint16_t ticket;
-	int pause_cnt;
+	struct timespec enter, leave;
+	int64_t **stats;
 
-	WT_UNUSED(session);
-
-	/*
-	 * Possibly wrap: if we have more than 64K lockers waiting, the ticket
-	 * value will wrap and two lockers will simultaneously be granted the
-	 * lock.
-	 */
-	ticket = __wt_atomic_fetch_add16(&lock->fair_lock_waiter, 1);
-	for (pause_cnt = 0; ticket != lock->fair_lock_owner;) {
-		/*
-		 * We failed to get the lock; pause before retrying and if we've
-		 * paused enough, sleep so we don't burn CPU to no purpose. This
-		 * situation happens if there are more threads than cores in the
-		 * system and we're thrashing on shared resources.
-		 */
-		if (++pause_cnt < WT_THOUSAND)
-			WT_PAUSE();
+	if (t->stat_count_off != -1 && WT_STAT_ENABLED(session)) {
+		__wt_epoch(session, &enter);
+		__wt_spin_lock(session, t);
+		__wt_epoch(session, &leave);
+		stats = (int64_t **)S2C(session)->stats;
+		stats[session->stat_bucket][t->stat_count_off]++;
+		if (F_ISSET(session, WT_SESSION_INTERNAL))
+			stats[session->stat_bucket][t->stat_int_usecs_off] +=
+			    (int64_t)WT_TIMEDIFF_US(leave, enter);
 		else
-			__wt_sleep(0, 10);
-	}
-
-	/*
-	 * Applications depend on a barrier here so that operations holding the
-	 * lock see consistent data.
-	 */
-	WT_READ_BARRIER();
-
-	return (0);
+			stats[session->stat_bucket][t->stat_app_usecs_off] +=
+			    (int64_t)WT_TIMEDIFF_US(leave, enter);
+	} else
+		__wt_spin_lock(session, t);
 }
 
 /*
- * __wt_fair_unlock --
- *	Release a shared lock.
+ * __wt_spin_trylock_track --
+ *      Try to lock a spinlock or fail immediately if it is busy.
+ *      Track if successful.
  */
 static inline int
-__wt_fair_unlock(WT_SESSION_IMPL *session, WT_FAIR_LOCK *lock)
+__wt_spin_trylock_track(WT_SESSION_IMPL *session, WT_SPINLOCK *t)
 {
-	WT_UNUSED(session);
+	int64_t **stats;
 
-	/*
-	 * Ensure that all updates made while the lock was held are visible to
-	 * the next thread to acquire the lock.
-	 */
-	WT_WRITE_BARRIER();
-
-	/*
-	 * We have exclusive access - the update does not need to be atomic.
-	 */
-	++lock->fair_lock_owner;
-
-	return (0);
+	if (t->stat_count_off != -1 && WT_STAT_ENABLED(session)) {
+		WT_RET(__wt_spin_trylock(session, t));
+		stats = (int64_t **)S2C(session)->stats;
+		stats[session->stat_bucket][t->stat_count_off]++;
+		return (0);
+	}
+	return (__wt_spin_trylock(session, t));
 }
-
-#ifdef HAVE_DIAGNOSTIC
-/*
- * __wt_fair_islocked --
- *	Test whether the lock is currently held.
- */
-static inline bool
-__wt_fair_islocked(WT_SESSION_IMPL *session, WT_FAIR_LOCK *lock)
-{
-	WT_UNUSED(session);
-
-	return (lock->fair_lock_waiter != lock->fair_lock_owner);
-}
-#endif

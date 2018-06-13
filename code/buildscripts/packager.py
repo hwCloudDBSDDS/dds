@@ -28,18 +28,14 @@
 
 import argparse
 import errno
-import getopt
-import httplib2
 from glob import glob
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
 import time
-import urlparse
 
 # The MongoDB names for the architectures we support.
 ARCH_CHOICES=["x86_64"]
@@ -54,10 +50,14 @@ class Spec(object):
         self.gitspec = gitspec
         self.rel = rel
 
-    # Nightly version numbers can be in the form: 3.0.7-pre-, or 3.0.7-5-g3b67ac
+    # Commit-triggerd version numbers can be in the form: 3.0.7-pre-, or 3.0.7-5-g3b67ac
+    # Patch builds version numbers are in the form: 3.5.5-64-g03945fa-patch-58debcdb3ff1223c9d00005b
     #
     def is_nightly(self):
         return bool(re.search("-$", self.version())) or bool(re.search("\d-\d+-g[0-9a-f]+$", self.version()))
+
+    def is_patch(self):
+        return bool(re.search("\d-\d+-g[0-9a-f]+-patch-[0-9a-f]+$", self.version()))
 
     def is_rc(self):
         return bool(re.search("-rc\d+$", self.version()))
@@ -67,6 +67,12 @@ class Spec(object):
 
     def version(self):
         return self.ver
+
+    def patch_id(self):
+        if self.is_patch():
+            return re.sub(r'.*-([0-9a-f]+$)', r'\1', self.version())
+        else:
+            return "none"
 
     def metadata_gitspec(self):
         """Git revision to use for spec+control+init+manpage files.
@@ -85,35 +91,57 @@ class Spec(object):
         return "-org" if int(self.ver.split(".")[1])%2==0 else "-org-unstable"
 
     def prelease(self):
-      # "N" is either passed in on the command line, or "1"
+      # NOTE: This is only called for RPM packages, and only after
+      # pversion() below has been called. If you want to change this format
+      # and want DEB packages to match, make sure to update pversion()
+      # below
       #
-      # 1) Standard release - "N"
-      # 2) Nightly (snapshot) - "0.N.YYYYMMDDlatest"
-      # 3) RC's - "0.N.rcX"
+      # "N" is either passed in on the command line, or "1"
       if self.rel:
-        corenum = self.rel
+          corenum = self.rel
       else:
-        corenum = 1
-      # RC's
+          corenum = 1
+
+      # Version suffix for RPM packages:
+      # 1) RC's - "0.N.rcX"
+      # 2) Nightly (snapshot) - "0.N.latest"
+      # 3) Patch builds - "0.N.patch.<patch_id>"
+      # 4) Standard release - "N"
       if self.is_rc():
-        return "0.%s.%s" % (corenum, re.sub('.*-','',self.version()))
-      # Nightlies
+          return "0.%s.%s" % (corenum, re.sub('.*-','',self.version()))
       elif self.is_nightly():
-        return "0.%s.%s" % (corenum, time.strftime("%Y%m%d"))
+          return "0.%s.latest" % (corenum)
+      elif self.is_patch():
+          return "0.%s.patch.%s" % (corenum, self.patch_id())
       else:
-        return str(corenum)
+          return str(corenum)
 
     def pversion(self, distro):
         # Note: Debian packages have funny rules about dashes in
         # version numbers, and RPM simply forbids dashes.  pversion
         # will be the package's version number (but we need to know
         # our upstream version too).
+
+        # For RPM packages this just returns X.Y.X because of the
+        # aforementioned rules, and prelease (above) adds a suffix later,
+        # so detect this case early
+        if re.search("(suse|redhat|fedora|centos|amazon)", distro.name()):
+            return re.sub("-.*", "", self.version())
+
+        # For DEB packages, this code sets the full version. If you change
+        # this format and want RPM packages to match make sure you change
+        # prelease above as well
         if re.search("^(debian|ubuntu)", distro.name()):
-            return re.sub("-", "~", self.ver)
-        elif re.search("(suse|redhat|fedora|centos|amazon)", distro.name()):
-            return re.sub("-.*", "", self.ver)
-        else:
-            raise Exception("BUG: unsupported platform?")
+            if self.is_nightly():
+                ver = re.sub("-.*", "-latest", self.ver)
+            elif self.is_patch():
+                ver = re.sub("-.*", "", self.ver) + "-patch-" + self.patch_id()
+            else:
+                ver = self.ver
+
+            return re.sub("-", "~", ver)
+
+        raise Exception("BUG: unsupported platform?")
 
     def branch(self):
         """Return the major and minor portions of the specified version.
@@ -216,6 +244,8 @@ class Distro(object):
         elif self.n == 'debian':
             if build_os == 'debian71':
                 return 'wheezy'
+            elif build_os == 'debian81':
+                return 'jessie'
             else:
                 raise Exception("unsupported build_os: %s" % build_os)
         else:
@@ -246,7 +276,7 @@ class Distro(object):
         elif self.n == 'ubuntu':
             return [ "ubuntu1204", "ubuntu1404", "ubuntu1604", ]
         elif self.n == 'debian':
-            return [ "debian71" ]
+            return [ "debian71", "debian81" ]
         else:
             raise Exception("BUG: unsupported platform?")
 
@@ -273,7 +303,7 @@ def get_args(distros, arch_choices):
     parser.add_argument("-d", "--distros", help="Distros to build for", choices=distro_choices, required=False, default=[], action='append')
     parser.add_argument("-p", "--prefix", help="Directory to build into", required=False)
     parser.add_argument("-a", "--arches", help="Architecture to build", choices=arch_choices, default=[], required=False, action='append')
-    parser.add_argument("-t", "--tarball", help="Local tarball to package instead of downloading (only valid with one distro/arch combination)", required=False, type=lambda x: is_valid_file(parser, x))
+    parser.add_argument("-t", "--tarball", help="Local tarball to package", required=True, type=lambda x: is_valid_file(parser, x))
 
     args = parser.parse_args()
 
@@ -302,9 +332,6 @@ def main(argv):
 
     os.chdir(prefix)
     try:
-      # Download the binaries.
-      urlfmt="http://downloads.mongodb.org/linux/mongodb-linux-%s-%s-%s.tgz"
-
       # Build a package for each distro/spec/arch tuple, and
       # accumulate the repository-layout directories.
       for (distro, arch) in crossproduct(distros, args.arches):
@@ -312,12 +339,9 @@ def main(argv):
           for build_os in distro.build_os(arch):
             if build_os in args.distros or not args.distros:
 
-              if args.tarball:
-                filename = tarfile(build_os, arch, spec)
-                ensure_dir(filename)
-                shutil.copyfile(args.tarball,filename)
-              else:
-                httpget(urlfmt % (arch, build_os, spec.version()), ensure_dir(tarfile(build_os, arch, spec)))
+              filename = tarfile(build_os, arch, spec)
+              ensure_dir(filename)
+              shutil.copyfile(args.tarball,filename)
 
               repo = make_package(distro, build_os, arch, spec, srcdir)
               make_repo(repo, distro, build_os, spec)
@@ -368,27 +392,6 @@ def setupdir(distro, build_os, arch, spec):
     # would be dst/x86_64/debian-sysvinit/wheezy/mongodb-org-unstable/
     # or dst/x86_64/redhat/rhel55/mongodb-org-unstable/
     return "dst/%s/%s/%s/%s%s-%s/" % (arch, distro.name(), build_os, distro.pkgbase(), spec.suffix(), spec.pversion(distro))
-
-def httpget(url, filename):
-    """Download the contents of url to filename, return filename."""
-    print "Fetching %s to %s." % (url, filename)
-    conn = None
-    u=urlparse.urlparse(url)
-    assert(u.scheme=='http')
-    try:
-        h = httplib2.Http(cache = os.environ["HOME"] + "/.cache")
-        resp, content = h.request(url, "GET")
-        t=filename+'.TMP'
-        if resp.status==200:
-            with open(t, 'w') as f:
-                f.write(content)
-        else:
-            raise Exception("HTTP error %d" % resp.status)
-        os.rename(t, filename)
-    finally:
-        if conn:
-            conn.close()
-    return filename
 
 def unpack_binaries_into(build_os, arch, spec, where):
     """Unpack the tarfile for (build_os, arch, spec) into directory where."""
@@ -453,11 +456,21 @@ def make_deb(distro, build_os, arch, spec, srcdir):
     suffix=spec.suffix()
     sdir=setupdir(distro, build_os, arch, spec)
     if re.search("debian", distro.name()):
-        os.link(sdir+"debian/init.d", sdir+"debian/%s%s-server.mongod.init" % (distro.pkgbase(), suffix))
         os.unlink(sdir+"debian/mongod.upstart")
+        if build_os == "debian71":
+            os.link(sdir+"debian/init.d", sdir+"debian/%s%s-server.mongod.init" % (distro.pkgbase(), suffix))
+            os.unlink(sdir+"debian/mongod.service")
+        else:
+            os.link(sdir+"debian/mongod.service", sdir+"debian/%s%s-server.mongod.service" % (distro.pkgbase(), suffix))
+            os.unlink(sdir+"debian/init.d")
     elif re.search("ubuntu", distro.name()):
-        os.link(sdir+"debian/mongod.upstart", sdir+"debian/%s%s-server.mongod.upstart" % (distro.pkgbase(), suffix))
         os.unlink(sdir+"debian/init.d")
+        if build_os in ("ubuntu1204", "ubuntu1404", "ubuntu1410"):
+            os.link(sdir+"debian/mongod.upstart", sdir+"debian/%s%s-server.mongod.upstart" % (distro.pkgbase(), suffix))
+            os.unlink(sdir+"debian/mongod.service")
+        else:
+            os.link(sdir+"debian/mongod.service", sdir+"debian/%s%s-server.mongod.service" % (distro.pkgbase(), suffix))
+            os.unlink(sdir+"debian/mongod.upstart")
     else:
         raise Exception("unknown debianoid flavor: not debian or ubuntu?")
     # Rewrite the control and rules files
@@ -647,7 +660,7 @@ def make_rpm(distro, build_os, arch, spec, srcdir):
     # all of this is to let us do our work with some guarantee that
     # we're not clobbering anything that doesn't belong to us.
     #
-    # On RHEL systems, --rcfile will generally be used and 
+    # On RHEL systems, --rcfile will generally be used and
     # --macros will be used in Ubuntu.
     #
     macrofiles=[l for l in backtick(["rpm", "--showrc"]).split("\n") if l.startswith("macrofiles")]
@@ -668,7 +681,7 @@ def make_rpm(distro, build_os, arch, spec, srcdir):
     # Put the specfile and the tar'd up binaries and stuff in
     # place.
     #
-    # The version of rpm and rpm tools in RHEL 5.5 can't interpolate the 
+    # The version of rpm and rpm tools in RHEL 5.5 can't interpolate the
     # %{dynamic_version} macro, so do it manually
     with open(specfile, "r") as spec_source:
       with open(topdir+"SPECS/" + os.path.basename(specfile), "w") as spec_dest:
@@ -736,5 +749,3 @@ def is_valid_file(parser, filename):
 
 if __name__ == "__main__":
     main(sys.argv)
-
-

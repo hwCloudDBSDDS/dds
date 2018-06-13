@@ -180,9 +180,9 @@ Collection::Collection(OperationContext* txn,
       _validatorDoc(_details->getCollectionOptions(txn).validator.getOwned()),
       _validator(uassertStatusOK(parseValidator(_validatorDoc))),
       _validationAction(uassertStatusOK(
-          _parseValidationAction(_details->getCollectionOptions(txn).validationAction))),
+          parseValidationAction(_details->getCollectionOptions(txn).validationAction))),
       _validationLevel(uassertStatusOK(
-          _parseValidationLevel(_details->getCollectionOptions(txn).validationLevel))),
+          parseValidationLevel(_details->getCollectionOptions(txn).validationLevel))),
       _cursorManager(fullNS),
       _cappedNotifier(_recordStore->isCapped() ? new CappedInsertNotifier() : nullptr),
       _mustTakeCappedLockOnInsert(isCapped() && !_ns.isSystemDotProfile() && !_ns.isOplog()) {
@@ -196,10 +196,11 @@ Collection::Collection(OperationContext* txn,
 
 Collection::~Collection() {
     verify(ok());
-    _magic = 0;
-    if (_cappedNotifier) {
+    if (isCapped()) {
+        _recordStore->setCappedCallback(nullptr);
         _cappedNotifier->kill();
     }
+    _magic = 0;
 }
 
 bool Collection::requiresIdIndex() const {
@@ -476,9 +477,11 @@ Status Collection::aboutToDeleteCapped(OperationContext* txn,
     return Status::OK();
 }
 
-void Collection::deleteDocument(
-    OperationContext* txn, const RecordId& loc, bool fromMigrate, bool cappedOK, bool noWarn) {
-    if (isCapped() && !cappedOK) {
+void Collection::deleteDocument(OperationContext* txn,
+                                const RecordId& loc,
+                                bool fromMigrate,
+                                bool noWarn) {
+    if (isCapped()) {
         log() << "failing remove on a capped ns " << _ns << endl;
         uasserted(10089, "cannot remove from a capped collection");
         return;
@@ -820,7 +823,7 @@ Status Collection::setValidator(OperationContext* txn, BSONObj validatorDoc) {
     return Status::OK();
 }
 
-StatusWith<Collection::ValidationLevel> Collection::_parseValidationLevel(StringData newLevel) {
+StatusWith<Collection::ValidationLevel> Collection::parseValidationLevel(StringData newLevel) {
     if (newLevel == "") {
         // default
         return STRICT_V;
@@ -836,7 +839,7 @@ StatusWith<Collection::ValidationLevel> Collection::_parseValidationLevel(String
     }
 }
 
-StatusWith<Collection::ValidationAction> Collection::_parseValidationAction(StringData newAction) {
+StatusWith<Collection::ValidationAction> Collection::parseValidationAction(StringData newAction) {
     if (newAction == "") {
         // default
         return ERROR_V;
@@ -875,7 +878,7 @@ StringData Collection::getValidationAction() const {
 Status Collection::setValidationLevel(OperationContext* txn, StringData newLevel) {
     invariant(txn->lockState()->isCollectionLockedForMode(ns().toString(), MODE_X));
 
-    StatusWith<ValidationLevel> status = _parseValidationLevel(newLevel);
+    StatusWith<ValidationLevel> status = parseValidationLevel(newLevel);
     if (!status.isOK()) {
         return status.getStatus();
     }
@@ -890,7 +893,7 @@ Status Collection::setValidationLevel(OperationContext* txn, StringData newLevel
 Status Collection::setValidationAction(OperationContext* txn, StringData newAction) {
     invariant(txn->lockState()->isCollectionLockedForMode(ns().toString(), MODE_X));
 
-    StatusWith<ValidationAction> status = _parseValidationAction(newAction);
+    StatusWith<ValidationAction> status = parseValidationAction(newAction);
     if (!status.isOK()) {
         return status.getStatus();
     }
@@ -1043,5 +1046,9 @@ Status Collection::touch(OperationContext* txn,
     }
 
     return Status::OK();
+}
+
+UpdateNotifier* Collection::getUpdateNotifier() {
+    return this;
 }
 }

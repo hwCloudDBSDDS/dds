@@ -58,7 +58,8 @@ ReplicationCoordinatorExternalStateMock::ReplicationCoordinatorExternalStateMock
 
 ReplicationCoordinatorExternalStateMock::~ReplicationCoordinatorExternalStateMock() {}
 
-void ReplicationCoordinatorExternalStateMock::startThreads(const ReplSettings& settings) {
+void ReplicationCoordinatorExternalStateMock::startThreads(const ReplSettings& settings,
+                                                           ReplicationCoordinator* replCoord) {
     _threadsStarted = true;
 }
 
@@ -69,7 +70,7 @@ Status ReplicationCoordinatorExternalStateMock::initializeReplSetStorage(Operati
     return storeLocalConfigDocument(txn, config);
 }
 
-void ReplicationCoordinatorExternalStateMock::shutdown() {}
+void ReplicationCoordinatorExternalStateMock::shutdown(OperationContext*) {}
 void ReplicationCoordinatorExternalStateMock::forwardSlaveProgress() {}
 
 OID ReplicationCoordinatorExternalStateMock::ensureMe(OperationContext*) {
@@ -216,10 +217,17 @@ void ReplicationCoordinatorExternalStateMock::dropAllSnapshots() {}
 void ReplicationCoordinatorExternalStateMock::updateCommittedSnapshot(SnapshotName newCommitPoint) {
 }
 
+void ReplicationCoordinatorExternalStateMock::createSnapshot(OperationContext* txn,
+                                                             SnapshotName name) {}
+
 void ReplicationCoordinatorExternalStateMock::forceSnapshotCreation() {}
 
 bool ReplicationCoordinatorExternalStateMock::snapshotsEnabled() const {
-    return true;
+    return _areSnapshotsEnabled;
+}
+
+void ReplicationCoordinatorExternalStateMock::setAreSnapshotsEnabled(bool val) {
+    _areSnapshotsEnabled = val;
 }
 
 void ReplicationCoordinatorExternalStateMock::notifyOplogMetadataWaiters() {}
@@ -230,11 +238,19 @@ double ReplicationCoordinatorExternalStateMock::getElectionTimeoutOffsetLimitFra
 
 bool ReplicationCoordinatorExternalStateMock::isReadCommittedSupportedByStorageEngine(
     OperationContext* txn) const {
-    return true;
+    return _isReadCommittedSupported;
 }
 
-void ReplicationCoordinatorExternalStateMock::logTransitionToPrimaryToOplog(OperationContext* txn) {
-    _lastOpTime = OpTime(Timestamp(1, 0), 1);
+void ReplicationCoordinatorExternalStateMock::setIsReadCommittedEnabled(bool val) {
+    _isReadCommittedSupported = val;
+}
+
+OpTime ReplicationCoordinatorExternalStateMock::onTransitionToPrimary(OperationContext* txn,
+                                                                      bool isV1ElectionProtocol) {
+    if (isV1ElectionProtocol) {
+        _lastOpTime = OpTime(Timestamp(1, 0), 1);
+    }
+    return fassertStatusOK(40297, _lastOpTime);
 }
 
 }  // namespace repl

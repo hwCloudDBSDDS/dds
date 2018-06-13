@@ -26,7 +26,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "test_util.i"
+#include "test_util.h"
 
 #include <assert.h>
 
@@ -54,8 +54,6 @@ void run(int);
 void t(int, u_int, int);
 int  usage(void);
 
-static const char *progname;			/* Program name */
-
 static FILE	*res_fp;			/* Results file */
 static u_int	 page_type;			/* File types */
 static int	 value_unique;			/* Values are unique */
@@ -64,18 +62,13 @@ static int	 verbose;			/* -v flag */
 extern int __wt_optind;
 extern char *__wt_optarg;
 
-void (*custom_die)(void) = NULL;
-
 int
 main(int argc, char *argv[])
 {
 	u_int ptype;
 	int ch, r;
 
-	if ((progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		progname = argv[0];
-	else
-		++progname;
+	(void)testutil_set_progname(argv);
 
 	r = 0;
 	ptype = 0;
@@ -159,7 +152,7 @@ int
 usage(void)
 {
 	(void)fprintf(stderr,
-	    "usage: %s [-v] [-r run] [-t fix|rle|var|row]\n", progname);
+	    "usage: %s [-v] [-r run] [-t fix|var|row]\n", progname);
 	return (EXIT_FAILURE);
 }
 
@@ -170,7 +163,7 @@ run(int r)
 
 	printf("\t%s: run %d\n", __wt_page_type_string(page_type), r);
 
-	CHECK(system("rm -f WiredTiger* __slvg.* __schema.*") == 0);
+	CHECK(system("rm -f WiredTiger* __slvg.*") == 0);
 	CHECK((res_fp = fopen(RSLT, "w")) != NULL);
 
 	/*
@@ -447,7 +440,8 @@ run(int r)
 
 	process();
 
-	snprintf(buf, sizeof(buf), "cmp %s %s > /dev/null", DUMP, RSLT);
+	testutil_check(__wt_snprintf(
+	    buf, sizeof(buf), "cmp %s %s > /dev/null", DUMP, RSLT));
 	if (system(buf)) {
 		fprintf(stderr,
 		    "check failed, salvage results were incorrect\n");
@@ -492,28 +486,28 @@ build(int ikey, int ivalue, int cnt)
 
 	switch (page_type) {
 	case WT_PAGE_COL_FIX:
-		(void)snprintf(config, sizeof(config),
+		testutil_check(__wt_snprintf(config, sizeof(config),
 		    "key_format=r,value_format=7t,"
 		    "allocation_size=%d,"
 		    "internal_page_max=%d,internal_item_max=%d,"
 		    "leaf_page_max=%d,leaf_item_max=%d",
-		    PSIZE, PSIZE, OSIZE, PSIZE, OSIZE);
+		    PSIZE, PSIZE, OSIZE, PSIZE, OSIZE));
 		break;
 	case WT_PAGE_COL_VAR:
-		(void)snprintf(config, sizeof(config),
+		testutil_check(__wt_snprintf(config, sizeof(config),
 		    "key_format=r,"
 		    "allocation_size=%d,"
 		    "internal_page_max=%d,internal_item_max=%d,"
 		    "leaf_page_max=%d,leaf_item_max=%d",
-		    PSIZE, PSIZE, OSIZE, PSIZE, OSIZE);
+		    PSIZE, PSIZE, OSIZE, PSIZE, OSIZE));
 		break;
 	case WT_PAGE_ROW_LEAF:
-		(void)snprintf(config, sizeof(config),
+		testutil_check(__wt_snprintf(config, sizeof(config),
 		    "key_format=u,"
 		    "allocation_size=%d,"
 		    "internal_page_max=%d,internal_item_max=%d,"
 		    "leaf_page_max=%d,leaf_item_max=%d",
-		    PSIZE, PSIZE, OSIZE, PSIZE, OSIZE);
+		    PSIZE, PSIZE, OSIZE, PSIZE, OSIZE));
 		break;
 	default:
 		assert(0);
@@ -527,7 +521,8 @@ build(int ikey, int ivalue, int cnt)
 		case WT_PAGE_COL_VAR:
 			break;
 		case WT_PAGE_ROW_LEAF:
-			snprintf(kbuf, sizeof(kbuf), "%010d KEY------", ikey);
+			testutil_check(__wt_snprintf(
+			   kbuf, sizeof(kbuf), "%010d KEY------", ikey));
 			key.data = kbuf;
 			key.size = 20;
 			cursor->set_key(cursor, &key);
@@ -540,8 +535,8 @@ build(int ikey, int ivalue, int cnt)
 			break;
 		case WT_PAGE_COL_VAR:
 		case WT_PAGE_ROW_LEAF:
-			snprintf(vbuf, sizeof(vbuf),
-			    "%010d VALUE----", value_unique ? ivalue : 37);
+			testutil_check(__wt_snprintf(vbuf, sizeof(vbuf),
+			    "%010d VALUE----", value_unique ? ivalue : 37));
 			value.data = vbuf;
 			value.size = 20;
 			cursor->set_value(cursor, &value);
@@ -602,8 +597,8 @@ copy(u_int gen, u_int recno)
 			dsk->recno = recno;
 		dsk->write_gen = gen;
 		blk = WT_BLOCK_HEADER_REF(buf);
-		blk->cksum = 0;
-		blk->cksum = __wt_cksum(dsk, PSIZE);
+		blk->checksum = 0;
+		blk->checksum = __wt_checksum(dsk, PSIZE);
 		CHECK(fwrite(buf, 1, PSIZE, ofp) == PSIZE);
 	}
 
@@ -628,9 +623,9 @@ process(void)
 	/* Salvage. */
 	config[0] = '\0';
 	if (verbose)
-		snprintf(config, sizeof(config),
+		testutil_check(__wt_snprintf(config, sizeof(config),
 		    "error_prefix=\"%s\",verbose=[salvage,verify],",
-		    progname);
+		    progname));
 	strcat(config, "log=(enabled=false),");
 
 	CHECK(wiredtiger_open(NULL, NULL, config, &conn) == 0);
@@ -701,7 +696,7 @@ print_res(int key, int value, int cnt)
 		switch (page_type) {			/* Print value */
 		case WT_PAGE_COL_FIX:
 			ch = value & 0x7f;
-			if (isprint(ch)) {
+			if (__wt_isprint((u_char)ch)) {
 				if (ch == '\\')
 					fputc('\\', res_fp);
 				fputc(ch, res_fp);

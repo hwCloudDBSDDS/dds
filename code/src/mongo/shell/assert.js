@@ -3,6 +3,9 @@ doassert = function(msg, obj) {
     if (typeof(msg) == "function")
         msg = msg();
 
+    if (typeof(msg) == "object")
+        msg = tojson(msg);
+
     if (typeof(msg) == "string" && msg.indexOf("assert") == 0)
         print(msg);
     else
@@ -182,7 +185,7 @@ assert.soon = function(f, msg, timeout /*ms*/, interval) {
     }
 
     var start = new Date();
-    timeout = timeout || 30000;
+    timeout = timeout || 5 * 60 * 1000;
     interval = interval || 200;
     var last;
     while (1) {
@@ -200,6 +203,26 @@ assert.soon = function(f, msg, timeout /*ms*/, interval) {
         }
         sleep(interval);
     }
+};
+
+/**
+ * Wraps assert.soon to try...catch any function passed in.
+ */
+assert.soonNoExcept = function(func, msg, timeout /*ms*/) {
+    /**
+     * Surrounds a function call by a try...catch to convert any exception to a print statement
+     * and return false.
+     */
+    function _convertExceptionToReturnStatus(func) {
+        try {
+            return func();
+        } catch (e) {
+            print("caught exception " + e);
+            return false;
+        }
+    }
+
+    assert.soon((() => _convertExceptionToReturnStatus(func)), msg, timeout);
 };
 
 assert.time = function(f, msg, timeout /*ms*/) {
@@ -429,16 +452,33 @@ assert.writeOK = function(res, msg) {
 };
 
 assert.writeError = function(res, msg) {
+    return assert.writeErrorWithCode(res, null, msg);
+};
+
+assert.writeErrorWithCode = function(res, expectedCode, msg) {
 
     var errMsg = null;
+    var foundCode = null;
 
     if (res instanceof WriteResult) {
-        if (!res.hasWriteError() && !res.hasWriteConcernError()) {
+        if (res.hasWriteError()) {
+            foundCode = res.getWriteError().code;
+        } else if (res.hasWriteConcernError()) {
+            foundCode = res.getWriteConcernError().code;
+        } else {
             errMsg = "no write error: " + tojson(res);
         }
     } else if (res instanceof BulkWriteResult) {
         // Can only happen with bulk inserts
-        if (!res.hasWriteErrors() && !res.hasWriteConcernError()) {
+        if (res.hasWriteErrors()) {
+            if (res.getWriteErrorCount() > 1 && expectedCode != null) {
+                errMsg = "can't check for specific code when there was more than one write error";
+            } else {
+                foundCode = res.getWriteErrorAt(0).code;
+            }
+        } else if (res.hasWriteConcernError()) {
+            foundCode = res.getWriteConcernError().code;
+        } else {
             errMsg = "no write errors: " + tojson(res);
         }
     } else if (res instanceof WriteCommandError) {
@@ -447,6 +487,12 @@ assert.writeError = function(res, msg) {
     } else {
         if (!res || res.ok) {
             errMsg = "unknown type of write result, cannot check error: " + tojson(res);
+        }
+    }
+
+    if (!errMsg && expectedCode) {
+        if (foundCode != expectedCode) {
+            errMsg = "found code " + foundCode + " does not match expected code " + expectedCode;
         }
     }
 

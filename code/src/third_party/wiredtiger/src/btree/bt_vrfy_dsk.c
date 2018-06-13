@@ -203,7 +203,8 @@ __verify_dsk_row(
 	WT_ITEM *last;
 	enum { FIRST, WAS_KEY, WAS_VALUE } last_cell_type;
 	void *huffman;
-	uint32_t cell_num, cell_type, i, key_cnt, prefix;
+	size_t prefix;
+	uint32_t cell_num, cell_type, i, key_cnt;
 	uint8_t *end;
 	int cmp;
 
@@ -298,14 +299,11 @@ __verify_dsk_row(
 		case WT_CELL_ADDR_LEAF_NO:
 		case WT_CELL_KEY_OVFL:
 		case WT_CELL_VALUE_OVFL:
-			ret = bm->addr_invalid(
-			    bm, session, unpack->data, unpack->size);
-			WT_RET_ERROR_OK(ret, EINVAL);
-			if (ret == EINVAL) {
+			if ((ret = bm->addr_invalid(
+			    bm, session, unpack->data, unpack->size)) == EINVAL)
 				ret = __err_cell_corrupt_or_eof(
 				    session, cell_num, tag);
-				goto err;
-			}
+			WT_ERR(ret);
 			break;
 		}
 
@@ -346,8 +344,9 @@ __verify_dsk_row(
 		if (cell_num > 1 && prefix > last->size)
 			WT_ERR_VRFY(session,
 			    "key %" PRIu32 " on page at %s has a prefix "
-			    "compression count of %" PRIu32 ", larger than "
-			    "the length of the previous key, %" WT_SIZET_FMT,
+			    "compression count of %" WT_SIZET_FMT
+			    ", larger than the length of the previous key, %"
+			    WT_SIZET_FMT,
 			    cell_num, tag, prefix, last->size);
 
 		/*

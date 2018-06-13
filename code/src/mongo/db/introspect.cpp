@@ -43,8 +43,6 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-#include "mongo/db/initialize_server_global_state.h"
 
 namespace mongo {
 
@@ -175,10 +173,9 @@ Status createProfileCollection(OperationContext* txn, Database* db) {
     // system.profile namespace doesn't exist; create it
     log() << "Creating profile collection: " << dbProfilingNS << endl;
 
-    CollectionOptions collectionOptions; 
+    CollectionOptions collectionOptions;
     collectionOptions.capped = true;
-	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    collectionOptions.cappedSize = serverGlobalParams.profileSizeMB * 1024 * 1024;
+    collectionOptions.cappedSize = 1024 * 1024;
 
     WriteUnitOfWork wunit(txn);
     bool shouldReplicateWrites = txn->writesAreReplicated();

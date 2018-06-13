@@ -25,6 +25,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kASIO
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/executor/connection_pool_asio.h"
@@ -37,6 +39,7 @@
 #include "mongo/rpc/legacy_request_builder.h"
 #include "mongo/rpc/reply_interface.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 namespace executor {
@@ -57,7 +60,13 @@ void ASIOTimer::setTimeout(Milliseconds timeout, TimeoutCallback cb) {
         _cb = std::move(cb);
 
         cancelTimeout();
-        _impl.expires_after(timeout);
+
+        std::error_code ec;
+        _impl.expires_after(timeout, ec);
+        if (ec) {
+            severe() << "Failed to set connection pool timer: " << ec.message();
+            fassertFailed(40333);
+        }
 
         decltype(_callbackSharedState->id) id;
         decltype(_callbackSharedState) sharedState;
@@ -102,7 +111,12 @@ void ASIOTimer::cancelTimeout() {
         stdx::lock_guard<stdx::mutex> lk(sharedState->mutex);
         if (sharedState->id != id)
             return;
-        _impl.cancel();
+
+        std::error_code ec;
+        _impl.cancel(ec);
+        if (ec) {
+            log() << "Failed to cancel connection pool timer: " << ec.message();
+        }
     });
 }
 
@@ -113,8 +127,14 @@ ASIOConnection::ASIOConnection(const HostAndPort& hostAndPort, size_t generation
       _impl(makeAsyncOp(this)),
       _timer(&_impl->strand()) {}
 
+ASIOConnection::~ASIOConnection() {
+    if (_impl) {
+        stdx::lock_guard<stdx::mutex> lk(_impl->_access->mutex);
+        _impl->_access->id++;
+    }
+}
+
 void ASIOConnection::indicateSuccess() {
-    indicateUsed();
     _status = Status::OK();
 }
 
@@ -184,12 +204,55 @@ void ASIOConnection::cancelTimeout() {
 void ASIOConnection::setup(Milliseconds timeout, SetupCallback cb) {
     _impl->strand().dispatch([this, timeout, cb] {
         _setupCallback = [this, cb](ConnectionInterface* ptr, Status status) {
+            {
+                stdx::lock_guard<stdx::mutex> lk(_impl->_access->mutex);
+                _impl->_access->id++;
+
+                // If our connection timeout callback ran but wasn't the reason we exited
+                // the state machine, clear the timedOut flag.
+                if (status.isOK()) {
+                    _impl->_timedOut = false;
+                }
+            }
+
             cancelTimeout();
             cb(ptr, status);
         };
 
+        // Capturing the shared access pad and generation before calling setTimeout gives us enough
+        // information to avoid calling the timer if we shouldn't without needing any other
+        // resources that might have been cleaned up.
+        decltype(_impl->_access) access;
+        std::size_t generation;
+        {
+            stdx::lock_guard<stdx::mutex> lk(_impl->_access->mutex);
+            access = _impl->_access;
+            generation = access->id;
+        }
+
         // Actually timeout setup
-        setTimeout(timeout, [this] { _impl->connection().stream().cancel(); });
+        setTimeout(timeout,
+                   [this, access, generation] {
+                       // For operations that time out immediately, we can't simply cancel the
+                       // connection, because it may not have been initialized.
+                       stdx::lock_guard<stdx::mutex> lk(access->mutex);
+
+                       if (generation != access->id) {
+                           // The operation has been cleaned up, do not access.
+                           return;
+                       }
+
+                       // Time out the op.
+                       _impl->_strand.post([this, access, generation] {
+                           stdx::lock_guard<stdx::mutex> lk(access->mutex);
+                           if (generation == access->id) {
+                               _impl->_timedOut = true;
+                               if (_impl->_connection) {
+                                   _impl->_connection->cancel();
+                               }
+                           }
+                       });
+                   });
 
         _global->_impl->_connect(_impl.get());
     });
@@ -229,6 +292,8 @@ void ASIOConnection::refresh(Milliseconds timeout, RefreshCallback cb) {
             cb(this, failedResponse.getStatus());
         });
 
+        op->_inRefresh = true;
+
         _global->_impl->_asyncRunCommand(
             op,
             [this, op](std::error_code ec, size_t bytes) {
@@ -239,12 +304,18 @@ void ASIOConnection::refresh(Milliseconds timeout, RefreshCallback cb) {
                 if (ec)
                     return cb(this, Status(ErrorCodes::HostUnreachable, ec.message()));
 
+                op->_inRefresh = false;
+
                 cb(this, Status::OK());
             });
     });
 }
 
 std::unique_ptr<NetworkInterfaceASIO::AsyncOp> ASIOConnection::releaseAsyncOp() {
+    {
+        stdx::lock_guard<stdx::mutex> lk(_impl->_access->mutex);
+        _impl->_access->id++;
+    }
     return std::move(_impl);
 }
 

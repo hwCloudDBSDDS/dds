@@ -31,6 +31,7 @@
 #include "mongo/scripting/mozjs/objectwrapper.h"
 
 #include <js/Conversions.h>
+#include <jsapi.h>
 
 #include "mongo/base/error_codes.h"
 #include "mongo/bson/bsonobjbuilder.h"
@@ -467,51 +468,60 @@ BSONObj ObjectWrapper::toBSON() {
     // emplace() inside ValueWriter. The runtime asserts enabled by MozJS's
     // debug mode will catch runtime errors, but be aware of how difficult this
     // is to get right and what to look for if one of them bites you.
-    WriteFieldRecursionFrames frames;
-    frames.emplace(_context, _object, nullptr, StringData{});
 
     BSONObjBuilder b;
 
-    // We special case the _id field in top-level objects and move it to the front.
-    // This matches other drivers behavior and makes finding the _id field quicker in BSON.
-    if (hasOwnField(InternedString::_id)) {
-        _writeField(&b, InternedString::_id, &frames, frames.top().originalBSON);
-    }
+    {
+        // NOTE: Keep the frames in a scope so that it is clear that
+        // we always destroy them before we destroy 'b'. It is
+        // important to do so: if 'b' is destroyed before the frames,
+        // and we don't pop all of the frames (say, due to an
+        // exeption), then the frame dtors would write to freed
+        // memory.
+        WriteFieldRecursionFrames frames;
+        frames.emplace(_context, _object, nullptr, StringData{});
 
-    while (frames.size()) {
-        auto& frame = frames.top();
-
-        // If the index is the same as length, we've seen all the keys at this
-        // level and should go up a level
-        if (frame.idx == frame.ids.length()) {
-            frames.pop();
-            continue;
+        // We special case the _id field in top-level objects and move it to the front.
+        // This matches other drivers behavior and makes finding the _id field quicker in BSON.
+        if (hasOwnField(InternedString::_id)) {
+            _writeField(&b, InternedString::_id, &frames, frames.top().originalBSON);
         }
 
-        if (frame.idx == 0 && frame.originalBSON && !frame.altered) {
-            // If this is our first look at the object and it has an unaltered
-            // bson behind it, move idx to the end so we'll roll up on the next
-            // pass through the loop.
-            frame.subbob_or(&b)->appendElements(*frame.originalBSON);
-            frame.idx = frame.ids.length();
-            continue;
-        }
+        while (frames.size()) {
+            auto& frame = frames.top();
 
-        id.set(frame.ids[frame.idx++]);
-
-        if (frames.size() == 1) {
-            IdWrapper idw(_context, id);
-
-            // TODO: check if it's cheaper to just compare with an interned
-            // string of "_id" rather than with ascii
-            if (idw.isString() && idw.equalsAscii("_id")) {
+            // If the index is the same as length, we've seen all the keys at this
+            // level and should go up a level
+            if (frame.idx == frame.ids.length()) {
+                frames.pop();
                 continue;
             }
-        }
 
-        // writeField invokes ValueWriter with the frame stack, which will push
-        // onto frames for subobjects, which will effectively recurse the loop.
-        _writeField(frame.subbob_or(&b), JS::HandleId(id), &frames, frame.originalBSON);
+            if (frame.idx == 0 && frame.originalBSON && !frame.altered) {
+                // If this is our first look at the object and it has an unaltered
+                // bson behind it, move idx to the end so we'll roll up on the next
+                // pass through the loop.
+                frame.subbob_or(&b)->appendElements(*frame.originalBSON);
+                frame.idx = frame.ids.length();
+                continue;
+            }
+
+            id.set(frame.ids[frame.idx++]);
+
+            if (frames.size() == 1) {
+                IdWrapper idw(_context, id);
+
+                // TODO: check if it's cheaper to just compare with an interned
+                // string of "_id" rather than with ascii
+                if (idw.isString() && idw.equalsAscii("_id")) {
+                    continue;
+                }
+            }
+
+            // writeField invokes ValueWriter with the frame stack, which will push
+            // onto frames for subobjects, which will effectively recurse the loop.
+            _writeField(frame.subbob_or(&b), JS::HandleId(id), &frames, frame.originalBSON);
+        }
     }
 
     const int sizeWithEOO = b.len() + 1 /*EOO*/ - 4 /*BSONObj::Holder ref count*/;
@@ -528,15 +538,47 @@ ObjectWrapper::WriteFieldRecursionFrame::WriteFieldRecursionFrame(JSContext* cx,
                                                                   JSObject* obj,
                                                                   BSONObjBuilder* parent,
                                                                   StringData sd)
-    : thisv(cx, obj), ids(cx, JS_Enumerate(cx, thisv)) {
+    : thisv(cx, obj), ids(cx) {
+    bool isArray = false;
     if (parent) {
-        subbob.emplace(JS_IsArrayObject(cx, thisv) ? parent->subarrayStart(sd)
-                                                   : parent->subobjStart(sd));
+        isArray = JS_IsArrayObject(cx, thisv);
+
+        subbob.emplace(isArray ? parent->subarrayStart(sd) : parent->subobjStart(sd));
     }
 
-    if (!ids) {
-        throwCurrentJSException(
-            cx, ErrorCodes::JSInterpreterFailure, "Failure to enumerate object");
+    if (isArray) {
+        uint32_t length;
+        if (!JS_GetArrayLength(cx, thisv, &length)) {
+            throwCurrentJSException(
+                cx, ErrorCodes::JSInterpreterFailure, "Failure to get array length");
+        }
+
+        if (!ids.reserve(length)) {
+            throwCurrentJSException(
+                cx, ErrorCodes::JSInterpreterFailure, "Failure to reserve array");
+        }
+
+        JS::RootedId rid(cx);
+        for (uint32_t i = 0; i < length; i++) {
+            rid.set(INT_TO_JSID(i));
+            ids.infallibleAppend(rid);
+        }
+    } else {
+        auto ridArrayPtr = JS_Enumerate(cx, thisv);
+        if (!ridArrayPtr) {
+            throwCurrentJSException(
+                cx, ErrorCodes::JSInterpreterFailure, "Failure to enumerate object");
+        }
+        JS::AutoIdArray rids(cx, ridArrayPtr);
+
+        if (!ids.reserve(rids.length())) {
+            throwCurrentJSException(
+                cx, ErrorCodes::JSInterpreterFailure, "Failure to reserve array");
+        }
+
+        for (uint32_t i = 0; i < rids.length(); i++) {
+            ids.infallibleAppend(rids[i]);
+        }
     }
 
     if (getScope(cx)->getProto<BSONInfo>().instanceOf(thisv)) {

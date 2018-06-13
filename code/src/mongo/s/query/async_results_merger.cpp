@@ -304,6 +304,14 @@ Status AsyncResultsMerger::askForNextBatch_inlock(size_t remoteIndex) {
     return Status::OK();
 }
 
+/*
+ * Note: When nextEvent() is called to do retries, only the remotes with retriable errors will
+ * be rescheduled because:
+ *
+ * 1. Other pending remotes still have callback assigned to them.
+ * 2. Remotes that already has some result will have a non-empty buffer.
+ * 3. Remotes that reached maximum retries will be in 'exhausted' state.
+ */
 StatusWith<executor::TaskExecutor::EventHandle> AsyncResultsMerger::nextEvent() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
@@ -324,8 +332,9 @@ StatusWith<executor::TaskExecutor::EventHandle> AsyncResultsMerger::nextEvent() 
     for (size_t i = 0; i < _remotes.size(); ++i) {
         auto& remote = _remotes[i];
 
-        // It is illegal to call this method if there is an error received from any shard.
-        invariant(remote.status.isOK());
+        if (!remote.status.isOK()) {
+            return remote.status;
+        }
 
         if (!remote.hasNext() && !remote.exhausted() && !remote.cbHandle.isValid()) {
             // If we already have established a cursor with this remote, and there is no outstanding
@@ -441,26 +450,37 @@ void AsyncResultsMerger::handleBatchResponse(
             }
         }
 
-        // If the error is retriable, schedule another request.
+        // If we can still retry the initial cursor establishment, reset the state so it can be
+        // retried the next time nextEvent is called. Never retry getMores to avoid
+        // accidentally skipping results.
         if (!remote.cursorId && remote.retryCount < kMaxNumFailedHostRetryAttempts &&
             ShardRegistry::kAllRetriableErrors.count(cursorResponseStatus.getStatus().code())) {
+            invariant(remote.docBuffer.empty());
+
             LOG(1) << "Initial cursor establishment failed with retriable error and will be retried"
                    << causedBy(cursorResponseStatus.getStatus());
 
             ++remote.retryCount;
 
-            // Since we potentially updated the targeter that the last host it chose might be
-            // faulty, the call below may end up getting a different host.
-            remote.status = askForNextBatch_inlock(remoteIndex);
-            if (remote.status.isOK()) {
-                return;
+            remote.status = Status::OK();  // Reset status so it can be retried.
+
+            // Signal the merger thread to make it retry this remote again.
+            if (_currentEvent.isValid()) {
+                // To prevent ourselves from signalling the event twice,
+                // we set '_currentEvent' as invalid after signalling it.
+                _executor->signalEvent(_currentEvent);
+                _currentEvent = executor::TaskExecutor::EventHandle();
             }
 
-            // If we end up here, it means we failed to schedule the retry request, which is a more
-            // severe error that should not be retried. Just pass through to the error handling
-            // logic below.
+            return;
         } else {
             remote.status = cursorResponseStatus.getStatus();
+            if (remote.status == ErrorCodes::CallbackCanceled) {
+                // This callback should only be canceled as part of the shutdown sequence, so we
+                // promote a canceled callback error to an error that will make more sense to the
+                // client.
+                remote.status = Status(ErrorCodes::ShutdownInProgress, "shutdown in progress");
+            }
         }
 
         // Unreachable host errors are swallowed if the 'allowPartialResults' option is set. We

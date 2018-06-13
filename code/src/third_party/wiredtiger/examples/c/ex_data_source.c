@@ -46,6 +46,21 @@ my_data_source_init(WT_CONNECTION *connection)
 }
 /*! [WT_EXTENSION_API declaration] */
 
+/*! [WT_DATA_SOURCE alter] */
+static int
+my_alter(WT_DATA_SOURCE *dsrc, WT_SESSION *session,
+    const char *uri, WT_CONFIG_ARG *config)
+/*! [WT_DATA_SOURCE alter] */
+{
+	/* Unused parameters */
+	(void)dsrc;
+	(void)session;
+	(void)uri;
+	(void)config;
+
+	return (0);
+}
+
 /*! [WT_DATA_SOURCE create] */
 static int
 my_create(WT_DATA_SOURCE *dsrc, WT_SESSION *session,
@@ -56,6 +71,17 @@ my_create(WT_DATA_SOURCE *dsrc, WT_SESSION *session,
 	(void)dsrc;
 	(void)uri;
 	(void)config;
+
+	{
+#if !defined(ERROR_BAD_COMMAND)
+#define	ERROR_BAD_COMMAND	37
+#endif
+	/*! [WT_EXTENSION_API map_windows_error] */
+	int posix_error =
+	    wt_api->map_windows_error(wt_api, session, ERROR_BAD_COMMAND);
+	/*! [WT_EXTENSION_API map_windows_error] */
+	(void)posix_error;
+	}
 
 	{
 	const char *msg = "string";
@@ -593,6 +619,7 @@ main(void)
 	{
 	/*! [WT_DATA_SOURCE register] */
 	static WT_DATA_SOURCE my_dsrc = {
+		my_alter,
 		my_create,
 		my_compact,
 		my_drop,
@@ -667,7 +694,7 @@ main(void)
 	(void)wt_api->msg_printf(wt_api, NULL, "configuration complete");
 	/*! [WT_EXTENSION_API default_session] */
 
-	(void)conn->close(conn, NULL);
+	ret = conn->close(conn, NULL);
 
-	return (ret);
+	return (ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }

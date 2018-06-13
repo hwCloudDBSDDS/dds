@@ -146,6 +146,12 @@ public:
      * Also invalid to call if there is an outstanding event, created by a previous call to this
      * function, that has not yet been signaled. If there is an outstanding unsignaled event,
      * returns an error.
+     *
+     * Conditions when event can be signaled:
+     * - Finished collecting results from all remotes.
+     * - One of the host failed with a retriable error. In this case, if ready() is false, then
+     *   the caller should call nextEvent() to retry the request on the hosts that errored. If
+     *   ready() is true, then either the error was not retriable or it has exhausted max retries.
      */
     StatusWith<executor::TaskExecutor::EventHandle> nextEvent();
 
@@ -153,11 +159,12 @@ public:
      * Starts shutting down this ARM. Returns a handle to an event which is signaled when this
      * cursor is safe to destroy.
      *
-     * Returns an invalid handle if the underlying task executor is shutting down. In this case, it
-     * is legal to destroy the cursor only after the task executor shutdown process is complete.
+     * Returns an invalid handle if the underlying task executor is shutting down. In this case,
+     * killing is considered complete and the ARM may be destroyed immediately.
      *
-     * An ARM can only be destroyed if either 1) all its results have been exhausted or 2) the kill
-     * event returned by this method has been signaled.
+     * When the underlying task executor is *not* shutting down, an ARM can only be destroyed if
+     * either 1) all its results have been exhausted or 2) the kill event returned by this method
+     * has been signaled.
      *
      * May be called multiple times (idempotent).
      */

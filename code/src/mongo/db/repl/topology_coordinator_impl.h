@@ -217,14 +217,17 @@ public:
     virtual void setElectionInfo(OID electionId, Timestamp electionOpTime);
     virtual void processWinElection(OID electionId, Timestamp electionOpTime);
     virtual void processLoseElection();
-    virtual bool checkShouldStandForElection(Date_t now, const OpTime& lastOpApplied) const;
+    virtual Status checkShouldStandForElection(Date_t now, const OpTime& lastOpApplied) const;
     virtual void setMyHeartbeatMessage(const Date_t now, const std::string& message);
-    virtual bool stepDown(Date_t until, bool force, const OpTime& lastOpApplied);
+    virtual bool stepDown(Date_t until,
+                          bool force,
+                          const OpTime& lastOpApplied,
+                          const OpTime& lastOpCommitted);
     virtual bool stepDownIfPending();
     virtual Date_t getStepDownTime() const;
-    virtual void prepareReplResponseMetadata(rpc::ReplSetMetadata* metadata,
-                                             const OpTime& lastVisibleOpTime,
-                                             const OpTime& lastCommitttedOpTime) const;
+    virtual void prepareReplMetadata(rpc::ReplSetMetadata* metadata,
+                                     const OpTime& lastVisibleOpTime,
+                                     const OpTime& lastCommitttedOpTime) const;
     Status processReplSetDeclareElectionWinner(const ReplSetDeclareElectionWinnerArgs& args,
                                                long long* responseTerm);
     virtual void processReplSetRequestVotes(const ReplSetRequestVotesArgs& args,
@@ -238,7 +241,7 @@ public:
     virtual HeartbeatResponseAction setMemberAsDown(Date_t now,
                                                     const int memberIndex,
                                                     const OpTime& myLastOpApplied);
-    virtual bool becomeCandidateIfElectable(const Date_t now, const OpTime& lastOpApplied);
+    virtual Status becomeCandidateIfElectable(const Date_t now, const OpTime& lastOpApplied);
     virtual void setStorageEngineSupportsReadCommitted(bool supported);
 
     ////////////////////////////////////////////////////////////
@@ -280,7 +283,8 @@ private:
         NoData = 1 << 6,
         NotInitialized = 1 << 7,
         VotedTooRecently = 1 << 8,
-        RefusesToStand = 1 << 9
+        RefusesToStand = 1 << 9,
+        NotCloseEnoughToLatestForPriorityTakeover = 1 << 10,
     };
     typedef int UnelectableReasonMask;
 
@@ -304,10 +308,17 @@ private:
     // Sees if a majority number of votes are held by members who are currently "up"
     bool _aMajoritySeemsToBeUp() const;
 
+    // Returns true if the node can see a healthy primary of equal or greater priority to the
+    // candidate.
+    bool _canSeeHealthyPrimaryOfEqualOrGreaterPriority(const int candidateIndex) const;
+
     // Is otherOpTime close enough (within 10 seconds) to the latest known optime to qualify
     // for an election
     bool _isOpTimeCloseEnoughToLatestToElect(const OpTime& otherOpTime,
                                              const OpTime& ourLastOpApplied) const;
+
+    // Is our optime close enough to the latest known optime to call for a priority takeover.
+    bool _amIFreshEnoughForPriorityTakeover(const OpTime& ourLastOpApplied) const;
 
     // Returns reason why "self" member is unelectable
     UnelectableReasonMask _getMyUnelectableReason(const Date_t now,
@@ -453,7 +464,7 @@ private:
     } _voteLease;
 
     // V1 last vote info for elections
-    LastVote _lastVote;
+    LastVote _lastVote{OpTime::kInitialTerm, -1};
 
     enum class ReadCommittedSupport {
         kUnknown,

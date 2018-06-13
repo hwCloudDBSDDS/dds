@@ -28,7 +28,6 @@
 
 import os
 import wiredtiger, wttest, run
-from wtscenario import check_scenarios, multiply_scenarios, number_scenarios
 
 # test_join04.py
 #    Join operations
@@ -37,33 +36,9 @@ class test_join04(wttest.WiredTigerTestCase):
     table_name1 = 'test_join04'
     nentries = 100
 
-    # Return the wiredtiger_open extension argument for a shared library.
-    def extensionArg(self, exts):
-        extfiles = []
-        for ext in exts:
-            (dirname, name, libname) = ext
-            if name != None and name != 'none':
-                testdir = os.path.dirname(__file__)
-                extdir = os.path.join(run.wt_builddir, 'ext', dirname)
-                extfile = os.path.join(
-                    extdir, name, '.libs', 'libwiredtiger_' + libname + '.so')
-                if not os.path.exists(extfile):
-                    self.skipTest('extension "' + extfile + '" not built')
-                if not extfile in extfiles:
-                    extfiles.append(extfile)
-        if len(extfiles) == 0:
-            return ''
-        else:
-            return ',extensions=["' + '","'.join(extfiles) + '"]'
-
-    # Override WiredTigerTestCase, we have extensions.
-    def setUpConnectionOpen(self, dir):
-        extarg = self.extensionArg([('extractors', 'csv', 'csv_extractor')])
-        connarg = 'create,error_prefix="{0}: ",{1}'.format(
-            self.shortid(), extarg)
-        conn = self.wiredtiger_open(dir, connarg)
-        self.pr(`conn`)
-        return conn
+    def conn_extensions(self, extlist):
+        extlist.skip_if_missing = True
+        extlist.extension('extractors', 'csv')
 
     # JIRA WT-2308:
     # Test extractors with equality joins
@@ -163,7 +138,6 @@ class test_join04(wttest.WiredTigerTestCase):
             jcursor.close()
             for c in cursors:
                 c.close()
-
 
 if __name__ == '__main__':
     wttest.run()

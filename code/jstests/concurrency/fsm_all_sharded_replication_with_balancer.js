@@ -9,6 +9,7 @@ var blacklist = [
     'distinct.js',             // SERVER-13116 distinct isn't sharding aware
     'distinct_noindex.js',     // SERVER-13116 distinct isn't sharding aware
     'distinct_projection.js',  // SERVER-13116 distinct isn't sharding aware
+    'create_database.js',      // SERVER-17397 Drops of sharded namespaces may not fully succeed
     'drop_database.js',        // SERVER-17397 Drops of sharded namespaces may not fully succeed
     'remove_where.js',  // SERVER-14669 Multi-removes that use $where miscount removed documents
 
@@ -52,6 +53,7 @@ var blacklist = [
     'convert_to_capped_collection_index.js',  // convertToCapped can't be run on mongos processes
     'findAndModify_remove_queue.js',          // remove cannot be {} for findAndModify
     'findAndModify_update_collscan.js',       // findAndModify requires a shard key
+    'findAndModify_update_grow.js',           // can cause OOM kills on test hosts
     'findAndModify_update_queue.js',          // findAndModify requires a shard key
     'group.js',                // the group command cannot be issued against a sharded cluster
     'group_cond.js',           // the group command cannot be issued against a sharded cluster
@@ -72,6 +74,11 @@ var blacklist = [
     'rename_collection_dbname_chain.js',
     'rename_collection_dbname_droptarget.js',
     'rename_collection_droptarget.js',
+
+    // This workload assumes that the distributed lock can always be acquired when running the split
+    // command in its setup() function; however, a LockBusy error may be returned if the balancer is
+    // running.
+    'sharded_moveChunk_drop_shard_key_index.js',
 
     'update_simple_eval.js',           // eval doesn't work with sharded collections
     'update_simple_eval_nolock.js',    // eval doesn't work with sharded collections

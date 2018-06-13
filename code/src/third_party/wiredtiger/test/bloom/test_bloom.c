@@ -26,11 +26,9 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "test_util.i"
+#include "test_util.h"
 
 static struct {
-	char *progname;				/* Program name */
-
 	WT_CONNECTION *wt_conn;			/* WT_CONNECTION handle */
 	WT_SESSION *wt_session;			/* WT_SESSION handle */
 
@@ -50,22 +48,18 @@ void cleanup(void);
 void populate_entries(void);
 void run(void);
 void setup(void);
-void usage(void);
+void usage(void)
+    WT_GCC_FUNC_DECL_ATTRIBUTE((noreturn));
 
 extern char *__wt_optarg;
 extern int __wt_optind;
-
-void (*custom_die)(void) = NULL;
 
 int
 main(int argc, char *argv[])
 {
 	int ch;
 
-	if ((g.progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		g.progname = argv[0];
-	else
-		++g.progname;
+	(void)testutil_set_progname(argv);
 
 	/* Set default configuration values. */
 	g.c_cache = 10;
@@ -76,7 +70,7 @@ main(int argc, char *argv[])
 	g.c_srand = 3233456;
 
 	/* Set values from the command line. */
-	while ((ch = __wt_getopt(g.progname, argc, argv, "c:f:k:o:s:")) != EOF)
+	while ((ch = __wt_getopt(progname, argc, argv, "c:f:k:o:s:")) != EOF)
 		switch (ch) {
 		case 'c':			/* Cache size */
 			g.c_cache = (u_int)atoi(__wt_optarg);
@@ -127,9 +121,9 @@ setup(void)
 	 * Open configuration -- put command line configuration options at the
 	 * end so they can override "standard" configuration.
 	 */
-	snprintf(config, sizeof(config),
+	testutil_check(__wt_snprintf(config, sizeof(config),
 	    "create,error_prefix=\"%s\",cache_size=%" PRIu32 "MB,%s",
-	    g.progname, g.c_cache, g.config_open == NULL ? "" : g.config_open);
+	    progname, g.c_cache, g.config_open == NULL ? "" : g.config_open));
 
 	testutil_check(wiredtiger_open(NULL, NULL, config, &conn));
 
@@ -159,8 +153,7 @@ run(void)
 	item.size = g.c_key_max;
 	for (i = 0; i < g.c_ops; i++) {
 		item.data = g.entries[i];
-		if ((ret = __wt_bloom_insert(bloomp, &item)) != 0)
-			testutil_die(ret, "__wt_bloom_insert: %" PRIu32, i);
+		__wt_bloom_insert(bloomp, &item);
 	}
 
 	testutil_check(__wt_bloom_finalize(bloomp));
@@ -189,9 +182,7 @@ run(void)
 	 * ensure the value doesn't overlap with existing values.
 	 */
 	item.size = g.c_key_max + 10;
-	item.data = calloc(item.size, 1);
-	if (item.data == NULL)
-		testutil_die(ENOMEM, "value buffer malloc");
+	item.data = dcalloc(item.size, 1);
 	memset((void *)item.data, 'a', item.size);
 	for (i = 0, fp = 0; i < g.c_ops; i++) {
 		((uint8_t *)item.data)[i % item.size] =
@@ -232,14 +223,10 @@ populate_entries(void)
 
 	srand(g.c_srand);
 
-	entries = calloc(g.c_ops, sizeof(uint8_t *));
-	if (entries == NULL)
-		testutil_die(ENOMEM, "key buffer malloc");
+	entries = dcalloc(g.c_ops, sizeof(uint8_t *));
 
 	for (i = 0; i < g.c_ops; i++) {
-		entries[i] = calloc(g.c_key_max, sizeof(uint8_t));
-		if (entries[i] == NULL)
-			testutil_die(ENOMEM, "key buffer malloc 2");
+		entries[i] = dcalloc(g.c_key_max, sizeof(uint8_t));
 		for (j = 0; j < g.c_key_max; j++)
 			entries[i][j] = 'a' + ((uint8_t)rand() % 26);
 	}
@@ -254,7 +241,7 @@ populate_entries(void)
 void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-cfkos]\n", g.progname);
+	fprintf(stderr, "usage: %s [-cfkos]\n", progname);
 	fprintf(stderr, "%s",
 	    "\t-c cache size\n"
 	    "\t-f number of bits per item\n"

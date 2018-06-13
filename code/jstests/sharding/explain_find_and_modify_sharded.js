@@ -9,7 +9,6 @@
 
     // Create a cluster with 2 shards.
     var st = new ShardingTest({shards: 2});
-    st.stopBalancer();
 
     var testDB = st.s.getDB('test');
     var shardKey = {
@@ -25,8 +24,7 @@
     // Enable sharding on the database and shard the collection.
     // Use "shard0000" as the primary shard.
     assert.commandWorked(testDB.adminCommand({enableSharding: testDB.getName()}));
-    var res = testDB.adminCommand({movePrimary: testDB.getName(), to: 'shard0000'});
-    assert(res.ok || res.errmsg == "it is already the primary");
+    st.ensurePrimaryShard(testDB.toString(), 'shard0000');
     assert.commandWorked(
         testDB.adminCommand({shardCollection: shardedColl.getFullName(), key: shardKey}));
 
@@ -86,4 +84,5 @@
     assert.commandWorked(res);
     assertExplainResult(res, 'executionStats', 'executionStages', 'shard0001', 'DELETE');
 
+    st.stop();
 })();

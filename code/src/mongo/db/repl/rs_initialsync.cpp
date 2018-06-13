@@ -69,6 +69,10 @@ using std::string;
 // Failpoint which fails initial sync and leaves on oplog entry in the buffer.
 MONGO_FP_DECLARE(failInitSyncWithBufferedEntriesLeft);
 
+// Failpoint which causes the initial sync function to hang before copying databases.
+MONGO_FP_DECLARE(initialSyncHangBeforeCopyingDatabases);
+
+
 /**
  * Truncates the oplog (removes any documents) and resets internal variables that were
  * originally initialized or affected by using values from the oplog at startup time.  These
@@ -79,8 +83,8 @@ MONGO_FP_DECLARE(failInitSyncWithBufferedEntriesLeft);
 void truncateAndResetOplog(OperationContext* txn,
                            ReplicationCoordinator* replCoord,
                            BackgroundSync* bgsync) {
-    // Clear minvalid
-    setMinValid(txn, OpTime(), DurableRequirement::None);
+    // Add field to minvalid document to tell us to restart initial sync if we crash
+    setInitialSyncFlag(txn);
 
     AutoGetDb autoDb(txn, "local", MODE_X);
     massert(28585, "no local database found", autoDb.getDb());
@@ -317,7 +321,7 @@ Status _initialSync() {
     while (r.getHost().empty()) {
         // We must prime the sync source selector so that it considers all candidates regardless
         // of oplog position, by passing in null OpTime as the last op fetched time.
-        r.connectToSyncSource(&txn, OpTime(), replCoord);
+        r.connectToSyncSource(&txn, OpTime(), OpTime(), replCoord);
         if (r.getHost().empty()) {
             std::string msg =
                 "no valid sync sources found in current replset to do an initial sync";
@@ -341,13 +345,19 @@ Status _initialSync() {
         return Status(ErrorCodes::InitialSyncFailure, msg);
     }
 
-    // Add field to minvalid document to tell us to restart initial sync if we crash
-    setInitialSyncFlag(&txn);
-
     log() << "initial sync drop all databases";
     dropAllDatabasesExceptLocal(&txn);
 
     log() << "initial sync clone all databases";
+
+    if (MONGO_FAIL_POINT(initialSyncHangBeforeCopyingDatabases)) {
+        // This log output is used in js tests so please leave it.
+        log() << "initial sync - initialSyncHangBeforeCopyingDatabases fail point "
+                 "enabled. Blocking until fail point is disabled.";
+        while (MONGO_FAIL_POINT(initialSyncHangBeforeCopyingDatabases) && !inShutdown()) {
+            mongo::sleepsecs(1);
+        }
+    }
 
     list<string> dbs = r.conn()->getDatabaseNames();
     {
@@ -457,19 +467,10 @@ Status _initialSync() {
 
     log() << "initial sync finishing up";
 
-    {
-        ScopedTransaction scopedXact(&txn, MODE_IX);
-        AutoGetDb autodb(&txn, "local", MODE_X);
-        OpTime lastOpTimeWritten(getGlobalReplicationCoordinator()->getMyLastAppliedOpTime());
-        log() << "set minValid=" << lastOpTimeWritten;
-
-        // Initial sync is now complete.  Flag this by setting minValid to the last thing we synced.
-        setMinValid(&txn, lastOpTimeWritten, DurableRequirement::None);
-        BackgroundSync::get()->setInitialSyncRequestedFlag(false);
-    }
-
+    // Initial sync is now complete.
     // Clear the initial sync flag -- cannot be done under a db lock, or recursive.
     clearInitialSyncFlag(&txn);
+    BackgroundSync::get()->setInitialSyncRequestedFlag(false);
 
     // Clear maint. mode.
     while (replCoord->getMaintenanceMode()) {
@@ -523,6 +524,8 @@ void syncDoInitialSync() {
         severe() << "The maximum number of retries have been exhausted for initial sync.";
         fassertFailedNoTrace(16233);
     }
+
+    log() << "initial sync succeeded after " << (failedAttempts + 1) << " attempt(s).";
 }
 
 }  // namespace repl

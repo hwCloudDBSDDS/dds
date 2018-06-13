@@ -32,7 +32,7 @@
 
 import os, run, random
 import wiredtiger, wttest
-from wtscenario import multiply_scenarios, number_scenarios
+from wtscenario import make_scenarios
 
 # Test encryption, when on, does not leak any information
 class test_encrypt06(wttest.WiredTigerTestCase):
@@ -86,48 +86,24 @@ class test_encrypt06(wttest.WiredTigerTestCase):
             file0_encrypt='rotn', file0_encrypt_args=key13, encrypt0=True,
             file1_encrypt='none', file1_encrypt_args='', encrypt1=False)),
     ]
-    scenarios = number_scenarios(multiply_scenarios('.', encrypt, storagetype))
+    scenarios = make_scenarios(encrypt, storagetype)
     nrecords = 1000
 
-    # Override WiredTigerTestCase, we have extensions.
-    def setUpConnectionOpen(self, dir):
-        encarg = 'encryption=(name={0}{1}),'.format(
-            self.sys_encrypt, self.sys_encrypt_args)
-        comparg = ''
-        extarg = self.extensionArg([('encryptors', self.sys_encrypt),
-            ('encryptors', self.file0_encrypt),
-            ('encryptors', self.file1_encrypt)])
-        self.open_params = 'create,error_prefix="{0}: ",{1}{2}{3}'.format(
-                self.shortid(), encarg, comparg, extarg)
-        conn = self.wiredtiger_open(dir, self.open_params)
-        self.pr(`conn`)
-        return conn
+    def conn_extensions(self, extlist):
+        extlist.skip_if_missing = True
+        extlist.extension('encryptors', self.sys_encrypt)
+        extlist.extension('encryptors', self.file0_encrypt)
+        extlist.extension('encryptors', self.file1_encrypt)
 
-    # Return the wiredtiger_open extension argument for a shared library.
-    def extensionArg(self, exts):
-        extfiles = []
-        for ext in exts:
-            (dirname, name) = ext
-            if name != None and name != 'none':
-                testdir = os.path.dirname(__file__)
-                extdir = os.path.join(run.wt_builddir, 'ext', dirname)
-                extfile = os.path.join(
-                    extdir, name, '.libs', 'libwiredtiger_' + name + '.so')
-                if not os.path.exists(extfile):
-                    self.skipTest('extension "' + extfile + '" not built')
-                if not extfile in extfiles:
-                    extfiles.append(extfile)
-        if len(extfiles) == 0:
-            return ''
-        else:
-            return ',extensions=["' + '","'.join(extfiles) + '"]'
+    def conn_config(self):
+        return 'encryption=(name={0}{1}),'.format(
+            self.sys_encrypt, self.sys_encrypt_args)
 
     def encrypt_file_params(self, name, args):
         if name == None:
             return ''
         else:
             return ',encryption=(name=' + name + args + ')'
-
 
     def match_string_in_file(self, fname, match):
         with open(fname, 'rb') as f:
@@ -222,7 +198,6 @@ class test_encrypt06(wttest.WiredTigerTestCase):
                          not self.match_string_in_rundir(txt0))
         self.assertEqual(self.expected_encryption(self.encrypt1),
                          not self.match_string_in_rundir(txt1))
-
 
 if __name__ == '__main__':
     wttest.run()

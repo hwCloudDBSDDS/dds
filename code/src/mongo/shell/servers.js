@@ -779,16 +779,18 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
     /**
      * Starts an instance of the specified mongo tool
      *
-     * @param {String} binaryName The name of the tool to run
-     * @param {Object} opts options to pass to the tool
-     *    {
-     *      binVersion {string}: version of tool to run
-     *    }
+     * @param {String} binaryName - The name of the tool to run.
+     * @param {Object} [opts={}] - Options of the form --flag or --key=value to pass to the tool.
+     * @param {string} [opts.binVersion] - The version of the tool to run.
+     *
+     * @param {...string} positionalArgs - Positional arguments to pass to the tool after all
+     * options have been specified. For example,
+     * MongoRunner.runMongoTool("executable", {key: value}, arg1, arg2) would invoke
+     * ./executable --key value arg1 arg2.
      *
      * @see MongoRunner.arrOptions
      */
-    MongoRunner.runMongoTool = function(binaryName, opts) {
-
+    MongoRunner.runMongoTool = function(binaryName, opts, ... positionalArgs) {
         var opts = opts || {};
         // Normalize and get the binary version to use
         opts.binVersion = MongoRunner.getBinVersionFor(opts.binVersion);
@@ -798,14 +800,46 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         // connecting for up to 30 seconds to handle when the tests are run on a
         // resource-constrained host machine.
         if (!opts.hasOwnProperty('dialTimeout') &&
-            MongoRunner.getBinVersionFor(opts.binVersion) === '') {
+            _toolVersionSupportsDialTimeout(opts.binVersion)) {
             opts['dialTimeout'] = '30';
         }
 
+        // Convert 'opts' into an array of arguments.
         var argsArray = MongoRunner.arrOptions(binaryName, opts);
 
-        return runMongoProgram.apply(null, argsArray);
+        // Append any positional arguments that were specified.
+        argsArray.push(... positionalArgs);
 
+        return runMongoProgram.apply(null, argsArray);
+    };
+
+    var _toolVersionSupportsDialTimeout = function(version) {
+        if (version === "latest" || version === "") {
+            return true;
+        }
+        var versionParts =
+            convertVersionStringToArray(version).slice(0, 3).map(part => parseInt(part, 10));
+        if (versionParts.length === 2) {
+            versionParts.push(Infinity);
+        }
+
+        if (versionParts[0] > 3 || (versionParts[0] === 3 && versionParts[1] > 3)) {
+            // The --dialTimeout command line option is supported by the tools
+            // with a major version newer than 3.3.
+            return true;
+        }
+
+        for (var supportedVersion of["3.3.4", "3.2.5", "3.0.12"]) {
+            var supportedVersionParts = convertVersionStringToArray(supportedVersion)
+                                            .slice(0, 3)
+                                            .map(part => parseInt(part, 10));
+            if (versionParts[0] === supportedVersionParts[0] &&
+                versionParts[1] === supportedVersionParts[1] &&
+                versionParts[2] >= supportedVersionParts[2]) {
+                return true;
+            }
+        }
+        return false;
     };
 
     // Given a test name figures out a directory for that test to use for dump files and makes sure
@@ -883,6 +917,19 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                 if (jsTest.options().storageEngine) {
                     if (argArray.indexOf("--storageEngine") < 0) {
                         argArray.push(...['--storageEngine', jsTest.options().storageEngine]);
+                    }
+                }
+                if (jsTest.options().storageEngineCacheSizeGB) {
+                    if (jsTest.options().storageEngine === "rocksdb") {
+                        argArray.push(
+                            ...
+                            ['--rocksdbCacheSizeGB', jsTest.options().storageEngineCacheSizeGB]);
+                    } else if (jsTest.options().storageEngine === "wiredTiger" ||
+                               !jsTest.options().storageEngine) {
+                        argArray.push(...[
+                            '--wiredTigerCacheSizeGB',
+                            jsTest.options().storageEngineCacheSizeGB
+                        ]);
                     }
                 }
                 if (jsTest.options().wiredTigerEngineConfigString) {

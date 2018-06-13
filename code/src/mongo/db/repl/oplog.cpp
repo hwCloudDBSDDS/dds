@@ -114,6 +114,11 @@ namespace {
 Database* _localDB = nullptr;
 Collection* _localOplogCollection = nullptr;
 
+// Specifies whether we abort initial sync when attempting to apply a renameCollection operation.
+// If set to true, users risk corrupting their data. This should only be enabled by expert users
+// of the server who understand the risks this poses.
+MONGO_EXPORT_SERVER_PARAMETER(allowUnsafeRenamesDuringInitialSync, bool, false);
+
 PseudoRandom hashGenerator(std::unique_ptr<SecureRandom>(SecureRandom::create())->nextInt64());
 
 // Synchronizes the section where a new Timestamp is generated and when it actually
@@ -304,7 +309,7 @@ unique_ptr<OplogDocWriter> _logOpWriter(OperationContext* txn,
 }
 }  // end anon namespace
 
-// Truncates the oplog to and including the "truncateTimestamp" entry.
+// Truncates the oplog after and including the "truncateTimestamp" entry.
 void truncateOplogTo(OperationContext* txn, Timestamp truncateTimestamp) {
     const NamespaceString oplogNss(rsOplogName);
     ScopedTransaction transaction(txn, MODE_IX);
@@ -318,36 +323,41 @@ void truncateOplogTo(OperationContext* txn, Timestamp truncateTimestamp) {
     }
 
     // Scan through oplog in reverse, from latest entry to first, to find the truncateTimestamp.
-    bool foundSomethingToTruncate = false;
-    RecordId lastRecordId;
-    BSONObj lastOplogEntry;
+    RecordId oldestIDToDelete;  // Non-null if there is something to delete.
     auto oplogRs = oplogCollection->getRecordStore();
-    auto oplogReverseCursor = oplogRs->getCursor(txn, false);
-    bool first = true;
+    auto oplogReverseCursor = oplogRs->getCursor(txn, /*forward=*/false);
+    size_t count = 0;
     while (auto next = oplogReverseCursor->next()) {
-        lastOplogEntry = next->data.releaseToBson();
-        lastRecordId = next->id;
+        const BSONObj entry = next->data.releaseToBson();
+        const RecordId id = next->id;
+        count++;
 
-        const auto tsElem = lastOplogEntry["ts"];
-
-        if (first) {
+        const auto tsElem = entry["ts"];
+        if (count == 1) {
             if (tsElem.eoo())
-                LOG(2) << "Oplog tail entry: " << lastOplogEntry;
+                LOG(2) << "Oplog tail entry: " << entry;
             else
                 LOG(2) << "Oplog tail entry ts field: " << tsElem;
-            first = false;
         }
 
         if (tsElem.timestamp() < truncateTimestamp) {
-            break;
+            // If count == 1, that means that we have nothing to delete because everything in the
+            // oplog is < truncateTimestamp.
+            if (count != 1) {
+                invariant(!oldestIDToDelete.isNull());
+                oplogCollection->temp_cappedTruncateAfter(
+                    txn, oldestIDToDelete, /*inclusive=*/true);
+            }
+            return;
         }
 
-        foundSomethingToTruncate = true;
+        oldestIDToDelete = id;
     }
 
-    if (foundSomethingToTruncate) {
-        oplogCollection->temp_cappedTruncateAfter(txn, lastRecordId, false);
-    }
+    severe() << "Reached end of oplog looking for oplog entry before "
+             << truncateTimestamp.toStringPretty()
+             << " but couldn't find any after looking through " << count << " entries.";
+    fassertFailedNoTrace(40296);
 }
 
 /* we write to local.oplog.rs:
@@ -639,7 +649,8 @@ std::map<std::string, ApplyOpMetadata> opsMap = {
      {[](OperationContext* txn, const char* ns, BSONObj& cmd) -> Status {
          BSONObjBuilder resultWeDontCareAbout;
          return collMod(txn, parseNs(ns, cmd), cmd, &resultWeDontCareAbout);
-     }}},
+     },
+      {ErrorCodes::IndexNotFound, ErrorCodes::NamespaceNotFound}}},
     {"dropDatabase",
      {[](OperationContext* txn, const char* ns, BSONObj& cmd)
           -> Status { return dropDatabase(txn, NamespaceString(ns).db().toString()); },
@@ -707,7 +718,7 @@ std::map<std::string, ApplyOpMetadata> opsMap = {
 Status applyOperation_inlock(OperationContext* txn,
                              Database* db,
                              const BSONObj& op,
-                             bool convertUpdateToUpsert) {
+                             bool inSteadyStateReplication) {
     LOG(3) << "applying op: " << op << endl;
 
     OpCounters* opCounters = txn->writesAreReplicated() ? &globalOpCounters : &replOpCounters;
@@ -789,6 +800,7 @@ Status applyOperation_inlock(OperationContext* txn,
                     // Wait for thread to start and register itself
                     IndexBuilder::waitForBgIndexStarting();
                 }
+                txn->recoveryUnit()->abandonSnapshot();
             } else {
                 IndexBuilder builder(o);
                 Status status = builder.buildInForeground(txn, db);
@@ -818,11 +830,7 @@ Status applyOperation_inlock(OperationContext* txn,
         Status status{ErrorCodes::NotYetInitialized, ""};
         {
             WriteUnitOfWork wuow(txn);
-            try {
-                status = collection->insertDocument(txn, o, true);
-            } catch (DBException dbe) {
-                status = dbe.toStatus();
-            }
+            status = collection->insertDocument(txn, o, true);
             if (status.isOK()) {
                 wuow.commit();
             }
@@ -861,7 +869,7 @@ Status applyOperation_inlock(OperationContext* txn,
 
         OpDebug debug;
         BSONObj updateCriteria = o2;
-        const bool upsert = valueB || convertUpdateToUpsert;
+        const bool upsert = valueB || inSteadyStateReplication;
 
         uassert(ErrorCodes::NoSuchKey,
                 str::stream() << "Failed to apply update due to missing _id: " << op.toString(),
@@ -944,7 +952,9 @@ Status applyOperation_inlock(OperationContext* txn,
     return Status::OK();
 }
 
-Status applyCommand_inlock(OperationContext* txn, const BSONObj& op) {
+Status applyCommand_inlock(OperationContext* txn,
+                           const BSONObj& op,
+                           bool inSteadyStateReplication) {
     const char* names[] = {"o", "ns", "op"};
     BSONElement fields[3];
     op.getFields(3, names, fields);
@@ -966,6 +976,19 @@ Status applyCommand_inlock(OperationContext* txn, const BSONObj& op) {
     BSONObj o = fieldO.embeddedObject();
 
     const char* ns = fieldNs.valuestrsafe();
+
+    // Applying renameCollection during initial sync might lead to data corruption, so we restart
+    // the initial sync.
+    if (!inSteadyStateReplication && o.firstElementFieldName() == std::string("renameCollection")) {
+        if (!allowUnsafeRenamesDuringInitialSync.load()) {
+            return Status(ErrorCodes::OplogOperationUnsupported,
+                          str::stream()
+                              << "Applying renameCollection not supported in initial sync: " << op);
+        }
+        warning() << "allowUnsafeRenamesDuringInitialSync set to true. Applying renameCollection "
+                     "operation during initial sync even though it may lead to data corruption: "
+                  << op;
+    }
 
     // Applying commands in repl is done under Global W-lock, so it is safe to not
     // perform the current DB checks after reacquiring the lock.
@@ -1185,8 +1208,7 @@ void SnapshotThread::run() {
                 invariant(!opTimeOfSnapshot.isNull());
             }
 
-            _manager->createSnapshot(txn.get(), name);
-            replCoord->onSnapshotCreate(opTimeOfSnapshot, name);
+            replCoord->createSnapshot(txn.get(), opTimeOfSnapshot, name);
         } catch (const WriteConflictException& wce) {
             log() << "skipping storage snapshot pass due to write conflict";
             continue;

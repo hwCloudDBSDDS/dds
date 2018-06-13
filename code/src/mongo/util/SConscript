@@ -248,7 +248,8 @@ if env['MONGO_ALLOCATOR'] == 'tcmalloc':
         # level configure check, though its effects should still be scoped just to these files.
         tcmspEnv.Append(
             CPPDEFINES=[
-                'MONGO_HAVE_GPERFTOOLS_GET_THREAD_CACHE_SIZE'
+                'MONGO_HAVE_GPERFTOOLS_GET_THREAD_CACHE_SIZE',
+                'MONGO_HAVE_GPERFTOOLS_SIZE_CLASS_STATS'
             ]
         )
 
@@ -257,6 +258,7 @@ if env['MONGO_ALLOCATOR'] == 'tcmalloc':
         source=[
             'tcmalloc_server_status_section.cpp',
             'tcmalloc_set_parameter.cpp',
+            'heap_profiler.cpp',
         ],
         LIBDEPS=[
             # TODO: This is needless, the definition of
@@ -444,3 +446,44 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/base',
     ]
 )
+
+if env.TargetOSIs('linux'):
+    env.Library(
+        target='procparser',
+        source=[
+            "procparser.cpp",
+        ],
+        LIBDEPS=[
+            '$BUILD_DIR/mongo/base',
+        ],
+    )
+
+    env.CppUnitTest(
+        target='procparser_test',
+        source=[
+            'procparser_test.cpp',
+        ],
+        LIBDEPS=[
+            'procparser',
+        ])
+
+if env.TargetOSIs('windows'):
+    env.Library(
+        target='perfctr_collect',
+        source=[
+            "perfctr_collect.cpp",
+        ],
+        LIBDEPS=[
+            '$BUILD_DIR/mongo/base',
+            '$BUILD_DIR/mongo/platform/platform',
+        ],
+    )
+
+    env.CppUnitTest(
+        target='perfctr_collect_test',
+        source=[
+            'perfctr_collect_test.cpp',
+        ],
+        LIBDEPS=[
+            'perfctr_collect',
+        ])

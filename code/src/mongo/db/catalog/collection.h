@@ -38,6 +38,7 @@
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/mutable/damage_vector.h"
+#include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/collection_info_cache.h"
 #include "mongo/db/catalog/cursor_manager.h"
 #include "mongo/db/catalog/index_catalog.h"
@@ -257,7 +258,6 @@ public:
     void deleteDocument(OperationContext* txn,
                         const RecordId& loc,
                         bool fromMigrate = false,
-                        bool cappedOK = false,
                         bool noWarn = false);
 
     /*
@@ -363,6 +363,16 @@ public:
      */
     void temp_cappedTruncateAfter(OperationContext* txn, RecordId end, bool inclusive);
 
+    enum ValidationAction { WARN, ERROR_V };
+    enum ValidationLevel { OFF, MODERATE, STRICT_V };
+
+    /**
+     * Returns a non-ok Status if validator is not legal for this collection.
+     */
+    StatusWithMatchExpression parseValidator(const BSONObj& validator) const;
+
+    static StatusWith<ValidationLevel> parseValidationLevel(StringData);
+    static StatusWith<ValidationAction> parseValidationAction(StringData);
     /**
      * Sets the validator for this collection.
      *
@@ -423,16 +433,17 @@ public:
      */
     void notifyCappedWaitersIfNeeded();
 
+    /**
+     * This function is necessary for a 3.2 backport. We have a better fix for the
+     * underlying issue in later versions.
+     */
+    UpdateNotifier* getUpdateNotifier();
+
 private:
     /**
      * Returns a non-ok Status if document does not pass this collection's validator.
      */
     Status checkValidation(OperationContext* txn, const BSONObj& document) const;
-
-    /**
-     * Returns a non-ok Status if validator is not legal for this collection.
-     */
-    StatusWithMatchExpression parseValidator(const BSONObj& validator) const;
 
     Status recordStoreGoingToMove(OperationContext* txn,
                                   const RecordId& oldLocation,
@@ -471,11 +482,9 @@ private:
     BSONObj _validatorDoc;
     // Points into _validatorDoc. Null means no filter.
     std::unique_ptr<MatchExpression> _validator;
-    enum ValidationAction { WARN, ERROR_V } _validationAction;
-    enum ValidationLevel { OFF, MODERATE, STRICT_V } _validationLevel;
 
-    static StatusWith<ValidationLevel> _parseValidationLevel(StringData);
-    static StatusWith<ValidationAction> _parseValidationAction(StringData);
+    ValidationAction _validationAction;
+    ValidationLevel _validationLevel;
 
     // this is mutable because read only users of the Collection class
     // use it keep state.  This seems valid as const correctness of Collection

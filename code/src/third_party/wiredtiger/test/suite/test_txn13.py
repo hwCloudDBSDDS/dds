@@ -33,7 +33,7 @@
 
 #import fnmatch, os, shutil, run, time
 from suite_subprocess import suite_subprocess
-from wtscenario import check_scenarios
+from wtscenario import make_scenarios
 import wiredtiger, wttest
 
 class test_txn13(wttest.WiredTigerTestCase, suite_subprocess):
@@ -43,14 +43,14 @@ class test_txn13(wttest.WiredTigerTestCase, suite_subprocess):
     nops = 1024
     create_params = 'key_format=i,value_format=S'
 
-    scenarios = check_scenarios([
+    scenarios = make_scenarios([
         ('1gb', dict(expect_err=False, valuesize=1048576)),
         ('2gb', dict(expect_err=False, valuesize=2097152)),
         ('4gb', dict(expect_err=True, valuesize=4194304))
     ])
 
     # Turn on logging for this test.
-    def conn_config(self, dir):
+    def conn_config(self):
         return 'log=(archive=false,enabled,file_max=%s)' % self.logmax + \
             ',cache_size=8G'
 

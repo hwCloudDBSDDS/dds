@@ -379,12 +379,24 @@ public:
     /**
      * Tries to transition the coordinator from the leader role to the follower role.
      *
-     * Fails if "force" is not set and no follower is known to be up.  It is illegal
-     * to call this method if the node is not leader.
+     * If force==true, step down this node and return true immediately. Else, a step down
+     * succeeds only if the following conditions are met:
      *
-     * Returns whether or not the step down succeeded.
+     *      C1. A majority set of nodes, M, in the replica set have optimes greater than or
+     *      equal to the last applied optime of the primary.
+     *
+     *      C2. If C1 holds, then there must exist at least one electable secondary node in the
+     *      majority set M.
+     *
+     * If C1 and C2 hold, a step down occurs and this method returns true. Else, the step down
+     * fails and this method returns false.
+     *
+     * NOTE: It is illegal to call this method if the node is not a primary.
      */
-    virtual bool stepDown(Date_t until, bool force, const OpTime& lastOpApplied) = 0;
+    virtual bool stepDown(Date_t until,
+                          bool force,
+                          const OpTime& lastOpApplied,
+                          const OpTime& lastOpCommitted) = 0;
 
     /**
      * Sometimes a request to step down comes in (like via a heartbeat), but we don't have the
@@ -400,7 +412,7 @@ public:
      * Considers whether or not this node should stand for election, and returns true
      * if the node has transitioned to candidate role as a result of the call.
      */
-    virtual bool checkShouldStandForElection(Date_t now, const OpTime& lastOpApplied) const = 0;
+    virtual Status checkShouldStandForElection(Date_t now, const OpTime& lastOpApplied) const = 0;
 
     /**
      * Set the outgoing heartbeat message from self
@@ -410,9 +422,9 @@ public:
     /**
      * Prepares a BSONObj describing the current term, primary, and lastOp information.
      */
-    virtual void prepareReplResponseMetadata(rpc::ReplSetMetadata* metadata,
-                                             const OpTime& lastVisibleOpTime,
-                                             const OpTime& lastCommittedOpTime) const = 0;
+    virtual void prepareReplMetadata(rpc::ReplSetMetadata* metadata,
+                                     const OpTime& lastVisibleOpTime,
+                                     const OpTime& lastCommittedOpTime) const = 0;
 
     /**
      * Writes into 'output' all the information needed to generate a summary of the current
@@ -456,7 +468,7 @@ public:
     /**
      * Transitions to the candidate role if the node is electable.
      */
-    virtual bool becomeCandidateIfElectable(const Date_t now, const OpTime& lastOpApplied) = 0;
+    virtual Status becomeCandidateIfElectable(const Date_t now, const OpTime& lastOpApplied) = 0;
 
     /**
      * Updates the storage engine read committed support in the TopologyCoordinator options after

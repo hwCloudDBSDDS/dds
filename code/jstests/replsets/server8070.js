@@ -1,3 +1,5 @@
+load("jstests/replsets/rslib.js");
+
 // Test for SERVER-8070: Flush buffer before changing sync targets to prevent unnecessary rollbacks
 // This test writes 50 ops to one secondary's data (member2) and 25 ops to the other secondary's
 // data (member3), then puts 50 more ops in member3's buffer and makes sure that member3 doesn't try
@@ -40,8 +42,9 @@ master.getDB("foo").bar.insert({x: 1});
 replSet.awaitReplication();
 
 jsTest.log("Make sure 2 & 3 are syncing from the primary");
-member2.adminCommand({replSetSyncFrom: getHostName() + ":" + replSet.ports[0]});
-member3.adminCommand({replSetSyncFrom: getHostName() + ":" + replSet.ports[0]});
+assert.eq(master, replSet.nodes[0]);
+syncFrom(replSet.nodes[1], master, replSet);
+syncFrom(replSet.nodes[2], master, replSet);
 
 jsTest.log("Stop 2's replication");
 member2.runCommand({configureFailPoint: 'rsSyncApplyStop', mode: 'alwaysOn'});
@@ -100,8 +103,8 @@ assert(syncingTo !== getHostName() + ":" + replSet.ports[1], "node 3 is syncing 
 
 jsTest.log("Pause 3's bgsync thread");
 var rsBgSyncProduceResult3 =
-    member3.runCommand({configureFailPoint: 'rsBgSyncProduce', mode: 'alwaysOn'});
-assert.eq(1, rsBgSyncProduceResult3.ok, "member 3 rsBgSyncProduce admin command failed");
+    member3.runCommand({configureFailPoint: 'stopReplProducer', mode: 'alwaysOn'});
+assert.eq(1, rsBgSyncProduceResult3.ok, "member 3 stopReplProducer admin command failed");
 
 // count documents in member 3
 assert.eq(26,
@@ -123,7 +126,7 @@ assert.soon(function() {
 }, "Replication member 3 did not apply ops 25-75");
 
 jsTest.log("Start 3's bgsync thread");
-member3.runCommand({configureFailPoint: 'rsBgSyncProduce', mode: 'off'});
+member3.runCommand({configureFailPoint: 'stopReplProducer', mode: 'off'});
 
 jsTest.log("Node 3 shouldn't hit rollback");
 var end = (new Date()).getTime() + 10000;

@@ -44,8 +44,13 @@
 
 namespace mongo {
 
-WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn, int epoch)
-    : _epoch(epoch), _session(NULL), _cursorGen(0), _cursorsCached(0), _cursorsOut(0) {
+WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn, uint64_t epoch, uint64_t cursorEpoch)
+    : _epoch(epoch),
+      _cursorEpoch(cursorEpoch),
+      _session(NULL),
+      _cursorGen(0),
+      _cursorsCached(0),
+      _cursorsOut(0) {
     invariantWTOK(conn->open_session(conn, NULL, "isolation=snapshot", &_session));
 }
 
@@ -101,15 +106,32 @@ void WiredTigerSession::releaseCursor(uint64_t id, WT_CURSOR* cursor) {
     }
 }
 
-void WiredTigerSession::closeAllCursors() {
+void WiredTigerSession::closeAllCursors(const std::string& uri) {
     invariant(_session);
-    for (CursorCache::iterator i = _cursors.begin(); i != _cursors.end(); ++i) {
+
+    bool all = (uri == "");
+    for (auto i = _cursors.begin(); i != _cursors.end();) {
+        WT_CURSOR* cursor = i->_cursor;
+        if (cursor && (all || uri == cursor->uri)) {
+            invariantWTOK(cursor->close(cursor));
+            i = _cursors.erase(i);
+        } else
+            ++i;
+    }
+}
+
+void WiredTigerSession::closeCursorsForQueuedDrops(uint64_t cursorEpoch,
+                                                   WiredTigerKVEngine* engine) {
+    invariant(_session);
+
+    auto toDrop = engine->filterCursorsWithQueuedDrops(&_cursors);
+
+    for (auto i = toDrop.begin(); i != toDrop.end(); i++) {
         WT_CURSOR* cursor = i->_cursor;
         if (cursor) {
             invariantWTOK(cursor->close(cursor));
         }
     }
-    _cursors.clear();
 }
 
 namespace {
@@ -154,6 +176,12 @@ void WiredTigerSessionCache::shuttingDown() {
 }
 
 void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint) {
+    // For inMemory storage engines, the data is "as durable as it's going to get".
+    // That is, a restart is equivalent to a complete node failure.
+    if (isEphemeral()) {
+        return;
+    }
+
     const int shuttingDown = _shuttingDown.fetchAndAdd(1);
     ON_BLOCK_EXIT([this] { _shuttingDown.fetchAndSubtract(1); });
 
@@ -199,7 +227,7 @@ void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint) {
     JournalListener::Token token = _journalListener->getToken();
 
     // Use the journal when available, or a checkpoint otherwise.
-    if (_engine->isDurable()) {
+    if (_engine && _engine->isDurable()) {
         invariantWTOK(s->log_flush(s, "sync=on"));
         LOG(4) << "flushed journal";
     } else {
@@ -209,8 +237,25 @@ void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint) {
     _journalListener->onDurable(token);
 }
 
+void WiredTigerSessionCache::closeAllCursors(const std::string& uri) {
+    stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+    for (SessionCache::iterator i = _sessions.begin(); i != _sessions.end(); i++) {
+        (*i)->closeAllCursors(uri);
+    }
+}
+
+void WiredTigerSessionCache::closeCursorsForQueuedDrops() {
+    // Increment the cursor epoch so that all cursors from this epoch are closed.
+    uint64_t cursorEpoch = _cursorEpoch.addAndFetch(1);
+
+    stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+    for (SessionCache::iterator i = _sessions.begin(); i != _sessions.end(); i++) {
+        (*i)->closeCursorsForQueuedDrops(cursorEpoch, _engine);
+    }
+}
+
 void WiredTigerSessionCache::closeAll() {
-    // Increment the epoch as we are now closing all sessions with this epoch
+    // Increment the epoch as we are now closing all sessions with this epoch.
     SessionCache swap;
 
     {
@@ -245,7 +290,7 @@ WiredTigerSession* WiredTigerSessionCache::getSession() {
     }
 
     // Outside of the cache partition lock, but on release will be put back on the cache
-    return new WiredTigerSession(_conn, _epoch.load());
+    return new WiredTigerSession(_conn, _epoch.load(), _cursorEpoch.load());
 }
 
 void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
@@ -256,21 +301,32 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
     ON_BLOCK_EXIT([this] { _shuttingDown.fetchAndSubtract(1); });
 
     if (shuttingDown & kShuttingDownMask) {
-        // Leak the session in order to avoid race condition with clean shutdown, where the
-        // storage engine is ripped from underneath transactions, which are not "active"
-        // (i.e., do not have any locks), but are just about to delete the recovery unit.
-        // See SERVER-16031 for more information.
+        // There is a race condition with clean shutdown, where the storage engine is ripped from
+        // underneath OperationContexts, which are not "active" (i.e., do not have any locks), but
+        // are just about to delete the recovery unit. See SERVER-16031 for more information. Since
+        // shutting down the WT_CONNECTION will close all WT_SESSIONS, we shouldn't also try to
+        // directly close this session.
+        session->_session = nullptr;  // Prevents calling _session->close() in destructor.
+        delete session;
         return;
     }
 
-    // This checks that we are only caching idle sessions and not something which might hold
-    // locks or otherwise prevent truncation.
     {
         WT_SESSION* ss = session->getSession();
         uint64_t range;
+        // This checks that we are only caching idle sessions and not something which might hold
+        // locks or otherwise prevent truncation.
         invariantWTOK(ss->transaction_pinned_range(ss, &range));
         invariant(range == 0);
+
+        // Release resources in the session we're about to cache.
+        invariantWTOK(ss->reset(ss));
     }
+
+    // If the cursor epoch has moved on, close all cursors in the session.
+    uint64_t cursorEpoch = _cursorEpoch.load();
+    if (session->_getCursorEpoch() != cursorEpoch)
+        session->closeCursorsForQueuedDrops(cursorEpoch, _engine);
 
     bool returnedToCache = false;
     uint64_t currentEpoch = _epoch.load();
@@ -288,7 +344,7 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
         delete session;
 
     if (_engine && _engine->haveDropsQueued())
-        _engine->dropAllQueued();
+        _engine->dropSomeQueuedIdents();
 }
 
 void WiredTigerSessionCache::setJournalListener(JournalListener* jl) {

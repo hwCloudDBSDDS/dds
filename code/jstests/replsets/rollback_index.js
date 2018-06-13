@@ -38,7 +38,7 @@ var b_conn = conns[1];
 var AID = replTest.getNodeId(a_conn);
 var BID = replTest.getNodeId(b_conn);
 
-replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY, 60 * 1000);
+replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY);
 
 // get master and do an initial write
 var master = replTest.getPrimary();
@@ -78,7 +78,7 @@ options = {
     writeConcern: {w: 1, wtimeout: 60000}
 };
 assert.writeOK(a_conn.getDB(name).foo.insert({x: 1}, options));
-assert.eq(2, a_conn.getDB(name).foo.count(), 'invalid number of documents on A');
+assert.eq(2, a_conn.getDB(name).foo.find().itcount(), 'invalid number of documents on A');
 
 // restart B, which should rollback.
 replTest.restart(BID);
@@ -89,13 +89,13 @@ replTest.awaitSecondaryNodes();
 
 // Perform a write that should succeed if there's no unique index on B.
 options = {
-    writeConcern: {w: 'majority', wtimeout: 10000}
+    writeConcern: {w: 'majority', wtimeout: 60000}
 };
 assert.writeOK(a_conn.getDB(name).foo.insert({x: 1}, options));
 
 // Check collections and indexes.
 assert.eq(3,
-          b_conn.getDB(name).foo.count(),
+          b_conn.getDB(name).foo.find().itcount(),
           'Collection on B does not have the same number of documents as A');
 assert.eq(a_conn.getDB(name).foo.getIndexes().length,
           b_conn.getDB(name).foo.getIndexes().length,

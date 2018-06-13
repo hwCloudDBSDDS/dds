@@ -113,7 +113,7 @@ public:
 
     virtual void startReplication(OperationContext* txn) override;
 
-    virtual void shutdown() override;
+    virtual void shutdown(OperationContext* txn) override;
 
     virtual ReplicationExecutor* getExecutor() override {
         return &_replExecutor;
@@ -217,7 +217,8 @@ public:
 
     virtual void processReplSetGetConfig(BSONObjBuilder* result) override;
 
-    virtual void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata) override;
+    virtual void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata,
+                                        bool advanceCommitPoint) override;
 
     virtual void cancelAndRescheduleElectionTimeout() override;
 
@@ -290,9 +291,8 @@ public:
     virtual Status processReplSetDeclareElectionWinner(const ReplSetDeclareElectionWinnerArgs& args,
                                                        long long* responseTerm) override;
 
-    void prepareReplResponseMetadata(const rpc::RequestInterface&,
-                                     const OpTime& lastOpTimeFromClient,
-                                     BSONObjBuilder* builder) override;
+    virtual void prepareReplMetadata(const OpTime& lastOpTimeFromClient,
+                                     BSONObjBuilder* builder) const override;
 
     virtual Status processHeartbeatV1(const ReplSetHeartbeatArgsV1& args,
                                       ReplSetHeartbeatResponse* response) override;
@@ -315,9 +315,11 @@ public:
 
     virtual void forceSnapshotCreation() override;
 
-    virtual void onSnapshotCreate(OpTime timeOfSnapshot, SnapshotName name) override;
+    virtual void createSnapshot(OperationContext* txn,
+                                OpTime timeOfSnapshot,
+                                SnapshotName name) override;
 
-    virtual OpTime getCurrentCommittedSnapshotOpTime() override;
+    virtual OpTime getCurrentCommittedSnapshotOpTime() const override;
 
     virtual void waitUntilSnapshotCommitted(OperationContext* txn,
                                             const SnapshotName& untilSnapshot) override;
@@ -440,6 +442,7 @@ private:
         bool operator>=(const SnapshotInfo& other) const {
             return std::tie(opTime, name) >= std::tie(other.opTime, other.name);
         }
+        std::string toString() const;
     };
 
     class LoseElectionGuardV1;
@@ -662,11 +665,11 @@ private:
                                             Status* result);
 
     /**
-     * Bottom half of prepareReplResponseMetadata.
+     * Bottom half of prepareReplMetadata.
      */
     void _prepareReplResponseMetadata_finish(const ReplicationExecutor::CallbackArgs& cbData,
                                              const OpTime& lastOpTimeFromClient,
-                                             rpc::ReplSetMetadata* metadata);
+                                             rpc::ReplSetMetadata* metadata) const;
     /**
      * Scheduled to cause the ReplicationCoordinator to reconsider any state that might
      * need to change as a result of time passing - for instance becoming PRIMARY when a single
@@ -890,7 +893,8 @@ private:
      */
     void _finishReplSetReconfig(const ReplicationExecutor::CallbackArgs& cbData,
                                 const ReplicaSetConfig& newConfig,
-                                int myIndex);
+                                int myIndex,
+                                ReplicationExecutor::EventHandle finishedEvent);
 
     /**
      * Changes _rsConfigState to newState, and notify any waiters.
@@ -1024,7 +1028,10 @@ private:
      */
     void _requestRemotePrimaryStepdown(const HostAndPort& target);
 
-    ReplicationExecutor::EventHandle _stepDownStart();
+    /**
+     * Schedules stepdown to run with the global exclusive lock.
+     */
+    ReplicationExecutor::EventHandle _stepDownStart(bool hasMutex);
 
     /**
      * Completes a step-down of the current node.  Must be run with a global
@@ -1063,9 +1070,11 @@ private:
      * Utility method that schedules or performs actions specified by a HeartbeatResponseAction
      * returned by a TopologyCoordinator::processHeartbeatResponse(V1) call with the given
      * value of "responseStatus".
+     * 'hasMutex' is true if the caller is holding _mutex.  TODO(SERVER-27083): Remove this.
      */
     void _handleHeartbeatResponseAction(const HeartbeatResponseAction& action,
-                                        const StatusWith<ReplSetHeartbeatResponse>& responseStatus);
+                                        const StatusWith<ReplSetHeartbeatResponse>& responseStatus,
+                                        bool hasMutex);
 
     /**
      * Bottom half of processHeartbeat(), which runs in the replication executor.
@@ -1115,11 +1124,13 @@ private:
 
     /**
      * Callback that processes the ReplSetMetadata returned from a command run against another
-     * replica set member and updates protocol version 1 information (most recent optime that is
-     * committed, member id of the current PRIMARY, the current config version and the current term)
+     * replica set member and so long as the config version in the metadata matches the replica set
+     * config version this node currently has, updates the current term and optionally updates
+     * this node's notion of the commit point.
      * Returns the finish event which is invalid if the process has already finished.
      */
-    EventHandle _processReplSetMetadata_incallback(const rpc::ReplSetMetadata& replMetadata);
+    EventHandle _processReplSetMetadata_incallback(const rpc::ReplSetMetadata& replMetadata,
+                                                   bool advanceCommitPoint);
 
     /**
      * Blesses a snapshot to be used for new committed reads.
@@ -1175,11 +1186,11 @@ private:
     void _startElectSelfIfEligibleV1(bool isPriorityTakeover);
 
     /**
-     * Reset the term of last vote to 0 to prevent any node from voting for term 0.
-     * Blocking until last vote write finishes. Must be called without holding _mutex.
+     * Resets the term of last vote to 0 to prevent any node from voting for term 0.
+     * Returns the event handle that indicates when last vote write finishes.
      */
-    void _resetElectionInfoOnProtocolVersionUpgrade(const ReplicaSetConfig& oldConfig,
-                                                    const ReplicaSetConfig& newConfig);
+    EventHandle _resetElectionInfoOnProtocolVersionUpgrade(const ReplicaSetConfig& oldConfig,
+                                                           const ReplicaSetConfig& newConfig);
 
     /**
      * Schedules work and returns handle to callback.
@@ -1280,6 +1291,14 @@ private:
     // Rollback ID. Used to check if a rollback happened during some interval of time
     // TODO: ideally this should only change on rollbacks NOT on mongod restarts also.
     int _rbid;  // (M)
+
+    // Indicates that we've received a request to stepdown from PRIMARY (likely via a heartbeat)
+    // TODO(SERVER-27083): This bool is redundant of the same-named bool in TopologyCoordinatorImpl,
+    // but due to mutex ordering between _mutex and _topoMutex we can't inspect the
+    // TopologyCoordinator field in awaitReplication() where this bool is used.  Once we get rid
+    // of topoMutex and start guarding access to the TopologyCoordinator via _mutex we should
+    // consolidate the two bools.
+    bool _stepDownPending = false;  // (M)
 
     // list of information about clients waiting on replication.  Does *not* own the WaiterInfos.
     std::vector<WaiterInfo*> _replicationWaiterList;  // (M)

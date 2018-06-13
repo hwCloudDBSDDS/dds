@@ -153,11 +153,23 @@ public:
      * is left unconnected, where this->conn() equals NULL.
      * In the process of connecting, this function may add items to the repl coordinator's
      * sync source blacklist.
+     *
+     * If the rbidOut param is non-null it will be set to the rbid of the server before any data is
+     * fetched from it.
+     *
      * This function may throw DB exceptions.
      */
     void connectToSyncSource(OperationContext* txn,
                              const OpTime& lastOpTimeFetched,
-                             ReplicationCoordinator* replCoord);
+                             const OpTime& requiredOpTime,
+                             ReplicationCoordinator* replCoord,
+                             int* rbidOut = nullptr);
+
+private:
+    /**
+     * Checks query response for required optime.
+     */
+    Status _compareRequiredOpTimeWithQueryResponse(const OpTime& requiredOpTime);
 };
 
 }  // namespace repl

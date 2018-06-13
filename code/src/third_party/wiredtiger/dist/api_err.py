@@ -53,11 +53,11 @@ errors = [
         to return an error if recovery is required to use the database.'''),
     Error('WT_CACHE_FULL', -31807,
         'operation would overflow cache', '''
-        This error is generated when wiredtiger_open is configured
-        to run in-memory, and an insert or update operation requires more
-        than the configured cache size to complete.''', undoc=True),
-    Error('WT_PERM_DENIED', -31808,
-        'permission denied (internal)', undoc=True),
+        This error is only generated when wiredtiger_open is configured
+        to run in-memory, and an insert or update operation requires
+        more than the configured cache size to complete. The operation
+        may be retried; if a transaction is in progress, it should be
+        rolled back and the operation retried in a new transaction.'''),
 ]
 
 # Update the #defines in the wiredtiger.in file.
@@ -82,7 +82,7 @@ for line in open('../src/include/wiredtiger.in', 'r'):
                 ''.join('\n * ' + l for l in textwrap.wrap(
             textwrap.dedent(err.long_desc).strip(), 77)) +
         '\n' if err.long_desc else ''))
-            tfile.write('#define\t%s\t%d\n' % (err.name, err.value))
+            tfile.write('#define\t%s\t(%d)\n' % (err.name, err.value))
             if 'undoc' in err.flags:
                 tfile.write('/*! @endcond */\n')
         tfile.write('/*\n')
