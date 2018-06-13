@@ -103,9 +103,11 @@ PlanStage::StageState FetchStage::doWork(WorkingSetID* out) {
 
             try {
                 if (!_cursor)
+                {
                     _cursor = _collection->getCursor(getOpCtx());
-
-                if (auto fetcher = _cursor->fetcherForId(member->recordId)) {
+                }
+                auto fetcher = _cursor->fetcherForId(member->recordId);
+                if (fetcher) {
                     // There's something to fetch. Hand the fetcher off to the WSM, and pass up
                     // a fetch request.
                     _idRetrying = id;

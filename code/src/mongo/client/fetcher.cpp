@@ -38,6 +38,7 @@
 #include "mongo/util/destructor_guard.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/base/remote_command_timeout.h"
 
 namespace mongo {
 
@@ -398,7 +399,8 @@ void Fetcher::_sendKillCursors(const CursorId id, const NamespaceString& nss) {
         };
         auto cmdObj = BSON("killCursors" << nss.coll() << "cursors" << BSON_ARRAY(id));
         auto scheduleResult = _executor->scheduleRemoteCommand(
-            RemoteCommandRequest(_source, _dbname, cmdObj, nullptr), logKillCursorsResult);
+            RemoteCommandRequest(_source, _dbname, cmdObj, nullptr, Milliseconds(kKillCursorsTimeoutMS)), 
+            logKillCursorsResult);
         if (!scheduleResult.isOK()) {
             warning() << "failed to schedule killCursors command: "
                       << redact(scheduleResult.getStatus());

@@ -44,6 +44,8 @@ const BSONField<std::string> BatchedUpdateRequest::collName("update");
 const BSONField<std::vector<BatchedUpdateDocument*>> BatchedUpdateRequest::updates("updates");
 const BSONField<BSONObj> BatchedUpdateRequest::writeConcern("writeConcern");
 const BSONField<bool> BatchedUpdateRequest::ordered("ordered", true);
+const BSONField<bool> BatchedUpdateRequest::atomicity("atomicity", false);
+const BSONField<bool> BatchedUpdateRequest::prewarm("prewarm", false);
 
 BatchedUpdateRequest::BatchedUpdateRequest() {
     clear();
@@ -96,6 +98,12 @@ BSONObj BatchedUpdateRequest::toBSON() const {
     if (_isOrderedSet)
         builder.append(ordered(), _ordered);
 
+    if (_isAtomicitySet)
+        builder.append(atomicity(), _atomicity);
+    
+    if (_isPrewarmSet)
+        builder.append(prewarm(), _prewarm);
+
     if (_shouldBypassValidation)
         builder.append(bypassDocumentValidationCommandOption(), true);
 
@@ -140,7 +148,17 @@ bool BatchedUpdateRequest::parseBSON(StringData dbName, const BSONObj& source, s
             _isOrderedSet = fieldState == FieldParser::FIELD_SET;
         } else if (fieldName == bypassDocumentValidationCommandOption()) {
             _shouldBypassValidation = elem.trueValue();
-        } else if (fieldName[0] != '$') {
+        } else if (fieldName == atomicity.name()) {
+            fieldState = FieldParser::extract(elem, atomicity, &_atomicity, errMsg);
+            if (fieldState == FieldParser::FIELD_INVALID)
+                return false;
+            _isAtomicitySet = fieldState == FieldParser::FIELD_SET;
+        } else if (fieldName == prewarm.name()) {
+            fieldState = FieldParser::extract(elem, prewarm, &_prewarm, errMsg);
+                if (fieldState == FieldParser::FIELD_INVALID)
+                    return false;
+            _isPrewarmSet = fieldState == FieldParser::FIELD_SET;
+        }else if (fieldName[0] != '$') {
             std::initializer_list<StringData> ignoredFields = {"maxTimeMS", "shardVersion"};
             if (std::find(ignoredFields.begin(), ignoredFields.end(), fieldName) ==
                 ignoredFields.end()) {
@@ -163,6 +181,12 @@ void BatchedUpdateRequest::clear() {
 
     _ordered = false;
     _isOrderedSet = false;
+
+    _atomicity = false;
+    _isAtomicitySet = false;
+
+    _prewarm = false;
+    _isPrewarmSet = false;
 
     _shouldBypassValidation = false;
 }
@@ -187,6 +211,9 @@ void BatchedUpdateRequest::cloneTo(BatchedUpdateRequest* other) const {
 
     other->_ordered = _ordered;
     other->_isOrderedSet = _isOrderedSet;
+
+    other->_atomicity = _atomicity;
+    other->_isAtomicitySet = _isAtomicitySet;
 
     other->_shouldBypassValidation = _shouldBypassValidation;
 }
@@ -288,4 +315,47 @@ bool BatchedUpdateRequest::getOrdered() const {
         return ordered.getDefault();
     }
 }
+
+void BatchedUpdateRequest::setAtomicity(bool atomicity) {
+    _atomicity = atomicity;
+    _isAtomicitySet = true;
+}
+
+void BatchedUpdateRequest::unsetAtomicity() {
+    _isAtomicitySet = false;
+}
+
+bool BatchedUpdateRequest::isAtomicitySet() const {
+    return _isAtomicitySet;
+}
+
+bool BatchedUpdateRequest::getAtomicity() const {
+    if (_isAtomicitySet) {
+        return _atomicity;
+    } else {
+        return atomicity.getDefault();
+    }
+}
+
+void BatchedUpdateRequest::setPrewarm(bool prewarm) {
+    _prewarm = prewarm;
+    _isPrewarmSet = true;
+}
+
+void BatchedUpdateRequest::unsetPrewarm() {
+    _isPrewarmSet = false;
+}
+
+bool BatchedUpdateRequest::isPrewarmSet() const {
+    return _isPrewarmSet;
+}
+
+bool BatchedUpdateRequest::getPrewarm() const {
+    if (_isPrewarmSet) {
+        return _prewarm;
+    } else {
+        return prewarm.getDefault();
+    }
+}
+
 }  // namespace mongo

@@ -31,7 +31,7 @@
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kIndex
 
 #include "mongo/platform/basic.h"
-
+#include <vector>
 #include "mongo/db/catalog/index_create.h"
 
 #include "mongo/base/error_codes.h"
@@ -55,12 +55,280 @@
 #include "mongo/util/processinfo.h"
 #include "mongo/util/progress_meter.h"
 #include "mongo/util/quick_exit.h"
+#include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/client/shard.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/grid.h"
+#include "mongo/s/catalog/type_collection.h"
+#include "mongo/db/catalog/create_collection.h"
+#include "mongo/s/client/shard_remote.h"
+#include "mongo/client/remote_command_targeter.h"
+#include "mongo/util/net/hostandport.h"
+#include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/modules/rocks/src/GlobalConfig.h"
 
 namespace mongo {
 
 using std::unique_ptr;
 using std::string;
 using std::endl;
+using std::vector;
+const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
+Status passCreateIndexCMDtoEveryChunk(OperationContext* txn,
+                 const NamespaceString& ns,
+                 BSONArray& toCreateCmdBuilder,
+                 std::string &s,
+                 const std::string& dbname,
+                 BSONObjBuilder& result){
+
+
+    vector<ChunkType> chunks;
+    uassertStatusOK(grid.catalogClient(txn)->getChunks(txn,
+                BSON(ChunkType::ns(ns.ns())),
+                BSONObj(),
+                0,
+                &chunks,
+                nullptr,
+                repl::ReadConcernLevel::kMajorityReadConcern));
+
+    for(ChunkType chunk: chunks){
+        log()<<chunk.toString();
+        BSONObjBuilder builder;
+        builder.append("createIndexes",s);
+        builder.append("indexes",toCreateCmdBuilder);
+        const auto shardStatus = grid.shardRegistry()->getShard(txn, chunk.getShard());
+        if( !shardStatus.isOK()){
+            log()<<"[passCreateIndexCMDtoEveryChunk] get shard fail";
+            return shardStatus.getStatus();
+        }
+        builder.append("chunkId",chunk.getName());
+        BSONObj cmdObj = builder.obj(); 
+        const auto createindexShard = shardStatus.getValue();
+        int retryNum = 0;
+        while(retryNum < 1000){
+            auto cmdResponseStatus = uassertStatusOK(createindexShard->runCommand(txn,kPrimaryOnlyReadPreference,dbname,cmdObj,Shard::RetryPolicy::kIdempotent));
+            if (!cmdResponseStatus.commandStatus.isOK()){
+                if( cmdResponseStatus.commandStatus.code() == ErrorCodes::ChunkNotAssigned ){
+                   log()<<"[passCreateIndexCMDtoEveryChunk]run cmd fail, cmdObj:" << cmdObj;
+                   sleepsecs(1);
+                   retryNum++;
+                   continue;
+                }
+                return cmdResponseStatus.commandStatus;
+            }else{
+                auto targeter = createindexShard->getTargeter(); 
+                auto res = targeter->findHost(txn,ReadPreferenceSetting{ReadPreference::PrimaryOnly});
+                result.append(StringData(res.getValue().toString()),cmdResponseStatus.response);
+                break;// ok and other error break.
+            }
+        } 
+    }
+    return Status::OK();
+}
+
+Status createNewCollection(OperationContext* txn,const NamespaceString& ns){
+    BSONObj idIndexSpec;
+    BSONObjBuilder cmd;
+    cmd.append("create",ns.coll());
+    return createCollectionMetadata(txn, ns, cmd.obj(), idIndexSpec);
+}
+
+Status createIndexMetadata(OperationContext* txn,
+        const NamespaceString& ns,
+        std::vector<BSONObj>& indexSpecs,
+        BSONObj& cmdObj,
+        const std::string& dbname,
+        BSONObjBuilder& result){
+
+    BSONObj obj = indexSpecs[0];
+    log() << "createIndexMetadata start,ns:"<< ns << ", indexSpecs[0]:" << obj;
+    // check if the collection already exists , load it. If not, create a new collection first
+    BSONObjBuilder subobj(result.subobjStart("raw"));
+	CollectionType coll;
+    auto collStatus = grid.catalogClient(txn)->getCollection(txn, ns.ns());
+    //log() << ns.ns() << (collStatus.getValue().value.toString());
+    if (collStatus.isOK()){
+        coll = collStatus.getValue().value;
+        if(coll.getDropped()){
+            Status status = createNewCollection(txn, ns);
+            if(!status.isOK())
+                return status;
+            auto cs = grid.catalogClient(txn)->getCollection(txn, ns.ns());
+            coll = cs.getValue().value;
+        }
+    }
+    else{
+        // create collection
+        Status status = createNewCollection(txn, ns);
+        if(!status.isOK())
+            return status;
+        auto cs = grid.catalogClient(txn)->getCollection(txn, ns.ns());
+        coll = cs.getValue().value;
+    }
+    // get current index specs
+    BSONArrayBuilder indexArrayBuilder;
+    BSONArrayBuilder toCreateCmdBuilder;
+    BSONObjIterator indexspecs(coll.getIndex());
+    long long ll_max_prefix = coll.getPrefix();
+    while (indexspecs.more()) {
+        BSONObj existingIndex = indexspecs.next().Obj();
+        //indexArrayBuilder.append (existingIndex);
+        bool isAppend = false;
+        //remove duplicate index
+        std::vector<BSONObj>::iterator it = indexSpecs.begin();
+        for(;it !=indexSpecs.end();it++)
+        {
+
+            bool equal = IndexDescriptor::isIdIndexPatternEqual((*it)["key"].Obj(),existingIndex["key"].Obj());
+            if((*it)["key"].toString() == existingIndex["key"].toString() || equal ){
+                log() << ns.ns() << "createIndexMetadata duplicate index:" << existingIndex["name"].toString();
+                BSONObj option = coll.getOptions();
+                auto collation_exist = existingIndex["collation"];
+                auto collation_it = (*it)["collation"];
+                auto collation_option = option["collation"];
+                bool simple = false;
+                if( !collation_it.eoo()){
+                    if(((*it)["collation"].Obj())["locale"].toString() == BSON("locale"<<"simple")["locale"].toString()){
+                        simple = true;
+                    }
+                }
+                if( !collation_it.eoo() && collation_exist.eoo() && !simple ){
+                    if( collation_option.eoo()){ 
+                        break;
+                    }
+                }else if( !collation_it.eoo() && !collation_exist.eoo() ){
+                    break;      
+                    /*if((collation_it.Obj())["locale"].toString() != (collation_exist.Obj())["locale"].toString()){
+                        break;
+                    }*/
+                }
+                if(!IndexDescriptor::isIdIndexPattern(existingIndex["key"].Obj())){
+                    if((*it)["name"].toString() != existingIndex["name"].toString()){
+                        break;
+                    } 
+                }       
+                indexSpecs.erase(it);
+                if(IndexDescriptor::isIdIndexPattern(existingIndex["key"].Obj())){
+                    if( !option.isEmpty() ){
+                        if( !option["autoIndexId"].eoo() && !option["autoIndexId"].boolean()){
+                            option = option.removeField("autoIndexId");
+                            coll.setOptions(option);
+                        }
+                        if( !option["collation"].eoo() && !(*it)["collation"].eoo() ){
+                            if((option["collation"].Obj())["locale"].toString()!=((*it)["collation"].Obj())["locale"].toString()){
+                                return {ErrorCodes::BadValue,
+                                       str::stream() << "The _id index must have the same collation as the collection. Index collation: " << (*it)["collation"].toString() << ", collection collation: "<<option["collation"].toString()};
+                            }
+                        }else if( !option["collation"].eoo() || !(*it)["collation"].eoo()){
+                            if(!(*it)["collation"].eoo() && ((*it)["collation"].Obj())["locale"].toString() != BSON("locale"<<"simple")["locale"].toString()){
+                                return {ErrorCodes::BadValue, str::stream() << "The _id index must have the same collation as the collection. Index collation: " << ((*it)["collation"].eoo()? BSON("locale"<<"simple"):(*it)["collation"].Obj()) << ", collection collation: "<<(option["collation"].eoo() ? BSON("locale"<<"simple"):option["collation"].Obj())};
+                            }
+                       }
+                       BSONObjBuilder in;
+                       in.appendElements(existingIndex);
+                       bool flag = false;
+                       if(!option["collation"].eoo()){
+                           flag = true;
+                           CollationSpec spec;
+                           spec.localeID = option["collation"].Obj().getField("locale").str();
+                           spec.version = "57.1";
+                           in.append("collation",spec.toBSON());
+                       }
+                       if( flag && (!(*it)["collation"].eoo())){
+                           CollationSpec spec;
+                           spec.localeID = (*it)["collation"].Obj().getField("locale").str();
+                           spec.version = "57.1";
+                           in.append("collation",spec.toBSON());;
+                       }
+                       indexArrayBuilder.append(in.obj());
+                       isAppend = true;
+                    }
+                }
+                break;
+            }      
+        }
+        if( !isAppend ){
+           indexArrayBuilder.append(existingIndex);
+        }
+    }
+    // insert the new index spec
+    BSONObjBuilder indexBuilder;
+    for (auto val : indexSpecs)
+    {
+        BSONObjBuilder indexBuilder;
+        BSONObj obj;
+        if( !val["collation"].eoo()){
+             indexBuilder.appendElements(val.removeField("collation")); 
+        }else{
+             indexBuilder.appendElements(val);
+        }
+        indexBuilder.append ("prefix", ++ll_max_prefix);
+        if(!val["collation"].eoo()){
+            CollationSpec spec;
+            spec.localeID = val["collation"].Obj().getField("locale").str();
+            spec.version = "57.1";
+            if(!val["collation"].Obj().getField("strength").eoo()){
+                int n = val["collation"].Obj().getField("strength").numberInt();
+                switch(n){
+                   case 1:
+                      spec.strength = CollationSpec::StrengthType::kPrimary;
+                      break;
+                   case 2:
+                      spec.strength = CollationSpec::StrengthType::kSecondary;
+                      break;
+                   case 3:
+                      spec.strength = CollationSpec::StrengthType::kTertiary;
+                      break;
+                   case 4:
+                      spec.strength = CollationSpec::StrengthType::kQuaternary;
+                      break;
+                   case 5:
+                      spec.strength = CollationSpec::StrengthType::kIdentical;
+                      break;
+                }
+            }
+            BSONObj obj = spec.toBSON();
+            indexBuilder.append("collation",obj);
+        }
+        obj = indexBuilder.obj();
+        toCreateCmdBuilder.append(obj);
+        if(IndexDescriptor::isIdIndexPattern(obj["key"].Obj())){
+              BSONObj option = coll.getOptions();
+              if( !option.isEmpty() ){
+                   if( !option["autoIndexId"].eoo() && !option["autoIndexId"].boolean()){
+                        option = option.removeField("autoIndexId");
+                        coll.setOptions(option);
+                   }
+              }
+              continue;
+        }
+        auto ele = val.getField("dropDups");
+        if( !ele.eoo()){
+            obj = obj.removeField("dropDups");
+        }
+        indexArrayBuilder.append(obj);
+    }
+
+
+    BSONArray temp = indexArrayBuilder.arr();
+    coll.setIndex(temp);
+    coll.setPrefix(ll_max_prefix);
+    log()<< "coll.getIndex :"<< coll.getIndex().toString();
+    // TODO: need to gurantee the atomicity ...
+    std::string s = cmdObj.getField("createIndexes").String();
+    BSONArray ba;
+    if( indexSpecs.size() == 0){
+        ba = temp;
+    }else{
+        ba= toCreateCmdBuilder.arr();
+    }
+    Status st=passCreateIndexCMDtoEveryChunk(txn,ns,ba,s,dbname,subobj);
+    if( !st.isOK() )
+        return st;
+    uassertStatusOK(grid.catalogClient(txn)->updateCollection(txn, ns.ns(), coll));
+    return Status::OK();
+}
 
 MONGO_FP_DECLARE(crashAfterStartingIndexBuild);
 MONGO_FP_DECLARE(hangAfterStartingIndexBuild);
@@ -194,8 +462,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
         return status;
 
     for (size_t i = 0; i < indexSpecs.size(); i++) {
-        BSONObj info = indexSpecs[i];
-
+        BSONObj info = indexSpecs[i].getOwned();
         string pluginName = IndexNames::findPluginName(info["key"].Obj());
         if (pluginName.size()) {
             Status s = _collection->getIndexCatalog()->_upgradeDatabaseMinorVersionIfNeeded(
@@ -217,7 +484,27 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
     }
 
     for (size_t i = 0; i < indexSpecs.size(); i++) {
-        BSONObj info = indexSpecs[i];
+        BSONObj info = indexSpecs[i].getOwned();
+
+        if (!info.hasField("prefix")) {
+            index_log() << "[createIndex] MultiIndexBlock::init() origin info: " << info;
+            NamespaceString nss = _collection->ns();
+            if (GLOBAL_CONFIG_GET(IsCoreTest) && !nss.isSystemCollection()) {
+                  static long long prefix = 10000;
+                  BSONObjBuilder builder;
+
+                  BSONObjIterator it(info);
+                  while (it.more()) {
+                      builder.append(*it);
+                      it++;
+                  }
+
+                  builder.append("prefix", prefix++);
+                  info = builder.obj();
+                  index_log() << "[createIndex] MultiIndexBlock::init() fixup info: " << info;
+            }
+        }
+
         StatusWith<BSONObj> statusWithInfo =
             _collection->getIndexCatalog()->prepareSpecForCreate(_txn, info);
         Status status = statusWithInfo.getStatus();

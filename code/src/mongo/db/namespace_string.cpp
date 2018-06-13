@@ -36,6 +36,8 @@
 
 #include "mongo/util/mongoutils/str.h"
 
+#include "mongo/db/modules/rocks/src/GlobalConfig.h"
+
 namespace mongo {
 
 using std::string;
@@ -151,6 +153,39 @@ string NamespaceString::escapeDbName(const StringData dbname) {
 
 std::ostream& operator<<(std::ostream& stream, const NamespaceString& nss) {
     return stream << nss.toString();
+}
+
+bool NamespaceString::isSystemCollection() const
+{
+    if (isSystem()) {
+        if (GLOBAL_CONFIG_GET(IsCoreTest)) {
+            return true;
+        }
+
+        if( coll().startsWith("system.views") || coll().startsWith("system.js") || coll().startsWith("system.users")){
+            return false;
+        }
+        return true;
+    } else if (isLocal()) {
+        return true;
+    } else if (isSystemDotIndexes()) {
+        return true;
+    } else if (isSystemDotProfile()) {
+        return true;
+    } else if (isConfigDB()) {
+        return true;
+    } else if (isOplog()) {
+        return true;
+    } else if (isSystemDotViews()) {
+        return false;
+    } else if(coll().startsWith("tmp.agg_out")) {
+        return true;
+    }/*else if (isCommand()) {
+        return true;
+    }*/
+
+    // add more system db or temp db
+    return false;
 }
 
 }  // namespace mongo

@@ -88,6 +88,7 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                                   const BatchedCommandRequest& clientRequest,
                                   BatchedCommandResponse* clientResponse,
                                   BatchWriteExecStats* stats) {
+
     LOG(4) << "starting execution of write batch of size "
            << static_cast<int>(clientRequest.sizeWriteOps()) << " for " << clientRequest.getNS();
 
@@ -141,6 +142,19 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
             dassert(childBatches.size() == 0u);
         }
 
+        auto prewarmFlag = (clientRequest.getBatchType() == BatchedCommandRequest::BatchType_Insert)
+            && (clientRequest.isPrewarmSet() == true) && (clientRequest.getPrewarm() == true);
+        if (prewarmFlag == true) {
+            if (childBatches.size() > 1) {
+                stringstream msg;
+                msg << ErrorCodes::NotInOneChunk << ". " << "Batch insert should be in a chunk for prewarm!";
+                WriteErrorDetail error;
+                buildErrorFrom(Status(ErrorCodes::NotInOneChunk, msg.str()), &error);
+                batchOp.abortBatch(error);
+                break;
+            }
+        }
+
         //
         // Send all child batches
         //
@@ -177,31 +191,21 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                 bool resolvedHost = false;
                 ConnectionString shardHost;
                 if (!shardStatus.isOK()) {
+                    batchOp.cancelWriteOps(*nextBatch);
+                    _targeter->noteCouldNotTarget();
                     Status status(std::move(shardStatus.getStatus()));
-
-                    // Record a resolve failure
-                    // TODO: It may be necessary to refresh the cache if stale, or maybe just
-                    // cancel and retarget the batch
-                    WriteErrorDetail error;
-                    buildErrorFrom(status, &error);
-                    LOG(4) << "unable to send write batch to " << nextBatch->getEndpoint().shardName
+                    log() << "unable to send write batch to " << nextBatch->getEndpoint().shardName
                            << causedBy(status);
-                    batchOp.noteBatchError(*nextBatch, error);
                 } else {
                     auto shard = shardStatus.getValue();
 
                     auto swHostAndPort = shard->getTargeter()->findHostNoWait(readPref);
                     if (!swHostAndPort.isOK()) {
-
-                        // Record a resolve failure
-                        // TODO: It may be necessary to refresh the cache if stale, or maybe just
-                        // cancel and retarget the batch
-                        WriteErrorDetail error;
-                        buildErrorFrom(swHostAndPort.getStatus(), &error);
-                        LOG(4) << "unable to send write batch to "
+                        batchOp.cancelWriteOps(*nextBatch);
+                        _targeter->noteCouldNotTarget();
+                        log() << "unable to send write batch to "
                                << nextBatch->getEndpoint().shardName
                                << causedBy(swHostAndPort.getStatus());
-                        batchOp.noteBatchError(*nextBatch, error);
                     } else {
                         shardHost = ConnectionString(std::move(swHostAndPort.getValue()));
                         resolvedHost = true;
@@ -296,19 +300,11 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                         response.isLastOpSet() ? response.getLastOp() : repl::OpTime(),
                         response.isElectionIdSet() ? response.getElectionId() : OID());
                 } else {
-                    // Error occurred dispatching, note it
+                    batchOp.cancelWriteOps(*batch);
+                    _targeter->noteCouldNotTarget();
 
-                    stringstream msg;
-                    msg << "write results unavailable from " << shardHost.toString()
-                        << causedBy(dispatchStatus.toString());
-
-                    WriteErrorDetail error;
-                    buildErrorFrom(Status(ErrorCodes::RemoteResultsUnavailable, msg.str()), &error);
-
-                    LOG(4) << "unable to receive write results from " << shardHost.toString()
-                           << causedBy(redact(dispatchStatus.toString()));
-
-                    batchOp.noteBatchError(*batch, error);
+                    log() << "unable to receive write results from " << shardHost.toString()
+                          << causedBy(redact(dispatchStatus.toString()));
                 }
             }
         }
@@ -369,6 +365,7 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                    : "")
            << (clientResponse->isWriteConcernErrorSet() ? " with write concern error" : "")
            << " for " << clientRequest.getNS();
+
 }
 
 void BatchWriteExecStats::noteWriteAt(const ConnectionString& host,

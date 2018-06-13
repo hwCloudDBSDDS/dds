@@ -192,14 +192,14 @@ void CollectionShardingState::clearMigrationSourceManager(OperationContext* txn)
     _sourceMgr = nullptr;
 }
 
-void CollectionShardingState::checkShardVersionOrThrow(OperationContext* txn) {
+void CollectionShardingState::checkChunkVersionOrThrow(OperationContext* txn) {
     string errmsg;
     ChunkVersion received;
     ChunkVersion wanted;
-    if (!_checkShardVersionOk(txn, &errmsg, &received, &wanted)) {
+    if (!_checkChunkVersionOk(txn, &errmsg, &received, &wanted)) {
         throw SendStaleConfigException(
             _nss.ns(),
-            str::stream() << "[" << _nss.ns() << "] shard version not ok: " << errmsg,
+            str::stream() << "[" << _nss.ns() << "] chunk version not ok: " << errmsg,
             received,
             wanted);
     }
@@ -235,6 +235,7 @@ void CollectionShardingState::onInsertOp(OperationContext* txn, const BSONObj& i
         _nss == NamespaceString::kConfigCollectionNamespace) {
         if (auto idElem = insertedDoc["_id"]) {
             if (idElem.str() == ShardIdentityType::IdName) {
+                log() << "CollectionShardingState::onInsertOp insert doc bson is" << insertedDoc; 
                 auto shardIdentityDoc = uassertStatusOK(ShardIdentityType::fromBSON(insertedDoc));
                 uassertStatusOK(shardIdentityDoc.validate());
                 txn->recoveryUnit()->registerChange(
@@ -259,7 +260,7 @@ void CollectionShardingState::onInsertOp(OperationContext* txn, const BSONObj& i
         }
     }
 
-    checkShardVersionOrThrow(txn);
+    checkChunkVersionOrThrow(txn);
 
     if (_sourceMgr) {
         _sourceMgr->getCloner()->onInsertOp(txn, insertedDoc);
@@ -269,7 +270,7 @@ void CollectionShardingState::onInsertOp(OperationContext* txn, const BSONObj& i
 void CollectionShardingState::onUpdateOp(OperationContext* txn, const BSONObj& updatedDoc) {
     dassert(txn->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
 
-    checkShardVersionOrThrow(txn);
+    checkChunkVersionOrThrow(txn);
 
     if (_sourceMgr) {
         _sourceMgr->getCloner()->onUpdateOp(txn, updatedDoc);
@@ -322,7 +323,7 @@ void CollectionShardingState::onDeleteOp(OperationContext* txn,
         }
     }
 
-    checkShardVersionOrThrow(txn);
+    checkChunkVersionOrThrow(txn);
 
     if (_sourceMgr && deleteState.isMigrating) {
         _sourceMgr->getCloner()->onDeleteOp(txn, deleteState.idDoc);
@@ -359,10 +360,10 @@ void CollectionShardingState::onDropCollection(OperationContext* txn,
     }
 }
 
-bool CollectionShardingState::_checkShardVersionOk(OperationContext* txn,
+bool CollectionShardingState::_checkChunkVersionOk(OperationContext* txn,
                                                    string* errmsg,
-                                                   ChunkVersion* expectedShardVersion,
-                                                   ChunkVersion* actualShardVersion) {
+                                                   ChunkVersion* expectedChunkVersion,
+                                                   ChunkVersion* actualChunkVersion) {
     Client* client = txn->getClient();
 
     // Operations using the DBDirectClient are unversioned.
@@ -380,7 +381,7 @@ bool CollectionShardingState::_checkShardVersionOk(OperationContext* txn,
     // If there is a version attached to the OperationContext, use it as the received version.
     // Otherwise, get the received version from the ShardedConnectionInfo.
     if (oss.hasShardVersion()) {
-        *expectedShardVersion = oss.getShardVersion(_nss);
+        *expectedChunkVersion = oss.getShardVersion(_nss);
     } else {
         ShardedConnectionInfo* info = ShardedConnectionInfo::get(client, false);
         if (!info) {
@@ -390,16 +391,16 @@ bool CollectionShardingState::_checkShardVersionOk(OperationContext* txn,
             return true;
         }
 
-        *expectedShardVersion = info->getVersion(_nss.ns());
+        *expectedChunkVersion = info->getVersion(_nss.ns());
     }
 
-    if (ChunkVersion::isIgnoredVersion(*expectedShardVersion)) {
+    if (ChunkVersion::isIgnoredVersion(*expectedChunkVersion)) {
         return true;
     }
 
     // Set this for error messaging purposes before potentially returning false.
     auto metadata = getMetadata();
-    *actualShardVersion = metadata ? metadata->getShardVersion() : ChunkVersion::UNSHARDED();
+    *actualChunkVersion = metadata ? metadata->getShardVersion() : ChunkVersion::UNSHARDED();
 
     if (_sourceMgr && _sourceMgr->getMigrationCriticalSectionSignal()) {
         *errmsg = str::stream() << "migration commit in progress for " << _nss.ns();
@@ -411,10 +412,12 @@ bool CollectionShardingState::_checkShardVersionOk(OperationContext* txn,
         return false;
     }
 
-    if (expectedShardVersion->isWriteCompatibleWith(*actualShardVersion)) {
+    // shardversion == chunkversion, so they have to be exactly the same
+    if (expectedChunkVersion->equals(*actualChunkVersion)) {
         return true;
     }
 
+    log()<<"expected:"<<*expectedChunkVersion<<" actual:"<<*actualChunkVersion;
     //
     // Figure out exactly why not compatible, send appropriate error message
     // The versions themselves are returned in the error, so not needed in messages here
@@ -422,33 +425,60 @@ bool CollectionShardingState::_checkShardVersionOk(OperationContext* txn,
 
     // Check epoch first, to send more meaningful message, since other parameters probably won't
     // match either.
-    if (actualShardVersion->epoch() != expectedShardVersion->epoch()) {
+    if (actualChunkVersion->epoch() != expectedChunkVersion->epoch()) {
         *errmsg = str::stream() << "version epoch mismatch detected for " << _nss.ns() << ", "
                                 << "the collection may have been dropped and recreated";
         return false;
     }
 
-    if (!actualShardVersion->isSet() && expectedShardVersion->isSet()) {
+    if (!actualChunkVersion->isSet() && expectedChunkVersion->isSet()) {
         *errmsg = str::stream() << "this shard no longer contains chunks for " << _nss.ns() << ", "
                                 << "the collection may have been dropped";
         return false;
     }
 
-    if (actualShardVersion->isSet() && !expectedShardVersion->isSet()) {
+    if (actualChunkVersion->isSet() && !expectedChunkVersion->isSet()) {
         *errmsg = str::stream() << "this shard contains versioned chunks for " << _nss.ns() << ", "
                                 << "but no version set in request";
         return false;
     }
 
-    if (actualShardVersion->majorVersion() != expectedShardVersion->majorVersion()) {
+    if (actualChunkVersion->majorVersion() != expectedChunkVersion->majorVersion()) {
         // Could be > or < - wanted is > if this is the source of a migration, wanted < if this is
         // the target of a migration
         *errmsg = str::stream() << "version mismatch detected for " << _nss.ns();
         return false;
     }
 
+    if (actualChunkVersion->minorVersion() != expectedChunkVersion->minorVersion()) {
+        *errmsg = str::stream() << "version minor mismatch detected for " << _nss.ns();
+        return false;
+    }
+
     // Those are all the reasons the versions can mismatch
     MONGO_UNREACHABLE;
+}
+
+void CollectionShardingState::updateChunkInfo(OperationContext* txn, const ChunkType& chunkType)
+{
+    log() << "CollectionShardingState::updateChunkInfo()-> newChunkType: " << chunkType << 
+        "; version: " << chunkType.getVersion();
+ 
+    if (!getMetadata()) {
+        log() << "CollectionShardingState::updateChunkInfo()-> invalid";
+        return;
+    }
+    log() << "CollectionShardingState::updateChunkInfo()-> minKey: " << getMetadata()->getMinKey()
+        << "; maxkey: " << getMetadata()->getMaxKey() << "; collectionVersion: " << getMetadata()->getCollVersion()
+        << "; shardVersion: " << getMetadata()->getShardVersion();
+
+    //invariant(chunkType.getMin() == getMetadata()->getMinKey());
+    if (getMetadata()->getShardVersion() == chunkType.getVersion()) {
+        return;
+    }
+
+    //invariant(chunkType.getMax() != getMetadata()->getMaxKey());
+    _metadataManager.updateChunkInfo(txn, chunkType);
 }
 
 }  // namespace mongo

@@ -32,6 +32,10 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/s/catalog/type_shard_server.h"
+#include "mongo/s/catalog/catalog_extend/root_folder_manager.h"
+#include "mongo/s/catalog/catalog_extend/sharding_catalog_shard_server_manager.h"
+#include "mongo/db/s/balancer/state_machine.h"
 
 namespace mongo {
 
@@ -46,6 +50,7 @@ class ShardType;
 class Status;
 template <typename T>
 class StatusWith;
+class ShardServerManager;
 
 namespace executor {
 struct ConnectionPoolStats;
@@ -83,6 +88,19 @@ public:
      * Performs necessary cleanup when shutting down cleanly.
      */
     virtual void shutDown(OperationContext* txn) = 0;
+    // Create chunk root folder for a chunk
+    virtual Status createRootFolder(
+        OperationContext* txn,
+        const std::string& chunkId,
+        std::string& chunkRootFolder) = 0;
+
+    // Delete chunk root folder
+    virtual Status deleteRootFolder(
+        OperationContext* txn,
+        const std::string& chunkId) = 0;
+
+    virtual Status deleteRootFolder(
+        const std::string& chunkRootFolder) = 0;
 
     /**
      *
@@ -98,9 +116,11 @@ public:
      * @return either an !OK status or the name of the newly added shard.
      */
     virtual StatusWith<std::string> addShard(OperationContext* txn,
-                                             const std::string* shardProposedName,
+                                             const std::string& shardProposedName,
                                              const ConnectionString& shardConnectionString,
-                                             const long long maxSize) = 0;
+                                             const long long maxSize,
+                                             const std::string& processIdentity) = 0;
+    virtual StatusWith<ShardType> findShardByHost(OperationContext* txn,const std::string& ns,const std::string& host) = 0;
 
     /**
      * Adds the shard to the zone.
@@ -212,6 +232,40 @@ public:
      */
     virtual Status setFeatureCompatibilityVersionOnShards(OperationContext* txn,
                                                           const std::string& version) = 0;
+
+    virtual StatusWith<ShardType> insertOrUpdateShardDocument(OperationContext* txn,
+                                                              ShardType& shardType,
+                                                              const ConnectionString& shardServerConn) = 0;
+
+    virtual StatusWith<ShardType> insertShardDocument(OperationContext* txn,
+                const ConnectionString& shardServerConn,
+                const std::string& extendIPs,
+                const std::string& processIdentity,
+                bool& isRestart) = 0;
+
+    virtual StatusWith<std::string> updateShardStateWhenReady(OperationContext* txn,
+                const std::string& shardName,
+                const std::string& processIdentity) = 0;
+
+    virtual Status updateShardStateDuringFailover(OperationContext* txn,
+                const ShardType& shardType,
+                const ShardType::ShardState& targetState) = 0;
+
+    virtual Status updateMultiChunkStatePendingOpen(OperationContext* txn,
+                const std::string& shardName) = 0;
+
+    virtual Status verifyShardConnectionString(OperationContext* txn,
+                const std::string& shardName, const ConnectionString& shardServerConn) = 0;
+    virtual ShardServerManager* getShardServerManager() = 0;
+
+    virtual StateMachine* getStateMachine() = 0;
+
+    // clear all the chunk version record
+    virtual void resetMaxChunkVersionMap() = 0;
+
+    //get a new max chunk version for a collection
+    virtual StatusWith<uint64_t> newMaxChunkVersion(OperationContext* txn,
+                const std::string& ns) = 0;
 
 protected:
     ShardingCatalogManager() = default;

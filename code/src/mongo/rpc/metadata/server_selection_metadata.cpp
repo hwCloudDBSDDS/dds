@@ -54,6 +54,7 @@ const char kQueryOptionsFieldName[] = "$queryOptions";
 
 const char kDollarQueryWrapper[] = "$query";
 const char kQueryWrapper[] = "query";
+const char kChunkIdField[] = "chunkId";
 
 /**
  * Utility to unwrap a '$query' or 'query' wrapped command object. The first element of the
@@ -67,7 +68,7 @@ StatusWith<std::tuple<bool, BSONObj>> unwrapCommand(const BSONObj& maybeWrapped)
         (firstElFieldName != StringData(kQueryWrapper))) {
         return std::make_tuple(false, maybeWrapped);
     }
-
+    BSONObjBuilder cmd;
     BSONElement inner;
     auto extractStatus =
         bsonExtractTypedField(maybeWrapped, firstElFieldName, mongo::Object, &inner);
@@ -75,8 +76,14 @@ StatusWith<std::tuple<bool, BSONObj>> unwrapCommand(const BSONObj& maybeWrapped)
     if (!extractStatus.isOK()) {
         return extractStatus;
     }
-
-    return std::make_tuple(true, inner.Obj());
+    cmd.appendElements(inner.Obj());
+    BSONElement chunkidElement;
+    Status chunkidElementStatus =
+        bsonExtractTypedField(maybeWrapped,kChunkIdField,BSONType::String,&chunkidElement);
+    if(chunkidElementStatus.isOK()){
+        cmd.append(chunkidElement);
+    }
+    return std::make_tuple(true,cmd.obj());
 }
 
 /**

@@ -30,10 +30,13 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/platform/process_id.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/type_shard_server.h"
 #include "mongo/util/net/listen.h"  // For DEFAULT_MAX_CONN
+#include "mongo/util/concurrency/notification.h"
+#include "mongo/stdx/mutex.h"
+#include "mongo/s/catalog/type_shard.h"
 
 namespace mongo {
-
 const int DEFAULT_UNIX_PERMS = 0700;
 
 enum class ClusterRole { None, ShardServer, ConfigServer };
@@ -49,6 +52,9 @@ struct ServerGlobalParams {
     }
 
     std::string bind_ip;  // --bind_ip
+    std::string extendIPs; // manage ips   
+    std::string processIdentity; // add for shard process re-start after failover, used as identity in register flow
+
     bool rest = false;    // --rest
     bool jsonp = false;   // --jsonp
 
@@ -58,6 +64,17 @@ struct ServerGlobalParams {
 
     ClusterRole clusterRole = ClusterRole::None;  // --configsvr/--shardsvr
 
+    std::string shardName = "";  // shardName to be used when adding shardsvr to a shard
+    ShardServerType::ShardServerState shardServerState = ShardServerType::ShardServerState::kStandby;
+    ShardType::ShardState shardState = ShardType::ShardState::kShardRegistering;
+    std::shared_ptr<Notification<void>> activeNotification; // standby will be blocked until receive grant active message
+
+    stdx::mutex shardServerStateMutex;
+    stdx::mutex shardStateMutex;
+
+    // Auto-increment value used to generate chunk id. Initialized when CS become a leader, by loading the maximum id from the chunk collection.
+    std::atomic<uint64_t> chunkCount{0};  // --quiet NOLINT
+        
     bool cpu = false;  // --cpu show cpu time periodically
 
     bool objcheck = true;  // --objcheck
@@ -155,7 +172,7 @@ struct ServerGlobalParams {
         };
 
         // Read-only parameter featureCompatibilityVersion.
-        AtomicWord<Version> version{Version::k32};
+        AtomicWord<Version> version{Version::k34};
 
         // Feature validation differs depending on the role of a mongod in a replica set or
         // master/slave configuration. Masters/primaries can accept user-initiated writes and

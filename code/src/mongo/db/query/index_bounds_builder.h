@@ -190,6 +190,8 @@ public:
                                  bool* startKeyInclusive,
                                  BSONObj* endKey,
                                  bool* endKeyInclusive);
+
+    static bool isAllPointIntervals(const IndexBounds& bounds);
 };
 
 }  // namespace mongo

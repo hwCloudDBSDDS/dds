@@ -298,6 +298,83 @@ Status parseProcStatFile(StringData filename,
     return parseProcStat(keys, swString.getValue(), getTicksPerSecond(), builder);
 }
 
+Status parseProcSelfStatusInfo(const std::vector<StringData>& keys,
+                        StringData data,
+                        BSONObjBuilder* builder) {
+    bool foundKeys = false;
+
+    using string_split_iterator = boost::split_iterator<StringData::const_iterator>;
+
+    for (string_split_iterator lineIt = string_split_iterator(
+             data.begin(),
+             data.end(),
+             boost::token_finder([](char c) { return c == '\n'; }, boost::token_compress_on));
+         lineIt != string_split_iterator();
+         ++lineIt) {
+
+        StringData line((*lineIt).begin(), (*lineIt).end());
+        string_split_iterator partIt =
+            string_split_iterator(line.begin(),
+                                  line.end(),
+                                  boost::token_finder([](char c) { return c == ' ' || c == ':' || c == '\t'; },
+                                                      boost::token_compress_on));
+
+        if (partIt == string_split_iterator()) {
+            continue;
+        }
+
+        StringData key((*partIt).begin(), (*partIt).end());
+
+        ++partIt;
+
+        if (partIt == string_split_iterator()) {
+            continue;
+        }
+
+        if (keys.empty() || std::find(keys.begin(), keys.end(), key) != keys.end()) {
+            foundKeys = true;
+
+            StringData stringValue((*partIt).begin(), (*partIt).end());
+
+            uint64_t value;
+
+            if (!parseNumberFromString(stringValue, &value).isOK()) {
+                value = 0;
+            }
+
+            ++partIt;
+
+            if (partIt != string_split_iterator()) {
+                StringData kb_token((*partIt).begin(), (*partIt).end());
+                auto keyWithSuffix = key.toString();
+
+                if (kb_token == "kB") {
+                    keyWithSuffix.append("_kb");
+                }
+
+                builder->appendNumber(keyWithSuffix, value);
+            } else {
+
+                builder->appendNumber(key, value);
+            }
+        }
+    }
+
+    return foundKeys ? Status::OK()
+                     : Status(ErrorCodes::NoSuchKey, "Failed to find any keys in meminfo string");
+}
+
+Status parseProcSelfStatusFile(StringData filename,
+                            const std::vector<StringData>& keys,
+                            BSONObjBuilder* builder) {
+    auto swString = readFileAsString(filename);
+    if (!swString.isOK()) {
+        return swString.getStatus();
+    }
+
+    return parseProcSelfStatusInfo(keys, swString.getValue(), builder);
+}
+
 // Here is an example of the type of string it supports:
 // Note: output has been trimmed
 //

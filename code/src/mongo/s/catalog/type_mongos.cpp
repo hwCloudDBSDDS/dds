@@ -43,6 +43,7 @@ const BSONField<long long> MongosType::uptime("up");
 const BSONField<bool> MongosType::waiting("waiting");
 const BSONField<std::string> MongosType::mongoVersion("mongoVersion");
 const BSONField<long long> MongosType::configVersion("configVersion");
+const BSONField<std::string> MongosType::extendIPs("extendIPs");
 
 StatusWith<MongosType> MongosType::fromBSON(const BSONObj& source) {
     MongosType mt;
@@ -95,6 +96,16 @@ StatusWith<MongosType> MongosType::fromBSON(const BSONObj& source) {
         mt._configVersion = mtConfigVersion;
     }
 
+    {
+        std::string extendIPsStr;
+        Status status = bsonExtractStringField(source, extendIPs.name(), &extendIPsStr);
+        if (!status.isOK()) {
+            return status;
+        } else {
+            mt._extendIPs = extendIPsStr;
+        }
+    }
+
     return mt;
 }
 
@@ -133,6 +144,8 @@ BSONObj MongosType::toBSON() const {
         builder.append(mongoVersion.name(), getMongoVersion());
     if (_configVersion)
         builder.append(configVersion.name(), getConfigVersion());
+    if (_extendIPs)
+        builder.append(extendIPs.name(), getExtendIPs());
 
     return builder.obj();
 }
@@ -161,6 +174,10 @@ void MongosType::setMongoVersion(const std::string& mongoVersion) {
 
 void MongosType::setConfigVersion(const long long configVersion) {
     _configVersion = configVersion;
+}
+
+void MongosType::setExtendIPs(const std::string& extendIPs) {
+    _extendIPs = extendIPs;
 }
 
 std::string MongosType::toString() const {

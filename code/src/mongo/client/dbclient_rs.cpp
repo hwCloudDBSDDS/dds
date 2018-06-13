@@ -159,7 +159,7 @@ DBClientReplicaSet::~DBClientReplicaSet() {
 
 ReplicaSetMonitorPtr DBClientReplicaSet::_getMonitor() {
     // If you can't get a ReplicaSetMonitor then this connection isn't valid
-    uassert(16340,
+    uassert(ErrorCodes::NoReplicaSetMonitor,
             str::stream() << "No replica set monitor active and no cached seed "
                              "found for set: "
                           << _setName,
@@ -291,7 +291,26 @@ bool DBClientReplicaSet::isSecondaryQuery(const string& ns,
 
 DBClientConnection* DBClientReplicaSet::checkMaster() {
     ReplicaSetMonitorPtr monitor = _getMonitor();
-    HostAndPort h = monitor->getMasterOrUassert();
+    const ReadPreferenceSetting primaryHostOnly(ReadPreference::PrimaryOnly, TagSet());
+    StatusWith<HostAndPort> getMasterStatus = monitor->getHostOrRefresh(primaryHostOnly);
+    HostAndPort h;
+    if (getMasterStatus.isOK()) {
+        h = getMasterStatus.getValue();
+    }
+    else {
+        log() << "Failed to get primary from replica set monitor (setName: "
+            << _setName << ", hosts: " << monitor->getServerAddress() << ")"
+            << causedBy(getMasterStatus.getStatus());
+
+        // Refresh replica set monitor and retry
+        _rsm = ReplicaSetMonitor::get(_setName);
+        monitor = _getMonitor();
+        log() << "Refresh replica set monitor (setName: "
+            << _setName << ", hosts: " << monitor->getServerAddress()
+            << ") and retry to get primary";
+
+        h = uassertStatusOK(monitor->getHostOrRefresh(primaryHostOnly));
+    }
 
     if (h == _masterHost && _master) {
         // a master is selected.  let's just make sure connection didn't die
@@ -394,7 +413,7 @@ DBClientConnection& DBClientReplicaSet::slaveConn() {
         new ReadPreferenceSetting(ReadPreference::SecondaryPreferred, TagSet()));
     DBClientConnection* conn = selectNodeUsingTags(readPref);
 
-    uassert(16369,
+    uassert(ErrorCodes::NoGoodNodeAvailableForSet,
             str::stream() << "No good nodes available for set: " << _getMonitor()->getName(),
             conn != NULL);
 
@@ -557,7 +576,7 @@ unique_ptr<DBClientCursor> DBClientReplicaSet::query(const string& ns,
             assertMsg << ", last error: " << lastNodeErrMsg;
         }
 
-        uasserted(16370, assertMsg.str());
+        uasserted(ErrorCodes::NoGoodNodeForQuery, assertMsg.str());
     }
 
     LOG(3) << "dbclient_rs query to primary node in " << _getMonitor()->getName() << endl;
@@ -607,7 +626,7 @@ BSONObj DBClientReplicaSet::findOne(const string& ns,
             assertMsg << ", last error: " << lastNodeErrMsg;
         }
 
-        uasserted(16379, assertMsg.str());
+        uasserted(ErrorCodes::NoGoodNodeForFindOne, assertMsg.str());
     }
 
     LOG(3) << "dbclient_rs findOne to primary node in " << _getMonitor()->getName() << endl;
@@ -715,7 +734,7 @@ DBClientConnection* DBClientReplicaSet::selectNodeUsingTags(
 
     // Assert here instead of returning NULL since the contract of this method is such
     // that returning NULL means none of the nodes were good, which is not the case here.
-    uassert(16532,
+    uassert(ErrorCodes::NoGoodNodeForSelect,
             str::stream() << "Failed to connect to " << _lastSlaveOkHost.toString(),
             newConn != NULL);
 
@@ -797,7 +816,7 @@ void DBClientReplicaSet::say(Message& toSend, bool isRetry, string* actualServer
                 assertMsg << ", last error: " << lastNodeErrMsg;
             }
 
-            uasserted(16380, assertMsg.str());
+            uasserted(ErrorCodes::NoGoodNodeForSay, assertMsg.str());
         }
     }
 

@@ -340,7 +340,13 @@ void CurOp::reportState(BSONObjBuilder* builder) {
     }
 
     builder->append("op", logicalOpToString(_logicalOp));
-    builder->append("ns", _ns);
+    std::string new_ns;
+    if(_ns.find('$')!= std::string::npos){ 
+        new_ns = _ns.substr(0,_ns.find('$'));
+    }else{
+        new_ns = _ns;
+    }
+    builder->append("ns", new_ns);
 
     // When currentOp is run, it returns a single response object containing all current
     // operations. This request will fail if the response exceeds the 16MB document limit. We limit

@@ -33,6 +33,7 @@
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/client/shard.h"
+#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -68,11 +69,17 @@ public:
     Chunk(OperationContext* txn, ChunkManager* manager, const ChunkType& from);
 
     Chunk(ChunkManager* manager,
+          const ChunkId& chunkId,
           const BSONObj& min,
           const BSONObj& max,
           const ShardId& shardId,
           ChunkVersion lastmod,
+          const std::string& rootFolder,
           uint64_t initialDataWritten);
+
+    ChunkId getChunkId() const {
+        return _chunkId;
+    }
 
     //
     // chunk boundary support
@@ -174,6 +181,21 @@ public:
         return _manager;
     }
 
+    const std::string& getRootFolder() const {
+        return _rootFolder;
+    }
+
+    void constructChunkType(ChunkType *chunkType) {
+        chunkType->setMin(getMin());
+        chunkType->setMax(getMax());
+        chunkType->setJumbo(isJumbo());
+        chunkType->setShard(getShardId());
+        chunkType->setVersion(getLastmod());
+        chunkType->setRootFolder(getRootFolder());
+        chunkType->setName(getChunkId().toString());
+        return;
+    }
+
 private:
     /**
      * Returns the connection string for the shard on which this chunk resides.
@@ -187,11 +209,13 @@ private:
     // The chunk manager, which owns this chunk. Not owned by the chunk.
     const ChunkManager* _manager;
 
+    ChunkId _chunkId;
     BSONObj _min;
     BSONObj _max;
     ShardId _shardId;
     const ChunkVersion _lastmod;
     mutable bool _jumbo;
+    std::string _rootFolder;
 
     // Statistics for the approximate data written by this chunk
     uint64_t _dataWritten;

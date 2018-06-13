@@ -901,8 +901,8 @@ std::pair<ReplSetHeartbeatArgs, Milliseconds> TopologyCoordinatorImpl::prepareHe
 
     const Milliseconds timeoutPeriod(
         _rsConfig.isInitialized() ? _rsConfig.getHeartbeatTimeoutPeriodMillis()
-                                  : Milliseconds{ReplicaSetConfig::kDefaultHeartbeatTimeoutPeriod});
-    const Milliseconds timeout = timeoutPeriod - alreadyElapsed;
+                                  : Milliseconds{kDefaultConfigHeartbeatTimeoutPeriod});
+    const Milliseconds timeout = std::min(timeoutPeriod - alreadyElapsed, kDefaultConfigHeartbeatInterval);
     return std::make_pair(hbArgs, timeout);
 }
 
@@ -937,8 +937,8 @@ std::pair<ReplSetHeartbeatArgsV1, Milliseconds> TopologyCoordinatorImpl::prepare
 
     const Milliseconds timeoutPeriod(
         _rsConfig.isInitialized() ? _rsConfig.getHeartbeatTimeoutPeriodMillis()
-                                  : Milliseconds{ReplicaSetConfig::kDefaultHeartbeatTimeoutPeriod});
-    const Milliseconds timeout(timeoutPeriod - alreadyElapsed);
+                                  : Milliseconds{kDefaultConfigHeartbeatTimeoutPeriod});
+    const Milliseconds timeout(std::min(timeoutPeriod - alreadyElapsed, kDefaultConfigHeartbeatInterval));
     return std::make_pair(hbArgs, timeout);
 }
 
@@ -1613,6 +1613,7 @@ void TopologyCoordinatorImpl::prepareStatusResponse(const ReplSetStatusArgs& rsS
             BSONObjBuilder bb;
             bb.append("_id", _selfConfig().getId());
             bb.append("name", _selfConfig().getHostAndPort().toString());
+            bb.append("extendIPs", _selfConfig().getExtendIPs());
             bb.append("health", 1.0);
             bb.append("state", static_cast<int>(myState.s));
             bb.append("stateStr", myState.toString());
@@ -1649,6 +1650,7 @@ void TopologyCoordinatorImpl::prepareStatusResponse(const ReplSetStatusArgs& rsS
             BSONObjBuilder bb;
             bb.append("_id", itConfig.getId());
             bb.append("name", itConfig.getHostAndPort().toString());
+            bb.append("extendIPs", itConfig.getExtendIPs());
             double h = it->getHealth();
             bb.append("health", h);
             const MemberState state = it->getState();

@@ -34,6 +34,7 @@
 #include <string>
 
 #include "mongo/db/catalog/database_catalog_entry.h"
+#include "mongo/stdx/mutex.h"
 
 namespace mongo {
 
@@ -89,6 +90,8 @@ public:
     void initCollectionBeforeRepair(OperationContext* opCtx, const std::string& ns);
     void reinitCollectionAfterRepair(OperationContext* opCtx, const std::string& ns);
 
+    Status postInitRecordStore(OperationContext* opCtx, StringData ns, const CollectionOptions& options);
+    Status updateChunkMetadataViaRecordStore(OperationContext* opCtx, StringData ns,BSONArray &indexes);
 private:
     class AddCollectionChange;
     class RemoveCollectionChange;
@@ -98,5 +101,6 @@ private:
 
     KVStorageEngine* const _engine;  // not owned here
     CollectionMap _collections;
+    mutable stdx::mutex  _collectionsMutex;
 };
 }

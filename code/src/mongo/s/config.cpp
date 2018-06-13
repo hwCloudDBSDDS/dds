@@ -75,10 +75,11 @@ CollectionInfo::CollectionInfo(OperationContext* txn,
     } else {
         warning() << "no chunks found for collection " << manager->getns()
                   << ", assuming unsharded";
-        unshard();
+        //unshard();
     }
 
     _dirty = false;
+    _tableType = coll.getTabType();
 }
 
 CollectionInfo::~CollectionInfo() = default;
@@ -108,7 +109,7 @@ void CollectionInfo::useChunkManager(std::shared_ptr<ChunkManager> manager) {
 void CollectionInfo::save(OperationContext* txn, const string& ns) {
     CollectionType coll;
     coll.setNs(NamespaceString{ns});
-
+    coll.setPrefix(1);
     if (_cm) {
         invariant(!_dropped);
         coll.setEpoch(_cm->getVersion().epoch());
@@ -153,6 +154,29 @@ bool DBConfig::isSharded(const string& ns) {
 
     return i->second.isSharded();
 }
+
+bool DBConfig::isCollectionExist(const string& ns) {
+    stdx::lock_guard<stdx::mutex> lk(_lock);
+
+    CollectionInfoMap::iterator it = _collections.find(ns);
+    if (it != _collections.end()) {
+        return true;
+    }
+
+    return false;
+}
+
+CollectionType::TableType DBConfig::getCollTabType(const string& ns) {
+    stdx::lock_guard<stdx::mutex> lk(_lock);
+
+    CollectionInfoMap::iterator it = _collections.find(ns);
+    if (it != _collections.end()) {
+        return it->second.getCollTabType();
+    }
+
+    return CollectionType::TableType::kNonShard;
+}
+
 
 void DBConfig::invalidateNs(const std::string& ns) {
     stdx::lock_guard<stdx::mutex> lk(_lock);
@@ -204,7 +228,7 @@ bool DBConfig::removeSharding(OperationContext* txn, const string& ns) {
 
 // Handles weird logic related to getting *either* a chunk manager *or* the collection primary
 // shard
-void DBConfig::getChunkManagerOrPrimary(OperationContext* txn,
+Status DBConfig::getChunkManagerOrPrimary(OperationContext* txn,
                                         const string& ns,
                                         std::shared_ptr<ChunkManager>& manager,
                                         std::shared_ptr<Shard>& primary) {
@@ -215,39 +239,43 @@ void DBConfig::getChunkManagerOrPrimary(OperationContext* txn,
 
     manager.reset();
     primary.reset();
-
+    bool ns_not_exist = false;
     {
         stdx::lock_guard<stdx::mutex> lk(_lock);
-
         CollectionInfoMap::iterator i = _collections.find(ns);
-
         // No namespace
-        if (i == _collections.end()) {
-            // If we don't know about this namespace, it's unsharded by default
-            auto primaryStatus = grid.shardRegistry()->getShard(txn, _primaryId);
-            if (primaryStatus.isOK()) {
-                primary = primaryStatus.getValue();
-            }
-        } else {
-            CollectionInfo& cInfo = i->second;
-
-            // TODO: we need to be careful about handling shardingEnabled, b/c in some places we
-            // seem to use and some we don't.  If we use this function in combination with just
-            // getChunkManager() on a slightly borked config db, we'll get lots of staleconfig
-            // retries
-            if (_shardingEnabled && cInfo.isSharded()) {
-                manager = cInfo.getCM();
-            } else {
-                auto primaryStatus = grid.shardRegistry()->getShard(txn, _primaryId);
-                if (primaryStatus.isOK()) {
-                    primary = primaryStatus.getValue();
-                }
-            }
+        if (i == _collections.end())
+        {
+            ns_not_exist = true; 
         }
+
     }
 
-    invariant(manager || primary);
-    invariant(!manager || !primary);
+    // only for internal DB(config.local.admin) or view  we should send data to the primary
+    // for other DB collection, the primary is meaningless
+    NamespaceString nameSpace(ns);
+    if (nameSpace.isOnInternalDb() || true == ns_not_exist) {
+        auto primaryStatus = grid.shardRegistry()->getShard(txn, _primaryId);
+        if (!primaryStatus.isOK()) {
+            return primaryStatus.getStatus();
+        }
+
+        primary = primaryStatus.getValue();
+    } else {
+        if (!isShardedAfterReload(txn, ns)) {
+            return Status(ErrorCodes::NamespaceNotSharded,
+                          str::stream() << "ns " << ns <<" is not sharded yet");
+        }
+
+        stdx::lock_guard<stdx::mutex> lk(_lock);
+        CollectionInfoMap::iterator i = _collections.find(ns);
+
+        invariant(i != _collections.end());
+        CollectionInfo& cInfo = i->second;
+        manager = cInfo.getCM();
+    }
+
+    return Status::OK();
 }
 
 
@@ -475,15 +503,15 @@ bool DBConfig::_loadIfNeeded(OperationContext* txn, Counter reloadIteration) {
     invariant(configOpTimeWhenLoadingColl >= _configOpTime);
 
     for (const auto& coll : collections) {
-        auto collIter = _collections.find(coll.getNs().ns());
+        CollectionInfoMap::iterator collIter = _collections.find(coll.getNs().ns());
         if (collIter != _collections.end()) {
             invariant(configOpTimeWhenLoadingColl >= collIter->second.getConfigOpTime());
         }
 
-        if (coll.getDropped()) {
-            _collections.erase(coll.getNs().ns());
+        if (coll.getDropped() && collIter != _collections.end()) {
+            _collections.erase(collIter);
             numCollsErased++;
-        } else {
+        } else if(!coll.getDropped()){
             _collections[coll.getNs().ns()] =
                 CollectionInfo(txn, coll, configOpTimeWhenLoadingColl);
             numCollsSharded++;
@@ -704,11 +732,27 @@ void DBConfig::getAllShardedCollections(set<string>& namespaces) {
 
     for (CollectionInfoMap::const_iterator i = _collections.begin(); i != _collections.end(); i++) {
         log() << "Coll : " << i->first << " sharded? " << i->second.isSharded();
-        if (i->second.isSharded())
-            namespaces.insert(i->first);
+       /* if (i->second.isSharded())
+            namespaces.insert(i->first);*/
+    if (i->second.getCollTabType() != CollectionType::TableType::kNonShard){
+        namespaces.insert(i->first);
+        }
+
     }
 }
 
+void DBConfig::getAllNonShardedCollections(set<string>& namespaces) {
+    stdx::lock_guard<stdx::mutex> lk(_lock);
+
+    for (CollectionInfoMap::const_iterator i = _collections.begin(); i != _collections.end(); i++) {
+        //log() << "Coll : " << i->first << " sharded? " << i->second.isSharded();
+        if (i->second.getCollTabType() == CollectionType::TableType::kNonShard)
+            namespaces.insert(i->first);
+            
+       // if (i->second.isSharded())
+           // namespaces.insert(i->first);
+    }
+}
 bool DBConfig::isShardingEnabled() {
     stdx::lock_guard<stdx::mutex> lk(_lock);
     return _shardingEnabled;
@@ -717,6 +761,17 @@ bool DBConfig::isShardingEnabled() {
 ShardId DBConfig::getPrimaryId() {
     stdx::lock_guard<stdx::mutex> lk(_lock);
     return _primaryId;
+}
+
+bool DBConfig::isShardedAfterReload(OperationContext* txn, const std::string& ns) {
+    if (!isSharded(ns)) {
+        reload(txn);
+        if (!isSharded(ns)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 /* --- ConfigServer ---- */

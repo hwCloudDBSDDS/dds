@@ -49,6 +49,7 @@ class QueryRequest {
 public:
     static const char kFindCommandName[];
     static const char kShardVersionField[];
+    static const char kChunkIdField[];
 
     QueryRequest(NamespaceString nss);
 
@@ -160,6 +161,14 @@ public:
 
     void setSort(BSONObj sort) {
         _sort = sort.getOwned();
+    }
+
+    const BSONObj& getShardKey() const {
+        return _shardKey;
+    }
+
+    void setShardKey(BSONObj shardKey) {
+        _shardKey = shardKey.getOwned();
     }
 
     const BSONObj& getHint() const {
@@ -483,6 +492,7 @@ private:
     bool _allowPartialResults = false;
 
     boost::optional<long long> _replicationTerm;
+    BSONObj _shardKey;
 };
 
 }  // namespace mongo

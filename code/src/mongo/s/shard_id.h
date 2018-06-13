@@ -39,9 +39,6 @@ namespace mongo {
 
 class NamespaceString;
 
-/**
- *  Representation of a shard identifier.
- */
 class ShardId {
 public:
     friend std::ostream& operator<<(std::ostream&, const ShardId&);
@@ -94,6 +91,38 @@ public:
 
 private:
     std::string _shardId;
+};
+
+/**
+ *  Representation of a shard identifier.
+ */
+class ShardIdent{
+public:
+    ShardIdent(ShardId& shardId, std::string& processIdent);
+    ShardIdent() {};
+
+    static StatusWith<ShardIdent> fromBSON(const BSONObj& obj);
+
+    BSONObj toBSON() const;
+    bool operator==(const ShardIdent&) const;
+    bool operator!=(const ShardIdent&) const;
+
+    const ShardId& getShardId() const {
+        return _shardId;
+    }
+    void setShardId(ShardId& shardId);
+
+    const std::string& getProcessIdentity() const {
+        return _processIdentity;
+    }
+    void setProcessIdentity(std::string& processIdent);
+
+    // true if _shardId and _processIdentity is empty
+    bool isValid() const;
+
+private:
+    ShardId _shardId;
+    std::string _processIdentity;
 };
 
 template <typename Allocator>

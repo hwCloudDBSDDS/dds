@@ -44,6 +44,7 @@
 #include "mongo/db/keypattern.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/util/log.h"
+#include "mongo/db/catalog/database_holder.h"
 
 namespace mongo {
 
@@ -88,7 +89,8 @@ public:
              int options,
              std::string& errmsg,
              BSONObjBuilder& result) {
-        const NamespaceString nss = NamespaceString(parseNs(dbname, jsobj));
+        const NamespaceString ns = NamespaceString(parseNs(dbname, jsobj));
+        NamespaceString nss = ns2chunkHolder().getNsWithChunkId(ns);
 
         BSONObj keyPattern = jsobj.getObjectField("keyPattern");
         if (keyPattern.isEmpty()) {

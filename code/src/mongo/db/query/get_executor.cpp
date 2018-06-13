@@ -821,7 +821,7 @@ namespace {
 
 // TODO: Make this a function on NamespaceString, or make it cleaner.
 inline void validateUpdate(const char* ns, const BSONObj& updateobj, const BSONObj& patternOrig) {
-    uassert(10155, "cannot update reserved $ collection", strchr(ns, '$') == 0);
+    //uassert(10155, "cannot update reserved $ collection", strchr(ns, '$') == 0);
     if (strstr(ns, ".system.")) {
         /* dm: it's very important that system.indexes is never updated as IndexDetails
            has pointers into it */
@@ -839,6 +839,7 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorUpdate(OperationContext* txn,
                                                        OpDebug* opDebug,
                                                        Collection* collection,
                                                        ParsedUpdate* parsedUpdate) {
+
     const UpdateRequest* request = parsedUpdate->getRequest();
     UpdateDriver* driver = parsedUpdate->getDriver();
 
@@ -900,8 +901,9 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorUpdate(OperationContext* txn,
                    << " Using EOF stage: " << redact(unparsedQuery);
             auto updateStage = make_unique<UpdateStage>(
                 txn, updateStageParams, ws.get(), collection, new EOFStage(txn));
-            return PlanExecutor::make(
+            auto returnvalue =  PlanExecutor::make(
                 txn, std::move(ws), std::move(updateStage), nsString.ns(), policy);
+            return returnvalue;
         }
 
         const IndexDescriptor* descriptor = collection->getIndexCatalog()->findIdIndex(txn);
@@ -917,7 +919,8 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorUpdate(OperationContext* txn,
                 new IDHackStage(txn, collection, unparsedQuery["_id"].wrap(), ws.get(), descriptor);
             unique_ptr<UpdateStage> root =
                 make_unique<UpdateStage>(txn, updateStageParams, ws.get(), collection, idHackStage);
-            return PlanExecutor::make(txn, std::move(ws), std::move(root), collection, policy);
+            auto ret_status = PlanExecutor::make(txn, std::move(ws), std::move(root), collection, policy);
+            return ret_status;
         }
 
         // If we're here then we don't have a parsed query, but we're also not eligible for
@@ -969,13 +972,14 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorUpdate(OperationContext* txn,
 
     // We must have a tree of stages in order to have a valid plan executor, but the query
     // solution may be null. Takes ownership of all args other than 'collection' and 'txn'
-    return PlanExecutor::make(txn,
+    auto ret_status2 = PlanExecutor::make(txn,
                               std::move(ws),
                               std::move(root),
                               std::move(querySolution),
                               std::move(cq),
                               collection,
                               policy);
+    return ret_status2;
 }
 
 //

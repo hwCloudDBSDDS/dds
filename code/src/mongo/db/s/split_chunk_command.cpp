@@ -52,8 +52,11 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/split_chunk_request_type.h"
 #include "mongo/s/stale_exception.h"
+#include "mongo/s/split_chunk_request.h"
+#include "mongo/s/confirm_split_request.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/db/storage/storage_options.h"
 
 namespace mongo {
 
@@ -175,281 +178,140 @@ public:
              int options,
              std::string& errmsg,
              BSONObjBuilder& result) override {
-        //
-        // Check whether parameters passed to splitChunk are sound
-        //
-        const NamespaceString nss = NamespaceString(parseNs(dbname, cmdObj));
-        if (!nss.isValid()) {
-            errmsg = str::stream() << "invalid namespace '" << nss.toString()
-                                   << "' specified for command";
-            return false;
-        }
+         Date_t initExecTime = Date_t::now();
+         log() << "splitChunk db: " << dbname << " cmdobj:" << cmdObj;
+         SplitChunkReq splitChunkRequest = uassertStatusOK(SplitChunkReq::createFromCommand(cmdObj));
+         if (!splitChunkRequest.validSplitPoint()) {
+             log() << "[splitChunk] invalid splitPoint " << cmdObj;
+             errmsg = str::stream() << "invlid split point ";
+             return false;
+         }
+         splitChunkRequest.setFullRightDBPath(storageGlobalParams.dbpath + /*'/' + */
+                                              splitChunkRequest.getRightChunkName() + '/' +
+                                              splitChunkRequest.getRightDBPath());
 
-        BSONObj keyPatternObj;
-        {
-            BSONElement keyPatternElem;
-            auto keyPatternStatus =
-                bsonExtractTypedField(cmdObj, "keyPattern", Object, &keyPatternElem);
+         index_LOG(1)<<"splitChunk db Request: " << splitChunkRequest;
+         NamespaceString nss = splitChunkRequest.getNss();
+         NamespaceString nss_with_chunkID (StringData(nss.ns()+'$'+ splitChunkRequest.getName()));
 
-            if (!keyPatternStatus.isOK()) {
-                errmsg = "need to specify the key pattern the collection is sharded over";
-                return false;
-            }
-            keyPatternObj = keyPatternElem.Obj();
-        }
+         index_log() << "[splitChunk] shardSvr start nss : " << nss_with_chunkID;
 
-        auto chunkRange = uassertStatusOK(ChunkRange::fromBSON(cmdObj));
-        const BSONObj min = chunkRange.getMin();
-        const BSONObj max = chunkRange.getMax();
+         splitChunkRequest.setNs(nss_with_chunkID);
+         index_log() << "[splitChunk] shardSvr get DBLock nss: " << nss_with_chunkID;
+         Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_IS);
+         index_log() << "[splitChunk] after geted DBLock nss: " << nss_with_chunkID << "; used Time(ms): " <<
+             (Date_t::now()-initExecTime);
 
-        boost::optional<ChunkVersion> expectedChunkVersion;
-        auto statusWithChunkVersion =
-            ChunkVersion::parseFromBSONWithFieldForCommands(cmdObj, kChunkVersion);
-        if (statusWithChunkVersion.isOK()) {
-            expectedChunkVersion = std::move(statusWithChunkVersion.getValue());
-        } else if (statusWithChunkVersion != ErrorCodes::NoSuchKey) {
-            uassertStatusOK(statusWithChunkVersion);
-        }
+         Database* db = dbHolder().get(txn, nss.db());
+         if (!db) {
+             log() << "splitChunk db not exeist: " << nss.db();
+             errmsg = str::stream() << "database not exist " << nss.db();
+             return false;
+         }
 
-        vector<BSONObj> splitKeys;
-        {
-            BSONElement splitKeysElem;
-            auto splitKeysElemStatus =
-                bsonExtractTypedField(cmdObj, "splitKeys", mongo::Array, &splitKeysElem);
+         Collection* collection = db->getCollection(nss_with_chunkID);
+         if (!collection) {
+             log() << "splitChunk nss not exeist: " << nss_with_chunkID;
+             errmsg = str::stream() << "collection not exist " << nss_with_chunkID.toString();
+             return false;
+         }
 
-            if (!splitKeysElemStatus.isOK()) {
-                errmsg = "need to provide the split points to chunk over";
-                return false;
-            }
-            BSONObjIterator it(splitKeysElem.Obj());
-            while (it.more()) {
-                splitKeys.push_back(it.next().Obj().getOwned());
-            }
-        }
-
-        string shardName;
-        auto parseShardNameStatus = bsonExtractStringField(cmdObj, "from", &shardName);
-        if (!parseShardNameStatus.isOK())
-            return appendCommandStatus(result, parseShardNameStatus);
-
-        //
-        // Get sharding state up-to-date
-        //
-        ShardingState* const shardingState = ShardingState::get(txn);
-
-        // This could be the first call that enables sharding - make sure we initialize the
-        // sharding state for this shard.
-        if (!shardingState->enabled()) {
-            if (cmdObj["configdb"].type() != String) {
-                errmsg = "sharding not enabled";
-                warning() << errmsg;
-                return false;
-            }
-
-            const string configdb = cmdObj["configdb"].String();
-            shardingState->initializeFromConfigConnString(txn, configdb, shardName);
-        }
-
-        log() << "received splitChunk request: " << redact(cmdObj);
-
-        //
-        // Lock the collection's metadata and get highest version for the current shard
-        // TODO(SERVER-25086): Remove distLock acquisition from split chunk
-        //
-        const string whyMessage(str::stream() << "splitting chunk [" << min << ", " << max
-                                              << ") in "
-                                              << nss.toString());
-        auto scopedDistLock = grid.catalogClient(txn)->getDistLockManager()->lock(
-            txn, nss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
-        if (!scopedDistLock.isOK()) {
-            errmsg = str::stream() << "could not acquire collection lock for " << nss.toString()
-                                   << " to split chunk [" << redact(min) << "," << redact(max)
-                                   << ") " << causedBy(redact(scopedDistLock.getStatus()));
-            warning() << errmsg;
-            return false;
-        }
-
-        // Always check our version remotely
-        ChunkVersion shardVersion;
-        Status refreshStatus = shardingState->refreshMetadataNow(txn, nss, &shardVersion);
-
-        if (!refreshStatus.isOK()) {
-            errmsg = str::stream() << "splitChunk cannot split chunk "
-                                   << "[" << redact(min) << "," << redact(max) << ") "
-                                   << causedBy(redact(refreshStatus));
-
-            warning() << errmsg;
-            return false;
-        }
-
-        if (shardVersion.majorVersion() == 0) {
-            // It makes no sense to split if our version is zero and we have no chunks
-            errmsg = str::stream() << "splitChunk cannot split chunk "
-                                   << "[" << redact(min) << "," << redact(max) << ") "
-                                   << " with zero shard version";
-
-            warning() << errmsg;
-            return false;
-        }
-
-        const auto& oss = OperationShardingState::get(txn);
-        uassert(ErrorCodes::InvalidOptions, "collection version is missing", oss.hasShardVersion());
-
-        // Even though the splitChunk command transmits a value in the operation's shardVersion
-        // field, this value does not actually contain the shard version, but the global collection
-        // version.
-        ChunkVersion expectedCollectionVersion = oss.getShardVersion(nss);
-        if (expectedCollectionVersion.epoch() != shardVersion.epoch()) {
-            std::string msg = str::stream() << "splitChunk cannot split chunk "
-                                            << "[" << redact(min) << "," << redact(max) << "), "
-                                            << "collection may have been dropped. "
-                                            << "current epoch: " << shardVersion.epoch()
-                                            << ", cmd epoch: " << expectedCollectionVersion.epoch();
-            warning() << msg;
-            throw SendStaleConfigException(
-                nss.toString(), msg, expectedCollectionVersion, shardVersion);
-        }
-
-        ScopedCollectionMetadata collMetadata;
-        {
-            AutoGetCollection autoColl(txn, nss, MODE_IS);
-
-            // Get collection metadata
-            collMetadata = CollectionShardingState::get(txn, nss.ns())->getMetadata();
-        }
-
-        // With nonzero shard version, we must have metadata
-        invariant(collMetadata);
-
-        ChunkVersion collVersion = collMetadata->getCollVersion();
-        // With nonzero shard version, we must have a coll version >= our shard version
-        invariant(collVersion >= shardVersion);
-
-        {
-            ChunkType chunkToMove;
-            chunkToMove.setMin(min);
-            chunkToMove.setMax(max);
-            if (expectedChunkVersion) {
-                chunkToMove.setVersion(*expectedChunkVersion);
-            }
-
-            uassertStatusOK(collMetadata->checkChunkIsValid(chunkToMove));
-        }
-
-        auto request = SplitChunkRequest(
-            nss, shardName, expectedCollectionVersion.epoch(), chunkRange, splitKeys);
-
-        auto configCmdObj =
-            request.toConfigCommandBSON(ShardingCatalogClient::kMajorityWriteConcern.toBSON());
-
-        auto cmdResponseStatus =
-            Grid::get(txn)->shardRegistry()->getConfigShard()->runCommandWithFixedRetryAttempts(
-                txn,
-                kPrimaryOnlyReadPreference,
-                "admin",
-                configCmdObj,
-                Shard::RetryPolicy::kIdempotent);
-
-        //
-        // Refresh chunk metadata regardless of whether or not the split succeeded
-        //
-        {
-            ChunkVersion unusedShardVersion;
-            refreshStatus = shardingState->refreshMetadataNow(txn, nss, &unusedShardVersion);
-
-            if (!refreshStatus.isOK()) {
-                errmsg = str::stream() << "failed to refresh metadata for split chunk ["
-                                       << redact(min) << "," << redact(max) << ") "
-                                       << causedBy(redact(refreshStatus));
-
-                warning() << errmsg;
-                return false;
-            }
-        }
-
-        // If we failed to get any response from the config server at all, despite retries, then we
-        // should just go ahead and fail the whole operation.
-        if (!cmdResponseStatus.isOK())
-            return appendCommandStatus(result, cmdResponseStatus.getStatus());
-
-        // Check commandStatus and writeConcernStatus
-        auto commandStatus = cmdResponseStatus.getValue().commandStatus;
-        auto writeConcernStatus = cmdResponseStatus.getValue().writeConcernStatus;
-
-        // Send stale epoch if epoch of request did not match epoch of collection
-        if (commandStatus == ErrorCodes::StaleEpoch) {
-            std::string msg = str::stream() << "splitChunk cannot split chunk "
-                                            << "[" << redact(min) << "," << redact(max) << "), "
-                                            << "collection may have been dropped. "
-                                            << "current epoch: " << collVersion.epoch()
-                                            << ", cmd epoch: " << expectedCollectionVersion.epoch();
-            warning() << msg;
-
-            throw SendStaleConfigException(
-                nss.toString(), msg, expectedCollectionVersion, collVersion);
-
-            return appendCommandStatus(result, commandStatus);
-        }
-
-        //
-        // If _configsvrCommitChunkSplit returned an error, look at this shard's metadata to
-        // determine if  the split actually did happen. This can happen if there's a network error
-        // getting the response from the first call to _configsvrCommitChunkSplit, but it actually
-        // succeeds, thus the automatic retry fails with a precondition violation, for example.
-        //
-        if ((!commandStatus.isOK() || !writeConcernStatus.isOK()) &&
-            _checkMetadataForSuccess(txn, nss, chunkRange, splitKeys)) {
-
-            LOG(1) << "splitChunk [" << redact(min) << "," << redact(max)
-                   << ") has already been committed.";
-        } else if (!commandStatus.isOK()) {
-            return appendCommandStatus(result, commandStatus);
-        } else if (!writeConcernStatus.isOK()) {
-            return appendCommandStatus(result, writeConcernStatus);
-        }
-
-        // Select chunk to move out for "top chunk optimization".
-        KeyPattern shardKeyPattern(collMetadata->getKeyPattern());
-
-        AutoGetCollection autoColl(txn, nss, MODE_IS);
-
-        Collection* const collection = autoColl.getCollection();
-        if (!collection) {
-            warning() << "will not perform top-chunk checking since " << nss.toString()
-                      << " does not exist after splitting";
-            return true;
-        }
-
-        // Allow multiKey based on the invariant that shard keys must be single-valued. Therefore,
-        // any multi-key index prefixed by shard key cannot be multikey over the shard key fields.
-        IndexDescriptor* idx =
-            collection->getIndexCatalog()->findShardKeyPrefixedIndex(txn, keyPatternObj, false);
-        if (!idx) {
-            return true;
-        }
-
-        auto backChunk = ChunkType();
-        backChunk.setMin(splitKeys.back());
-        backChunk.setMax(max);
-
-        auto frontChunk = ChunkType();
-        frontChunk.setMin(min);
-        frontChunk.setMax(splitKeys.front());
-
-        if (shardKeyPattern.globalMax().woCompare(backChunk.getMax()) == 0 &&
-            checkIfSingleDoc(txn, collection, idx, &backChunk)) {
-            result.append("shouldMigrate",
-                          BSON("min" << backChunk.getMin() << "max" << backChunk.getMax()));
-        } else if (shardKeyPattern.globalMin().woCompare(frontChunk.getMin()) == 0 &&
-                   checkIfSingleDoc(txn, collection, idx, &frontChunk)) {
-            result.append("shouldMigrate",
-                          BSON("min" << frontChunk.getMin() << "max" << frontChunk.getMax()));
-        }
-
-        return true;
+         Status commandStatus = collection->split(txn, splitChunkRequest, result);
+         if (!commandStatus.isOK()) {
+             log() << "splitChunk split fail: " ;
+             return appendCommandStatus(result, commandStatus);
+         }
+         
+         index_log() << "[splitChunk] shardSvr end nss : " << nss_with_chunkID <<
+             "; used Time(ms): " << (Date_t::now()-initExecTime);
+         return true;
     }
 
 } cmdSplitChunk;
+
+
+class ConfirmSplitCommand : public Command {
+public:
+    ConfirmSplitCommand() : Command("confirmSplit") {}
+
+    void help(std::stringstream& help) const override {
+        help << "internal command usage only\n"
+            "example:\n"
+            " { confirmSplit:\"db.foo\" , keyPattern: {a:1} , min : {a:100} , max: {a:200} { "
+            "splitKeys : [ {a:150} , ... ]}";
+    }
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
+    }
+
+    bool slaveOk() const override {
+        return false;
+    }
+
+    bool adminOnly() const override {
+        return true;
+    }
+
+    Status checkAuthForCommand(Client* client,
+        const std::string& dbname,
+        const BSONObj& cmdObj) override {
+            if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::internal)) {
+                    return Status(ErrorCodes::Unauthorized, "Unauthorized");
+            }
+            return Status::OK();
+    }
+
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return parseNsFullyQualified(dbname, cmdObj);
+    }
+
+    bool run(OperationContext* txn,
+        const std::string& dbname,
+        BSONObj& cmdObj,
+        int options,
+        std::string& errmsg,
+        BSONObjBuilder& result) override {
+            Date_t initExecTime = Date_t::now();
+            index_log() << "confirmSplit db: " << dbname << " cmdobj:" << cmdObj;
+            ConfirmSplitRequest confirmSplitRequest = uassertStatusOK(ConfirmSplitRequest::createFromCommand(cmdObj));
+            NamespaceString nss = confirmSplitRequest.getNss();
+            NamespaceString nss_with_chunkID (StringData(nss.ns()+'$'+ confirmSplitRequest.getName()));
+            index_log() << "[confirmSplit] shardSvr start nss : " << nss_with_chunkID;
+            confirmSplitRequest.setNs(nss_with_chunkID);
+            {
+                index_log() << "[confirmSplit] nss db: " << nss_with_chunkID;
+                Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_IS);
+                Lock::CollectionLock collLock(txn->lockState(), nss.ns(), MODE_IS);
+                index_log() << "[confirmSplit] nss db after DBLock: " << nss_with_chunkID;
+                Database* db = dbHolder().get(txn, nss.db());
+                if (!db) {
+                    log() << "confirmSplit db not exist: " << nss.db();
+                    errmsg = str::stream() << "database not exist " << dbname;
+                    return false;
+                }
+
+                Collection* collection = db->getCollection(nss_with_chunkID);
+                if (!collection) {
+                    log() << "confirmSplit nss not exist: " << nss_with_chunkID;
+                    errmsg = str::stream() << "collection not exist " << nss_with_chunkID.toString();
+                    return false;
+                }
+
+                Status commandStatus = collection->confirmSplit(txn, confirmSplitRequest, result);
+                if (!commandStatus.isOK()) {
+                    log() << "confirmSplit split fail: " ;
+                    return appendCommandStatus(result, commandStatus);
+                }
+            }
+
+            index_log() << "[confirmSplit] shardSvr end nss : " << nss_with_chunkID <<
+                "; used Time(ms): " << (Date_t::now()-initExecTime);
+            return true;
+    }
+
+} cmdConfirmSplit;
 
 }  // namespace
 }  // namespace mongo

@@ -179,7 +179,7 @@ public:
         if (id == RecordId::min())
             return DiskLoc::min();
 
-        dassert(id.repr() == InvalidRepr);
+        dassert(id.repr() == (int64_t)InvalidRepr);
         return DiskLoc().setInvalid();
     }
 

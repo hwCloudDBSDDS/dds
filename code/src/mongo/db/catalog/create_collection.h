@@ -30,6 +30,8 @@
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"
+#include "mongo/db/namespace_string.h"
+
 
 namespace mongo {
 class BSONObj;
@@ -44,4 +46,18 @@ Status createCollection(OperationContext* txn,
                         const std::string& dbName,
                         const BSONObj& cmdObj,
                         const BSONObj& idIndex = BSONObj());
+
+
+/**
+ * Creates a collection metadata as described in "cmdObj" on the database "dbName". Creates the collection's
+ * _id index metadata according to 'idIndex', if it is non-empty. When 'idIndex' is empty, creates the metadata for
+ * default _id index.
+ */
+class nsToLockMap;
+extern nsToLockMap nsmap;
+Status createCollectionMetadata(OperationContext* txn,
+                        const NamespaceString& ns,
+                        const BSONObj& cmdObj,
+                        BSONObj& indexSpec);
+
 }  // namespace mongo

@@ -89,9 +89,9 @@ void TicketHolder::release() {
 Status TicketHolder::resize(int newSize) {
     stdx::lock_guard<stdx::mutex> lk(_resizeMutex);
 
-    if (newSize < 5)
+    if (newSize < 3)
         return Status(ErrorCodes::BadValue,
-                      str::stream() << "Minimum value for semaphore is 5; given " << newSize);
+                      str::stream() << "Minimum value for semaphore is 3; given " << newSize);
 
     if (newSize > SEM_VALUE_MAX)
         return Status(ErrorCodes::BadValue,

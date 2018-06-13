@@ -25,7 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/platform/basic.h"
 
 #include <boost/optional.hpp>
@@ -41,6 +41,7 @@
 #include "mongo/s/commands/cluster_aggregate.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/s/query/cluster_find.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 namespace {
@@ -54,9 +55,7 @@ const char kTermField[] = "term";
 /**
  * Implements the find command on mongos.
  */
-class ClusterFindCmd : public Command {
-    MONGO_DISALLOW_COPYING(ClusterFindCmd);
-
+class ClusterFindCmd : public Command { MONGO_DISALLOW_COPYING(ClusterFindCmd); 
 public:
     ClusterFindCmd() : Command("find") {}
 
@@ -193,9 +192,11 @@ public:
         BSONObj viewDefinition;
         auto cursorId = ClusterFind::runQuery(
             txn, *cq.getValue(), readPref.getValue(), &batch, &viewDefinition);
+        
         if (!cursorId.isOK()) {
             if (cursorId.getStatus() == ErrorCodes::CommandOnShardedViewNotSupportedOnMongod) {
                 auto aggCmdOnView = cq.getValue()->getQueryRequest().asAggregationCommand();
+
                 if (!aggCmdOnView.isOK()) {
                     return appendCommandStatus(result, aggCmdOnView.getStatus());
                 }
@@ -218,7 +219,9 @@ public:
                 appendCommandStatus(result, status);
                 return status.isOK();
             }
-
+            
+            error()<<"@@ERR@@ ClusterFind cmdObj:"<<cmdObj
+                   <<", status:" << cursorId.getStatus();
             return appendCommandStatus(result, cursorId.getStatus());
         }
 

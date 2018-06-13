@@ -38,6 +38,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/util/net/hostandport.h"
+#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -68,6 +69,9 @@ struct ClusterClientCursorParams {
         Remote(HostAndPort hostAndPort, CursorId cursorId)
             : hostAndPort(std::move(hostAndPort)), cursorId(cursorId) {}
 
+        Remote(ShardId sid, ChunkId cid, BSONObj cmdObj)
+            : shardId(std::move(sid)), chunkId(std::move(cid)), cmdObj(std::move(cmdObj)) {}
+
         // If this is a regular query cursor, this value will be set and shard id retargeting may
         // occur on certain networking or replication errors.
         //
@@ -78,6 +82,9 @@ struct ClusterClientCursorParams {
         // If this is an externally-specified cursor (e.g. aggregation), this value will be set and
         // used directly and no re-targeting may happen on errors.
         boost::optional<HostAndPort> hostAndPort;
+
+        // needed for find or getmore
+        boost::optional<ChunkId> chunkId;
 
         // The raw command parameters to send to this remote (e.g. the find command specification).
         //

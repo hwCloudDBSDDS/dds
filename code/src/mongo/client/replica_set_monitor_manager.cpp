@@ -95,7 +95,15 @@ shared_ptr<ReplicaSetMonitor> ReplicaSetMonitorManager::getOrCreateMonitor(
     auto setName = connStr.getSetName();
     auto monitor = _monitors[setName].lock();
     if (monitor) {
-        return monitor;
+        if (monitor->getServerAddress() == connStr.toString()) {
+            return monitor;
+        }
+        else {
+            log() << "Removing old replica set monitor for " << monitor->getServerAddress();
+            monitor->markAsRemoved();
+            _monitors.erase(setName);
+            log() << "Removed ReplicaSetMonitor for replica set " << setName;
+        }
     }
 
     const std::set<HostAndPort> servers(connStr.getServers().begin(), connStr.getServers().end());

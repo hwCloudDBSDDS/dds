@@ -100,6 +100,11 @@ public:
                 "Current storage engine does not support majority readConcerns"};
     }
 
+    //recover unit might be shared for read and write, after finishing read, clear the flag
+    virtual void clearReadFromMajorityCommittedSnapshot() {
+        return;
+    }
+
     /**
      * Returns true if setReadFromMajorityCommittedSnapshot() has been called.
      */

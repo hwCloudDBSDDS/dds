@@ -176,8 +176,15 @@ void NetworkCounter::append(BSONObjBuilder& b) {
     b.append("physicalBytesIn", static_cast<long long>(_physicalBytesIn.loadRelaxed()));
     b.append("physicalBytesOut", static_cast<long long>(_physicalBytesOut.loadRelaxed()));
     b.append("numRequests", static_cast<long long>(_requests.loadRelaxed()));
+
 }
 
+BSONObj NetworkCounter::getObj() const {
+    BSONObjBuilder b;
+    b.append("write", static_cast<long long>(_logicalBytesIn.loadRelaxed()));
+    b.append("read", static_cast<long long>(_logicalBytesOut.loadRelaxed()));
+    return b.obj();
+}
 
 OpCounters globalOpCounters;
 OpCounters replOpCounters;

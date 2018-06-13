@@ -208,7 +208,6 @@ void FTDCController::doLoop() {
                 if (!_mgr) {
                     auto swMgr =
                         FTDCFileManager::create(&_config, _path, &_rotateCollectors, client);
-
                     _mgr = uassertStatusOK(std::move(swMgr));
                 }
 

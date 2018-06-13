@@ -89,6 +89,7 @@ public:
      * TODO: Replace these methods and all other methods of command dispatch with a more general
      * command op framework.
      */
+    // the results is on chunklevel, so the size of results equal to chunk size, not shard size
     static void commandOp(OperationContext* txn,
                           const std::string& db,
                           const BSONObj& command,

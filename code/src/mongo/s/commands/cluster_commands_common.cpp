@@ -78,7 +78,7 @@ void Future::CommandResult::init() {
 
         if (_conn->lazySupported()) {
             _cursor.reset(
-                new DBClientCursor(_conn, _db + ".$cmd", _cmd, -1 /*limit*/, 0, NULL, _options, 0));
+                new DBClientCursor(_conn, _db + ".$cmd", _cmd, ChunkId(), -1 /*limit*/, 0, NULL, _options, 0));
             _cursor->initLazy();
         } else {
             _done = true;  // we set _done first because even if there is an error we're done

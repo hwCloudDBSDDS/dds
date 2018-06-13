@@ -404,6 +404,11 @@ Status ReplicationCoordinatorMock::processHeartbeatV1(const ReplSetHeartbeatArgs
     return Status::OK();
 }
 
+Status ReplicationCoordinatorMock::processShardServerHeartbeat(OperationContext* txn,
+                                   const ShardServerHeartbeatArgs& args) {
+    return Status::OK();
+}
+
 bool ReplicationCoordinatorMock::isV1ElectionProtocol() const {
     return true;
 }

@@ -61,6 +61,12 @@ public:
                                     const std::vector<IndexEntry>& indices,
                                     std::vector<IndexEntry>* out);
 
+    static bool isShardKeyIndex(const BSONObj& index, const BSONObj& shardKey);
+
+    static void findRelevantIndicesForFindCmd(const CanonicalQuery& query,
+                                    const std::vector<IndexEntry>& indices,
+                                    std::vector<IndexEntry>* out);
+
     /**
      * Return true if the index key pattern field 'elt' (which belongs to 'index') can be used
      * to answer the predicate 'node'.

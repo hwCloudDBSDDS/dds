@@ -276,4 +276,38 @@ OpObserver* ServiceContextMongoD::getOpObserver() {
     return _opObserver.get();
 }
 
+void ServiceContextMongoD::registerProcessStageTime(const std::string& processName) {
+    stdx::lock_guard<stdx::mutex> lk(_processStageTimeMapMutex);
+
+    ProcessStageTimeMap::iterator it = _processStageTimeMap.find(processName);
+    
+    if(it == _processStageTimeMap.end()) {
+        _processStageTimeMap.emplace(processName, stdx::make_unique<ProcessStageTime>(processName));
+    }
+    else {
+        //if it exists, clear its content
+        it->second->clear();
+    }
+}
+
+ProcessStageTime* ServiceContextMongoD::getProcessStageTime(const std::string& processName) {
+    stdx::lock_guard<stdx::mutex> lk(_processStageTimeMapMutex);
+
+    ProcessStageTimeMap::iterator it = _processStageTimeMap.find(processName);
+    
+    if(it == _processStageTimeMap.end()) {
+        _processStageTimeMap.emplace(processName, stdx::make_unique<ProcessStageTime>(processName));
+        it = _processStageTimeMap.find(processName);
+    }
+
+    return it->second.get();
+}
+
+void ServiceContextMongoD::cancelProcessStageTime(const std::string& processName) {
+    stdx::lock_guard<stdx::mutex> lk(_processStageTimeMapMutex);
+    
+    _processStageTimeMap.erase(processName);
+}
+
+
 }  // namespace mongo

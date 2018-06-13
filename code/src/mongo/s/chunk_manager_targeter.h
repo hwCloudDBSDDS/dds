@@ -35,6 +35,7 @@
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/s/ns_targeter.h"
+#include "mongo/s/catalog/type_collection.h"
 
 namespace mongo {
 
@@ -89,6 +90,8 @@ public:
     Status targetCollection(std::vector<ShardEndpoint*>* endpoints) const;
 
     Status targetAllShards(std::vector<ShardEndpoint*>* endpoints) const;
+
+    Status targetAllChunks(OperationContext* txn, std::vector<ShardEndpoint*>* endpoints) const;
 
     void noteStaleResponse(const ShardEndpoint& endpoint, const BSONObj& staleInfo);
 
@@ -175,6 +178,7 @@ private:
     // If sharded, _manager, if unsharded, _primary, on error, neither
     std::shared_ptr<ChunkManager> _manager;
     std::shared_ptr<Shard> _primary;
+    CollectionType::TableType _tabType;
 
     // Map of shard->remote shard version reported from stale errors
     ShardVersionMap _remoteShardVersions;

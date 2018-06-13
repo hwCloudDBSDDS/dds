@@ -41,6 +41,7 @@
 #include "mongo/s/chunk_diff.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/util/log.h"
+#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -63,12 +64,14 @@ public:
                          RangeMap* currMap,
                          ChunkVersion* maxVersion,
                          MaxChunkVersionMap* maxShardVersions,
-                         const ShardId& currShard)
+                         const ShardId& currShard,
+                         const ChunkId& currChunk)
         : ConfigDiffTracker<CachedChunkInfo>(ns, currMap, maxVersion, maxShardVersions),
-          _currShard(currShard) {}
+          _currShard(currShard),
+          _currChunk(currChunk) {}
 
     virtual bool isTracked(const ChunkType& chunk) const {
-        return chunk.getShard() == _currShard;
+        return (chunk.getShard()) == _currShard && (chunk.getName() == _currChunk.toString());
     }
 
     virtual pair<BSONObj, CachedChunkInfo> rangeFor(OperationContext* txn,
@@ -86,6 +89,7 @@ public:
 
 private:
     const ShardId _currShard;
+    const ChunkId _currChunk;
 };
 
 }  // namespace
@@ -96,12 +100,14 @@ Status MetadataLoader::makeCollectionMetadata(OperationContext* txn,
                                               const string& shard,
                                               const CollectionMetadata* oldMetadata,
                                               CollectionMetadata* metadata) {
-    Status initCollectionStatus = _initCollection(txn, catalogClient, ns, shard, metadata);
+    const NamespaceString nss(ns);    
+
+    Status initCollectionStatus = _initCollection(txn, catalogClient, nss.nsFilteredOutChunkId(), shard, metadata);
     if (!initCollectionStatus.isOK()) {
         return initCollectionStatus;
     }
 
-    return _initChunks(txn, catalogClient, ns, shard, oldMetadata, metadata);
+    return _initChunks(txn, catalogClient, nss, shard, oldMetadata, metadata);
 }
 
 Status MetadataLoader::_initCollection(OperationContext* txn,
@@ -131,7 +137,7 @@ Status MetadataLoader::_initCollection(OperationContext* txn,
 
 Status MetadataLoader::_initChunks(OperationContext* txn,
                                    ShardingCatalogClient* catalogClient,
-                                   const string& ns,
+                                   const NamespaceString& nss,
                                    const string& shard,
                                    const CollectionMetadata* oldMetadata,
                                    CollectionMetadata* metadata) {
@@ -158,11 +164,11 @@ Status MetadataLoader::_initChunks(OperationContext* txn,
             // not as frequently reloaded as in mongos.
             metadata->_chunksMap = oldMetadata->_chunksMap;
 
-            LOG(2) << "loading new chunks for collection " << ns
+            LOG(2) << "loading new chunks for collection " << nss.ns()
                    << " using old metadata w/ version " << oldMetadata->getShardVersion() << " and "
                    << metadata->_chunksMap.size() << " chunks";
         } else {
-            warning() << "reloading collection metadata for " << ns << " with new epoch "
+            warning() << "reloading collection metadata for " << nss.ns() << " with new epoch "
                       << epoch.toString() << ", the current epoch is "
                       << oldMetadata->getCollVersion().epoch().toString();
         }
@@ -171,7 +177,12 @@ Status MetadataLoader::_initChunks(OperationContext* txn,
     // Exposes the new metadata's range map and version to the "differ" which would ultimately be
     // responsible for filling them up
     SCMConfigDiffTracker differ(
-        ns, &metadata->_chunksMap, &metadata->_collVersion, &versionMap, shard);
+                            nss.nsFilteredOutChunkId(),
+                            &metadata->_chunksMap,
+                            &metadata->_collVersion,
+                            &versionMap,
+                            shard,
+                            nss.extractChunkId());
 
     try {
         std::vector<ChunkType> chunks;
@@ -195,7 +206,7 @@ Status MetadataLoader::_initChunks(OperationContext* txn,
         int diffsApplied = differ.calculateConfigDiff(txn, chunks);
         if (diffsApplied > 0) {
             // Chunks found, return ok
-            LOG(2) << "loaded " << diffsApplied << " chunks into new metadata for " << ns
+            LOG(2) << "loaded " << diffsApplied << " chunks into new metadata for " << nss.ns()
                    << " with version " << metadata->_collVersion;
 
             // If the last chunk was moved off of this shard, the shardVersion should be reset to
@@ -206,7 +217,14 @@ Status MetadataLoader::_initChunks(OperationContext* txn,
                 versionMap[shard] = ChunkVersion(0, 0, epoch);
             }
 
-            metadata->_shardVersion = versionMap[shard];
+            // in _chunksMap, there should be only one chunk, then shardversion == chunkversion
+            if (!metadata->_chunksMap.empty()) {
+                RangeMap::const_iterator it = metadata->_chunksMap.begin();
+                metadata->_shardVersion = it->second.getVersion();
+            } else {
+                metadata->_shardVersion = ChunkVersion(0, 0, epoch);
+            }
+
             metadata->fillRanges();
 
             invariant(metadata->isValid());
@@ -218,7 +236,7 @@ Status MetadataLoader::_initChunks(OperationContext* txn,
             // ambiguity
 
             return {fullReload ? ErrorCodes::NamespaceNotFound : ErrorCodes::RemoteChangeDetected,
-                    str::stream() << "No chunks found when reloading " << ns
+                    str::stream() << "No chunks found when reloading " << nss.ns()
                                   << ", previous version was "
                                   << metadata->_collVersion.toString()
                                   << (fullReload ? ", this is a drop" : "")};
@@ -226,7 +244,7 @@ Status MetadataLoader::_initChunks(OperationContext* txn,
             // Invalid chunks found, our epoch may have changed because we dropped/recreated the
             // collection
             return {ErrorCodes::RemoteChangeDetected,
-                    str::stream() << "Invalid chunks found when reloading " << ns
+                    str::stream() << "Invalid chunks found when reloading " << nss.ns()
                                   << ", previous version was "
                                   << metadata->_collVersion.toString()
                                   << ", this should be rare"};

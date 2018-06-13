@@ -83,6 +83,7 @@ public:
         bool ready;
         RecordId head;
         bool multikey;
+        long long prefix;
 
         // If non-empty, 'multikeyPaths' is a vector with size equal to the number of elements in
         // the index key pattern. Each element in the vector is an ordered set of positions

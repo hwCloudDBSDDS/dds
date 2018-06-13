@@ -47,9 +47,9 @@ namespace {
 using std::string;
 using str::stream;
 
-class ConfigSvrMoveChunkCommand : public Command {
+class ConfigSvrBalanceChunkCommand : public Command {
 public:
-    ConfigSvrMoveChunkCommand() : Command("_configsvrMoveChunk") {}
+    ConfigSvrBalanceChunkCommand() : Command("_configsvrBalanceChunk") {}
 
     void help(std::stringstream& help) const override {
         help << "Internal command, which is exported by the sharding config server. Do not call "
@@ -86,15 +86,51 @@ public:
              BSONObjBuilder& result) override {
         auto request = uassertStatusOK(BalanceChunkRequest::parseFromConfigCommand(cmdObj));
 
-        if (request.hasToShardId()) {
-            uassertStatusOK(Balancer::get(txn)->moveSingleChunk(txn,
-                                                                request.getChunk(),
-                                                                request.getToShardId(),
-                                                                request.getMaxChunkSizeBytes(),
-                                                                request.getSecondaryThrottle(),
-                                                                request.getWaitForDelete()));
-        } else {
-            uassertStatusOK(Balancer::get(txn)->rebalanceSingleChunk(txn, request.getChunk()));
+        Status status = Status(ErrorCodes::InternalError, "Internal error running command");
+        switch (request.getBalanceType()) {
+            case BalanceChunkRequest::BalanceType::offload:
+                status = Balancer::get(txn)->offloadChunk(txn,
+                                                          request.getChunk(),
+                                                          true);
+                break;
+            case BalanceChunkRequest::BalanceType::assign:
+                getGlobalServiceContext()->registerProcessStageTime(
+                    "assignChunk:"+request.getChunk().getName());
+                getGlobalServiceContext()->getProcessStageTime(
+                    "assignChunk:"+request.getChunk().getName())->noteStageStart(
+                    "assignCommandFromUser");
+                status = Balancer::get(txn)->assignChunk(txn,
+                                                request.getChunk(),
+                                                false,
+                                                true,
+                                                request.getToShardId());
+                break;
+            case BalanceChunkRequest::BalanceType::move:
+                status = Balancer::get(txn)->moveSingleChunk(txn,
+                                                    request.getChunk(),
+                                                    request.getToShardId(),
+                                                    request.getMaxChunkSizeBytes(),
+                                                    request.getSecondaryThrottle(),
+                                                    request.getWaitForDelete(),
+                                                    true);
+                break;
+            case BalanceChunkRequest::BalanceType::rebalance:
+                status = Balancer::get(txn)->rebalanceSingleChunk(txn, request.getChunk());
+                break;
+            case BalanceChunkRequest::BalanceType::split:
+                status = Balancer::get(txn)->splitChunk(txn,
+                                               request.getChunk(),
+                                               request.getSplitPoint(),
+                                               true);
+                break;
+            default:
+                return appendCommandStatus(result,
+                                    {ErrorCodes::IllegalOperation,
+                                     str::stream() << "request para is invalid for balance"});
+        }
+        
+        if (!status.isOK()) {
+            return appendCommandStatus(result, status);
         }
 
         return true;

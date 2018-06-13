@@ -34,15 +34,21 @@
 
 #include <algorithm>
 #include <string>
+#include "mongo/db/modules/rocks/src/GlobalConfig.h"
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/client/read_preference.h"
 #include "mongo/db/client.h"
+#include "mongo/db/commands.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy_impl.h"
 #include "mongo/db/s/balancer/cluster_statistics_impl.h"
+#include "mongo/db/s/balancer/state_machine_assign_event.h"
+#include "mongo/db/s/balancer/state_machine_offload_event.h"
+#include "mongo/db/s/balancer/state_machine_move_event.h"
+#include "mongo/db/s/balancer/state_machine_split_event.h"
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_chunk.h"
@@ -56,22 +62,23 @@
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
 #include "mongo/util/version.h"
+#include "mongo/s/offload_chunk_request.h"
+#include "mongo/s/assign_chunk_request.h"
+#include "mongo/s/split_chunk_request.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
+#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/util_extend/default_parameters.h"
 
 namespace mongo {
 
 using std::map;
 using std::string;
 using std::vector;
+using str::stream;
 
 namespace {
 
-const Seconds kBalanceRoundDefaultInterval(10);
-
-// Sleep between balancer rounds in the case where the last round found some chunks which needed to
-// be balanced. This value should be set sufficiently low so that imbalanced clusters will quickly
-// reach balanced state, but setting it too low may cause CRUD operations to start failing due to
-// not being able to establish a stable shard version.
-const Seconds kShortBalanceRoundInterval(1);
+const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
 
 const auto getBalancer = ServiceContext::declareDecoration<std::unique_ptr<Balancer>>();
 
@@ -269,14 +276,386 @@ Status Balancer::moveSingleChunk(OperationContext* txn,
                                  const ShardId& newShardId,
                                  uint64_t maxChunkSizeBytes,
                                  const MigrationSecondaryThrottleOptions& secondaryThrottle,
-                                 bool waitForDelete) {
-    auto moveAllowedStatus = _chunkSelectionPolicy->checkMoveAllowed(txn, chunk, newShardId);
+                                 bool waitForDelete,
+                                 bool userCommand) {
+    auto processedChunk = chunk;
+    auto moveAllowedStatus = _chunkSelectionPolicy->checkMoveAllowed(txn, processedChunk, newShardId);
     if (!moveAllowedStatus.isOK()) {
         return moveAllowedStatus;
     }
 
-    return _migrationManager.executeManualMigration(
-        txn, MigrateInfo(newShardId, chunk), maxChunkSizeBytes, secondaryThrottle, waitForDelete);
+    if (processedChunk.getProcessIdentity() == "noidentiy") {
+        auto getShardTypeStatus =
+            Grid::get(txn)->catalogManager()->getShardServerManager()->getShardTypeByShardId(processedChunk.getShard());
+        if (!getShardTypeStatus.isOK()) {
+            error() << "[moveSingleChunk] cannot get ShardType for shard: "
+                    << processedChunk.getShard().toString() + "when moving chunk("
+                    << processedChunk.getID() + ")";
+            return getShardTypeStatus.getStatus();
+        }
+        auto processIdent = getShardTypeStatus.getValue().getProcessIdentity();
+        processedChunk.setProcessIdentity(processIdent);
+    }
+
+    // Create a Move event and execute in state machine
+    auto resultNotification = std::make_shared<Notification<ErrorCodes::Error>>();
+    auto eventResultInfo = new IRebalanceEvent::EventResultInfo(resultNotification,
+                                                                StateMachine::EventType::kMoveEvent);
+    auto getShardTypeStatus = 
+        Grid::get(txn)->catalogManager()->getShardServerManager()->getShardTypeByShardId(newShardId);
+    if (!getShardTypeStatus.isOK()) {
+        error() << "[moveSingleChunk] cannot get ShardType for shard: " << newShardId.toString();
+        return getShardTypeStatus.getStatus();
+    }
+
+    ShardId shardId(getShardTypeStatus.getValue().getName());
+    auto processIdent = getShardTypeStatus.getValue().getProcessIdentity();
+    ShardIdent shardIdent(shardId, processIdent);
+    log() << "[moveSingleChunk] create MoveEvent and execute the event, chunk("
+          << processedChunk.toString()
+          << ")";
+
+    IRebalanceEvent* event = new MoveEvent(processedChunk,
+                                           shardIdent,
+                                           eventResultInfo,
+                                           userCommand);
+    auto executeEventStatus = StateMachine::executeEvent(txn, event);
+    if (!executeEventStatus.isOK()) {
+        error() << "[moveSingleChunk] failed to execute moveEvent for chunk("
+                << processedChunk.getID() + "), due to "
+                << executeEventStatus.reason();
+        StateMachine::deleteEvent(txn, event);
+        return executeEventStatus;
+    }
+
+    if (userCommand) {
+        ErrorCodes::Error moveResultCode = eventResultInfo->resultNotification->get();
+        if (moveResultCode != ErrorCodes::OK) {
+            error() << "[moveSingleChunk] failed to move chunk("
+                    << processedChunk.getID() + "), due to"
+                    << eventResultInfo->getErrorMsg();
+            StateMachine::deleteEvent(txn, event);
+            return Status(eventResultInfo->getErrorCode(), eventResultInfo->getErrorMsg());
+        }
+        StateMachine::deleteEvent(txn, event);
+    }
+
+    return Status::OK();
+}
+void Balancer::deleteAndClearEvent(OperationContext* txn,std::vector<IRebalanceEvent*> &evs,const std::string& ns){
+     for( IRebalanceEvent* event : evs ){
+         StateMachine::deleteEvent(txn, event);
+     }
+     {
+         stdx::lock_guard<stdx::mutex> lock(_nsToVectorMutex);       
+         NsEventVectorMap::iterator it = events.find(ns);
+         events.erase(it);
+     }
+}
+Status Balancer::getResults(OperationContext* txn,const std::string& ns){
+   std::vector<IRebalanceEvent*> envetVector;
+   NsEventVectorMap::iterator it = events.find(ns); 
+   if( it != events.end() ){
+        envetVector = it->second;
+   }else{
+        log()<<" ns not found";
+        return {ErrorCodes::BadValue,
+                str::stream() << "ns [" << ns  << "] not found."};
+   }
+   LOG(1)<<"events size:"<< envetVector.size();
+
+   Status ret_status = Status::OK();
+   for(IRebalanceEvent* event : envetVector){
+       auto eventResultInfo = event->getEventResultInfo();  
+       ErrorCodes::Error moveResultCode = eventResultInfo->resultNotification->get();
+       if (moveResultCode != ErrorCodes::OK) {
+           error() << "[assignChunk] failed to assignChunk("
+                   << event->getChunk().getID() + "), due to "
+                   << eventResultInfo->getErrorMsg();
+           ret_status = Status(eventResultInfo->getErrorCode(), eventResultInfo->getErrorMsg());
+           //deleteAndClearEvent(txn,envetVector,ns);
+           //return st;
+       }
+       LOG(1)<<"deleteEvent :"<<event->getChunk().getID();
+       StateMachine::deleteEvent(txn, event);
+   }
+   stdx::lock_guard<stdx::mutex> lock(_nsToVectorMutex);
+   events.erase(it);
+   return ret_status;
+}
+
+Status Balancer::assignChunk(OperationContext* txn,
+                             const ChunkType& chunk,
+                             bool newChunk,
+                             bool userCommand,
+                             ShardId newShardId,
+                             bool flag)
+{
+    // TODO: do some checking: chunk already on the new shard ? chunk state err ?
+    auto processedChunk = chunk;
+    ShardIdent newShardIdent;
+
+    // Create a Assign event and execute in state machine
+    auto resultNotification = std::make_shared<Notification<ErrorCodes::Error>>();
+    auto eventResultInfo = new IRebalanceEvent::EventResultInfo(resultNotification,
+                                                                StateMachine::EventType::kAssignEvent);
+    getGlobalServiceContext()->getProcessStageTime(
+            "assignChunk:"+chunk.getName())->noteStageStart("getShardType");
+    if (!newShardId.isValid()) {
+        // donot spicify a ShardId when calling assignChunk
+        auto getTakeOverShardStatus = 
+            Grid::get(txn)->catalogManager()->getShardServerManager()->getTakeOverShard(txn,
+                                                                                        userCommand);
+        if (!getTakeOverShardStatus.isOK()) {
+            error() << "[assignChunk] failed to assign chunk due to "
+                    << getTakeOverShardStatus.getStatus().reason();
+            return getTakeOverShardStatus.getStatus();
+        }
+        auto shardType = getTakeOverShardStatus.getValue();
+        ShardId shardId(shardType.getName());
+        auto processIdent = shardType.getProcessIdentity();
+        newShardIdent.setShardId(shardId);
+        newShardIdent.setProcessIdentity(processIdent);
+    } else {
+        auto getShardTypeStatus =
+            Grid::get(txn)->catalogManager()->getShardServerManager()->getShardTypeByShardId(newShardId);
+        if (!getShardTypeStatus.isOK()) {
+            error() << "[assignChunk] cannot get ShardType for shard: "
+                    << processedChunk.getShard().toString() + "when assigning chunk("
+                    << processedChunk.getID() + ")";
+            return getShardTypeStatus.getStatus();
+        }
+        auto processIdent = getShardTypeStatus.getValue().getProcessIdentity();
+        newShardIdent.setShardId(newShardId);
+        newShardIdent.setProcessIdentity(processIdent);
+    }
+
+    if (processedChunk.getProcessIdentity() == "noidentity") {
+        processedChunk.setProcessIdentity(newShardIdent.getProcessIdentity());
+    }
+    /*
+    log() << "[assignChunk] create AssignEvent and execute the event, chunk("
+          << processedChunk.toString()
+          << "), newShardId is "
+          << newShardIdent.getShardId().toString(); */
+    IRebalanceEvent* event = new AssignEvent(processedChunk,
+                                             newShardIdent,
+                                             eventResultInfo,
+                                             newChunk,
+                                             userCommand);
+    getGlobalServiceContext()->getProcessStageTime(
+            "assignChunk:"+chunk.getName())->noteStageStart(
+            "executeEvent:State"+std::to_string((int)event->getState()));
+    auto executeEventStatus = StateMachine::executeEvent(txn, event);
+    if (!executeEventStatus.isOK()) {
+        error() << "[assignChunk] failed to execute assignEvent for chunk("
+                << processedChunk.getID() + "), due to "
+                << executeEventStatus.reason();
+        StateMachine::deleteEvent(txn, event);
+        return executeEventStatus;
+    }
+
+    // For user command, we need to wait for the event to complete synchronously
+    if (userCommand) {
+        if( flag ){
+        	std::string ns = chunk.getNS();
+        	{
+        	    stdx::lock_guard<stdx::mutex> lock(_nsToVectorMutex);
+        	    NsEventVectorMap::iterator it = events.find(ns);
+        	    if( it != events.end()){
+        	    //auto eventVector = it->second;
+        	        it->second.push_back(event);
+        	    }else{
+        	        std::vector<IRebalanceEvent*> envetVector;
+        	        envetVector.push_back(event);
+        	        events[ns] = envetVector;
+        	    }
+        	 }
+       }else{
+           ErrorCodes::Error assignResultCode = eventResultInfo->resultNotification->get();
+           if (ErrorCodes::OK != assignResultCode) {
+                error() << "[assignChunk] failed to assignChunk("
+                        << processedChunk.getID() + "), due to "
+                        << eventResultInfo->getErrorMsg();
+                StateMachine::deleteEvent(txn, event);
+                return Status(eventResultInfo->getErrorCode(), eventResultInfo->getErrorMsg());
+           }
+           StateMachine::deleteEvent(txn, event);
+        
+       }
+    }
+    return Status::OK();
+}
+
+Status Balancer::offloadChunk(OperationContext* txn,
+                              const ChunkType& chunk,
+                              bool userCommand)
+{
+    // TODO: do some checking:   chunk state err ?
+    auto processedChunk = chunk;
+    if (processedChunk.getProcessIdentity() == "noidentity") {
+        auto newShardId = processedChunk.getShard();
+        auto getShardTypeStatus =
+            Grid::get(txn)->catalogManager()->getShardServerManager()->getShardTypeByShardId(newShardId);
+        if (!getShardTypeStatus.isOK()) {
+            log() << "[offloadChunk] cannot get ShardType for shard: " << newShardId.toString();
+            return Status::OK();
+        }
+        auto processIdent = getShardTypeStatus.getValue().getProcessIdentity();
+        processedChunk.setProcessIdentity(processIdent);
+    }
+    // 1. Create a Offload event and execute in state machine
+    auto resultNotification = std::make_shared<Notification<ErrorCodes::Error>>();
+    auto eventResultInfo = new IRebalanceEvent::EventResultInfo(resultNotification,
+                                                                StateMachine::EventType::kOffloadEvent);
+    /*log() << "[offloadChunk] create OffloadEvent and execute the event, chunk("
+              << processedChunk.toString()
+              << ")";*/
+
+    IRebalanceEvent* event = new OffloadEvent(processedChunk,
+                                              eventResultInfo,
+                                              userCommand);
+
+    auto executeEventStatus = StateMachine::executeEvent(txn, event);
+    if (!executeEventStatus.isOK()) {
+        error() << "[offloadChunk] failed to execute offloadEvent for chunk("
+                << processedChunk.getID() + "), due to "
+                << executeEventStatus.reason();
+        StateMachine::deleteEvent(txn, event);
+        return executeEventStatus;
+    }
+    /*log() << "[offloadChunk] succeeds to execute the event, chunk("
+          << processedChunk.getID() + ")";*/
+
+    if (userCommand) {
+        ErrorCodes::Error offloadResultCode = eventResultInfo->resultNotification->get();
+        if (ErrorCodes::OK != offloadResultCode) {
+            error() << "[offloadChunk] failed to offload chunk("
+                    << processedChunk.getID() + "), due to "
+                    << eventResultInfo->getErrorMsg();
+            StateMachine::deleteEvent(txn, event);
+            return Status(eventResultInfo->getErrorCode(), eventResultInfo->getErrorMsg());
+        }
+        /*log() << "[offloadChunk] finish offloading the chunk("
+              << processedChunk.getID()
+              << ")";*/
+        StateMachine::deleteEvent(txn, event);
+    }
+
+    return Status::OK();
+}
+
+Status Balancer::splitChunk(OperationContext* txn,
+                            const ChunkType& chunk,
+                            const BSONObj& splitPoint,
+                            bool userCommand) {
+    LOG(3) << "[splitChunk]chunk:" << chunk.toString()
+          << "[splitChunk]splitPoint:" << splitPoint.toString();
+    auto processedChunk = chunk;
+
+    if (processedChunk.getProcessIdentity() == "noidentity") {
+        auto shardId = processedChunk.getShard();
+        auto getShardTypeStatus = 
+            Grid::get(txn)->catalogManager()->getShardServerManager()->getShardTypeByShardId(shardId);
+        if (!getShardTypeStatus.isOK()) {
+            error() << "[splitChunk] cannot get ShardType for shard: " << shardId.toString();
+            return getShardTypeStatus.getStatus();
+        }
+        auto processIdent = getShardTypeStatus.getValue().getProcessIdentity();
+        processedChunk.setProcessIdentity(processIdent);
+    }
+
+    std::string chunkID;
+    auto chunkstatus = grid.catalogClient(txn)->generateNewChunkID(txn, chunkID);
+    if (!chunkstatus.isOK()) {
+        error() << "[splitChunk] fail to generate new chunk id";
+        return chunkstatus;
+    }
+
+    ChunkType newChunk;
+    newChunk.setName(chunkID);
+    // create root folder: ploglist for OBSindex and file for Maas
+    std::string chunkRootFolder;
+    Status status = grid.catalogManager()->createRootFolder(txn, newChunk.getID(), chunkRootFolder);
+    if (!status.isOK()) {
+        error() << "[splitChunk] fail to create root folder";
+        return status;
+    }
+    log()<<"[splitChunk] create new root folder "<< chunkRootFolder;
+
+    auto newVersionStatus = grid.catalogManager()->newMaxChunkVersion(txn, processedChunk.getNS());
+    if (!newVersionStatus.isOK()) {
+        error() << "[splitChunk] failed to create version";
+        Status status = grid.catalogManager()->deleteRootFolder(chunkRootFolder);
+        if (!status.isOK()) {
+            error() << "[splitChunk] failed to delete root folder";
+            return status;
+        }
+        return newVersionStatus.getStatus();
+    }
+    ChunkVersion chunkVersion(newVersionStatus.getValue(), processedChunk.getVersion().epoch());
+
+    // inherit other fields of chunktype from parent chunk, we fill in all the fields
+    // due to the validation on chunk during the recovery process
+
+    newChunk.setNS(processedChunk.getNS());
+    newChunk.setMin(processedChunk.getMin());
+    newChunk.setMax(processedChunk.getMax());
+    newChunk.setShard(processedChunk.getShard());
+    newChunk.setProcessIdentity(processedChunk.getProcessIdentity());
+    newChunk.setVersion(chunkVersion);
+    newChunk.setRootFolder(chunkRootFolder);
+    newChunk.setStatus(ChunkType::ChunkStatus::kOffloaded);
+
+    // 1. Create a Split event and execute in state machine
+    auto resultNotification = std::make_shared<Notification<ErrorCodes::Error>>();
+    auto eventResultInfo = new IRebalanceEvent::EventResultInfo(resultNotification,
+                                                                StateMachine::EventType::kSplitEvent);
+    log() << "[splitChunk] create SplitEvent and execute the event, chunk("
+              << processedChunk.toString()
+              << "), childChunk("
+              << newChunk.toString()
+              << ")";
+
+    IRebalanceEvent* event = new SplitEvent(processedChunk,
+                                            newChunk,
+                                            splitPoint,
+                                            eventResultInfo,
+                                            userCommand);
+
+    auto executeEventStatus = StateMachine::executeEvent(txn, event);
+    if (!executeEventStatus.isOK()) {
+        error() << "[splitChunk] failed to execute splitEvent for chunk("
+                << processedChunk.getID() + "), due to "
+                << executeEventStatus.reason();
+        Status status = grid.catalogManager()->deleteRootFolder(chunkRootFolder);
+        if (!status.isOK()) {
+            error() << "[splitChunk] failed to delete root folder for chunk("
+                    << processedChunk.getID() + ")";
+        }
+        StateMachine::deleteEvent(txn, event);
+        return executeEventStatus;
+    }
+    log() << "[splitChunk] succeeds to execute the event, chunk("
+          << processedChunk.getID()
+          << ")";
+
+    if (userCommand) {
+        ErrorCodes::Error splitResultCode = eventResultInfo->resultNotification->get();
+        if (ErrorCodes::OK != splitResultCode) {
+            error() << "[splitChunk] fail to split chunk("
+                    << processedChunk.getID() + "), due to "
+                    << eventResultInfo->getErrorMsg();
+            StateMachine::deleteEvent(txn, event);
+            return Status(eventResultInfo->getErrorCode(), eventResultInfo->getErrorMsg());
+        }
+        log() << "[splitChunk] finish spliting the chunk("
+              << processedChunk.getID()
+              << ")";
+        StateMachine::deleteEvent(txn, event);
+    }
+
+    return Status::OK();
 }
 
 void Balancer::report(OperationContext* txn, BSONObjBuilder* builder) {
@@ -291,19 +670,138 @@ void Balancer::report(OperationContext* txn, BSONObjBuilder* builder) {
     builder->append("numBalancerRounds", _numBalancerRounds);
 }
 
+Status Balancer::checkGCCollection(OperationContext* txn, bool &existed) {
+
+    auto findGCCollectionStatus =
+        Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+                txn, 
+                kPrimaryOnlyReadPreference,
+                repl::ReadConcernLevel::kLocalReadConcern,
+                NamespaceString(ChunkType::ConfigNS),
+                BSON(ChunkType::ns() << "gc.references"),
+                BSONObj(),
+                boost::none); // no limit need to check.
+
+    if (!findGCCollectionStatus.isOK()) {
+        LOG(1) << "error string is " << findGCCollectionStatus.getStatus().toString();
+        return findGCCollectionStatus.getStatus();
+    }    
+
+    auto gcCollectionDocs = findGCCollectionStatus.getValue().docs;
+    if (gcCollectionDocs.size() == 0) { 
+        existed = false;
+        return Status::OK();
+    }    
+
+    existed = true;
+    return Status::OK();
+}
+
+void Balancer::findAndRunCommand(OperationContext *txn, std::string command, std::string dbname, BSONObj &cmdObj)
+{
+    int options;
+    std::string errmsg;
+    BSONObjBuilder result;
+    Command* c = nullptr;
+
+    c = Command::findCommand(command);
+    c->run(txn, dbname, cmdObj, options, errmsg, result);
+}
+
+void Balancer::createGCCollection(OperationContext *txn)
+{
+    log() << "Create db gc start!";
+
+    BSONObj cmdObj;
+    std::string dbname = "gc";
+    auto shardingContext = Grid::get(txn);
+    shardingContext->catalogClient(txn)->enableSharding(txn, dbname);
+#if 0
+    {
+        BSONObjBuilder builder;
+        builder << "create" << "references";
+        cmdObj = builder.obj();
+        log() << "run create collection named references" << cmdObj;
+        findAndRunCommand(txn, "create", dbname, cmdObj);
+    }
+#endif
+
+    {
+        BSONObjBuilder builder, subBuilder;
+        subBuilder << "resourceid" << 1.0;
+        builder << "shardCollection" << "gc.references" << "key" << subBuilder.obj();
+        cmdObj = builder.obj();
+        log() << "run shardCollection" << cmdObj;
+        findAndRunCommand(txn, "shardCollection", dbname, cmdObj);
+    }
+
+
+    {
+        BSONObjBuilder builder, midBuilder, subBuilder;
+        BSONArrayBuilder arraryBuilder;
+
+        subBuilder.append("resourceid", 1.0);
+        subBuilder.append("chunkid", 1.0);
+        midBuilder << "key" << subBuilder.obj() << "name" << "resourceid_1_chunkid_1" << "unique" << true;
+        arraryBuilder << midBuilder.obj();
+        builder << "createIndexes" << "references" << "indexes" << arraryBuilder.arr();
+        cmdObj = builder.obj();
+        log() << "cmdObj is : " << cmdObj;
+        findAndRunCommand(txn, "createIndexes", dbname, cmdObj);
+    }
+
+
+    {
+        BSONObjBuilder builder, midBuilder, subBuilder;
+        BSONArrayBuilder arraryBuilder;
+
+        subBuilder.append("deleted", 1.0);
+        midBuilder << "key" << subBuilder.obj() << "name" << "deleted_1" << "sparse" << true;
+        arraryBuilder << midBuilder.obj();
+        builder << "createIndexes" << "references" << "indexes" << arraryBuilder.arr();
+        cmdObj = builder.obj();
+        log() << "cmdObj is : " << cmdObj;
+        findAndRunCommand(txn, "createIndexes", dbname, cmdObj);
+    }
+
+
+    log() << "Create db gc finished!";
+}
+
 void Balancer::_mainThread() {
-    Client::initThread("Balancer");
+    Client::initThread(kBalancerJobName.c_str());
     auto txn = cc().makeOperationContext();
     auto shardingContext = Grid::get(txn.get());
 
-    log() << "CSRS balancer is starting";
+    LOG(0) << "CSRS balancer is starting";
+    LOG(0) << "Find shard.";
+    /*while (1) {
+        auto findShardStatus =
+            Grid::get(txn.get())->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+                    txn.get(), 
+                    kPrimaryOnlyReadPreference,
+                    repl::ReadConcernLevel::kLocalReadConcern,
+                    NamespaceString(ShardType::ConfigNS),
+                    BSON(ShardType::state() << 1),
+                    BSONObj(),
+                    boost::none); // no limit need to check.
+
+        const auto shardDocs = findShardStatus.getValue().docs;
+        if (shardDocs.size() > 0) { 
+            log() << "Awared shard num is :"  << shardDocs.size();
+            break;
+        }    
+        sleep(10);
+
+    }*/
+    LOG(0) << "Find shard done.";
 
     {
         stdx::lock_guard<stdx::mutex> scopedLock(_mutex);
         _threadOperationContext = txn.get();
     }
 
-    const Seconds kInitBackoffInterval(10);
+    const Milliseconds kInitBackoffInterval(10000);
 
     // Take the balancer distributed lock and hold it permanently. Do the attempts with single
     // attempts in order to not block the thread and be able to check for interrupt more frequently.
@@ -344,9 +842,9 @@ void Balancer::_mainThread() {
     log() << "CSRS balancer thread is recovered";
 
     // Main balancer loop
-    while (!_stopRequested()) {
-        BalanceRoundDetails roundDetails;
+    while (!_stopRequested()) {        
 
+        BalanceRoundDetails roundDetails;
         _beginRound(txn.get());
 
         try {
@@ -376,11 +874,20 @@ void Balancer::_mainThread() {
                 OCCASIONALLY warnOnMultiVersion(
                     uassertStatusOK(_clusterStats->getStats(txn.get())));
 
+                // TODO: we donnt support splitting right now, after implementation of split, recover this
+                // TODO: decide witch chunks need to split acording to TPS, and split them
                 Status status = _enforceTagRanges(txn.get());
                 if (!status.isOK()) {
                     warning() << "Failed to enforce tag ranges" << causedBy(status);
                 } else {
                     LOG(1) << "Done enforcing tag range boundaries.";
+                }
+
+                status = _findAndSplitChunks(txn.get());
+                if (!status.isOK()) {
+                    warning() << "Failed to find and split chunks" << causedBy(status);
+                } else {
+                    LOG(1) << "Done find and split chunks.";
                 }
 
                 const auto candidateChunks = uassertStatusOK(
@@ -451,7 +958,7 @@ void Balancer::_beginRound(OperationContext* txn) {
     _condVar.notify_all();
 }
 
-void Balancer::_endRound(OperationContext* txn, Seconds waitTimeout) {
+void Balancer::_endRound(OperationContext* txn, Milliseconds waitTimeout) {
     {
         stdx::lock_guard<stdx::mutex> lock(_mutex);
         _inBalancerRound = false;
@@ -462,7 +969,7 @@ void Balancer::_endRound(OperationContext* txn, Seconds waitTimeout) {
     _sleepFor(txn, waitTimeout);
 }
 
-void Balancer::_sleepFor(OperationContext* txn, Seconds waitTimeout) {
+void Balancer::_sleepFor(OperationContext* txn, Milliseconds waitTimeout) {
     stdx::unique_lock<stdx::mutex> lock(_mutex);
     _condVar.wait_for(lock, waitTimeout.toSystemDuration(), [&] { return _state != kRunning; });
 }
@@ -539,28 +1046,25 @@ Status Balancer::_enforceTagRanges(OperationContext* txn) {
     if (!chunksToSplitStatus.isOK()) {
         return chunksToSplitStatus.getStatus();
     }
-
+    
     for (const auto& splitInfo : chunksToSplitStatus.getValue()) {
-        auto scopedCMStatus = ScopedChunkManager::getExisting(txn, splitInfo.nss);
-        if (!scopedCMStatus.isOK()) {
-            return scopedCMStatus.getStatus();
-        }
-
-        auto scopedCM = std::move(scopedCMStatus.getValue());
-        ChunkManager* const cm = scopedCM.cm();
-
-        auto splitStatus = shardutil::splitChunkAtMultiplePoints(txn,
-                                                                 splitInfo.shardId,
-                                                                 splitInfo.nss,
-                                                                 cm->getShardKeyPattern(),
-                                                                 splitInfo.collectionVersion,
-                                                                 splitInfo.minKey,
-                                                                 splitInfo.maxKey,
-                                                                 splitInfo.chunkVersion,
-                                                                 splitInfo.splitKeys);
+        LOG(1) << "[Auto-SplitChunk][CandidateSplitChunks] " << "Ns: " << splitInfo.chunk.getNS()
+              << ",Name: " << splitInfo.chunk.getName() << ",Min: " << splitInfo.chunk.getMin().toString()
+              << ",Max: " << splitInfo.chunk.getMax().toString() << ",SplitPoint: " << splitInfo.splitPoint.toString();
+        auto splitStatus = splitChunk(txn,
+                                     splitInfo.chunk,
+                                     splitInfo.splitPoint,
+                                     true);
+        
         if (!splitStatus.isOK()) {
-            warning() << "Failed to enforce tag range for chunk " << redact(splitInfo.toString())
-                      << causedBy(redact(splitStatus.getStatus()));
+            log() << "[Auto-SplitChunk][splitChunk] failed to split chunk("
+                  << splitInfo.chunk.getName()
+                  << "), due to "
+                  << splitStatus.reason();
+        } else {
+            LOG(1) << "[Auto-SplitChunk][splitChunk] succeed to split chunk("
+                  << splitInfo.chunk.getName()
+                  << ")";
         }
     }
 
@@ -577,46 +1081,114 @@ int Balancer::_moveChunks(OperationContext* txn,
         return 0;
     }
 
-    auto migrationStatuses =
-        _migrationManager.executeMigrationsForAutoBalance(txn,
-                                                          candidateChunks,
-                                                          balancerConfig->getMaxChunkSizeBytes(),
-                                                          balancerConfig->getSecondaryThrottle(),
-                                                          balancerConfig->waitForDelete());
+    // TODO: async and parallel, use the state machine interface
 
     int numChunksProcessed = 0;
 
-    for (const auto& migrationStatusEntry : migrationStatuses) {
-        const Status& status = migrationStatusEntry.second;
-        if (status.isOK()) {
-            numChunksProcessed++;
+    for (const auto& migrateInfo : candidateChunks) {
+        std::string chunkId = migrateInfo.getName();
+        auto findChunkStatus =
+            Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+                txn,
+                kPrimaryOnlyReadPreference,
+                repl::ReadConcernLevel::kLocalReadConcern,
+                NamespaceString(ChunkType::ConfigNS),
+                BSON(ChunkType::name(chunkId)),
+                BSONObj(),
+                boost::none);
+
+        if (!findChunkStatus.isOK()) {
+            log() << "[_moveChunks] failed to get info of chunk " << chunkId;
             continue;
         }
 
-        const MigrationIdentifier& migrationId = migrationStatusEntry.first;
-
-        const auto requestIt = std::find_if(candidateChunks.begin(),
-                                            candidateChunks.end(),
-                                            [&migrationId](const MigrateInfo& migrateInfo) {
-                                                return migrateInfo.getName() == migrationId;
-                                            });
-        invariant(requestIt != candidateChunks.end());
-
-        if (status == ErrorCodes::ChunkTooBig) {
-            numChunksProcessed++;
-
-            log() << "Performing a split because migration " << redact(requestIt->toString())
-                  << " failed for size reasons" << causedBy(redact(status));
-
-            _splitOrMarkJumbo(txn, NamespaceString(requestIt->ns), requestIt->minKey);
+        auto chunkDocs = findChunkStatus.getValue().docs;
+        if (chunkDocs.size() == 0) {
+            log() << "[_moveChunks] there is no chunk named " << chunkId << "is found";
             continue;
         }
 
-        log() << "Balancer move " << redact(requestIt->toString()) << " failed"
-              << causedBy(redact(status));
+        auto chunkDocStatus = ChunkType::fromBSON(chunkDocs.front());
+        if (!chunkDocStatus.isOK()) {
+            log() << "[_moveChunks] failed to get chunktype from BSON for " << chunkId;
+            continue;
+        }
+
+        auto chunkType = chunkDocStatus.getValue();
+        if (!chunkType.isAssigned()) {
+            log() << "[_moveChunks] cannot move chunk because its status is not assigned";
+            continue;
+        }
+
+        auto moveStatus = moveSingleChunk(txn,
+                                          chunkType,
+                                          migrateInfo.to,
+                                          balancerConfig->getMaxChunkSizeBytes(),
+                                          balancerConfig->getSecondaryThrottle(),
+                                          balancerConfig->waitForDelete(),
+                                          true);
+        if (!moveStatus.isOK()) {
+            error() << "[moveSingleChunk] failed to move chunk("
+                    << chunkType.toString()
+                    << "), due to "
+                    << moveStatus.reason();
+        } else {
+            log() << "[moveSingleChunk] succeed to move chunk("
+                  << chunkType.getID()
+                  << "), from " + chunkType.getShard().toString()
+                  << " to " + migrateInfo.to.toString();
+            numChunksProcessed++;
+        }
     }
 
     return numChunksProcessed;
+}
+
+Status Balancer::_findAndSplitChunks(OperationContext* txn) {
+    if (!GLOBAL_CONFIG_GET(enableAutoChunkSplit))
+        return Status::OK();
+
+    const auto balancerConfig = Grid::get(txn)->getBalancerConfiguration();
+    Status refreshStatus = balancerConfig->refreshAndCheck(txn);
+    if (!refreshStatus.isOK()) {
+        warning() << "Unable to refresh balancer settings" << causedBy(refreshStatus);
+    }
+
+    bool shouldAutoSplit = balancerConfig->getShouldAutoSplit();
+    if (!shouldAutoSplit) {
+        return Status::OK();
+    }
+
+    auto chunksToSplitStatus = _chunkSelectionPolicy->indexSelectChunksToSplit(txn);
+    if (!chunksToSplitStatus.isOK()) {
+        return chunksToSplitStatus.getStatus();
+    }
+
+    for (const auto& splitInfo : chunksToSplitStatus.getValue()) {
+        LOG(1) << "[Auto-SplitChunk][CandidateSplitChunks] " << "Ns: " << splitInfo.chunk.getNS()
+              << ",Name: " << splitInfo.chunk.getName() << ",Min: " << splitInfo.chunk.getMin().toString()
+              << ",Max: " << splitInfo.chunk.getMax().toString() << ",SplitPoint: " << splitInfo.splitPoint.toString();
+
+        auto splitStatus = splitChunk(txn,
+                                     splitInfo.chunk,
+                                     splitInfo.splitPoint,
+                                     true);
+        
+        if (!splitStatus.isOK()) {
+            log() << "[Auto-SplitChunk][splitChunk] failed to split chunk("
+                  << splitInfo.chunk.getName()
+                  << "), due to "
+                  << splitStatus.reason();
+        } else {
+            LOG(1) << "[Auto-SplitChunk][splitChunk] succeed to split chunk("
+                  << splitInfo.chunk.getName()
+                  << ")";
+        }
+
+    }
+    
+    return Status::OK();
+                          
 }
 
 void Balancer::_splitOrMarkJumbo(OperationContext* txn,

@@ -72,6 +72,10 @@
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/s/shard_key_pattern.h"
+#include "mongo/db/s/collection_sharding_state.h"
+#include "mongo/db/s/collection_metadata.h"
+#include "mongo/db/modules/rocks/src/GlobalConfig.h"
 
 namespace mongo {
 
@@ -82,6 +86,18 @@ namespace {
 MONGO_FP_DECLARE(failAllInserts);
 MONGO_FP_DECLARE(failAllUpdates);
 MONGO_FP_DECLARE(failAllRemoves);
+
+// if command against to a specified chunk, and the chunk is not here, return error and make mongos retry
+void throwExceptionForChunkNs(const NamespaceString& ns) {
+    if (ns.isChunk()) {
+        throw SendStaleConfigException(
+            ns.ns(),
+            str::stream() << "chunk " << ns.ns() << " is not on this shard",
+            ChunkVersion(),
+            ChunkVersion());
+    }
+    return;
+}
 
 void finishCurOp(OperationContext* txn, CurOp* curOp) {
     try {
@@ -170,12 +186,13 @@ void assertCanWrite_inlock(OperationContext* txn, const NamespaceString& ns) {
     uassert(ErrorCodes::PrimarySteppedDown,
             str::stream() << "Not primary while writing to " << ns.ns(),
             repl::ReplicationCoordinator::get(txn->getServiceContext())->canAcceptWritesFor(ns));
-    CollectionShardingState::get(txn, ns)->checkShardVersionOrThrow(txn);
+    CollectionShardingState::get(txn, ns)->checkChunkVersionOrThrow(txn);
 }
 
 void makeCollection(OperationContext* txn, const NamespaceString& ns) {
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-        AutoGetOrCreateDb db(txn, ns.db(), MODE_X);
+        AutoGetOrCreateDb db(txn, ns.db(), MODE_IX);
+        Lock::CollectionLock collLock(txn->lockState(), ns.ns(), MODE_X);
         assertCanWrite_inlock(txn, ns);
         if (!db.getDb()->getCollection(ns.ns())) {  // someone else may have beat us to it.
             WriteUnitOfWork wuow(txn);
@@ -251,6 +268,8 @@ static WriteResult::SingleResult createIndex(OperationContext* txn,
     cmdBuilder << "indexes" << BSON_ARRAY(spec);
     BSONObj cmd = cmdBuilder.done();
 
+    LOG(1) << "createIndex()-> ns: " << ns << " cmd: " << cmd;
+
     rpc::CommandRequestBuilder requestBuilder;
     auto cmdRequestMsg = requestBuilder.setDatabase(ns.db())
                              .setCommandName("createIndexes")
@@ -286,6 +305,7 @@ static WriteResult performCreateIndexes(OperationContext* txn, const InsertOp& w
     WriteResult out;
     for (auto&& spec : wholeOp.documents) {
         try {
+            LOG(1) << "performCreateIndexes()-> spec: " << spec;
             lastOpFixer.startingOp();
             out.results.emplace_back(createIndex(txn, wholeOp.ns, spec));
             lastOpFixer.finishedOpSuccessfully();
@@ -322,7 +342,6 @@ static bool insertBatchAndHandleErrors(OperationContext* txn,
         return true;
 
     auto& curOp = *CurOp::get(txn);
-
     boost::optional<AutoGetCollection> collection;
     auto acquireCollection = [&] {
         while (true) {
@@ -336,6 +355,12 @@ static bool insertBatchAndHandleErrors(OperationContext* txn,
             if (collection->getCollection())
                 break;
 
+            throwExceptionForChunkNs(wholeOp.ns);
+
+            uassert(ErrorCodes::ImplicitCreationNotSupported,
+                    str::stream() << "implicit creation of " << wholeOp.ns.ns() << " is not supported",
+                    wholeOp.ns.supportImplicitCreation());
+
             collection.reset();  // unlock.
             makeCollection(txn, wholeOp.ns);
         }
@@ -344,6 +369,8 @@ static bool insertBatchAndHandleErrors(OperationContext* txn,
         assertCanWrite_inlock(txn, wholeOp.ns);
     };
 
+    // Set the prewarm in txn to pass to rocks_index.
+    txn->setPrewarm(wholeOp.prewarmInBulk);
     try {
         acquireCollection();
         if (!collection->getCollection()->isCapped() && batch.size() > 1) {
@@ -363,7 +390,6 @@ static bool insertBatchAndHandleErrors(OperationContext* txn,
         // Ignore this failure and behave as-if we never tried to do the combined batch insert.
         // The loop below will handle reporting any non-transient errors.
     }
-
     // Try to insert the batch one-at-a-time. This path is executed both for singular batches, and
     // for batches that failed all-at-once inserting.
     for (auto it = batch.begin(); it != batch.end(); ++it) {
@@ -389,14 +415,16 @@ static bool insertBatchAndHandleErrors(OperationContext* txn,
         } catch (const DBException& ex) {
             bool canContinue = handleError(txn, ex, wholeOp, out);
             if (!canContinue)
+            {
                 return false;
+            }
         }
     }
-
     return true;
 }
 
 WriteResult performInserts(OperationContext* txn, const InsertOp& wholeOp) {
+    txn->setNs(wholeOp.ns);
     invariant(!txn->lockState()->inAWriteUnitOfWork());  // Does own retries.
     auto& curOp = *CurOp::get(txn);
     ON_BLOCK_EXIT([&] {
@@ -422,7 +450,9 @@ WriteResult performInserts(OperationContext* txn, const InsertOp& wholeOp) {
         curOp.debug().ninserted = 0;
     }
 
-    uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
+    if (GLOBAL_CONFIG_GET(IsCoreTest)) {
+        uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
+    }
 
     if (wholeOp.ns.isSystemDotIndexes()) {
         return performCreateIndexes(txn, wholeOp);
@@ -453,6 +483,17 @@ WriteResult performInserts(OperationContext* txn, const InsertOp& wholeOp) {
                 continue;  // Add more to batch before inserting.
         }
 
+        ScopedCollectionMetadata collMetadata;
+        collMetadata = CollectionShardingState::get(txn, wholeOp.ns.ns())->getMetadata();
+        if (collMetadata)
+        {
+            ShardKeyPattern shardKeyPattern(collMetadata->getKeyPattern());
+            BSONObj shardKey = shardKeyPattern.extractShardKeyFromDoc(doc);
+            if (shardKey.isEmpty()) {
+                continue;
+            }
+        }
+        
         bool canContinue = insertBatchAndHandleErrors(txn, wholeOp, batch, &lastOpFixer, &out);
         batch.clear();  // We won't need the current batch any more.
         bytesInBatch = 0;
@@ -497,11 +538,20 @@ static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
     request.setMulti(op.multi);
     request.setUpsert(op.upsert);
     request.setYieldPolicy(PlanExecutor::YIELD_AUTO);  // ParsedUpdate overrides this for $isolated.
-
+    request.setAtomicity(op.atomicity);
+    request.setFirst(op.first);
+    request.setLast(op.last);
+    //update global shardName
+    if (serverGlobalParams.clusterRole == ClusterRole::ShardServer && op.query.hasField("shardName"))
+    {
+        LOG(1) << "set global shardName";
+        serverGlobalParams.shardName = op.query.getStringField("shardName");
+        
+    }
     ParsedUpdate parsedUpdate(txn, &request);
     uassertStatusOK(parsedUpdate.parseRequest());
 
-    ScopedTransaction scopedXact(txn, MODE_IX);
+    //ScopedTransaction scopedXact(txn, MODE_IX);
     boost::optional<AutoGetCollection> collection;
     while (true) {
         txn->checkForInterrupt();
@@ -513,8 +563,17 @@ static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
                            ns,
                            MODE_IX,  // DB is always IX, even if collection is X.
                            parsedUpdate.isIsolated() ? MODE_X : MODE_IX);
-        if (collection->getCollection() || !op.upsert)
+        if (collection->getCollection())
             break;
+
+        throwExceptionForChunkNs(ns); 
+
+        if (!op.upsert)
+            break;
+
+        uassert(ErrorCodes::ImplicitCreationNotSupported,
+                str::stream() << "implicit creation of " << ns.ns() << " is not supported",
+                ns.supportImplicitCreation());
 
         collection.reset();  // unlock.
         makeCollection(txn, ns);
@@ -562,11 +621,14 @@ static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
 
 WriteResult performUpdates(OperationContext* txn, const UpdateOp& wholeOp) {
     invariant(!txn->lockState()->inAWriteUnitOfWork());  // Does own retries.
-    uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
-
+    if (GLOBAL_CONFIG_GET(IsCoreTest)) {
+        uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
+    }
+    txn->setNs(wholeOp.ns);
     DisableDocumentValidationIfTrue docValidationDisabler(txn, wholeOp.bypassDocumentValidation);
     LastOpFixer lastOpFixer(txn, wholeOp.ns);
 
+    ScopedTransaction scopedXact(txn, MODE_IX);
     WriteResult out;
     out.results.reserve(wholeOp.updates.size());
     for (auto&& singleOp : wholeOp.updates) {
@@ -635,6 +697,10 @@ static WriteResult::SingleResult performSingleDeleteOp(OperationContext* txn,
         curOp.raiseDbProfileLevel(collection.getDb()->getProfilingLevel());
     }
 
+    if (!collection.getCollection()) {
+        throwExceptionForChunkNs(ns);
+    }
+
     assertCanWrite_inlock(txn, ns);
 
     auto exec = uassertStatusOK(
@@ -669,8 +735,10 @@ static WriteResult::SingleResult performSingleDeleteOp(OperationContext* txn,
 
 WriteResult performDeletes(OperationContext* txn, const DeleteOp& wholeOp) {
     invariant(!txn->lockState()->inAWriteUnitOfWork());  // Does own retries.
-    uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
-
+    if (GLOBAL_CONFIG_GET(IsCoreTest)) {
+        uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
+    }
+    txn->setNs(wholeOp.ns);
     DisableDocumentValidationIfTrue docValidationDisabler(txn, wholeOp.bypassDocumentValidation);
     LastOpFixer lastOpFixer(txn, wholeOp.ns);
 

@@ -32,6 +32,7 @@
 
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy_impl.h"
 
+#include <map>
 #include <set>
 #include <vector>
 
@@ -44,6 +45,7 @@
 #include "mongo/s/catalog/type_tags.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/sharding_raii.h"
+#include "mongo/s/shard_util.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -52,9 +54,13 @@ namespace mongo {
 
 using MigrateInfoVector = BalancerChunkSelectionPolicy::MigrateInfoVector;
 using SplitInfoVector = BalancerChunkSelectionPolicy::SplitInfoVector;
+using IndexSplitInfoVector = BalancerChunkSelectionPolicy::IndexSplitInfoVector;
 using std::shared_ptr;
 using std::unique_ptr;
 using std::vector;
+using std::map;
+using std::string;
+using std::set;
 
 namespace {
 
@@ -77,11 +83,7 @@ StatusWith<DistributionStatus> createCollectionDistributionStatus(
 
         ChunkType chunk;
         chunk.setNS(chunkMgr->getns());
-        chunk.setMin(chunkEntry->getMin());
-        chunk.setMax(chunkEntry->getMax());
-        chunk.setJumbo(chunkEntry->isJumbo());
-        chunk.setShard(chunkEntry->getShardId());
-        chunk.setVersion(chunkEntry->getLastmod());
+        chunkEntry->constructChunkType(&chunk);
 
         shardToChunksMap[chunkEntry->getShardId()].push_back(chunk);
     }
@@ -185,7 +187,7 @@ BalancerChunkSelectionPolicyImpl::BalancerChunkSelectionPolicyImpl(ClusterStatis
 
 BalancerChunkSelectionPolicyImpl::~BalancerChunkSelectionPolicyImpl() = default;
 
-StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToSplit(
+StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToSplit(
     OperationContext* txn) {
     auto shardStatsStatus = _clusterStats->getStats(txn);
     if (!shardStatsStatus.isOK()) {
@@ -203,12 +205,15 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToSpli
     }
 
     if (collections.empty()) {
-        return SplitInfoVector{};
+        return IndexSplitInfoVector{};
     }
 
-    SplitInfoVector splitCandidates;
+    IndexSplitInfoVector splitCandidates;
 
     for (const auto& coll : collections) {
+        if (coll.getTabType() != CollectionType::TableType::kSharded) {
+            continue;
+        }
         const NamespaceString nss(coll.getNs());
 
         auto candidatesStatus = _getSplitCandidatesForCollection(txn, nss, shardStats);
@@ -228,6 +233,54 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToSpli
 
     return splitCandidates;
 }
+
+StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::indexSelectChunksToSplit(
+    OperationContext* txn) {
+    auto shardStatsStatus = _clusterStats->getStats(txn);
+    if (!shardStatsStatus.isOK()) {
+        return shardStatsStatus.getStatus();
+    }
+
+    const auto shardStats = std::move(shardStatsStatus.getValue());
+
+    vector<CollectionType> collections;
+
+    Status collsStatus =
+        Grid::get(txn)->catalogClient(txn)->getCollections(txn, nullptr, &collections, nullptr);
+    if (!collsStatus.isOK()) {
+        return collsStatus;
+    }
+
+    if (collections.empty()) {
+        return IndexSplitInfoVector{};
+    }
+
+    IndexSplitInfoVector splitCandidates;
+
+    for (const auto& coll : collections) {
+        if (coll.getTabType() != CollectionType::TableType::kSharded) {
+            continue;
+        }
+        const NamespaceString nss(coll.getNs());
+
+        auto candidatesStatus = _indexGetSplitCandidatesForCollection(txn, nss, shardStats);
+        if (candidatesStatus == ErrorCodes::NamespaceNotFound) {
+            // Namespace got dropped before we managed to get to it, so just skip it
+            continue;
+        } else if (!candidatesStatus.isOK()) {
+            warning() << "Unable to enforce tag range policy for collection " << nss.ns()
+                      << causedBy(candidatesStatus.getStatus());
+            continue;
+        }
+
+        splitCandidates.insert(splitCandidates.end(),
+                               std::make_move_iterator(candidatesStatus.getValue().begin()),
+                               std::make_move_iterator(candidatesStatus.getValue().end()));
+    }
+
+    return splitCandidates;
+}
+
 
 StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMove(
     OperationContext* txn, bool aggressiveBalanceHint) {
@@ -257,6 +310,9 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMo
     MigrateInfoVector candidateChunks;
 
     for (const auto& coll : collections) {
+        if (coll.getTabType() != CollectionType::TableType::kSharded) {
+            continue;
+        }
         const NamespaceString nss(coll.getNs());
 
         if (!coll.getAllowBalance()) {
@@ -356,7 +412,7 @@ Status BalancerChunkSelectionPolicyImpl::checkMoveAllowed(OperationContext* txn,
                                                    distribution.getTagForChunk(chunk));
 }
 
-StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidatesForCollection(
+StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidatesForCollection(
     OperationContext* txn, const NamespaceString& nss, const ShardStatisticsVector& shardStats) {
     auto scopedCMStatus = ScopedChunkManager::getExisting(txn, nss);
     if (!scopedCMStatus.isOK()) {
@@ -376,7 +432,7 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidate
     const DistributionStatus& distribution = collInfoStatus.getValue();
 
     // Accumulate split points for the same chunk together
-    SplitCandidatesBuffer splitCandidates(nss, cm->getVersion());
+    IndexSplitInfoVector splits;
 
     for (const auto& tagRangeEntry : distribution.tagRanges()) {
         const auto& tagRange = tagRangeEntry.second;
@@ -386,7 +442,10 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidate
         invariant(chunkAtZoneMin->getMax().woCompare(tagRange.min) > 0);
 
         if (chunkAtZoneMin->getMin().woCompare(tagRange.min)) {
-            splitCandidates.addSplitPoint(chunkAtZoneMin, tagRange.min);
+            ChunkType chunkType;
+            chunkType.setNS(nss.ns());
+            chunkAtZoneMin->constructChunkType(&chunkType);
+            splits.emplace_back(chunkType, tagRange.min);
         }
 
         // The global max key can never fall in the middle of a chunk
@@ -400,11 +459,86 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidate
         // the max is not equal, which would only happen in the case of the zone ending in MaxKey.
         if (chunkAtZoneMax->getMin().woCompare(tagRange.max) &&
             chunkAtZoneMax->getMax().woCompare(tagRange.max)) {
-            splitCandidates.addSplitPoint(chunkAtZoneMax, tagRange.max);
+            ChunkType chunkType;
+            chunkType.setNS(nss.ns());
+            chunkAtZoneMax->constructChunkType(&chunkType);
+            splits.emplace_back(chunkType, tagRange.max);
         }
     }
 
-    return splitCandidates.done();
+    return splits;
+}
+
+
+StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::_indexGetSplitCandidatesForCollection(
+    OperationContext* txn, const NamespaceString& nss, const ShardStatisticsVector& shardStats) {
+    auto scopedCMStatus = ScopedChunkManager::getExisting(txn, nss);
+    if (!scopedCMStatus.isOK()) {
+        return scopedCMStatus.getStatus();
+    }
+
+    auto scopedCM = std::move(scopedCMStatus.getValue());
+    ChunkManager* const cm = scopedCM.cm();
+
+    const auto collInfoStatus = createCollectionDistributionStatus(txn, shardStats, cm);
+    if (!collInfoStatus.isOK()) {
+        return collInfoStatus.getStatus();
+    }
+
+    const DistributionStatus& distribution = collInfoStatus.getValue();
+
+
+    //log() << "_indexGetSplitCandidatesForCollection";
+    map<string, ClusterStatistics::ChunkStatistics> chunkNameToStatis;
+    for (const auto& shardStat : shardStats) {
+        //log() << "[Auto-SplitChunk]shardId: " << shardStat.shardId.toString();
+        for (const auto& chunkStat : shardStat.chunkStatistics) {
+            chunkNameToStatis[chunkStat.chunkId.toString()] = chunkStat;
+            LOG(1) << "[Auto-SplitChunk]shardId: " << shardStat.shardId.toString() << ", chunkId: " << chunkStat.chunkId.toString() 
+                  << ", ns: " << chunkStat.ns << ", currSizeMB: " << chunkStat.currSizeMB << ", documentNum: "
+                  << chunkStat.documentNum << ", tps: " << chunkStat.tps << ", sstfileNum: " << chunkStat.sstfileNum
+                  << ", sstfilesize: " << chunkStat.sstfilesize;
+        }
+    }
+
+    IndexSplitInfoVector splits;
+
+    // Check for chunks, which are in above the split threshold
+    for (const auto& shardStat : shardStats) {
+        const vector<ChunkType>& chunks = distribution.getChunks(shardStat.shardId);
+
+        LOG(1) << "[Auto-SplitChunk]shardId: " << shardStat.shardId.toString() << ", chunkSize: " << chunks.size();
+        if (chunks.empty()) {
+            //error() << "[Auto-SplitChunk]Chunks is empty.";
+            continue;
+        }
+
+        // Scan all chunks to find if we should perform a split operation
+        for (const auto& chunk : chunks) {
+            if (chunkNameToStatis.find(chunk.getName()) == chunkNameToStatis.end()) {
+                error() << "[Auto-SplitChunk]Unable to find chunk from chunkNameToStatis map, chunkName is "
+                        << chunk.getName();
+                continue;
+            }
+            
+            auto chunkStat      = chunkNameToStatis[chunk.getName()];
+            auto splitThreshold = cm->getCurrentDesiredChunkSize();
+
+            LOG(1) << "[Auto-SplitChunk]splitThreshold: " << splitThreshold << ", chunkId: " << chunk.getName()
+                << "; chunkStat: " << chunkStat.toBSON();
+            if (!chunkStat.isAboveSplitThreshold(splitThreshold)) {
+                LOG(1) << "[Auto-SplitChunk]chunk(" << chunk.getName() << ") is not above SplitThreashold";
+                continue;
+            }
+
+            LOG(1) << "[Auto-SplitChunk]nss: " << nss.toString() << ", chunkNss: " << NamespaceString(cm->getns()).toString()
+                  << ", minKey: " << chunk.getMin() << ", maxKey: " << chunk.getMax();
+
+            splits.emplace_back(chunk, BSONObj());
+        }
+    }
+
+    return splits;
 }
 
 StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::_getMigrateCandidatesForCollection(

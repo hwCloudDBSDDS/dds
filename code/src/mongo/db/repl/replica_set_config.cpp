@@ -48,10 +48,6 @@ const size_t ReplicaSetConfig::kMaxVotingMembers;
 const std::string ReplicaSetConfig::kConfigServerFieldName = "configsvr";
 const std::string ReplicaSetConfig::kVersionFieldName = "version";
 const std::string ReplicaSetConfig::kMajorityWriteConcernModeName = "$majority";
-const Milliseconds ReplicaSetConfig::kDefaultHeartbeatInterval(2000);
-const Seconds ReplicaSetConfig::kDefaultHeartbeatTimeoutPeriod(10);
-const Milliseconds ReplicaSetConfig::kDefaultElectionTimeoutPeriod(10000);
-const Milliseconds ReplicaSetConfig::kDefaultCatchUpTimeoutPeriod(2000);
 const bool ReplicaSetConfig::kDefaultChainingAllowed(true);
 
 namespace {
@@ -227,7 +223,7 @@ Status ReplicaSetConfig::_parseSettingsSubdocument(const BSONObj& settings) {
     Status hbIntervalStatus =
         bsonExtractIntegerFieldWithDefault(settings,
                                            kHeartbeatIntervalFieldName,
-                                           durationCount<Milliseconds>(kDefaultHeartbeatInterval),
+                                           durationCount<Milliseconds>(kDefaultConfigHeartbeatInterval),
                                            &heartbeatIntervalMillis);
     if (!hbIntervalStatus.isOK()) {
         return hbIntervalStatus;
@@ -242,7 +238,7 @@ Status ReplicaSetConfig::_parseSettingsSubdocument(const BSONObj& settings) {
     auto electionTimeoutStatus = bsonExtractIntegerFieldWithDefaultIf(
         settings,
         kElectionTimeoutFieldName,
-        durationCount<Milliseconds>(kDefaultElectionTimeoutPeriod),
+        durationCount<Milliseconds>(kDefaultConfigElectionTimeoutPeriod),
         greaterThanZero,
         "election timeout must be greater than 0",
         &electionTimeoutMillis);
@@ -258,7 +254,7 @@ Status ReplicaSetConfig::_parseSettingsSubdocument(const BSONObj& settings) {
     Status heartbeatTimeoutStatus =
         bsonExtractIntegerFieldWithDefaultIf(settings,
                                              kHeartbeatTimeoutFieldName,
-                                             durationCount<Seconds>(kDefaultHeartbeatTimeoutPeriod),
+                                             durationCount<Seconds>(kDefaultConfigHeartbeatTimeoutPeriod),
                                              greaterThanZero,
                                              "heartbeat timeout must be greater than 0",
                                              &heartbeatTimeoutSecs);
@@ -275,7 +271,7 @@ Status ReplicaSetConfig::_parseSettingsSubdocument(const BSONObj& settings) {
     Status catchUpTimeoutStatus = bsonExtractIntegerFieldWithDefaultIf(
         settings,
         kCatchUpTimeoutFieldName,
-        durationCount<Milliseconds>(kDefaultCatchUpTimeoutPeriod),
+        durationCount<Milliseconds>(kDefaultConfigCatchUpTimeoutPeriod),
         notLessThanZero,
         "catch-up timeout must be greater than or equal to 0",
         &catchUpTimeoutMillis);

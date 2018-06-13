@@ -8,6 +8,7 @@
 "anyAction", # Special ActionType that represents *all* actions
 "appendOplogNote",
 "applicationMessage",
+"assignChunk",
 "auditLogRotate",  # Not used for permissions checks, but to id the event in logs.
 "authCheck",  # Not used for permissions checks, but to id the authorization-checking event in logs.
 "authenticate",  # Not used for permission checks, but to id authentication events in logs.
@@ -67,11 +68,16 @@
 "killop",
 "listCollections",
 "listDatabases",
+"enableFailover",
+"disableFailover",
+"prepareSnapshot",
+"endSnapshot",
 "listIndexes",
 "listShards",
 "logRotate",
 "moveChunk",
 "netstat",
+"offloadChunk",
 "planCacheIndexFilter", # view/update index filters
 "planCacheRead", # view contents of plan cache
 "planCacheWrite", # clear cache, drop cache entry, pin/unpin/shun plans
@@ -83,8 +89,10 @@
 "repairDatabase",
 "replSetConfigure",
 "replSetGetConfig",
+"replSetGetPrimaryConfig",
 "replSetGetStatus",
 "replSetHeartbeat",
+"shardServerHeartbeat",
 "replSetReconfig",  # Not used for permissions checks, but to id the event in logs.
 "replSetStateChange",
 "resync",

@@ -788,6 +788,8 @@ void SyncTail::oplogApplication(ReplicationCoordinator* replCoord) {
             // data.
             invariant(ops.getCount() == 1);
             if (replCoord->isWaitingForApplierToDrain()) {
+                getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
+                    "signalDrainComplete");
                 replCoord->signalDrainComplete(&txn);
             }
             continue;  // This wasn't a real op. Don't try to apply it.

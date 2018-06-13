@@ -81,5 +81,52 @@ Status rebalanceChunk(OperationContext* txn, const ChunkType& chunk) {
     return cmdResponseStatus.getValue().commandStatus;
 }
 
+Status offloadChunk(OperationContext* txn, const ChunkType& chunk) {
+    auto shardRegistry = Grid::get(txn)->shardRegistry();
+    auto shard = shardRegistry->getConfigShard();
+    auto cmdResponseStatus = shard->runCommand(
+        txn,
+        kPrimaryOnlyReadPreference,
+        "admin",
+        BalanceChunkRequest::serializeToOffloadCommandForConfig(chunk),
+        Shard::RetryPolicy::kIdempotent);
+    if (!cmdResponseStatus.isOK()) {
+        return cmdResponseStatus.getStatus();
+    }
+
+    return cmdResponseStatus.getValue().commandStatus;
+}
+
+Status assignChunk(OperationContext* txn, const ChunkType& chunk, const ShardId& newShardId) {
+    auto shardRegistry = Grid::get(txn)->shardRegistry();
+    auto shard = shardRegistry->getConfigShard();
+    auto cmdResponseStatus = shard->runCommand(
+        txn,
+        kPrimaryOnlyReadPreference,
+        "admin",
+        BalanceChunkRequest::serializeToAssignCommandForConfig(chunk, newShardId),
+        Shard::RetryPolicy::kIdempotent);
+    if (!cmdResponseStatus.isOK()) {
+        return cmdResponseStatus.getStatus();
+    }
+
+    return cmdResponseStatus.getValue().commandStatus;
+}
+
+Status splitChunk(OperationContext* txn, const ChunkType& chunk, const BSONObj& splitPoint) {
+    auto shardRegistry = Grid::get(txn)->shardRegistry();
+    auto shard = shardRegistry->getConfigShard();
+    auto cmdResponseStatus = shard->runCommand(
+        txn,
+        kPrimaryOnlyReadPreference,
+        "admin",
+        BalanceChunkRequest::serializeToSplitCommandForConfig(chunk, splitPoint),
+        Shard::RetryPolicy::kNotIdempotent);
+    if (!cmdResponseStatus.isOK()) {
+        return cmdResponseStatus.getStatus();
+    }
+
+    return cmdResponseStatus.getValue().commandStatus;
+}
 }  // namespace configsvr_client
 }  // namespace mongo

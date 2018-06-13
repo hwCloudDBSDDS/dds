@@ -72,6 +72,13 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
+#include "mongo/db/s/collection_sharding_state.h"
+#include "mongo/db/s/sharding_state.h"
+#include "mongo/s/shard_key_pattern.h"
+#include "mongo/db/modules/rocks/src/Chunk/ChunkRocksRecordStore.h"
+
+#include "mongo/db/modules/rocks/src/Chunk/chunk_key_string.h"
+
 namespace mongo {
 
 namespace {
@@ -230,7 +237,8 @@ Collection::Collection(OperationContext* txn,
           parseValidationLevel(_details->getCollectionOptions(txn).validationLevel))),
       _cursorManager(fullNS),
       _cappedNotifier(_recordStore->isCapped() ? new CappedInsertNotifier() : nullptr),
-      _mustTakeCappedLockOnInsert(isCapped() && !_ns.isSystemDotProfile() && !_ns.isOplog()) {
+      _mustTakeCappedLockOnInsert(isCapped() && !_ns.isSystemDotProfile() && !_ns.isOplog()) ,
+      _isAssigning(false){
 
     _magic = 1357924;
     _indexCatalog.init(txn);
@@ -243,7 +251,8 @@ Collection::Collection(OperationContext* txn,
 Collection::~Collection() {
     verify(ok());
     if (isCapped()) {
-        _recordStore->setCappedCallback(nullptr);
+        //TODO   renameCollecton(capped Collection)
+        //_recordStore->setCappedCallback(nullptr);
         _cappedNotifier->kill();
     }
     _magic = 0;
@@ -280,8 +289,9 @@ vector<std::unique_ptr<RecordCursor>> Collection::getManyCursors(OperationContex
 }
 
 Snapshotted<BSONObj> Collection::docFor(OperationContext* txn, const RecordId& loc) const {
-    return Snapshotted<BSONObj>(txn->recoveryUnit()->getSnapshotId(),
-                                _recordStore->dataFor(txn, loc).releaseToBson());
+    auto rd = _recordStore->dataFor(txn, loc);
+
+    return Snapshotted<BSONObj>(txn->recoveryUnit()->getSnapshotId(), rd.releaseToBson());
 }
 
 bool Collection::findDoc(OperationContext* txn,
@@ -353,7 +363,6 @@ Status Collection::insertDocumentsForOplog(OperationContext* txn,
                                            const DocWriter* const* docs,
                                            size_t nDocs) {
     dassert(txn->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
-
     // Since this is only for the OpLog, we can assume these for simplicity.
     // This also means that we do not need to forward this object to the OpObserver, which is good
     // because it would defeat the purpose of using DocWriter.
@@ -377,6 +386,7 @@ Status Collection::insertDocuments(OperationContext* txn,
                                    OpDebug* opDebug,
                                    bool enforceQuota,
                                    bool fromMigrate) {
+
 
     MONGO_FAIL_POINT_BLOCK(failCollectionInserts, extraData) {
         const BSONObj& data = extraData.getData();
@@ -404,7 +414,9 @@ Status Collection::insertDocuments(OperationContext* txn,
 
         auto status = checkValidation(txn, *it);
         if (!status.isOK())
+        {
             return status;
+        }
     }
 
     const SnapshotId sid = txn->recoveryUnit()->getSnapshotId();
@@ -415,6 +427,7 @@ Status Collection::insertDocuments(OperationContext* txn,
     Status status = _insertDocuments(txn, begin, end, enforceQuota, opDebug);
     if (!status.isOK())
         return status;
+
     invariant(sid == txn->recoveryUnit()->getSnapshotId());
 
     auto opObserver = getGlobalServiceContext()->getOpObserver();
@@ -422,7 +435,6 @@ Status Collection::insertDocuments(OperationContext* txn,
         opObserver->onInserts(txn, ns(), begin, end, fromMigrate);
 
     txn->recoveryUnit()->onCommit([this]() { notifyCappedWaitersIfNeeded(); });
-
     return Status::OK();
 }
 
@@ -521,6 +533,7 @@ Status Collection::_insertDocuments(OperationContext* txn,
         records.push_back(record);
     }
     Status status = _recordStore->insertRecords(txn, &records, _enforceQuota(enforceQuota));
+
     if (!status.isOK())
         return status;
 
@@ -538,6 +551,7 @@ Status Collection::_insertDocuments(OperationContext* txn,
 
     int64_t keysInserted;
     status = _indexCatalog.indexRecords(txn, bsonRecords, &keysInserted);
+
     if (opDebug) {
         opDebug->keysInserted += keysInserted;
     }
@@ -604,6 +618,18 @@ void Collection::deleteDocument(
 
 Counter64 moveCounter;
 ServerStatusMetricField<Counter64> moveCounterDisplay("record.moves", &moveCounter);
+
+void Collection::extractShardkey(OperationContext* txn, const BSONObj& doc) {
+	auto metadataNow = CollectionShardingState::get(txn, _ns)->getMetadata();
+    if (metadataNow)
+    {
+    	ShardKeyPattern kp(metadataNow->getKeyPattern());
+    	BSONObj shardKey = kp.extractShardKeyFromDoc(doc);
+    	txn->setShardkey(shardKey);
+    }
+
+    return;
+}
 
 StatusWith<RecordId> Collection::updateDocument(OperationContext* txn,
                                                 const RecordId& oldLocation,
@@ -859,6 +885,48 @@ uint64_t Collection::dataSize(OperationContext* txn) const {
     return _recordStore->dataSize(txn);
 }
 
+BSONObj Collection::getSSTFileStatistics() const {
+    // if this is not a chunk, means the _recordStore is not ChunkRocksRecordStore, just return nothing
+    if (!_ns.isChunk()) {
+        return BSONObj();
+    }
+
+    // TODO: maybe we need to add a new interface with rocksdb
+    BSONObjBuilder b;
+    std::string statsString;
+    ChunkRocksRecordStore* recordStore = (ChunkRocksRecordStore*)_recordStore;
+    if (!recordStore->GetChunkDBInstance().GetDB()->GetProperty("rocksdb.stats", &statsString)) {
+        return BSONObj();
+    }
+
+    std::stringstream ss(statsString);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (std::string::npos != line.find("Sum")) {
+            unsigned int iSize = line.size();
+            char array[1024];
+            memcpy(array, line.c_str(), iSize+1);
+            char * p = strtok (array, " ");
+
+            // filenum
+            p = strtok (NULL, " ");
+            if (NULL != p) {
+                b.append("count", atoll(p));
+            }
+
+            // filesize
+            p = strtok (NULL, " ");
+            if (NULL != p) {
+                b.append("size", atoll(p));
+            }
+
+            break;
+        }
+    }
+
+    return b.obj();
+}
+
 uint64_t Collection::getIndexSize(OperationContext* opCtx, BSONObjBuilder* details, int scale) {
     IndexCatalog* idxCatalog = getIndexCatalog();
 
@@ -916,6 +984,11 @@ Status Collection::truncate(OperationContext* txn) {
 
     // 4) re-create indexes
     for (size_t i = 0; i < indexSpecs.size(); i++) {
+        if (GLOBAL_CONFIG_GET(IsCoreTest)){
+            indexSpecs[i] = indexSpecs[i].removeField("prefix");
+            log() << " Collection::truncate()-> : indexSpecs: " << indexSpecs[i];
+        }
+
         status = _indexCatalog.createIndexOnEmptyCollection(txn, indexSpecs[i]).getStatus();
         if (!status.isOK())
             return status;
@@ -1266,9 +1339,17 @@ private:
 
     uint32_t hashIndexEntry(const BSONObj& key, const RecordId& loc, uint32_t hash) {
         // We're only using KeyString to get something hashable here, so version doesn't matter.
-        KeyString ks(KeyString::Version::V1, key, Ordering::make(BSONObj()), loc);
+        /*KeyString ks(KeyString::Version::V1, key, Ordering::make(BSONObj()), loc);
         MurmurHash3_x86_32(ks.getTypeBits().getBuffer(), ks.getTypeBits().getSize(), hash, &hash);
         MurmurHash3_x86_32(ks.getBuffer(), ks.getSize(), hash, &hash);
+        */
+        //modified begin
+        SecondaryIndexBuilder ks;
+        ks.Append(key,Ordering::make(BSONObj()));
+        ks.Append(loc);
+        MurmurHash3_x86_32(ks.get_TypeBits().getBuffer(),ks.get_TypeBits().getSize(),hash,&hash);
+        MurmurHash3_x86_32(ks.get_Buffer(), ks.get_Size(), hash, &hash);
+        //modified end
         return hash % kKeyCountTableSize;
     }
 };
@@ -1421,4 +1502,109 @@ Status Collection::touch(OperationContext* txn,
 
     return Status::OK();
 }
+
+Status Collection::validateSplitCommand(const SplitChunkReq& request){
+    if (_balanceOpType == BalanceOpType::SPLITING) {
+        if (_splittingChunkID != request.getRightChunkName()){
+             log() << "can't do split with child chunk: " << request.getRightChunkName() 
+                                                 << "since already splitted for" << _splittingChunkID;
+             return  Status(ErrorCodes::NeedRollBackSplit,
+                                   str::stream() << "can't do split with child chunk: " << request.getRightChunkName() 
+                                                 << "since already splitted for" << _splittingChunkID);
+        }
+    }
+
+    return Status::OK();
+}
+
+Status Collection::split(OperationContext* txn,
+                         const SplitChunkReq& request,
+                         BSONObjBuilder& output) {
+    stdx::unique_lock<stdx::mutex> lock(_balanceMutex);
+    auto status = validateSplitCommand (request);
+    if (!status.isOK()){
+        return status;
+    }
+
+    switch (_balanceOpType) {
+        case BalanceOpType::STABLE:
+            _balanceOpType = BalanceOpType::SPLITING;
+            if (!request.getSplitPoint().isEmpty()) {
+                _splitPoint = request.getSplitPoint();
+                log() << "Collection::split()-> splitPoint: " << _splitPoint;
+            } else {
+                _splitPoint = BSONObj();
+            }
+            _balanceOpResult = _recordStore->split(txn, request, _splitPoint);
+            if (!_balanceOpResult.isOK()) {
+                _balanceOpType = BalanceOpType::STABLE;
+                return _balanceOpResult; 
+            } else {
+                _splittingChunkID = request.getRightChunkName();
+                output.append("splitPoint", _splitPoint);
+                return Status::OK();
+            }
+        case BalanceOpType::SPLITING:
+            if (!_balanceOpResult.isOK()) {
+                return _balanceOpResult; 
+            }else{
+                output.append("splitPoint", _splitPoint);
+                return Status::OK();
+            }
+        case BalanceOpType::CONFIRMING:
+            log() << "[splitChunk] collection::split()-> receive split command, but chunk in CONFIRMING"; 
+            invariant(false);
+            break;
+        default:
+            invariant(false);
+    }
+
+    return _balanceOpResult;
+}
+
+Status Collection::confirmSplit(OperationContext* txn,
+                                const ConfirmSplitRequest& request,
+                                BSONObjBuilder& output) {
+    stdx::unique_lock<stdx::mutex> lock(_balanceMutex);
+    switch (_balanceOpType) {
+        case BalanceOpType::STABLE:
+            return _balanceOpResult;
+        case BalanceOpType::SPLITING:
+            _balanceOpType = BalanceOpType::CONFIRMING;
+            ShardingState::get(txn)->updateMetadata(txn, request.getNss(), request.getChunk());
+            _balanceOpResult = _recordStore->confirmSplit(txn, request);
+            if (_balanceOpResult.isOK()) {
+                _balanceOpType = BalanceOpType::STABLE;
+                _splittingChunkID.clear();
+            } else {
+                _balanceOpType = BalanceOpType::SPLITING;
+                //todo rollback ChunkVersion
+            }
+            return _balanceOpResult;
+        case BalanceOpType::CONFIRMING:
+            log() << "Collection::confirmSplit()-> receive confirm command, but chunk in CONFIRMING"; 
+            invariant(false);
+        default:
+            invariant(false);
+    }
+
+    return _balanceOpResult;
+}
+
+void Collection::getAllIndexes(OperationContext* opCtx,BSONArray &arr){
+    IndexCatalog* idxCatalog = getIndexCatalog();
+    IndexCatalog::IndexIterator ii = idxCatalog->getIndexIterator(opCtx, true);
+   
+    BSONArrayBuilder build;
+    BSONObjBuilder indexBuilder;
+    while (ii.more()) {
+        IndexDescriptor* d = ii.next();
+        BSONObj obj;
+        obj = d->infoObj();
+        build.append(obj);
+    }
+    arr = build.arr();
+    return ;
+}
+
 }

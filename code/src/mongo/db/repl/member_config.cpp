@@ -44,6 +44,7 @@ const std::string MemberConfig::kIdFieldName = "_id";
 const std::string MemberConfig::kVotesFieldName = "votes";
 const std::string MemberConfig::kPriorityFieldName = "priority";
 const std::string MemberConfig::kHostFieldName = "host";
+const std::string MemberConfig::kExtendIPsFieldName = "extendIPs";
 const std::string MemberConfig::kHiddenFieldName = "hidden";
 const std::string MemberConfig::kSlaveDelayFieldName = "slaveDelay";
 const std::string MemberConfig::kArbiterOnlyFieldName = "arbiterOnly";
@@ -58,6 +59,7 @@ const std::string kLegalMemberConfigFieldNames[] = {MemberConfig::kIdFieldName,
                                                     MemberConfig::kVotesFieldName,
                                                     MemberConfig::kPriorityFieldName,
                                                     MemberConfig::kHostFieldName,
+                                                    MemberConfig::kExtendIPsFieldName,
                                                     MemberConfig::kHiddenFieldName,
                                                     MemberConfig::kSlaveDelayFieldName,
                                                     MemberConfig::kArbiterOnlyFieldName,
@@ -111,6 +113,12 @@ Status MemberConfig::initialize(const BSONObj& mcfg, ReplicaSetTagConfig* tagCon
         _host = HostAndPort(_host.host(), _host.port());
     }
 
+    // Parse extendIPs field.
+    status = bsonExtractStringFieldWithDefault(mcfg, kExtendIPsFieldName, "", &_extendIPs);
+    if (!status.isOK()) {
+        return status;
+    }
+    
     //
     // Parse votes field.
     //
@@ -287,6 +295,7 @@ BSONObj MemberConfig::toBSON(const ReplicaSetTagConfig& tagConfig) const {
     BSONObjBuilder configBuilder;
     configBuilder.append("_id", _id);
     configBuilder.append("host", _host.toString());
+    configBuilder.append("extendIPs", _extendIPs);
     configBuilder.append("arbiterOnly", _arbiterOnly);
     configBuilder.append("buildIndexes", _buildIndexes);
     configBuilder.append("hidden", _hidden);

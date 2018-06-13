@@ -25,7 +25,7 @@
  *    delete this exception statement from all source files in the program,
  *    then also delete it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/query/query_request.h"
@@ -39,7 +39,7 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
-
+#include "mongo/util/log.h"
 namespace mongo {
 
 using std::string;
@@ -103,6 +103,7 @@ const char kOptionsField[] = "options";
 
 const char QueryRequest::kFindCommandName[] = "find";
 const char QueryRequest::kShardVersionField[] = "shardVersion";
+const char QueryRequest::kChunkIdField[] = "chunkId";
 
 QueryRequest::QueryRequest(NamespaceString nss) : _nss(std::move(nss)) {}
 
@@ -343,6 +344,8 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::makeFromFindCommand(Namespace
             }
         } else if (str::equals(fieldName, kShardVersionField)) {
             // Shard version parsing is handled elsewhere.
+        } else if (str::equals(fieldName, kChunkIdField)) {
+            // TODO: wait the shardserver to handle.
         } else if (str::equals(fieldName, kTermField)) {
             Status status = checkFieldType(el, NumberLong);
             if (!status.isOK()) {
@@ -716,7 +719,7 @@ Status QueryRequest::init(int ntoskip,
                           const BSONObj& proj,
                           bool fromQueryMessage) {
     _proj = proj.getOwned();
-
+    LOG(3)<<"ntoskip:"<<ntoskip<<" ntoreturn:"<<ntoreturn <<" queryOptions:"<<queryOptions <<" queryObj:" << queryObj.toString()<<" proj: "<<proj.toString();
     if (ntoskip) {
         _skip = ntoskip;
     }

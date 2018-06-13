@@ -63,12 +63,20 @@ AsyncResultsMerger::AsyncResultsMerger(executor::TaskExecutor* executor,
             invariant(remote.cmdObj);
             invariant(!remote.cursorId);
             invariant(!remote.hostAndPort);
-            _remotes.emplace_back(*remote.shardId, *remote.cmdObj);
+            if (remote.chunkId) {
+                _remotes.emplace_back(*remote.shardId, *remote.chunkId, *remote.cmdObj);
+            } else {
+                _remotes.emplace_back(*remote.shardId, *remote.cmdObj);
+            }
         } else {
             invariant(!remote.cmdObj);
             invariant(remote.cursorId);
             invariant(remote.hostAndPort);
-            _remotes.emplace_back(*remote.hostAndPort, *remote.cursorId);
+            if (remote.chunkId) {
+                _remotes.emplace_back(*remote.hostAndPort, *remote.chunkId, *remote.cursorId);
+            } else {
+                _remotes.emplace_back(*remote.hostAndPort, *remote.cursorId);
+            }
         }
     }
 
@@ -283,6 +291,13 @@ Status AsyncResultsMerger::askForNextBatch_inlock(size_t remoteIndex) {
                                 boost::none,
                                 boost::none)
                      .toBSON();
+
+        if (remote.chunkId) {
+            BSONObjBuilder cmdBuilder;
+            cmdBuilder.appendElements(cmdObj);
+            (*remote.chunkId).appendForCommands(&cmdBuilder);
+            cmdObj = cmdBuilder.obj();
+        }
     } else {
         // Do the first time shard host resolution.
         invariant(_params.readPreference);
@@ -670,6 +685,14 @@ AsyncResultsMerger::RemoteCursorData::RemoteCursorData(HostAndPort hostAndPort,
                                                        CursorId establishedCursorId)
     : cursorId(establishedCursorId), _shardHostAndPort(std::move(hostAndPort)) {}
 
+AsyncResultsMerger::RemoteCursorData::RemoteCursorData(ShardId shardId, ChunkId chunkId, BSONObj cmdObj)
+    : shardId(std::move(shardId)), chunkId(std::move(chunkId)), initialCmdObj(std::move(cmdObj)) {}
+
+AsyncResultsMerger::RemoteCursorData::RemoteCursorData(HostAndPort hostAndPort,
+                                                       ChunkId ChunkId,
+                                                       CursorId establishedCursorId)
+    : chunkId(std::move(chunkId)), cursorId(establishedCursorId), _shardHostAndPort(std::move(hostAndPort)) {}
+
 const HostAndPort& AsyncResultsMerger::RemoteCursorData::getTargetHost() const {
     invariant(_shardHostAndPort);
     return *_shardHostAndPort;
@@ -695,7 +718,8 @@ Status AsyncResultsMerger::RemoteCursorData::resolveShardIdToHostAndPort(
     }
 
     // TODO: Pass down an OperationContext* to use here.
-    auto findHostStatus = shard->getTargeter()->findHostWithMaxWait(readPref, Seconds{20});
+    // we donnt need to waste too much time here, because the outside (runquery) will loop to retry
+    auto findHostStatus = shard->getTargeter()->findHostWithMaxWait(readPref, Seconds{2});
     if (!findHostStatus.isOK()) {
         return findHostStatus.getStatus();
     }

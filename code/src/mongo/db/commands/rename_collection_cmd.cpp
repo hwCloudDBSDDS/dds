@@ -25,7 +25,6 @@
  *    delete this exception statement from all source files in the program,
  *    then also delete it in the license file.
  */
-
 #include "mongo/platform/basic.h"
 
 #include "mongo/client/dbclientcursor.h"
@@ -93,6 +92,8 @@ public:
                      BSONObjBuilder& result) {
         string source = cmdObj.getStringField(getName());
         string target = cmdObj.getStringField("to");
+        bool sharded = cmdObj["sharded"].trueValue();
+        bool docheck = cmdObj["docheck"].trueValue();
 
         if (!NamespaceString::validCollectionComponent(target.c_str())) {
             errmsg = "invalid collection name: " + target;
@@ -137,13 +138,18 @@ public:
             errmsg = "renaming system.indexes is not allowed";
             return false;
         }
-
+ 
+        if (docheck) {
+            return true;
+        }
+        
         return appendCommandStatus(result,
                                    renameCollection(txn,
                                                     NamespaceString(source),
                                                     NamespaceString(target),
                                                     cmdObj["dropTarget"].trueValue(),
-                                                    cmdObj["stayTemp"].trueValue()));
+                                                    cmdObj["stayTemp"].trueValue(),
+                                                    sharded));
     }
 
 } cmdrenamecollection;

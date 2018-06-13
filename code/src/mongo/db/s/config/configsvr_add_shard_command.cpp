@@ -44,9 +44,16 @@
 #include "mongo/s/request_types/add_shard_request_type.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/s/catalog/catalog_extend/sharding_catalog_shard_server_manager.h"
 
 namespace mongo {
 namespace {
+//add
+using std::unordered_map;
+using std::list;
+using std::vector;
+//end
+ 
 
 using std::string;
 
@@ -119,15 +126,33 @@ public:
                            parsedRequest.hasMaxSize() ? parsedRequest.getMaxSize()
                                                       : kMaxSizeMBDefault);
 
+        
+        HostAndPort hostandport = parsedRequest.getConnString().getServers()[0];
+        auto getShardInMap = 
+            Grid::get(txn)->catalogManager()->getShardServerManager()->getShardByHostAndPort(hostandport);
+        if (!getShardInMap.isOK())
+        {
+            return appendCommandStatus(result,getShardInMap.getStatus());
+        }
+        ShardType shard = getShardInMap.getValue();
+        
+        ConnectionString conn = parsedRequest.getConnString();
+        /*if (parsedRequest.getConnString().type() != ConnectionString::SET){
+            conn = ConnectionString(ConnectionString::SET,
+                                  parsedRequest.getConnString().getServers(),
+                                  shard.getName());
+        }*/
+
         StatusWith<string> addShardResult = Grid::get(txn)->catalogManager()->addShard(
             txn,
-            parsedRequest.hasName() ? &parsedRequest.getName() : nullptr,
-            parsedRequest.getConnString(),
-            parsedRequest.hasMaxSize() ? parsedRequest.getMaxSize() : kMaxSizeMBDefault);
+            parsedRequest.hasName() ? parsedRequest.getName() : shard.getName(),
+            conn,
+            parsedRequest.hasMaxSize() ? parsedRequest.getMaxSize() : kMaxSizeMBDefault,
+            shard.getProcessIdentity());
 
         if (!addShardResult.isOK()) {
-            log() << "addShard request '" << parsedRequest << "'"
-                  << "failed" << causedBy(addShardResult.getStatus());
+            log() << "addShard request '" << parsedRequest << ""
+                << "failed" << causedBy(addShardResult.getStatus());
             return appendCommandStatus(result, addShardResult.getStatus());
         }
 

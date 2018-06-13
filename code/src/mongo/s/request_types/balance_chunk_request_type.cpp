@@ -38,23 +38,36 @@
 namespace mongo {
 namespace {
 
-const char kConfigSvrMoveChunk[] = "_configsvrMoveChunk";
+const char kConfigSvrBalanceChunk[] = "_configsvrBalanceChunk";
 const char kMaxChunkSizeBytes[] = "maxChunkSizeBytes";
 const char kToShardId[] = "toShard";
 const char kSecondaryThrottle[] = "secondaryThrottle";
 const char kWaitForDelete[] = "waitForDelete";
-
+const char kBalanceType[] = "balanceType";
+const char kSplitPoint[] = "splitPoint";
+    
 const WriteConcernOptions kMajorityWriteConcernNoTimeout(WriteConcernOptions::kMajority,
                                                          WriteConcernOptions::SyncMode::UNSET,
                                                          Seconds(15));
 
 }  // namespace
 
-BalanceChunkRequest::BalanceChunkRequest(ChunkType chunk,
+BalanceChunkRequest::BalanceChunkRequest(BalanceType balanceType,
+                                         ChunkType& chunk,
                                          MigrationSecondaryThrottleOptions secondaryThrottle)
-    : _chunk(std::move(chunk)), _secondaryThrottle(std::move(secondaryThrottle)) {}
+    : _balanceType(balanceType), _chunk(std::move(chunk)), _secondaryThrottle(std::move(secondaryThrottle)) {}
 
 StatusWith<BalanceChunkRequest> BalanceChunkRequest::parseFromConfigCommand(const BSONObj& obj) {
+    BalanceType balanceType;
+    {
+        long long type;
+        Status status = bsonExtractIntegerField(obj, kBalanceType, &type);
+        if (!status.isOK()) {
+            return status;
+        }
+        balanceType = static_cast<BalanceType>(type);
+    }
+
     auto chunkStatus = ChunkType::fromBSON(obj);
     if (!chunkStatus.isOK()) {
         return chunkStatus.getStatus();
@@ -83,7 +96,8 @@ StatusWith<BalanceChunkRequest> BalanceChunkRequest::parseFromConfigCommand(cons
         return secondaryThrottleStatus.getStatus();
     }
 
-    BalanceChunkRequest request(std::move(chunkStatus.getValue()),
+    BalanceChunkRequest request(balanceType,
+                                chunkStatus.getValue(),
                                 std::move(secondaryThrottleStatus.getValue()));
 
     {
@@ -119,6 +133,22 @@ StatusWith<BalanceChunkRequest> BalanceChunkRequest::parseFromConfigCommand(cons
         }
     }
 
+    
+    {
+        BSONElement splitPointElement;
+        auto splitPointElementStatus =
+            bsonExtractTypedField(obj, kSplitPoint, Object, &splitPointElement);
+
+        if (splitPointElementStatus.isOK()) {
+            request._splitPoint = splitPointElement.Obj(); 
+            //request._splitPoint = splitPointObj;
+        } else if (splitPointElementStatus != ErrorCodes::NoSuchKey) {
+            return splitPointElementStatus;
+        }
+    }
+
+    
+    
     return request;
 }
 
@@ -131,7 +161,9 @@ BSONObj BalanceChunkRequest::serializeToMoveCommandForConfig(
     invariantOK(chunk.validate());
 
     BSONObjBuilder cmdBuilder;
-    cmdBuilder.append(kConfigSvrMoveChunk, 1);
+    cmdBuilder.append(kConfigSvrBalanceChunk, 1);
+    cmdBuilder.append(kBalanceType, 
+        static_cast<std::underlying_type<BalanceType>::type>(BalanceType::move));
     cmdBuilder.appendElements(chunk.toBSON());
     cmdBuilder.append(kToShardId, newShardId.toString());
     cmdBuilder.append(kMaxChunkSizeBytes, static_cast<long long>(maxChunkSizeBytes));
@@ -151,7 +183,9 @@ BSONObj BalanceChunkRequest::serializeToRebalanceCommandForConfig(const ChunkTyp
     invariantOK(chunk.validate());
 
     BSONObjBuilder cmdBuilder;
-    cmdBuilder.append(kConfigSvrMoveChunk, 1);
+    cmdBuilder.append(kConfigSvrBalanceChunk, 1);
+    cmdBuilder.append(kBalanceType, 
+        static_cast<std::underlying_type<BalanceType>::type>(BalanceType::rebalance));
     cmdBuilder.appendElements(chunk.toBSON());
     cmdBuilder.append(WriteConcernOptions::kWriteConcernField,
                       kMajorityWriteConcernNoTimeout.toBSON());
@@ -159,4 +193,41 @@ BSONObj BalanceChunkRequest::serializeToRebalanceCommandForConfig(const ChunkTyp
     return cmdBuilder.obj();
 }
 
+BSONObj BalanceChunkRequest::serializeToOffloadCommandForConfig(const ChunkType& chunk) {
+    invariantOK(chunk.validate());
+
+    BSONObjBuilder cmdBuilder;
+    cmdBuilder.append(kConfigSvrBalanceChunk, 1);
+    cmdBuilder.append(kBalanceType, 
+        static_cast<std::underlying_type<BalanceType>::type>(BalanceType::offload));
+    cmdBuilder.appendElements(chunk.toBSON());
+
+    return cmdBuilder.obj();
+}
+
+BSONObj BalanceChunkRequest::serializeToAssignCommandForConfig(const ChunkType& chunk, const ShardId& newShardId) {
+    invariantOK(chunk.validate());
+
+    BSONObjBuilder cmdBuilder;
+    cmdBuilder.append(kConfigSvrBalanceChunk, 1);
+    cmdBuilder.append(kBalanceType, 
+        static_cast<std::underlying_type<BalanceType>::type>(BalanceType::assign));
+    cmdBuilder.appendElements(chunk.toBSON());
+    cmdBuilder.append(kToShardId, newShardId.toString());
+
+    return cmdBuilder.obj();
+}
+
+BSONObj BalanceChunkRequest::serializeToSplitCommandForConfig(const ChunkType& chunk, const BSONObj& splitPoint) {
+    invariantOK(chunk.validate());
+
+    BSONObjBuilder cmdBuilder;
+    cmdBuilder.append(kConfigSvrBalanceChunk, 1);
+    cmdBuilder.append(kBalanceType,
+        static_cast<std::underlying_type<BalanceType>::type>(BalanceType::split));
+    cmdBuilder.appendElements(chunk.toBSON());
+    cmdBuilder.append(kSplitPoint, splitPoint);
+    
+    return cmdBuilder.obj();
+}
 }  // namespace mongo

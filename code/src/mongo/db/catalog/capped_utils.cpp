@@ -29,7 +29,8 @@
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
-
+#include <string>
+#include <vector>
 #include "mongo/db/catalog/capped_utils.h"
 
 #include "mongo/base/error_codes.h"
@@ -50,9 +51,103 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/views/view.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/s/grid.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/bson/bsonobj.h"
+#include "mongo/s/client/shard.h"
+#include "mongo/util/log.h"
+#include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/s/balancer/balancer.h"
+#include "mongo/db/modules/rocks/src/GlobalConfig.h"
 
 namespace mongo {
+using std::vector;
+using std::string;
+const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
+Status emptyCappedOnCfgSrv(OperationContext* txn, const NamespaceString& ns){
+    log()<<"[capped_util.cpp: emptyCappedOnCfgSrv]  on ConfigServer";
+    log()<<"[capped_util.cpp: emptyCappedOnCfgSrv] ns: "<<ns.ns();
+    vector<ChunkType> chunks;
+    uassertStatusOK(grid.catalogClient(txn)->getChunks(txn,
+                BSON(ChunkType::ns(ns.ns())),
+                BSONObj(),
+                0,
+                &chunks,
+                nullptr,
+                repl::ReadConcernLevel::kMajorityReadConcern));
+    LOG(0) << "[drop collection] chunk.szie : "<<chunks.size();
+    std::map<string, BSONObj> errors;
+    auto* shardRegistry = grid.shardRegistry();
+    for(ChunkType chunk: chunks){
+        BSONObjBuilder builder;
+        auto shardStatus = shardRegistry->getShard(txn, chunk.getShard());
+        if (!shardStatus.isOK()) {
+            log()<<"[drop collection] get shard fail";
+            return shardStatus.getStatus();
+        }
+        auto dropResult = shardStatus.getValue()->runCommandWithFixedRetryAttempts(
+                txn,
+                ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+                ns.db().toString(),
+                BSON("drop" << ns.coll() <<"chunkId"<<chunk.getName() << WriteConcernOptions::kWriteConcernField
+                    << txn->getWriteConcern().toBSON()),
+                Shard::RetryPolicy::kIdempotent);
+        if (!dropResult.isOK()) {
+            return Status(dropResult.getStatus().code(),
+                   dropResult.getStatus().reason() + " at " + chunk.getName());
+        }
+        auto dropStatus = std::move(dropResult.getValue().commandStatus);
+        auto wcStatus = std::move(dropResult.getValue().writeConcernStatus);
+        if (!dropStatus.isOK() || !wcStatus.isOK()) {
+            if (dropStatus.code() == ErrorCodes::NamespaceNotFound && wcStatus.isOK()) {
+                continue;
+            }
+            errors.emplace(chunk.getName(), std::move(dropResult.getValue().response));
+        }
+    }
+    if (!errors.empty()) {
+        StringBuilder sb;
+        sb << "Dropping collection failed on the following hosts: ";
+        for (auto it = errors.cbegin(); it != errors.cend(); ++it) {
+            if (it != errors.cbegin()) {
+                sb << ", ";
+            }
+            sb << it->first << ": " << it->second;
+        }
+        return {ErrorCodes::OperationFailed, sb.str()};
+    }
+    LOG(0) << "dropCollection " << ns << " shard data deleted"; 
+    for(ChunkType chunk: chunks){  
+
+        auto shardId = chunk.getShard();
+        auto assignStatus = Balancer::get(txn)->assignChunk(txn,
+                                                        chunk,
+                                                        true,
+                                                        false,
+                                                        shardId);
+   
+        if (!assignStatus.isOK()) {
+            log()<<"[CS_SHARDCOLL]assign fail";
+            return assignStatus;
+        }
+    }
+    return Status::OK();
+}
 Status emptyCapped(OperationContext* txn, const NamespaceString& collectionName) {
+    if (!GLOBAL_CONFIG_GET(IsCoreTest))
+    {
+        auto configshard = Grid::get(txn)->shardRegistry()->getConfigShard();
+        auto cmdResponseStatus = configshard->runCommand(
+            txn,
+            kPrimaryOnlyReadPreference,
+            collectionName.db().toString(),
+            BSON("emptycapped"<<collectionName.coll()),
+            Shard::RetryPolicy::kIdempotent);   
+        if(cmdResponseStatus.getValue().commandStatus.isOK()){
+            return Status::OK();
+        }
+    }
+
     ScopedTransaction scopedXact(txn, MODE_IX);
     AutoGetDb autoDb(txn, collectionName.db(), MODE_X);
 
@@ -79,13 +174,14 @@ Status emptyCapped(OperationContext* txn, const NamespaceString& collectionName)
                       str::stream() << "Cannot truncate a system collection: "
                                     << collectionName.ns());
     }
-
+    /*chunk has '$' and will be treated as vitual collection, so cancel the check.*/
+    /*
     if (NamespaceString::virtualized(collectionName.ns())) {
         return Status(ErrorCodes::IllegalOperation,
                       str::stream() << "Cannot truncate a virtual collection: "
                                     << collectionName.ns());
     }
-
+    */
     if ((repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
          repl::ReplicationCoordinator::modeNone) &&
         collectionName.isOplog()) {
@@ -276,6 +372,8 @@ Status convertToCapped(OperationContext* txn, const NamespaceString& collectionN
     ON_BLOCK_EXIT(&OperationContext::setReplicatedWrites, txn, shouldReplicateWrites);
     Status status =
         cloneCollectionAsCapped(txn, db, shortSource.toString(), shortTmpName, size, true);
+
+    txn->recoveryUnit()->abandonSnapshot();
 
     if (!status.isOK()) {
         return status;

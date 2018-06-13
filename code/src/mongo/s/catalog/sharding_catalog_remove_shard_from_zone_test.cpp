@@ -49,6 +49,7 @@ TEST_F(RemoveShardFromZoneTest, RemoveZoneThatNoLongerExistsShouldNotError) {
     shard.setName("a");
     shard.setHost("a:1234");
 
+
     setupShards({shard});
 
     ASSERT_OK(catalogManager()->removeShardFromZone(operationContext(), shard.getName(), "z"));
@@ -66,9 +67,11 @@ TEST_F(RemoveShardFromZoneTest, RemovingZoneThatIsOnlyReferencedByAnotherShardSh
     shardA.setHost("a:1234");
     shardA.setTags({"z"});
 
+
     ShardType shardB;
     shardB.setName("b");
     shardB.setHost("b:1234");
+
 
     setupShards({shardA, shardB});
 

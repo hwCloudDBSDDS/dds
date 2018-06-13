@@ -95,6 +95,7 @@
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/time_support.h"
+#include "mongo/db/index/index_descriptor.h"
 
 namespace mongo {
 using logger::LogComponent;
@@ -464,18 +465,27 @@ bool receivedGetMore(OperationContext* txn, DbResponse& dbresponse, Message& m, 
     curop.debug().ntoreturn = ntoreturn;
     curop.debug().cursorid = cursorid;
 
+    //read chunkId from message if exist, but maybe get null
+    std::string nsWithChunkId;
+    const char* chunkId = d.pullCString();
+    if (NULL != chunkId) {
+        nsWithChunkId = std::string(ns) + "$" + std::string(chunkId);
+    } else {
+        nsWithChunkId = std::string(ns);
+    }
+
     {
         stdx::lock_guard<Client>(*txn->getClient());
-        CurOp::get(txn)->setNS_inlock(ns);
+        CurOp::get(txn)->setNS_inlock(nsWithChunkId);
     }
 
     bool exhaust = false;
     bool isCursorAuthorized = false;
 
     try {
-        const NamespaceString nsString(ns);
+        const NamespaceString nsString(nsWithChunkId);
         uassert(ErrorCodes::InvalidNamespace,
-                str::stream() << "Invalid ns [" << ns << "]",
+                str::stream() << "Invalid ns [" << nsWithChunkId << "]",
                 nsString.isValid());
 
         Status status = AuthorizationSession::get(txn->getClient())
@@ -487,7 +497,7 @@ bool receivedGetMore(OperationContext* txn, DbResponse& dbresponse, Message& m, 
             sleepmillis(0);
         }
 
-        dbresponse.response = getMore(txn, ns, ntoreturn, cursorid, &exhaust, &isCursorAuthorized);
+        dbresponse.response = getMore(txn, nsWithChunkId.c_str(), ntoreturn, cursorid, &exhaust, &isCursorAuthorized);
     } catch (AssertionException& e) {
         if (isCursorAuthorized) {
             // If a cursor with id 'cursorid' was authorized, it may have been advanced
@@ -518,7 +528,7 @@ bool receivedGetMore(OperationContext* txn, DbResponse& dbresponse, Message& m, 
 
     if (exhaust) {
         curop.debug().exhaust = true;
-        dbresponse.exhaustNS = ns;
+        dbresponse.exhaustNS = nsWithChunkId;
     }
 
     return true;
@@ -560,7 +570,7 @@ void assembleResponse(OperationContext* txn,
 
     const char* ns = dbmsg.messageShouldHaveNs() ? dbmsg.getns() : NULL;
     const NamespaceString nsString = ns ? NamespaceString(ns) : NamespaceString();
-
+    LOG(1)<<"assembleResponse op: "<<(int)op <<", ns:"<<nsString;
     if (op == dbQuery) {
         if (nsString.isCommand()) {
             isCommand = true;
@@ -699,16 +709,21 @@ void assembleResponse(OperationContext* txn,
     }
 
     if (currentOp.shouldDBProfile()) {
+        log() << "currentOp.shouldDBProfile()";
         // Performance profiling is on
         if (txn->lockState()->isReadLocked()) {
+            log() << "currentOp.shouldDBProfile() 1";
             LOG(1) << "note: not profiling because recursive read lock";
         } else if (lockedForWriting()) {
+             log() << "currentOp.shouldDBProfile() 2";
             // TODO SERVER-26825: Fix race condition where fsyncLock is acquired post
             // lockedForWriting() call but prior to profile collection lock acquisition.
             LOG(1) << "note: not profiling because doing fsync+lock";
         } else if (storageGlobalParams.readOnly) {
+            log() << "currentOp.shouldDBProfile() 3";
             LOG(1) << "note: not profiling because server is read-only";
         } else {
+            log() << "currentOp.shouldDBProfile() 4";
             profile(txn, op);
         }
     }

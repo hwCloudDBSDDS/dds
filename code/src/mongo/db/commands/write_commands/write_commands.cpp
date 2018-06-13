@@ -25,7 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kWrite
 #include "mongo/base/init.h"
 #include "mongo/bson/mutable/document.h"
 #include "mongo/bson/mutable/element.h"
@@ -51,7 +51,7 @@
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/s/stale_exception.h"
-
+#include "mongo/util/log.h"
 namespace mongo {
 
 using std::string;

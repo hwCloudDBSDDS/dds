@@ -280,13 +280,18 @@ void JSReducer::_reduce(const BSONList& tuples, BSONObj& key, int& endSizeEstima
 Config::Config(const string& _dbname, const BSONObj& cmdObj) {
     dbname = _dbname;
     ns = dbname + "." + cmdObj.firstElement().valuestrsafe();
+    
+    NamespaceString nss = NamespaceString(StringData(ns));
+
+    ns = (Ns2ChunkIdHolder().getNsWithChunkId(nss)).ns();
+    LOG(1)<<" Config::Config ns:"<<ns << ", cmdObj:"<<cmdObj;
 
     verbose = cmdObj["verbose"].trueValue();
     jsMode = cmdObj["jsMode"].trueValue();
     splitInfo = 0;
 
     if (cmdObj.hasField("splitInfo")) {
-        splitInfo = cmdObj["splitInfo"].Int();
+        splitInfo = cmdObj["splitInfo"].Long();
     }
 
     jsMaxKeys = 500000;
@@ -1415,7 +1420,7 @@ public:
         BSONObjBuilder timingBuilder;
         State state(txn, config);
         if (!state.sourceExists()) {
-            errmsg = "ns doesn't exist";
+            errmsg = "ns doesn't exist, ns:" + config.ns;
             return false;
         }
         if (state.isOnDisk()) {

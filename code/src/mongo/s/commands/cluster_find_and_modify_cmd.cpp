@@ -25,7 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/platform/basic.h"
 
 #include <string>
@@ -52,6 +52,10 @@
 #include "mongo/s/sharding_raii.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/timer.h"
+#include "mongo/util/log.h"
+#include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/bson/bsonobjbuilder.h"
 
 namespace mongo {
 namespace {
@@ -59,6 +63,8 @@ namespace {
 using std::shared_ptr;
 using std::string;
 using std::vector;
+
+static const int kMaxRetryRounds(5);
 
 class FindAndModifyCmd : public Command {
 public:
@@ -97,7 +103,7 @@ public:
         shared_ptr<ChunkManager> chunkMgr;
         shared_ptr<Shard> shard;
 
-        if (!conf->isShardingEnabled() || !conf->isSharded(nss.ns())) {
+        if (!conf->isShardingEnabled() || CollectionType::TableType::kNonShard == conf->getCollTabType(nss.ns())) {
             auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, conf->getPrimaryId());
             if (!shardStatus.isOK()) {
                 return shardStatus.getStatus();
@@ -149,10 +155,13 @@ public:
         Timer timer;
 
         BSONObjBuilder result;
-        bool ok = _runCommand(txn, conf, chunkMgr, shard->getId(), nss, explainCmd.obj(), result);
+        auto runStatus = _runCommand(txn, conf, chunkMgr, shard->getId(), nss, explainCmd.obj(), result);
+        if (!runStatus.isOK()) {
+            return runStatus.getStatus();
+        }
         long long millisElapsed = timer.millis();
 
-        if (!ok) {
+        if (!runStatus.getValue()) {
             BSONObj res = result.obj();
             return Status(ErrorCodes::OperationFailed,
                           str::stream() << "Explain for findAndModify failed: " << res);
@@ -169,7 +178,26 @@ public:
         return ClusterExplain::buildExplainResult(
             txn, shardResults, ClusterExplain::kSingleShard, millisElapsed, out);
     }
-
+    static bool CreateCollIfNotExist(OperationContext* txn,const std::string& dbName,const NamespaceString& ns){
+        auto config = uassertStatusOK(grid.catalogCache()->getDatabase(txn, dbName));
+        if(!config->isCollectionExist(dbName+"."+ns.coll())){
+            Command* createCmd = Command::findCommand("create");
+            int queryOptions = 0;
+            string errmsg;
+            BSONObjBuilder cmdBob;
+            cmdBob.append("create", ns.coll());
+            auto createCmdObj = cmdBob.done();
+            bool ok = false;
+            try { 
+                 ok = createCmd->run(txn, dbName, createCmdObj, queryOptions, errmsg, cmdBob);
+            } catch (const DBException& e) {
+                 LOG(1)<<"run create cmd error";
+                 return false;
+            }
+            return ok;
+        }
+        return true;
+    }
     virtual bool run(OperationContext* txn,
                      const std::string& dbName,
                      BSONObj& cmdObj,
@@ -177,14 +205,27 @@ public:
                      std::string& errmsg,
                      BSONObjBuilder& result) {
         const NamespaceString nss = parseNsCollectionRequired(dbName, cmdObj);
-
+        LOG(1)<<"[find_and_modify] cmd "<<cmdObj;
         // findAndModify should only be creating database if upsert is true, but this would require
         // that the parsing be pulled into this function.
         auto scopedDb = uassertStatusOK(ScopedShardDatabase::getOrCreate(txn, dbName));
         DBConfig* conf = scopedDb.db();
+        if( !CreateCollIfNotExist(txn,dbName,nss)){
+            return false;
+        }  
 
-        if (!conf->isShardingEnabled() || !conf->isSharded(nss.ns())) {
-            return _runCommand(txn, conf, nullptr, conf->getPrimaryId(), nss, cmdObj, result);
+        if (nss.isOnInternalDb() || CollectionType::TableType::kNonShard == conf->getCollTabType(nss.ns())) {
+            auto runStatus = _runCommand(txn, conf, nullptr, conf->getPrimaryId(), nss, cmdObj, result);
+            if (!runStatus.isOK()) {
+                return appendCommandStatus(result, runStatus.getStatus());
+            }
+            return runStatus.getValue();
+        }
+
+        if (!conf->isShardedAfterReload(txn, nss.ns())) {
+            return appendCommandStatus(result,
+                                        Status(ErrorCodes::NamespaceNotSharded,
+                                        str::stream() << "ns " << nss.ns() <<" is not sharded yet"));
         }
 
         shared_ptr<ChunkManager> chunkMgr = _getChunkManager(txn, conf, nss);
@@ -216,21 +257,32 @@ public:
                       "non-simple collation");
         }
 
-        bool ok =
-            _runCommand(txn, conf, chunkMgr, chunk.getValue()->getShardId(), nss, cmdObj, result);
-        if (ok) {
-            // check whether split is necessary (using update object for size heuristic)
-            chunk.getValue()->splitIfShould(txn, cmdObj.getObjectField("update").objsize());
+        // we need to add chunkver and chunkid info, so re-build the command
+        BSONObjBuilder cmdBuilder;
+        cmdBuilder.appendElements(cmdObj);
+
+        ChunkVersion version(chunk.getValue()->getLastmod());
+        version.appendForCommands(&cmdBuilder);
+        ChunkId chunkId(chunk.getValue()->getChunkId());
+        chunkId.appendForCommands(&cmdBuilder);
+
+        auto runStatus = _runCommand(txn, conf, chunkMgr, chunk.getValue()->getShardId(), nss, cmdBuilder.obj(), result);
+        if (runStatus.isOK()) {
+            return runStatus.getValue();
         }
 
-        return ok;
+        if (runStatus == ErrorCodes::ShardNotFound) {
+            chunkMgr->reload(txn);
+        }
+
+        return appendCommandStatus(result, runStatus.getStatus());
     }
 
 private:
     shared_ptr<ChunkManager> _getChunkManager(OperationContext* txn,
                                               DBConfig* conf,
                                               const NamespaceString& nss) const {
-        shared_ptr<ChunkManager> chunkMgr = conf->getChunkManager(txn, nss.ns());
+        shared_ptr<ChunkManager> chunkMgr = conf->getChunkManager(txn, nss.ns(), true);
         massert(13002, "shard internal error chunk manager should never be null", chunkMgr);
 
         return chunkMgr;
@@ -257,7 +309,7 @@ private:
         return shardKey;
     }
 
-    bool _runCommand(OperationContext* txn,
+    StatusWith<bool> _runCommand(OperationContext* txn,
                      DBConfig* conf,
                      shared_ptr<ChunkManager> chunkManager,
                      const ShardId& shardId,
@@ -266,16 +318,40 @@ private:
                      BSONObjBuilder& result) const {
         BSONObj res;
 
-        const auto shard = uassertStatusOK(Grid::get(txn)->shardRegistry()->getShard(txn, shardId));
+        auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, shardId);
+        if (!shardStatus.isOK()) {
+            return shardStatus.getStatus();
+        }
+        std::vector<ChunkType> Chunks;
+        uassertStatusOK(grid.catalogClient(txn)->getChunks(txn,
+                                           BSON(ChunkType::ns(nss.ns())),
+                                           BSONObj(),
+                                           boost::none,
+                                           &Chunks,
+                                           nullptr,
+                                           repl::ReadConcernLevel::kMajorityReadConcern));
 
-        ShardConnection conn(shard->getConnString(), nss.ns(), chunkManager);
-        bool ok = conn->runCommand(conf->name(), cmdObj, res);
+        BSONObjBuilder newCmd; 
+        if( Chunks.size() == 0){
+             newCmd.appendElements(cmdObj);
+             LOG(1)<<"ns not found on mongos";
+        }else{
+             newCmd.appendElements(cmdObj);
+             newCmd.append("chunkId",Chunks[0].getName());
+        }
+        ShardConnection conn(shardStatus.getValue()->getConnString(), nss.ns(), chunkManager);
+        bool ok = conn->runCommand(conf->name(), newCmd.obj(), res);
         conn.done();
 
-        // ErrorCodes::RecvStaleConfig is the code for RecvStaleConfigException.
-        if (!ok && res.getIntField("code") == ErrorCodes::RecvStaleConfig) {
-            // Command code traps this exception and re-runs
-            throw RecvStaleConfigException("FindAndModify", res);
+        if (!ok) {
+            int errCode = res.getIntField("code");
+            if (errCode == ErrorCodes::RecvStaleConfig)
+                throw RecvStaleConfigException("FindAndModify", res);
+
+            if (errCode == ErrorCodes::FailedToSatisfyReadPreference
+                || ErrorCodes::isNetworkError(static_cast<ErrorCodes::Error>(errCode))) {
+                return {ErrorCodes::ShardNotFound, str::stream() << "shard cannt be accessed " << errCode}; 
+            }
         }
 
         // First append the properly constructed writeConcernError. It will then be skipped

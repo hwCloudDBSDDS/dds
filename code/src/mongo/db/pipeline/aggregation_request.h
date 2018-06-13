@@ -54,6 +54,7 @@ public:
     static const StringData kCollationName;
     static const StringData kExplainName;
     static const StringData kAllowDiskUseName;
+    static const StringData kChunkIdName;
 
     static const long long kDefaultBatchSize;
 

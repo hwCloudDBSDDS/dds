@@ -119,8 +119,9 @@ bool Helpers::findOne(OperationContext* txn,
                       BSONObj& result,
                       bool requireIndex) {
     RecordId loc = findOne(txn, collection, query, requireIndex);
-    if (loc.isNull())
+    if (loc.isNull()) {
         return false;
+    }
     result = collection->docFor(txn, loc).value();
     return true;
 }

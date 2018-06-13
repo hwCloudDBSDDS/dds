@@ -35,11 +35,75 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/s/shard_id.h"
+#include "mongo/util/log.h"
+#include "mongo/bson/bsonobj.h"
+#include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/bson/util/bson_extract.h"
 
 namespace mongo {
 
 using std::string;
 using std::ostream;
+
+const char kShardId[] = "shardId";
+const char kProcessIdentity[] = "processIdentity";
+
+ShardIdent::ShardIdent(ShardId& shardId, std::string& processIdent) {
+    _shardId = shardId;
+    _processIdentity = processIdent;
+}
+
+StatusWith<ShardIdent> ShardIdent::fromBSON(const BSONObj& obj) {
+    std::string chunkShard;
+    {
+        Status status = bsonExtractStringField(obj, kShardId, &chunkShard);
+        if (!status.isOK()) {
+            error() << "failed to extract shardid from ShardIdent";
+            return status;
+        }
+    }
+    ShardId shardId(chunkShard);
+
+    std::string processIdent;
+    {
+        Status status = bsonExtractStringField(obj, kProcessIdentity, &processIdent);
+        if (!status.isOK()) {
+            error() << "failed to extract processIdentity from ShardIdent";
+            return status;
+        }
+    }
+
+    return ShardIdent(shardId, processIdent);
+}
+
+BSONObj ShardIdent::toBSON() const {
+    BSONObjBuilder builder;
+    builder.append(kShardId, getShardId().toString());
+    builder.append(kProcessIdentity, getProcessIdentity());
+    return builder.obj();
+}
+
+bool ShardIdent::operator==(const ShardIdent& other) const {
+    return (this->_shardId == other._shardId &&
+            this->_processIdentity == other._processIdentity);
+}
+
+bool ShardIdent::operator!=(const ShardIdent& other) const {
+    return (this->_shardId != other._shardId ||
+            this->_processIdentity != other._processIdentity);
+}
+
+void ShardIdent::setShardId(ShardId& shardId) {
+    _shardId = shardId;
+}
+
+void ShardIdent::setProcessIdentity(std::string& processIdent) {
+    _processIdentity = processIdent;
+}
+
+bool ShardIdent::isValid() const {
+    return (_shardId.isValid() && !_processIdentity.empty());
+}
 
 bool ShardId::operator==(const ShardId& other) const {
     return (this->_shardId == other._shardId);

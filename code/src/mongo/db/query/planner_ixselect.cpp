@@ -164,6 +164,67 @@ void QueryPlannerIXSelect::findRelevantIndices(const unordered_set<string>& fiel
     }
 }
 
+//static, iterate the shardKey and check if the fields of shardKey exist in index
+bool QueryPlannerIXSelect::isShardKeyIndex(const BSONObj& index, const BSONObj& shardKey)
+{
+    int i = 0;
+    bool ret = false;
+
+    if (shardKey.isEmpty())
+    {
+        return ret;
+    }
+
+    BSONObjIterator it(shardKey);
+
+    // the numbers of the elements of the shardKey are less than index's, and shardKey
+    // is the prefix of index.
+    while (it.more())
+    {
+        BSONElement ele = it.next();
+        if (!index.hasElement(ele.fieldNameStringData()))
+        {
+            ret = false;
+            break;
+        }
+        i++;
+    }
+
+    if (i == shardKey.nFields()) // check if all the fields of shard key are checked.
+    {
+        ret = true;
+    }
+
+    return ret;
+}
+
+// static
+// choose the shardkey index as the relevant index.
+void QueryPlannerIXSelect::findRelevantIndicesForFindCmd(const CanonicalQuery& query,
+                                                    const std::vector<IndexEntry>& indices,
+                                                    std::vector<IndexEntry>* out)
+{
+    const BSONObj shardKey = query.getQueryRequest().getShardKey();
+
+    for (size_t i = 0; i < indices.size(); ++i)
+    {
+        // choose _id as the relevant index when no skey
+        if ((indices[i].keyPattern.hasField("_id")) && shardKey.isEmpty())
+        {
+            out->push_back(indices[i]);
+            break;
+        }
+
+        if (true == isShardKeyIndex(indices[i].keyPattern, shardKey))
+        {
+            out->push_back(indices[i]);
+            break;
+        }
+    }
+
+    return;
+}
+
 // static
 bool QueryPlannerIXSelect::compatible(const BSONElement& elt,
                                       const IndexEntry& index,

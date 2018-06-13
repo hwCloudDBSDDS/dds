@@ -44,7 +44,7 @@ using unittest::assertGet;
 TEST(BalanceChunkRequest, ParseFromConfigCommandNoSecondaryThrottle) {
     const ChunkVersion version(1, 0, OID::gen());
     auto request = assertGet(BalanceChunkRequest::parseFromConfigCommand(
-        BSON("_configsvrMoveChunk" << 1 << "ns"
+        BSON("_configsvrMoveChunk" << 1   << "balanceType" << 0 << "ns"
                                    << "TestDB.TestColl"
                                    << "min"
                                    << BSON("a" << -100LL)
@@ -55,7 +55,11 @@ TEST(BalanceChunkRequest, ParseFromConfigCommandNoSecondaryThrottle) {
                                    << "lastmod"
                                    << Date_t::fromMillisSinceEpoch(version.toLong())
                                    << "lastmodEpoch"
-                                   << version.epoch())));
+                                   << version.epoch()
+                                   << "rootFolder"
+                                   << "plogcnt1,12345"
+                                   << "_id"
+                                   << "00001")));
     const auto& chunk = request.getChunk();
     ASSERT_EQ("TestDB.TestColl", chunk.getNS());
     ASSERT_BSONOBJ_EQ(BSON("a" << -100LL), chunk.getMin());
@@ -71,7 +75,7 @@ TEST(BalanceChunkRequest, ParseFromConfigCommandNoSecondaryThrottle) {
 TEST(BalanceChunkRequest, ParseFromConfigCommandWithSecondaryThrottle) {
     const ChunkVersion version(1, 0, OID::gen());
     auto request = assertGet(BalanceChunkRequest::parseFromConfigCommand(
-        BSON("_configsvrMoveChunk" << 1 << "ns"
+        BSON("_configsvrMoveChunk" << 1  << "balanceType" << 0 << "ns"
                                    << "TestDB.TestColl"
                                    << "min"
                                    << BSON("a" << -100LL)
@@ -83,6 +87,10 @@ TEST(BalanceChunkRequest, ParseFromConfigCommandWithSecondaryThrottle) {
                                    << Date_t::fromMillisSinceEpoch(version.toLong())
                                    << "lastmodEpoch"
                                    << version.epoch()
+                                   << "rootFolder"
+                                   << "plogcnt1,12345"
+                                   << "_id"
+                                   << "00001"
                                    << "secondaryThrottle"
                                    << BSON("_secondaryThrottle" << true << "writeConcern"
                                                                 << BSON("w" << 2)))));

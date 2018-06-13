@@ -37,6 +37,10 @@ class OperationContext;
  * Drops the collection "collectionName" and populates "result" with statistics about what
  * was removed.
  */
+Status dropCollectionOnCfgSrv(OperationContext* txn,
+                      const NamespaceString& collectionName,
+                      BSONObjBuilder& result);
+
 Status dropCollection(OperationContext* txn,
                       const NamespaceString& collectionName,
                       BSONObjBuilder& result);

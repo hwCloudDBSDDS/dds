@@ -67,6 +67,8 @@ public:
     RESTHandler() : DbWebHandler("DUMMY REST", 1000, true) {}
 
     virtual bool handles(const string& url) const {
+        // Let mongo native restAPI does not take effect, so that the upgrade interface to take effect.
+        //return false;//maas keep unchange
         return url[0] == '/' && url.find_last_of('/') > 0;
     }
 

@@ -34,6 +34,10 @@ var DB;
         return new DBCollection(this._mongo, this, name, this._name + "." + name);
     };
 
+    DB.prototype.rocksStats = function(num){
+        return this.runCommand({rocksStats:1, num:num});
+    }
+
     DB.prototype.commandHelp = function(name) {
         var c = {};
         c[name] = 1;
@@ -518,6 +522,7 @@ var DB;
         print("\tdb.shutdownServer()");
         print("\tdb.stats()");
         print("\tdb.version() current version of the server");
+        print("\tdb.rocksStats() print rocksdb statistics");
 
         return __magicNoPrint;
     };

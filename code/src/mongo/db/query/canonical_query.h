@@ -106,7 +106,7 @@ public:
     BSONObj getQueryObj() const {
         return _qr->getFilter();
     }
-    const QueryRequest& getQueryRequest() const {
+    QueryRequest& getQueryRequest() const {
         return *_qr;
     }
     const ParsedProjection* getProj() const {

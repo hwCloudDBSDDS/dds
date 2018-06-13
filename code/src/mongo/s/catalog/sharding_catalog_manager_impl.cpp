@@ -33,6 +33,7 @@
 #include "mongo/s/catalog/sharding_catalog_manager_impl.h"
 
 #include <iomanip>
+#include <vector>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
@@ -42,6 +43,7 @@
 #include "mongo/client/read_preference.h"
 #include "mongo/client/remote_command_targeter.h"
 #include "mongo/client/replica_set_monitor.h"
+#include "mongo/client/global_conn_pool.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
@@ -67,6 +69,7 @@
 #include "mongo/s/catalog/type_lockpings.h"
 #include "mongo/s/catalog/type_locks.h"
 #include "mongo/s/catalog/type_shard.h"
+#include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_tags.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_registry.h"
@@ -82,6 +85,7 @@
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/base/remote_command_timeout.h"
 
 namespace mongo {
 
@@ -90,6 +94,7 @@ MONGO_FP_DECLARE(dontUpsertShardIdentityOnNewShards);
 using std::string;
 using std::vector;
 using str::stream;
+std::mutex shardName_lock;
 
 namespace {
 
@@ -300,9 +305,19 @@ BSONArray buildMergeChunksApplyOpsPrecond(const std::vector<ChunkType>& chunksTo
 
 ShardingCatalogManagerImpl::ShardingCatalogManagerImpl(
     ShardingCatalogClient* catalogClient, std::unique_ptr<executor::TaskExecutor> addShardExecutor)
-    : _catalogClient(catalogClient), _executorForAddShard(std::move(addShardExecutor)) {}
+    : _catalogClient(catalogClient), _executorForAddShard(std::move(addShardExecutor))
+{
+     _shardServerManager = new ShardServerManager();
+     //must new rootFolderManager instance
+     _rootFolderManager = new RootFolderManager();
+    _stateMachine = new StateMachine();
+}
 
-ShardingCatalogManagerImpl::~ShardingCatalogManagerImpl() = default;
+ShardingCatalogManagerImpl::~ShardingCatalogManagerImpl() {
+    delete(_rootFolderManager);
+    delete(_shardServerManager);
+    delete(_stateMachine);
+}
 
 Status ShardingCatalogManagerImpl::startup() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
@@ -336,7 +351,8 @@ StatusWith<Shard::CommandResponse> ShardingCatalogManagerImpl::_runCommandForAdd
     }
 
     executor::RemoteCommandRequest request(
-        host.getValue(), dbName, cmdObj, rpc::makeEmptyMetadata(), nullptr, Seconds(30));
+        host.getValue(), dbName, cmdObj, rpc::makeEmptyMetadata(), nullptr, 
+        Milliseconds(kIsMasterTimeoutMS));
     executor::RemoteCommandResponse swResponse =
         Status(ErrorCodes::InternalError, "Internal error running command");
 
@@ -394,95 +410,92 @@ StatusWith<Shard::CommandResponse> ShardingCatalogManagerImpl::_runCommandForAdd
 
 StatusWith<boost::optional<ShardType>> ShardingCatalogManagerImpl::_checkIfShardExists(
     OperationContext* txn,
-    const ConnectionString& proposedShardConnectionString,
-    const std::string* proposedShardName,
-    long long proposedShardMaxSize) {
-    // Check whether any host in the connection is already part of the cluster.
-    const auto existingShards =
-        _catalogClient->getAllShards(txn, repl::ReadConcernLevel::kLocalReadConcern);
-    if (!existingShards.isOK()) {
-        return Status(existingShards.getStatus().code(),
-                      str::stream() << "Failed to load existing shards during addShard"
-                                    << causedBy(existingShards.getStatus().reason()));
+    const std::string& shardName,
+    const ConnectionString& shardConnectionString,
+    long long maxSize,
+    const std::string& processIdentity) {
+    HostAndPort hostandport = shardConnectionString.getServers()[0];
+    const auto findShardStatus =
+        Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+                txn,
+                kConfigPrimarySelector,
+                repl::ReadConcernLevel::kLocalReadConcern,
+                NamespaceString(ShardType::ConfigNS),
+                BSON(ShardType::host() << BSON("$regex" << hostandport.toString()) << 
+                     ShardType::processIdentity() << processIdentity),
+                BSONObj(),
+                boost::none); // no limit
+
+    if (!findShardStatus.isOK()) {
+        return Status(findShardStatus.getStatus().code(),
+                      str::stream() << "Failed to find existing shards during addShard"
+                                    << causedBy(findShardStatus.getStatus()));
     }
 
-    // Now check if this shard already exists - if it already exists *with the same options* then
-    // the addShard request can return success early without doing anything more.
-    for (const auto& existingShard : existingShards.getValue().value) {
-        auto swExistingShardConnStr = ConnectionString::parse(existingShard.getHost());
-        if (!swExistingShardConnStr.isOK()) {
-            return swExistingShardConnStr.getStatus();
-        }
-        auto existingShardConnStr = std::move(swExistingShardConnStr.getValue());
-        // Function for determining if the options for the shard that is being added match the
-        // options of an existing shard that conflicts with it.
-        auto shardsAreEquivalent = [&]() {
-            if (proposedShardName && *proposedShardName != existingShard.getName()) {
-                return false;
-            }
-            if (proposedShardConnectionString.type() != existingShardConnStr.type()) {
-                return false;
-            }
-            if (proposedShardConnectionString.type() == ConnectionString::SET &&
-                proposedShardConnectionString.getSetName() != existingShardConnStr.getSetName()) {
-                return false;
-            }
-            if (proposedShardMaxSize != existingShard.getMaxSizeMB()) {
-                return false;
-            }
-            return true;
-        };
+    const auto shardDocs = findShardStatus.getValue().docs;
 
-        if (existingShardConnStr.type() == ConnectionString::SET &&
-            proposedShardConnectionString.type() == ConnectionString::SET &&
-            existingShardConnStr.getSetName() == proposedShardConnectionString.getSetName()) {
-            // An existing shard has the same replica set name as the shard being added.
-            // If the options aren't the same, then this is an error,
-            // but if the options match then the addShard operation should be immediately
-            // considered a success and terminated.
-            if (shardsAreEquivalent()) {
-                return {existingShard};
-            } else {
-                return {ErrorCodes::IllegalOperation,
-                        str::stream() << "A shard already exists containing the replica set '"
-                                      << existingShardConnStr.getSetName()
-                                      << "'"};
-            }
-        }
+    if (shardDocs.size() > 1) {
+        return Status(ErrorCodes::TooManyMatchingDocuments,
+            str::stream() << "More than one document for shard " <<
+                shardName << " in config databases");
+    }
 
-        for (const auto& existingHost : existingShardConnStr.getServers()) {
-            // Look if any of the hosts in the existing shard are present within the shard trying
-            // to be added.
-            for (const auto& addingHost : proposedShardConnectionString.getServers()) {
-                if (existingHost == addingHost) {
-                    // At least one of the hosts in the shard being added already exists in an
-                    // existing shard.  If the options aren't the same, then this is an error,
-                    // but if the options match then the addShard operation should be immediately
-                    // considered a success and terminated.
-                    if (shardsAreEquivalent()) {
-                        return {existingShard};
-                    } else {
-                        return {ErrorCodes::IllegalOperation,
-                                str::stream() << "'" << addingHost.toString() << "' "
-                                              << "is already a member of the existing shard '"
-                                              << existingShard.getHost()
-                                              << "' ("
-                                              << existingShard.getName()
-                                              << ")."};
-                    }
-                }
-            }
+    if (shardDocs.size() == 0) {
+        return Status(ErrorCodes::ShardNotFound,
+                str::stream() << "Shard " << shardName << " does not exist");
+    }
+
+    auto existingShardParseStatus = ShardType::fromBSON(shardDocs.front());
+    if (!existingShardParseStatus.isOK()) {
+        return existingShardParseStatus.getStatus();
+    }
+
+    ShardType existingShard = existingShardParseStatus.getValue();
+
+    auto swExistingShardConnStr = ConnectionString::parse(existingShard.getHost());
+    if (!swExistingShardConnStr.isOK()) {
+        return swExistingShardConnStr.getStatus();
+    }
+    auto existingShardConnStr = std::move(swExistingShardConnStr.getValue());
+
+    // Function for determining if the options for the shard that is being added match the
+    // options of an existing shard that conflicts with it.
+    auto shardsAreEquivalent = [&]() {
+        /*if (shardName != existingShard.getName()) {
+            return false;
+        }*/
+        if (shardConnectionString != existingShardConnStr) {
+            return false;
         }
-        if (proposedShardName && *proposedShardName == existingShard.getName()) {
-            // If we get here then we're trying to add a shard with the same name as an existing
-            // shard, but there was no overlap in the hosts between the existing shard and the
-            // proposed connection string for the new shard.
+        if (maxSize != existingShard.getMaxSizeMB()) {
+            return false;
+        }
+        return true;
+    };
+
+    if (existingShard.getState() == ShardType::ShardState::kShardRegistering ||
+        existingShard.getState() == ShardType::ShardState::kShardRestarting) {
+        if (shardsAreEquivalent()) {
+            return {boost::none};
+        }
+        else {
             return Status(ErrorCodes::IllegalOperation,
-                          str::stream() << "A shard named " << *proposedShardName
-                                        << " already exists");
+                str::stream() << "A shard (state: NotShardAware) named " << shardName
+                    << " with different setting " << existingShard.toBSON().toString()
+                    << " already exists, current " << shardConnectionString.toString());
         }
     }
-    return {boost::none};
+    else { // existingShard.getState() == ShardType::ShardState::kShardActive
+        if (shardsAreEquivalent()) {
+            return {existingShard};
+        }
+        else {
+            return Status(ErrorCodes::IllegalOperation,
+                str::stream() << "A shard (state: kShardActive) named " << shardName 
+                    << " with different setting " << existingShard.toBSON().toString()
+                    << " already exists");
+        }
+    }
 }
 
 StatusWith<ShardType> ShardingCatalogManagerImpl::_validateHostAsShard(
@@ -667,7 +680,7 @@ StatusWith<ShardType> ShardingCatalogManagerImpl::_validateHostAsShard(
     ShardType shard;
     shard.setName(actualShardName);
     shard.setHost(actualShardConnStr.toString());
-    shard.setState(ShardType::ShardState::kShardAware);
+    shard.setState(ShardType::ShardState::kShardActive);
 
     return shard;
 }
@@ -701,67 +714,69 @@ StatusWith<std::vector<std::string>> ShardingCatalogManagerImpl::_getDBNamesList
     return dbNames;
 }
 
-StatusWith<std::string> ShardingCatalogManagerImpl::_generateNewShardName(OperationContext* txn) {
-    BSONObjBuilder shardNameRegex;
-    shardNameRegex.appendRegex(ShardType::name(), "^shard");
 
-    auto findStatus = Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
-        txn,
-        kConfigReadSelector,
-        repl::ReadConcernLevel::kMajorityReadConcern,
-        NamespaceString(ShardType::ConfigNS),
-        shardNameRegex.obj(),
-        BSON(ShardType::name() << -1),
-        1);
-    if (!findStatus.isOK()) {
-        return findStatus.getStatus();
+StatusWith<ShardType> ShardingCatalogManagerImpl::findShardByHost(OperationContext* txn,const std::string& ns,const std::string& host)
+{
+     auto findShardStatus =
+        Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+            txn,
+            kConfigReadSelector,
+            repl::ReadConcernLevel::kLocalReadConcern,
+            NamespaceString(ns),
+            BSON(ShardType::host() << BSON("$regex" << host)),
+            BSONObj(),
+            boost::none); // no limit
+    
+            
+    if (!findShardStatus.isOK()) {
+        return findShardStatus.getStatus();
     }
-
-    const auto& docs = findStatus.getValue().docs;
-
-    int count = 0;
-    if (!docs.empty()) {
-        const auto shardStatus = ShardType::fromBSON(docs.front());
-        if (!shardStatus.isOK()) {
-            return shardStatus.getStatus();
-        }
-
-        std::istringstream is(shardStatus.getValue().getName().substr(5));
-        is >> count;
-        count++;
+    const auto shardDocs = findShardStatus.getValue().docs;
+    if (shardDocs.size() > 1) {
+        return Status(ErrorCodes::TooManyMatchingDocuments,
+                      str::stream() << "more than one shard document found for host " 
+                                    << host << " in config databases");
     }
-
-    // TODO fix so that we can have more than 10000 automatically generated shard names
-    if (count < 9999) {
-        std::stringstream ss;
-        ss << "shard" << std::setfill('0') << std::setw(4) << count;
-        return ss.str();
+    if (shardDocs.size() == 0) {
+        return Status(ErrorCodes::ShardNotFound,
+                str::stream() << "Shard " << host << " does not exist");
     }
-
-    return Status(ErrorCodes::OperationFailed, "unable to generate new shard name");
+    
+    auto shardDocStatus = ShardType::fromBSON(shardDocs.front());
+    if (!shardDocStatus.isOK()) {
+         return shardDocStatus.getStatus();
+    } 
+    return shardDocStatus;
 }
 
 StatusWith<string> ShardingCatalogManagerImpl::addShard(
     OperationContext* txn,
-    const std::string* shardProposedName,
+    const std::string &shardName,
     const ConnectionString& shardConnectionString,
-    const long long maxSize) {
-    if (shardConnectionString.type() == ConnectionString::INVALID) {
-        return {ErrorCodes::BadValue, "Invalid connection string"};
-    }
-
-    if (shardProposedName && shardProposedName->empty()) {
-        return {ErrorCodes::BadValue, "shard name cannot be empty"};
-    }
-
+    const long long maxSize,
+    const std::string& processIdentity) {
+    /*if (shardConnectionString.type() != ConnectionString::SET) {
+        return Status(ErrorCodes::BadValue,
+            str::stream() << "Connection string type is not a set: "
+                << shardConnectionString.toString());
+    }*/
+    //if we specify shardName to add shard , it will return error
+    /*if (shardName != shardConnectionString.getSetName()) {
+        return Status(ErrorCodes::BadValue,
+            str::stream() << "Shard name (" << shardName
+                << ") does not match set name in connection string: "
+                << shardConnectionString.toString());
+    }*/
+    LOG(0) << "addShard : " << shardName;
     // Only one addShard operation can be in progress at a time.
     Lock::ExclusiveLock lk(txn->lockState(), _kShardMembershipLock);
 
     // Check if this shard has already been added (can happen in the case of a retry after a network
     // error, for example) and thus this addShard request should be considered a no-op.
     auto existingShard =
-        _checkIfShardExists(txn, shardConnectionString, shardProposedName, maxSize);
+        _checkIfShardExists(txn, shardName, shardConnectionString, maxSize, processIdentity);
     if (!existingShard.isOK()) {
+        LOG(0) << "check shard exists failed";
         return existingShard.getStatus();
     }
     if (existingShard.getValue()) {
@@ -773,12 +788,21 @@ StatusWith<string> ShardingCatalogManagerImpl::addShard(
         return existingShard.getValue()->getName();
     }
 
+    HostAndPort hostAndPort = shardConnectionString.getServers()[0];
+    auto findShardStatus = findShardByHost(txn, ShardType::ConfigNS, hostAndPort.toString());
+    if (!findShardStatus.isOK()){
+        return findShardStatus.getStatus();
+    }
+    auto shardInShards = findShardStatus.getValue();
+    bool isRestart = false;
+    if (shardInShards.getState() == ShardType::ShardState::kShardRestarting) {
+        isRestart = true;
+    }
     // TODO: Don't create a detached Shard object, create a detached RemoteCommandTargeter instead.
-    const std::shared_ptr<Shard> shard{
-        Grid::get(txn)->shardRegistry()->createConnection(shardConnectionString)};
+    std::shared_ptr<Shard> shard;
+    shard = Grid::get(txn)->shardRegistry()->createConnection(shardConnectionString);
     invariant(shard);
     auto targeter = shard->getTargeter();
-
     auto stopMonitoringGuard = MakeGuard([&] {
         if (shardConnectionString.type() == ConnectionString::SET) {
             // This is a workaround for the case were we could have some bad shard being
@@ -788,14 +812,6 @@ StatusWith<string> ShardingCatalogManagerImpl::addShard(
             ReplicaSetMonitor::remove(shardConnectionString.getSetName());
         }
     });
-
-    // Validate the specified connection string may serve as shard at all
-    auto shardStatus =
-        _validateHostAsShard(txn, targeter, shardProposedName, shardConnectionString);
-    if (!shardStatus.isOK()) {
-        return shardStatus.getStatus();
-    }
-    ShardType& shardType = shardStatus.getValue();
 
     // Check that none of the existing shard candidate's dbs exist already
     auto dbNamesStatus = _getDBNamesListFromShard(txn, targeter);
@@ -819,19 +835,6 @@ StatusWith<string> ShardingCatalogManagerImpl::addShard(
         } else if (dbt != ErrorCodes::NamespaceNotFound) {
             return dbt.getStatus();
         }
-    }
-
-    // If a name for a shard wasn't provided, generate one
-    if (shardType.getName().empty()) {
-        StatusWith<string> result = _generateNewShardName(txn);
-        if (!result.isOK()) {
-            return result.getStatus();
-        }
-        shardType.setName(result.getValue());
-    }
-
-    if (maxSize > 0) {
-        shardType.setMaxSizeMB(maxSize);
     }
 
     // If the minimum allowed version for the cluster is 3.4, set the featureCompatibilityVersion to
@@ -858,11 +861,10 @@ StatusWith<string> ShardingCatalogManagerImpl::addShard(
             return versionResponse.getValue().commandStatus;
         }
     }
-
     if (!MONGO_FAIL_POINT(dontUpsertShardIdentityOnNewShards)) {
-        auto commandRequest = createShardIdentityUpsertForAddShard(txn, shardType.getName());
+        auto commandRequest = createShardIdentityUpsertForAddShard(txn, shardName);
 
-        LOG(2) << "going to insert shardIdentity document into shard: " << shardType;
+        LOG(1) << "going to insert shardIdentity document for shard " << shardName;
 
         auto swCommandResponse =
             _runCommandForAddShard(txn, targeter.get(), "admin", commandRequest);
@@ -879,21 +881,38 @@ StatusWith<string> ShardingCatalogManagerImpl::addShard(
             return batchResponseStatus;
         }
     }
+   
+    LOG(2) << "going to update state for shard " << shardName 
+           << " in config.shards during addShard";
+   /*ConnectionString fakeConnectionString(
+                ConnectionString::SET,
+                shardConnectionString.getServers(),
+                shardName);*/
+    shardInShards.setName(shardName);
+    shardInShards.setState(ShardType::ShardState::kShardActive);
+    shardInShards.setHost(shardConnectionString.toString());
 
-    log() << "going to insert new entry for shard into config.shards: " << shardType.toString();
-
-    Status result = _catalogClient->insertConfigDocument(
-        txn, ShardType::ConfigNS, shardType.toBSON(), ShardingCatalogClient::kMajorityWriteConcern);
-    if (!result.isOK()) {
-        log() << "error adding shard: " << shardType.toBSON() << " err: " << result.reason();
-        return result;
+    auto updateShardStatus = updateShardStateInConfig(txn, shardInShards, ShardType::ConfigNS,hostAndPort.toString());
+    if (!updateShardStatus.isOK()) {
+        return {updateShardStatus.getStatus().code(),
+                      str::stream() << "couldn't updating shard: " << shardName
+                      << " during addShard;" << causedBy(updateShardStatus.getStatus())};
     }
 
+
+    auto updateShardMapStatus = Grid::get(txn)->catalogManager()->getShardServerManager()->updateShardInMemory(
+                                                                                        hostAndPort,
+                                                                                        shardInShards);
+    if (!updateShardMapStatus.isOK()) {
+        log() << "fail to update shard state in shardMap cause by " << updateShardMapStatus.getStatus();
+        return updateShardMapStatus.getStatus();
+    } 
+ 
     // Add all databases which were discovered on the new shard
     for (const string& dbName : dbNamesStatus.getValue()) {
         DatabaseType dbt;
         dbt.setName(dbName);
-        dbt.setPrimary(shardType.getName());
+        dbt.setPrimary(shardName);
         dbt.setSharded(false);
 
         Status status = _catalogClient->updateDatabase(txn, dbName, dbt);
@@ -902,26 +921,99 @@ StatusWith<string> ShardingCatalogManagerImpl::addShard(
                   << " even though could not add database " << dbName;
         }
     }
+ 
 
-    // Record in changelog
-    BSONObjBuilder shardDetails;
-    shardDetails.append("name", shardType.getName());
-    shardDetails.append("host", shardConnectionString.toString());
-
-    _catalogClient->logChange(
-        txn, "addShard", "", shardDetails.obj(), ShardingCatalogClient::kMajorityWriteConcern);
-
-    // Ensure the added shard is visible to this process.
+     // Ensure the added shard is visible to this process.
     auto shardRegistry = Grid::get(txn)->shardRegistry();
-    if (!shardRegistry->getShard(txn, shardType.getName()).isOK()) {
+    if (!shardRegistry->getShard(txn, shardName).isOK()) {
         return {ErrorCodes::OperationFailed,
                 "Could not find shard metadata for shard after adding it. This most likely "
                 "indicates that the shard was removed immediately after it was added."};
     }
     stopMonitoringGuard.Dismiss();
+   
+    // Record in changelog
+    BSONObjBuilder shardDetails;
+    shardDetails.append("name", shardName);
+    shardDetails.append("state", 
+        static_cast<std::underlying_type<ShardType::ShardState>::type>(
+            ShardType::ShardState::kShardActive));
+    _catalogClient->logChange(
+        txn, "addShard", "", shardDetails.obj(), ShardingCatalogClient::kMajorityWriteConcern);
 
-    return shardType.getName();
+    
+    return shardName;
 }
+
+
+StatusWith<std::string> ShardingCatalogManagerImpl::updateShardStateInConfig(OperationContext* txn, ShardType shard, const std::string& ns,const std::string& host){
+
+    auto findShardStatus =
+        Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+            txn,
+            kConfigPrimarySelector,
+            repl::ReadConcernLevel::kLocalReadConcern,
+            NamespaceString(ns),
+            BSON(ShardType::host() << BSON("$regex" << host)),
+            BSONObj(),
+            boost::none); // no limit
+            
+    if (!findShardStatus.isOK()) {
+        return findShardStatus.getStatus();
+    }
+
+    const auto shardDocs = findShardStatus.getValue().docs;
+
+    if (shardDocs.size() > 1) {
+        return Status(ErrorCodes::TooManyMatchingDocuments,
+            str::stream() << "more than one document for shard " <<
+                host << " in config databases");
+    }
+
+    if (shardDocs.size() == 0) {
+        return Status(ErrorCodes::ShardNotFound,
+                str::stream() << "host " << host << " does not exist");
+    }
+
+    auto shardDocStatus = ShardType::fromBSON(shardDocs.front());
+    if (!shardDocStatus.isOK()) {
+        return shardDocStatus.getStatus();
+    }
+
+    auto removeStatus = Grid::get(txn)->catalogClient(txn)->removeConfigDocuments(
+        txn,
+        ns,
+        BSON(ShardType::host() << BSON("$regex" << host)),
+        ShardingCatalogClient::kMajorityWriteConcern);
+
+    if (!removeStatus.isOK()) {
+        return removeStatus;
+    }
+
+    
+    auto insertStatus = Grid::get(txn)->catalogClient(txn)->insertConfigDocument(
+            txn,
+            ns,
+            shard.toBSON(),
+            ShardingCatalogClient::kMajorityWriteConcern);
+    
+    if (!insertStatus.isOK()) {
+        return insertStatus;
+    }
+
+    // Record in changelog
+    BSONObjBuilder shardDetails;
+    shardDetails.append("name", shard.getName());
+    shardDetails.append("state", 
+        static_cast<std::underlying_type<ShardType::ShardState>::type>(
+            ShardType::ShardState::kShardActive));
+    _catalogClient->logChange(
+        txn, "updateShardDuringAddShard", "", shardDetails.obj(), 
+            ShardingCatalogClient::kMajorityWriteConcern);
+
+    return shard.getName();
+}
+
 
 Status ShardingCatalogManagerImpl::addShardToZone(OperationContext* txn,
                                                   const std::string& shardName,
@@ -1583,6 +1675,17 @@ Status ShardingCatalogManagerImpl::_initConfigIndexes(OperationContext* txn) {
 
     result = configShard->createIndexOnConfig(
         txn,
+        NamespaceString(ChunkType::ConfigNS),
+        BSON(ChunkType::status() << 1),
+        false);
+    if (!result.isOK()) {
+        return Status(result.code(),
+                      str::stream() << "couldn't create status_1 index on config db"
+                                    << causedBy(result));
+    }
+
+    result = configShard->createIndexOnConfig(
+        txn,
         NamespaceString(MigrationType::ConfigNS),
         BSON(MigrationType::ns() << 1 << MigrationType::min() << 1),
         unique);
@@ -1680,7 +1783,7 @@ StatusWith<std::vector<ShardType>> ShardingCatalogManagerImpl::_getAllShardingUn
         NamespaceString(ShardType::ConfigNS),
         BSON(
             "state" << BSON("$ne" << static_cast<std::underlying_type<ShardType::ShardState>::type>(
-                                ShardType::ShardState::kShardAware))),  // shard is sharding unaware
+                                ShardType::ShardState::kShardActive))),  // shard is sharding unaware
         BSONObj(),                                                      // no sort
         boost::none);                                                   // no limit
     if (!findStatus.isOK()) {
@@ -1795,7 +1898,8 @@ void ShardingCatalogManagerImpl::_scheduleAddShardTask(
     }
 
     executor::RemoteCommandRequest request(
-        swHost.getValue(), "admin", commandRequest, rpc::makeEmptyMetadata(), nullptr, Seconds(30));
+        swHost.getValue(), "admin", commandRequest, rpc::makeEmptyMetadata(), nullptr, 
+        Milliseconds(kShardIdentityUpsertTimeoutMS));
 
     const RemoteCommandCallbackFn callback =
         stdx::bind(&ShardingCatalogManagerImpl::_handleAddShardTaskResponse,
@@ -1934,7 +2038,7 @@ void ShardingCatalogManagerImpl::_handleAddShardTaskResponse(
         BSON(ShardType::name(shardType.getName())),
         BSON("$set" << BSON(ShardType::state()
                             << static_cast<std::underlying_type<ShardType::ShardState>::type>(
-                                ShardType::ShardState::kShardAware))),
+                                ShardType::ShardState::kShardActive))),
         false,
         kNoWaitWriteConcern);
 
@@ -2034,6 +2138,513 @@ Status ShardingCatalogManagerImpl::setFeatureCompatibilityVersionOnShards(
     }
 
     return Status::OK();
+}
+
+StatusWith<ShardType> ShardingCatalogManagerImpl::insertOrUpdateShardDocument(
+    OperationContext* txn,
+     ShardType& shardType,
+     const ConnectionString& shardServerConn) {
+    if (shardType.getState() == ShardType::ShardState::kShardRestarting) {
+        BSONObjBuilder updateBuilder{};
+        updateBuilder.append(ShardType::processIdentity(), shardType.getProcessIdentity());
+        updateBuilder.append(ShardType::state(), 
+                             static_cast<std::underlying_type<ShardType::ShardState>::type>(
+                                shardType.getState()));
+
+        auto updateShardDocumentResult = 
+            _catalogClient->updateConfigDocument(
+                txn,
+                ShardType::ConfigNS,
+                BSON(ShardType::name() << shardType.getName()),
+                BSON("$set" << updateBuilder.obj()),
+                false,
+                ShardingCatalogClient::kMajorityWriteConcern 
+            );
+        
+        if (!updateShardDocumentResult.isOK()) {
+            return updateShardDocumentResult.getStatus();
+        }
+
+        if (!updateShardDocumentResult.getValue()) {
+            return Status(ErrorCodes::BadValue, "update document count is 0");
+        }
+
+    } else if (shardType.getState() == ShardType::ShardState::kShardRegistering) {
+        //generate a shardName
+        shardName_lock.lock();
+        StatusWith<std::string> shardNameResult = _shardServerManager->generateNewShardName(txn);
+        shardName_lock.unlock();
+        if (!shardNameResult.isOK()) {
+            return shardNameResult.getStatus();
+        }  
+        std::string shardName = shardNameResult.getValue();
+
+        // Make a fake ConnectionString with setName = shardName
+        /*ConnectionString fakeConnectionString(
+                ConnectionString::SET,
+                shardServerConn.getServers(),
+                shardName);
+        */
+        shardType.setName(shardName);
+        shardType.setHost(shardServerConn.toString());
+  
+        auto insertStatus = Grid::get(txn)->catalogClient(txn)->insertConfigDocument(
+                txn,
+                ShardType::ConfigNS,
+                shardType.toBSON(),
+                ShardingCatalogClient::kMajorityWriteConcern);
+
+        if (!insertStatus.isOK()) {
+            return insertStatus;
+        }
+    } else {
+        return Status(ErrorCodes::BadValue, 
+                      stream() << "state should not be: " << 
+                        static_cast<std::underlying_type<ShardType::ShardState>::type>(
+                            shardType.getState()));
+    }
+
+    // Record in changelog
+    BSONObjBuilder shardDetails;
+    shardDetails.append("name", shardType.getName());
+    shardDetails.append("host", shardType.getHost());
+    shardDetails.append("state", 
+        static_cast<std::underlying_type<ShardType::ShardState>::type>(
+                shardType.getState()));
+    shardDetails.append("extendIPs", shardType.getExtendIPs());
+    shardDetails.append("processIdentity", shardType.getProcessIdentity());
+    Grid::get(txn)->catalogClient(txn)->logChange(
+            txn, 
+            "insertOrUpdateShardDocument", 
+            "", 
+            shardDetails.obj(), 
+            ShardingCatalogClient::kMajorityWriteConcern);
+
+    return shardType;
+}
+
+StatusWith<ShardType> ShardingCatalogManagerImpl::insertShardDocument(
+    OperationContext* txn,
+    const ConnectionString& shardServerConn,
+    const std::string& extendIPs,
+    const std::string& processIdentity,
+    bool& isRestart) {    
+    HostAndPort hostAndPort = shardServerConn.getServers()[0];
+
+    LOG(2) << "[insertShardDocument]: " << hostAndPort.toString();
+
+    // Get shard doc from configDB
+    auto findShardStatus =
+        Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+            txn,
+            kConfigPrimarySelector,
+            repl::ReadConcernLevel::kLocalReadConcern,
+            NamespaceString(ShardType::ConfigNS),
+            BSON(ShardType::host() << BSON("$regex" << hostAndPort.toString())),
+            BSONObj(),
+            boost::none); // no limit
+
+    if (!findShardStatus.isOK()) {
+        return findShardStatus.getStatus();
+    }
+
+    const auto shardDocs = findShardStatus.getValue().docs;
+
+    LOG(2) << "[insertShardDocument]: " << hostAndPort.toString() << ", document num: " << shardDocs.size();
+
+    if (shardDocs.size() > 1) {
+        return Status(ErrorCodes::TooManyMatchingDocuments,
+            str::stream() << "more than one shard document found for host " <<
+                hostAndPort.toString() << " in config databases");
+    }
+
+    ShardType shardType;
+    if (shardDocs.size() == 1) {
+        auto shardDocStatus = ShardType::fromBSON(shardDocs.front());
+        if (!shardDocStatus.isOK()) {
+            return shardDocStatus.getStatus();
+        }
+
+        shardType = shardDocStatus.getValue();
+
+        // Make a fake ConnectionString with setName = shardName
+        /*ConnectionString fakeConnectionString(
+            ConnectionString::SET,
+            shardServerConn.getServers(),
+            shardType.getName());
+        */
+        if (shardType.getHost() != shardServerConn.toString()) {
+            return Status(ErrorCodes::IllegalOperation,
+                stream() << "not allowed to re-register a shard with a different host (" 
+                        << shardServerConn.toString() << "): " << shardType.toString()); 
+        }
+
+        if (processIdentity.compare(shardType.getProcessIdentity()) == 0) {
+            if (shardType.getState() != ShardType::ShardState::kShardRegistering) {
+                return Status(ErrorCodes::IllegalOperation,
+                              stream() << "not allowed to re-register a shard with state != kShardRegistering for same identity: "
+                                       << shardType.toString());
+            }
+                
+            // check chunks collection, to determine whether shard is re-launched after failover
+            auto findChunkStatus = 
+                Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+                    txn,
+                    kConfigPrimarySelector,
+                    repl::ReadConcernLevel::kLocalReadConcern,
+                    NamespaceString(ChunkType::ConfigNS),
+                    BSON(ChunkType::shard() << shardType.getName()),
+                    BSONObj(),
+                    boost::none
+                );
+               
+            if (!findChunkStatus.isOK()) {
+                return Status(findChunkStatus.getStatus());
+            }
+
+            const auto findChunkDocs = findChunkStatus.getValue().docs;
+              
+            if (findChunkDocs.size() > 0) {
+                isRestart = true;
+            } else {
+                isRestart = false;
+            }
+
+        } else {
+            BSONObjBuilder updateBuilder{};
+            updateBuilder.append(ShardType::processIdentity(), processIdentity);
+            updateBuilder.append(ShardType::state(), 
+                                 static_cast<std::underlying_type<ShardType::ShardState>::type>(
+                                    ShardType::ShardState::kShardRegistering));
+
+            auto updateProcessIdentityStatus = 
+                _catalogClient->updateConfigDocument(
+                    txn,
+                    ShardType::ConfigNS,
+                    BSON(ShardType::name() << shardType.getName()),
+                    BSON("$set" << updateBuilder.obj()),
+                    false,
+                    ShardingCatalogClient::kMajorityWriteConcern 
+                );
+            
+            if (!updateProcessIdentityStatus.isOK()) {
+                return updateProcessIdentityStatus.getStatus();
+            }
+            
+            isRestart = true;
+            shardType.setState(ShardType::ShardState::kShardRegistering);
+            shardType.setProcessIdentity(processIdentity);
+        }
+    } else {
+        //generate a shardName
+        StatusWith<std::string> shardNameResult = _shardServerManager->generateNewShardName(txn);
+        if (!shardNameResult.isOK()) {
+            return shardNameResult.getStatus();
+    }  
+        std::string shardName = shardNameResult.getValue();
+
+        // Make a fake ConnectionString with setName = shardName
+        /*ConnectionString fakeConnectionString(
+                ConnectionString::SET,
+                shardServerConn.getServers(),
+                shardName);
+         */
+            shardType.setName(shardName);
+            shardType.setHost(shardServerConn.toString());
+            shardType.setState(ShardType::ShardState::kShardRegistering);
+            shardType.setExtendIPs(extendIPs);
+            shardType.setProcessIdentity(processIdentity);        
+
+            auto insertStatus = Grid::get(txn)->catalogClient(txn)->insertConfigDocument(
+                    txn,
+                    ShardType::ConfigNS,
+                    shardType.toBSON(),
+                    ShardingCatalogClient::kMajorityWriteConcern);
+
+            if (!insertStatus.isOK()) {
+                return insertStatus;
+            }
+            
+            isRestart = false;
+    }
+
+    // Record in changelog
+    BSONObjBuilder shardDetails;
+    shardDetails.append("name", shardType.getName());
+    shardDetails.append("host", shardType.getHost());
+    shardDetails.append("state",
+        static_cast<std::underlying_type<ShardType::ShardState>::type>(
+                ShardType::ShardState::kShardRegistering));
+    shardDetails.append("extendIPs", shardType.getExtendIPs());
+    shardDetails.append("processIdentity", shardType.getProcessIdentity());
+    Grid::get(txn)->catalogClient(txn)->logChange(
+            txn,
+            "insertShardDocument",
+            "",
+            shardDetails.obj(),
+            ShardingCatalogClient::kMajorityWriteConcern);
+
+    return shardType;
+}
+
+StatusWith<std::string> ShardingCatalogManagerImpl::updateShardStateWhenReady(
+    OperationContext* txn, 
+    const std::string& shardName,
+    const std::string& processIdentity) {
+            
+
+    LOG(2) << "going to update state for shard " << shardName 
+           << " in config.shards during addShard";
+
+    auto updateShardStatus = 
+        Grid::get(txn)->catalogClient(txn)->updateConfigDocument(
+                        txn,
+                        ShardType::ConfigNS,
+                        BSON(ShardType::name() << shardName << 
+                             ShardType::processIdentity() << processIdentity),
+                        BSON("$set" << BSON(ShardType::state() 
+                            << static_cast<std::underlying_type<ShardType::ShardState>::type>(
+                                ShardType::ShardState::kShardActive))),
+                        false,//bool upsert
+                        ShardingCatalogClient::kMajorityWriteConcern); 
+
+    if (!updateShardStatus.isOK()) {
+        return {updateShardStatus.getStatus().code(),
+                      str::stream() << "couldn't updating shard: " << shardName 
+                      << " during addShard;" << causedBy(updateShardStatus.getStatus())};
+    }
+
+    // Record in changelog
+    BSONObjBuilder shardDetails;
+    shardDetails.append("name", shardName);
+    shardDetails.append("processIdentity", processIdentity);
+    shardDetails.append("state",
+        static_cast<std::underlying_type<ShardType::ShardState>::type>(
+            ShardType::ShardState::kShardActive));
+    _catalogClient->logChange(
+        txn, "addShard", "", shardDetails.obj(), ShardingCatalogClient::kMajorityWriteConcern);
+
+    return shardName;
+
+}
+
+Status ShardingCatalogManagerImpl::updateShardStateDuringFailover(
+    OperationContext* txn, 
+    const ShardType& shardType,
+    const ShardType::ShardState& targetState) {
+    // Get shard doc from configDB
+    BSONObjBuilder updateBuilder{};
+    updateBuilder.append(ShardType::state(), 
+                         static_cast<std::underlying_type<ShardType::ShardState>::type>(
+                            targetState));
+
+    auto updateShardDocumentResult = 
+        _catalogClient->updateConfigDocument(
+            txn,
+            ShardType::ConfigNS,
+            BSON(ShardType::name() << shardType.getName() << 
+                 ShardType::processIdentity() << shardType.getProcessIdentity()),
+            BSON("$set" << updateBuilder.obj()),
+            false,
+            ShardingCatalogClient::kMajorityWriteConcern 
+        );
+    
+    if (!updateShardDocumentResult.isOK()) {
+        return updateShardDocumentResult.getStatus();
+    }
+
+    if (!updateShardDocumentResult.getValue()) {
+        return Status(ErrorCodes::ShardServerNotFound, "update document count is 0");
+    }
+
+    // Record in changelog
+    BSONObjBuilder shardDetails;
+    shardDetails.append("name", shardType.getName());
+    shardDetails.append("state",
+        static_cast<std::underlying_type<ShardType::ShardState>::type>(
+            targetState));
+
+    _catalogClient->logChange(
+        txn, "updateShardStateDuringFailover", "", shardDetails.obj(),
+            ShardingCatalogClient::kMajorityWriteConcern);
+
+    return Status::OK();
+}
+
+
+Status ShardingCatalogManagerImpl::updateMultiChunkStatePendingOpen(
+    OperationContext* txn, const std::string& shardName) {
+    // update chunk state be PendingOpen
+    BSONObjBuilder updatePendingOpenBuilder{};
+    updatePendingOpenBuilder.append("status",
+        static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+            ChunkType::ChunkStatus::kOffloaded));
+
+    BSONObjBuilder failShardChunkFilter;
+    failShardChunkFilter.append(ChunkType::shard(), shardName);
+    failShardChunkFilter.append(ChunkType::rootFolder(), BSON("$ne" << "stalerootfolder"));
+    failShardChunkFilter.append(ChunkType::status(), BSON("$ne" << static_cast<int>(ChunkType::ChunkStatus::kDisabled)));
+
+    auto updateStatus = Grid::get(txn)->catalogClient(txn)->updateConfigDocuments(
+        txn,
+        ChunkType::ConfigNS,
+        failShardChunkFilter.obj(),
+        BSON("$set" << updatePendingOpenBuilder.obj()),
+        false,//bool upsert
+        ShardingCatalogClient::kMajorityWriteConcern);
+
+    if (!updateStatus.isOK()) {
+        return updateStatus;
+    }
+
+    // Record in changelog
+    BSONObjBuilder chunkDetails;
+    chunkDetails.append("shard", shardName);
+    chunkDetails.append("status",
+        static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+            ChunkType::ChunkStatus::kOffloaded));
+
+    _catalogClient->logChange(
+        txn, "updateChunkStatePendingOpen", "", chunkDetails.obj(),
+            ShardingCatalogClient::kMajorityWriteConcern);
+
+    return Status::OK();
+}
+Status ShardingCatalogManagerImpl::verifyShardConnectionString(
+    OperationContext* txn,
+    const std::string& shardName,
+    const ConnectionString& shardServerConn) {
+    // Get shard doc from configDB
+    auto findShardStatus =
+        Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+            txn,
+            kConfigPrimarySelector,
+            repl::ReadConcernLevel::kLocalReadConcern,
+            NamespaceString(ShardType::ConfigNS),
+            BSON(ShardType::name() << shardName),
+            BSONObj(),
+            boost::none); // no limit
+
+    if (!findShardStatus.isOK()) {
+        return findShardStatus.getStatus();
+    }
+
+    const auto shardDocs = findShardStatus.getValue().docs;
+
+    if (shardDocs.size() > 1) {
+        return Status(ErrorCodes::TooManyMatchingDocuments,
+            str::stream() << "more than one document for shard " <<
+                shardName << " in config databases");
+    }
+
+    if (shardDocs.size() == 0) {
+        return Status(ErrorCodes::ShardNotFound,
+            str::stream() << "shard " << shardName << " does not exist");
+    }
+
+    auto shardDocStatus = ShardType::fromBSON(shardDocs.front());
+    if (!shardDocStatus.isOK()) {
+        return shardDocStatus.getStatus();
+    }
+
+    ShardType shardType = shardDocStatus.getValue();
+
+    if (shardType.getHost() != shardServerConn.toString()) {
+        return Status(ErrorCodes::BadValue, 
+            str::stream() << "inconsistent shard server host for shard: " << shardName
+                << ", received: " << shardServerConn.toString() 
+                << ", stored: " << shardType.getHost());
+    }
+    return Status::OK();
+}
+
+ShardServerManager* ShardingCatalogManagerImpl::getShardServerManager() {
+    return _shardServerManager;
+}
+
+StateMachine* ShardingCatalogManagerImpl::getStateMachine() {
+    return _stateMachine;
+}
+
+Status ShardingCatalogManagerImpl::createRootFolder(
+    OperationContext* txn,
+    const std::string& chunkId,
+    std::string& chunkRootFolder) {
+
+    log() << "Start createChunkRootFolder for chunk " << chunkId;
+
+    Status createRootFolderStatus = _rootFolderManager->createChunkRootFolder(
+        txn, 
+        chunkId, 
+        chunkRootFolder);
+
+    if (!createRootFolderStatus.isOK()) {
+        return createRootFolderStatus;
+    }
+
+    log() << "Finish createChunkRootFolder for chunk " << chunkId;  
+    return Status::OK();
+}
+
+Status ShardingCatalogManagerImpl::deleteRootFolder(
+    OperationContext* txn,
+    const std::string& chunkId) {
+
+    log() << "Start deleteRootFolder for chunk " << chunkId;
+    Status deleteRootFolderStatus = _rootFolderManager->deleteChunkRootFolder(
+        txn,
+        chunkId);
+    log() << "Finish deleteRootFolder for chunk " << chunkId;
+    return deleteRootFolderStatus;
+}
+
+Status ShardingCatalogManagerImpl::deleteRootFolder(
+    const std::string& chunkRootFolder) {
+
+    log() << "Start deleteRootFolder with chunkRootFolder.";
+    Status deleteRootFolderStatus = _rootFolderManager->deleteChunkRootFolder(chunkRootFolder);
+    log() << "Finish deleteRootFolder with chunkRootFolder.";
+    return deleteRootFolderStatus;
+}
+
+void ShardingCatalogManagerImpl::resetMaxChunkVersionMap() {
+    stdx::lock_guard<stdx::mutex> lk(_maxChunkVersionMapMutex);
+    _maxChunkVersionMap.clear();
+    return;
+}
+
+StatusWith<uint64_t> ShardingCatalogManagerImpl::newMaxChunkVersion(
+    OperationContext* txn,
+    const std::string& ns) {
+    stdx::lock_guard<stdx::mutex> lk(_maxChunkVersionMapMutex);
+
+    auto it = _maxChunkVersionMap.find(ns);
+    if (it == _maxChunkVersionMap.end()) {
+        AutoGetCollection autoColl(txn, NamespaceString(ChunkType::ConfigNS), MODE_X);
+
+        auto findStatus = grid.shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+                                                            txn,
+                                                            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+                                                            repl::ReadConcernLevel::kLocalReadConcern,
+                                                            NamespaceString(ChunkType::ConfigNS),
+                                                            BSON("ns" << ns),
+                                                            BSON(ChunkType::DEPRECATED_lastmod << -1),
+                                                            1);
+        if (!findStatus.isOK()) {
+            return findStatus.getStatus();
+        }
+
+        const auto& chunksVector = findStatus.getValue().docs;
+        if (chunksVector.empty()) {
+            _maxChunkVersionMap[ns] = static_cast<uint64_t>(1) << 32;
+        } else {
+            ChunkVersion currentMaxVersion =
+                ChunkVersion::fromBSON(chunksVector.front(), ChunkType::DEPRECATED_lastmod());
+            _maxChunkVersionMap[ns] = currentMaxVersion.toLong() + 1048576;
+        }
+    }
+
+    return _maxChunkVersionMap[ns]++;
 }
 
 }  // namespace mongo

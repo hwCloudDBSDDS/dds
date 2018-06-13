@@ -37,6 +37,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/util/mongoutils/str.h"
 
+
 namespace mongo {
 
 class DatabaseCatalogEntry;
@@ -279,6 +280,16 @@ public:
      * system about journaled write progress.
      */
     virtual void setJournalListener(JournalListener* jl) = 0;
+
+    virtual void resetEngineStats() {   
+        return ;
+    }
+
+    virtual void getEngineStats( std::vector<std::string> & vs) {   
+        return ;
+    } 
+
+    virtual void setStorageEngineLogLevel(int level){}
 
 protected:
     /**

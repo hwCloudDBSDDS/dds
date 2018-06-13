@@ -93,7 +93,7 @@ void* runFunc(void* ptr) {
     if (!serverGlobalParams.quiet) {
         auto conns = tl->sessionStats().numOpenSessions;
         const char* word = (conns == 1 ? " connection" : " connections");
-        log() << "end connection " << ctx->session->remote() << " (" << conns << word
+        LOG(2) << "end connection " << ctx->session->remote() << " (" << conns << word
               << " now open)";
     }
 

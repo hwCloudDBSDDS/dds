@@ -71,6 +71,7 @@ protected:
         chunkType.setMin(BSON("a" << MINKEY));
         chunkType.setMax(BSON("a" << MAXKEY));
         chunkType.setVersion(ChunkVersion(1, 0, epoch));
+        chunkType.setName("1");
         ASSERT_OK(chunkType.validate());
         std::vector<BSONObj> chunksToSend{chunkType.toBSON()};
 

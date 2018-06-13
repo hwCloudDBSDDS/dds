@@ -37,6 +37,8 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/platform/decimal128.h"
+#include "mongo/util/assert_util.h"
+
 
 namespace mongo {
 
@@ -220,7 +222,10 @@ Status validateElementInfo(Buffer* buffer,
             if (!buffer->readNumber(&val))
                 return makeError("invalid bson", idElem);
             if ((val != 0) && (val != 1))
+            {
+                uassert(ErrorCodes::BadValue, "bson_validate.cpp boolean check fail", 0);
                 return makeError("invalid boolean value", idElem);
+            }
             return Status::OK();
 
         case NumberDouble:

@@ -60,6 +60,8 @@ public:
 
     Status setReadFromMajorityCommittedSnapshot() final;
 
+    void clearReadFromMajorityCommittedSnapshot() final;
+
     virtual void registerChange(Change* change) {
         _changes.push_back(ChangePtr(change));
     }

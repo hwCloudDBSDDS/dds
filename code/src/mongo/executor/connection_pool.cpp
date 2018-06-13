@@ -301,7 +301,7 @@ void ConnectionPool::SpecificPool::returnConnection(ConnectionInterface* connPtr
                                                     stdx::unique_lock<stdx::mutex> lk) {
     auto needsRefreshTP = connPtr->getLastUsed() + _parent->_options.refreshRequirement;
 
-    auto conn = takeFromPool(_checkedOutPool, connPtr);
+    auto conn = std::move(takeFromPool(_checkedOutPool, connPtr));
 
     updateStateInLock();
 
@@ -339,7 +339,7 @@ void ConnectionPool::SpecificPool::returnConnection(ConnectionInterface* connPtr
 
                              stdx::unique_lock<stdx::mutex> lk(_parent->_mutex);
 
-                             auto conn = takeFromProcessingPool(connPtr);
+                             auto conn = std::move(takeFromProcessingPool(connPtr));
 
                              // If the host and port were dropped, let this lapse
                              if (conn->getGeneration() != _generation)
@@ -389,7 +389,7 @@ void ConnectionPool::SpecificPool::addToReady(stdx::unique_lock<stdx::mutex>& lk
             return;
         }
 
-        conn = takeFromPool(_readyPool, connPtr);
+        conn = std::move(takeFromPool(_readyPool, connPtr));
 
         // If we're in shutdown, we don't need to refresh connections
         if (_state == State::kInShutdown)
@@ -532,7 +532,7 @@ void ConnectionPool::SpecificPool::spawnConnections(stdx::unique_lock<stdx::mute
 
                            stdx::unique_lock<stdx::mutex> lk(_parent->_mutex);
 
-                           auto conn = takeFromProcessingPool(connPtr);
+                           auto conn = std::move(takeFromProcessingPool(connPtr));
 
                            if (conn->getGeneration() != _generation) {
                                // If the host and port was dropped, let the

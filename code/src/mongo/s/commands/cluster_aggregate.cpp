@@ -91,7 +91,7 @@ Status ClusterAggregate::runAggregate(OperationContext* txn,
     LiteParsedPipeline liteParsedPipeline(request.getValue());
 
     for (auto&& ns : liteParsedPipeline.getInvolvedNamespaces()) {
-        uassert(28769, str::stream() << ns.ns() << " cannot be sharded", !conf->isSharded(ns.ns()));
+        uassert(28769, str::stream() << ns.ns() << " cannot be sharded", CollectionType::TableType::kNonShard == conf->getCollTabType(ns.ns()));
         // We won't try to execute anything on a mongos, but we still have to populate this map
         // so that any $lookups etc will be able to have a resolved view definition. It's okay
         // that this is incorrect, we will repopulate the real resolved namespace map on the
@@ -99,7 +99,7 @@ Status ClusterAggregate::runAggregate(OperationContext* txn,
         mergeCtx->resolvedNamespaces[ns.coll()] = {ns, std::vector<BSONObj>{}};
     }
 
-    if (!conf->isSharded(namespaces.executionNss.ns())) {
+    if (CollectionType::TableType::kNonShard == conf->getCollTabType(namespaces.executionNss.ns())) {
         return aggPassthrough(txn, namespaces, conf, cmdObj, result, options);
     }
 
@@ -168,6 +168,8 @@ Status ClusterAggregate::runAggregate(OperationContext* txn,
     BSONObj shardedCommand = commandBuilder.freeze().toBson();
     BSONObj shardQuery = shardPipeline->getInitialQuery();
 
+    log()<<"@@ runAggregate --shardedCommand:"<<shardedCommand<<", shardQuery:"<<shardQuery
+            <<", ns:"<<namespaces.executionNss.ns();
     // Run the command on the shards
     // TODO need to make sure cursors are killed if a retry is needed
     std::vector<Strategy::CommandResult> shardResults;
@@ -281,7 +283,8 @@ std::vector<DocumentSourceMergeCursors::CursorDescriptor> ClusterAggregate::pars
 
         for (size_t i = 0; i < shardResults.size(); i++) {
             BSONObj result = shardResults[i].result;
-
+            log()<<"@@-ClusterAggregate::parseCursors RetNum:"<<shardResults.size()
+                 <<", i:"<<i <<", result:"<<result;
             if (!result["ok"].trueValue()) {
                 // If the failure of the sharded command can be accounted to a single error,
                 // throw a UserException with that error code; otherwise, throw with a

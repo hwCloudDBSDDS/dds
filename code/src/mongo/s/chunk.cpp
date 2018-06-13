@@ -80,6 +80,7 @@ int mkDataWritten() {
 Chunk::Chunk(OperationContext* txn, ChunkManager* manager, const ChunkType& from)
     : _manager(manager), _lastmod(from.getVersion()), _dataWritten(mkDataWritten()) {
     string ns = from.getNS();
+    _chunkId = from.getName();
     _shardId = from.getShard();
 
     verify(_lastmod.isSet());
@@ -89,25 +90,30 @@ Chunk::Chunk(OperationContext* txn, ChunkManager* manager, const ChunkType& from
 
     _jumbo = from.getJumbo();
 
+    _rootFolder = from.getRootFolder();
+
     uassert(10170, "Chunk needs a ns", !ns.empty());
     uassert(13327, "Chunk ns must match server ns", ns == _manager->getns());
     uassert(10172, "Chunk needs a min", !_min.isEmpty());
     uassert(10173, "Chunk needs a max", !_max.isEmpty());
-    uassert(10171, "Chunk needs a server", grid.shardRegistry()->getShard(txn, _shardId).isOK());
 }
 
 Chunk::Chunk(ChunkManager* info,
+             const ChunkId& chunkId,
              const BSONObj& min,
              const BSONObj& max,
              const ShardId& shardId,
              ChunkVersion lastmod,
+             const std::string& rootFolder,
              uint64_t initialDataWritten)
     : _manager(info),
+      _chunkId(chunkId),
       _min(min),
       _max(max),
       _shardId(shardId),
       _lastmod(lastmod),
       _jumbo(false),
+      _rootFolder(rootFolder),
       _dataWritten(initialDataWritten) {}
 
 bool Chunk::containsKey(const BSONObj& shardKey) const {
@@ -321,6 +327,9 @@ void Chunk::setBytesWritten(uint64_t newBytesWritten) {
 }
 
 bool Chunk::splitIfShould(OperationContext* txn, long dataWritten) {
+    // TODO: we donnt support splitting right now, after implementation of split, recover this
+    return true;
+    #if 0
     LastError::Disabled d(&LastError::get(cc()));
 
     addBytesWritten(dataWritten);
@@ -436,6 +445,7 @@ bool Chunk::splitIfShould(OperationContext* txn, long dataWritten) {
         warning() << "could not autosplit collection " << _manager->getns() << causedBy(e);
         return false;
     }
+    #endif
 }
 
 ConnectionString Chunk::_getShardConnectionString(OperationContext* txn) const {

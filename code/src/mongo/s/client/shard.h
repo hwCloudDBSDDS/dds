@@ -223,6 +223,9 @@ public:
     // explicitly overridden
     static const Milliseconds kDefaultConfigCommandTimeout;
 
+    // This timeout will be used by default in runCommandWithFixedRetryAttempts operations
+    static const Milliseconds kDefaultCommandTimeout;
+
     /**
      * Returns false if the error is a retriable error and/or causes a replset monitor update. These
      * errors, if from a remote call, should not be further propagated back to another server

@@ -467,4 +467,10 @@ ChunkRange MetadataManager::getNextRangeToClean() {
     return ChunkRange(it->first, it->second.getMax());
 }
 
+void MetadataManager::updateChunkInfo(OperationContext* txn, const ChunkType& chunkType)
+{
+    stdx::lock_guard<stdx::mutex> scopedLock(_managerLock);
+    _setActiveMetadata_inlock(_activeMetadataTracker->metadata->cloneUpdateChunkInfo(chunkType));
+}
+
 }  // namespace mongo

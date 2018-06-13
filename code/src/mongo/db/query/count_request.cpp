@@ -42,6 +42,7 @@ const char kSkipField[] = "skip";
 const char kHintField[] = "hint";
 const char kCollationField[] = "collation";
 const char kExplainField[] = "explain";
+const char kChunkIdField[] = "chunkId";
 
 }  // namespace
 
@@ -87,7 +88,15 @@ StatusWith<CountRequest> CountRequest::parseFromBSON(const std::string& dbname,
     BSONElement firstElt = cmdObj.firstElement();
     const std::string coll = (firstElt.type() == BSONType::String) ? firstElt.str() : "";
 
-    NamespaceString nss(dbname, coll);
+    // chunkid
+    std::string collforchunk;
+    if (String == cmdObj[kChunkIdField].type()) {
+        collforchunk = coll + "$" + cmdObj.getStringField(kChunkIdField);
+    } else {
+        collforchunk = coll;
+    }
+
+    NamespaceString nss(dbname, collforchunk);
     if (!nss.isValid()) {
         return Status(ErrorCodes::InvalidNamespace, "invalid collection name");
     }

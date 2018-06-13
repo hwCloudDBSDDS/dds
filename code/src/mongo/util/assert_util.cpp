@@ -165,6 +165,19 @@ NOINLINE_DECL void invariantOKFailed(const char* expr,
     std::abort();
 }
 
+NOINLINE_DECL void invariantOKFailedWithNoCore(const char* expr,
+                                     const Status& status,
+                                     const char* file,
+                                     unsigned line) noexcept {
+    log() << "Invariant failure: " << expr << " resulted in status " << redact(status) << " at "
+          << file << ' ' << dec << line;
+    breakpoint();
+    log() << "\n\n***aborting after invariant() failure\n\n" << endl;
+    quickExit(EXIT_ABRUPT);
+}
+
+
+
 NOINLINE_DECL void fassertFailedWithLocation(int msgid, const char* file, unsigned line) noexcept {
     log() << "Fatal Assertion " << msgid << " at " << file << " " << dec << line;
     breakpoint();

@@ -68,6 +68,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/string_map.h"
+#include "mongo/db/catalog/database_holder.h"
 
 namespace mongo {
 
@@ -613,7 +614,18 @@ public:
             errmsg = "missing collection name";
             return false;
         }
-        NamespaceString nss(ns);
+        NamespaceString nss = ns2chunkHolder().getNsWithChunkId(NamespaceString(ns));
+        LOG(0)<<"[PipelineCommand]--Collection:"<< nss <<" ,cmdObj: "<<cmdObj;
+        AutoGetCollectionOrViewForRead ctx(txn, nss);
+        Collection* collection = ctx.getCollection();
+        if( collection == NULL){
+            LOG(1)<<"[PipelineCommand]--Collection:"<< nss <<" not found ";
+        }
+        // if find with chunkid, but no collection here, we should return stale config, so mongos will retry
+        if (!collection && nss.isChunk()) {
+            return appendCommandStatus(
+                result, {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});            
+        }
 
         // Parse the options for this request.
         auto request = AggregationRequest::parseFromBSON(nss, cmdObj);

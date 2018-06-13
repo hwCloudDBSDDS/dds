@@ -260,9 +260,10 @@ void Listener::initAndListen() {
     }
 
     if (maxfd >= FD_SETSIZE) {
-        error() << "socket " << maxfd << " is higher than " << FD_SETSIZE - 1 << "; not supported"
+        error() << "socket " << maxfd << " is higher than " << FD_SETSIZE - 1 
+             << "; not supported,can exe  'ls /proc/xxx(threadID)/fd -l',check open socket."
                 << warnings;
-        return;
+        // return;
     }
 
 #ifdef MONGO_CONFIG_SSL
@@ -343,7 +344,7 @@ void Listener::initAndListen() {
             if (_logConnect && !serverGlobalParams.quiet) {
                 int conns = globalTicketHolder.used() + 1;
                 const char* word = (conns == 1 ? " connection" : " connections");
-                log() << "connection accepted from " << from.toString() << " #"
+                LOG(2) << "connection accepted from " << from.toString() << " #"
                       << myConnectionNumber << " (" << conns << word << " now open)";
             }
 
@@ -559,7 +560,7 @@ void Listener::initAndListen() {
         if (_logConnect && !serverGlobalParams.quiet) {
             int conns = globalTicketHolder.used() + 1;
             const char* word = (conns == 1 ? " connection" : " connections");
-            log() << "connection accepted from " << from.toString() << " #" << myConnectionNumber
+            LOG(2) << "connection accepted from " << from.toString() << " #" << myConnectionNumber
                   << " (" << conns << word << " now open)";
         }
 

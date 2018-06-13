@@ -58,6 +58,8 @@ public:
     static const BSONField<std::vector<BatchedDeleteDocument*>> deletes;
     static const BSONField<BSONObj> writeConcern;
     static const BSONField<bool> ordered;
+    static const BSONField<bool> atomicity;
+    static const BSONField<bool> prewarm;
 
     //
     // construction / destruction
@@ -104,6 +106,16 @@ public:
     bool isOrderedSet() const;
     bool getOrdered() const;
 
+    void setAtomicity(bool atomicity);
+    void unsetAtomicity();
+    bool isAtomicitySet() const;
+    bool getAtomicity() const;
+
+    void setPrewarm(bool prewarm);
+    void unsetPrewarm();
+    bool isPrewarmSet() const;
+    bool getPrewarm() const;
+
     /**
      * These are no-ops since delete never validates documents. They only exist to fulfill the
      * unified API.
@@ -131,6 +143,14 @@ private:
     // (O)  whether batch is issued in parallel or not
     bool _ordered;
     bool _isOrderedSet;
+
+    // (O)  whether batch is issued in parallel or not
+    bool _atomicity;
+    bool _isAtomicitySet;
+   
+    // (O)  whether batch insert is in prewarm model or not for compatible
+    bool _prewarm;
+    bool _isPrewarmSet;
 };
 
 }  // namespace mongo

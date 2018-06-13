@@ -45,6 +45,8 @@ class Ordering {
     Ordering(unsigned b) : bits(b) {}
 
 public:
+    Ordering() : bits(0) {}
+
     Ordering(const Ordering& r) : bits(r.bits) {}
     void operator=(const Ordering& r) {
         bits = r.bits;

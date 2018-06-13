@@ -27,8 +27,9 @@
  */
 
 #include "mongo/base/status.h"
-
+#include <string>
 namespace mongo {
+using std::string;
 class BSONObj;
 class BSONObjBuilder;
 class NamespaceString;
@@ -43,4 +44,14 @@ Status dropIndexes(OperationContext* txn,
                    const BSONObj& idxDescriptor,
                    BSONObjBuilder* result);
 
+Status dropIndexesOnCfgSrv(OperationContext* txn,
+                   const string& dbname,
+                   const NamespaceString& ns,
+                   const BSONObj& idxDescriptor,
+                   BSONObjBuilder& result);
+Status reIndexesOnCfgSrv(OperationContext* txn,
+                   const string& dbname,
+                   const NamespaceString& nss,
+                   const BSONObj& idxDescriptor,
+                   BSONObjBuilder& result);
 }  // namespace mongo

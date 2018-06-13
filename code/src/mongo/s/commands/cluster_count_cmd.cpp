@@ -214,30 +214,38 @@ public:
         long long total = 0;
         BSONObjBuilder shardSubTotal(result.subobjStart("shards"));
 
-        for (vector<Strategy::CommandResult>::const_iterator iter = countResult.begin();
-             iter != countResult.end();
-             ++iter) {
-            const ShardId& shardName = iter->shardTargetId;
+        std::set<ShardId> shardIds;
+        for (const auto& cr : countResult) {
+            shardIds.insert(cr.shardTargetId);
+        }
 
-            if (iter->result["ok"].trueValue()) {
-                long long shardCount = iter->result["n"].numberLong();
+        //transform chunklevel result to shard level result
+        for (const auto& shard : shardIds) {
+            long long shardCount = 0;
 
-                shardSubTotal.appendNumber(shardName.toString(), shardCount);
-                total += shardCount;
-            } else {
-                shardSubTotal.doneFast();
-                errmsg = "failed on : " + shardName.toString();
-                result.append("cause", iter->result);
+            for (const auto& cr : countResult) {
+                if (cr.shardTargetId == shard) {
+                    if (cr.result["ok"].trueValue()) {
+                        shardCount += cr.result["n"].numberLong();
+                    } else {
+                        shardSubTotal.doneFast();
+                        errmsg = "failed on : " + shard.toString();
+                        result.append("cause", cr.result);
 
-                // Add "code" to the top-level response, if the failure of the sharded command
-                // can be accounted to a single error
-                int code = getUniqueCodeFromCommandResults(countResult);
-                if (code != 0) {
-                    result.append("code", code);
+                        // Add "code" to the top-level response, if the failure of the sharded command
+                        // can be accounted to a single error
+                        int code = getUniqueCodeFromCommandResults(countResult);
+                        if (code != 0) {
+                            result.append("code", code);
+                        }
+
+                        return false;
+                    }
                 }
-
-                return false;
             }
+
+            shardSubTotal.appendNumber(shard.toString(), shardCount);
+            total += shardCount;
         }
 
         shardSubTotal.doneFast();

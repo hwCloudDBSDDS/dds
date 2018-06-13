@@ -311,6 +311,7 @@ TEST_F(ShardCollectionTest, noInitialChunksOrData) {
     ShardKeyPattern keyPattern(BSON("_id" << 1));
 
     ChunkType expectedChunk;
+    expectedChunk.setName("1");
     expectedChunk.setNS(ns);
     expectedChunk.setMin(keyPattern.getKeyPattern().globalMin());
     expectedChunk.setMax(keyPattern.getKeyPattern().globalMax());
@@ -468,6 +469,7 @@ TEST_F(ShardCollectionTest, withInitialChunks) {
     ChunkVersion expectedVersion(1, 0, OID::gen());
 
     ChunkType expectedChunk0;
+    expectedChunk0.setName("0");
     expectedChunk0.setNS(ns);
     expectedChunk0.setShard(shard0.getName());
     expectedChunk0.setMin(keyPattern.getKeyPattern().globalMin());
@@ -476,6 +478,7 @@ TEST_F(ShardCollectionTest, withInitialChunks) {
     expectedVersion.incMinor();
 
     ChunkType expectedChunk1;
+    expectedChunk1.setName("1");
     expectedChunk1.setNS(ns);
     expectedChunk1.setShard(shard1.getName());
     expectedChunk1.setMin(splitPoint0);
@@ -484,6 +487,7 @@ TEST_F(ShardCollectionTest, withInitialChunks) {
     expectedVersion.incMinor();
 
     ChunkType expectedChunk2;
+    expectedChunk2.setName("2");
     expectedChunk2.setNS(ns);
     expectedChunk2.setShard(shard2.getName());
     expectedChunk2.setMin(splitPoint1);
@@ -492,6 +496,7 @@ TEST_F(ShardCollectionTest, withInitialChunks) {
     expectedVersion.incMinor();
 
     ChunkType expectedChunk3;
+    expectedChunk3.setName("3");
     expectedChunk3.setNS(ns);
     expectedChunk3.setShard(shard0.getName());
     expectedChunk3.setMin(splitPoint2);
@@ -500,6 +505,7 @@ TEST_F(ShardCollectionTest, withInitialChunks) {
     expectedVersion.incMinor();
 
     ChunkType expectedChunk4;
+    expectedChunk4.setName("4");
     expectedChunk4.setNS(ns);
     expectedChunk4.setShard(shard1.getName());
     expectedChunk4.setMin(splitPoint3);
@@ -640,6 +646,7 @@ TEST_F(ShardCollectionTest, withInitialData) {
     ChunkVersion expectedVersion(1, 0, OID::gen());
 
     ChunkType expectedChunk0;
+    expectedChunk0.setName("0");
     expectedChunk0.setNS(ns);
     expectedChunk0.setShard(shard.getName());
     expectedChunk0.setMin(keyPattern.getKeyPattern().globalMin());
@@ -648,6 +655,7 @@ TEST_F(ShardCollectionTest, withInitialData) {
     expectedVersion.incMinor();
 
     ChunkType expectedChunk1;
+    expectedChunk1.setName("1");
     expectedChunk1.setNS(ns);
     expectedChunk1.setShard(shard.getName());
     expectedChunk1.setMin(splitPoint0);
@@ -656,6 +664,7 @@ TEST_F(ShardCollectionTest, withInitialData) {
     expectedVersion.incMinor();
 
     ChunkType expectedChunk2;
+    expectedChunk2.setName("2");
     expectedChunk2.setNS(ns);
     expectedChunk2.setShard(shard.getName());
     expectedChunk2.setMin(splitPoint1);
@@ -664,6 +673,7 @@ TEST_F(ShardCollectionTest, withInitialData) {
     expectedVersion.incMinor();
 
     ChunkType expectedChunk3;
+    expectedChunk3.setName("3");
     expectedChunk3.setNS(ns);
     expectedChunk3.setShard(shard.getName());
     expectedChunk3.setMin(splitPoint2);
@@ -672,6 +682,7 @@ TEST_F(ShardCollectionTest, withInitialData) {
     expectedVersion.incMinor();
 
     ChunkType expectedChunk4;
+    expectedChunk4.setName("4");
     expectedChunk4.setNS(ns);
     expectedChunk4.setShard(shard.getName());
     expectedChunk4.setMin(splitPoint3);

@@ -47,6 +47,15 @@ class BSONObj;
 class Collection;
 class OperationContext;
 
+
+Status createIndexMetadata(OperationContext* txn,
+                          const NamespaceString& ns,
+                          std::vector<BSONObj>& indexSpecs,
+                          BSONObj& cmdObj,
+                          const std::string& dbname,
+                          BSONObjBuilder& result);
+
+
 /**
  * Builds one or more indexes.
  *

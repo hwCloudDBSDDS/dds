@@ -50,7 +50,10 @@ namespace {
 const Seconds kUptimeReportInterval(10);
 
 std::string constructInstanceIdString() {
-    return str::stream() << getHostNameCached() << ":" << serverGlobalParams.port;
+    if (serverGlobalParams.bind_ip.empty()) {
+        return str::stream() << getHostNameCached() << ":" << serverGlobalParams.port;
+    }
+    return str::stream() << serverGlobalParams.bind_ip << ":" << serverGlobalParams.port;
 }
 
 /**
@@ -60,6 +63,7 @@ std::string constructInstanceIdString() {
 void reportStatus(OperationContext* txn, const std::string& instanceId, const Timer& upTimeTimer) {
     MongosType mType;
     mType.setName(instanceId);
+    mType.setExtendIPs(serverGlobalParams.extendIPs);
     mType.setPing(jsTime());
     mType.setUptime(upTimeTimer.seconds());
     // balancer is never active in mongos. Here for backwards compatibility only.

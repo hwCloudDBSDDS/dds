@@ -52,6 +52,8 @@
 #include "mongo/db/storage/snapshot.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/s/catalog/type_collection.h"
+#include "mongo/s/split_chunk_request.h"
 
 namespace mongo {
 
@@ -178,6 +180,12 @@ private:
  */
 class Collection final : CappedCallback, UpdateNotifier {
 public:
+    enum class BalanceOpType  : int{
+        SPLITING = 0,
+        CONFIRMING,
+        STABLE,
+    };
+
     Collection(OperationContext* txn,
                StringData fullNS,
                CollectionCatalogEntry* details,  // does not own
@@ -189,6 +197,7 @@ public:
     bool ok() const {
         return _magic == 1357924;
     }
+    void getAllIndexes(OperationContext* opCtx,BSONArray &arr);
 
     CollectionCatalogEntry* getCatalogEntry() {
         return _details;
@@ -424,6 +433,9 @@ public:
 
     uint64_t dataSize(OperationContext* txn) const;
 
+    // including sstfilenum and sstfilesize for now
+    BSONObj getSSTFileStatistics() const;
+
     int averageObjectSize(OperationContext* txn) const {
         uint64_t n = numRecords(txn);
         if (n == 0)
@@ -455,6 +467,35 @@ public:
      * Collection is destroyed.
      */
     const CollatorInterface* getDefaultCollator() const;
+    
+    void extractShardkey(OperationContext* txn, const BSONObj& doc);
+
+    CollectionType::TableType getCollTabType()const{
+        return _tableType;
+    }
+    void setCollTabType(CollectionType::TableType tab){
+        _tableType = tab;
+    }
+
+    Status split(OperationContext* txn,
+                 const SplitChunkReq& request,
+                 BSONObjBuilder& output);
+
+    Status confirmSplit(OperationContext* txn,
+                        const ConfirmSplitRequest& request,
+                        BSONObjBuilder& output) ;
+
+    const bool isAssigning() {
+        return _isAssigning;
+    }
+    
+    void setAssigning(bool isAssigning){
+        _isAssigning = isAssigning;
+    }
+
+    void stopBackGround4Chunk() {
+        _recordStore->stopBackGround4Chunk();
+    }
 
 private:
     /**
@@ -494,6 +535,8 @@ private:
 
     bool _enforceQuota(bool userEnforeQuota) const;
 
+    Status validateSplitCommand(const SplitChunkReq& request);
+
     int _magic;
 
     const NamespaceString _ns;
@@ -503,6 +546,8 @@ private:
     const bool _needCappedLock;
     CollectionInfoCache _infoCache;
     IndexCatalog _indexCatalog;
+
+    CollectionType::TableType _tableType = CollectionType::TableType::kNonShard;
 
     // The default collation which is applied to operations and indices which have no collation of
     // their own. The collection's validator will respect this collation.
@@ -534,6 +579,16 @@ private:
     // The earliest snapshot that is allowed to use this collection.
     boost::optional<SnapshotName> _minVisibleSnapshot;
 
+    BalanceOpType _balanceOpType = BalanceOpType::STABLE;
+    std::string _splittingChunkID;
+    Status _balanceOpResult = Status::OK();
+    BSONObj _splitPoint;
+    stdx::mutex _balanceMutex;
+
+   
+    stdx::mutex _mutex;
+    bool _isAssigning;
+    
     friend class Database;
     friend class IndexCatalog;
     friend class NamespaceDetails;

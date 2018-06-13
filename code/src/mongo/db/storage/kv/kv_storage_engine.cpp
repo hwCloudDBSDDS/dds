@@ -39,6 +39,8 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
+
+
 namespace mongo {
 
 using std::string;
@@ -111,8 +113,16 @@ KVStorageEngine::KVStorageEngine(KVEngine* engine, const KVStorageEngineOptions&
     for (size_t i = 0; i < collections.size(); i++) {
         std::string coll = collections[i];
         NamespaceString nss(coll);
-        string dbName = nss.db().toString();
 
+        if(serverGlobalParams.clusterRole == ClusterRole::ShardServer
+            && !nss.isOnInternalDb())
+        {
+            //ignore collection which isn't belong to admin local config 
+            continue;
+        } 
+
+        
+        string dbName = nss.db().toString();
         // No rollback since this is only for committed dbs.
         KVDatabaseCatalogEntry*& db = _dbs[dbName];
         if (!db) {
@@ -292,4 +302,20 @@ Status KVStorageEngine::repairRecordStore(OperationContext* txn, const std::stri
 void KVStorageEngine::setJournalListener(JournalListener* jl) {
     _engine->setJournalListener(jl);
 }
+
+
+void KVStorageEngine::resetEngineStats() {
+    _engine->resetEngineStats();
+    return ;
+}
+
+void KVStorageEngine::getEngineStats( std::vector<std::string> & vs) { 
+    _engine->getEngineStats(vs);
+    return;
+} 
+
+void KVStorageEngine::setStorageEngineLogLevel(int level) {
+    _engine->setStorageEngineLogLevel(level);
+}
+
 }

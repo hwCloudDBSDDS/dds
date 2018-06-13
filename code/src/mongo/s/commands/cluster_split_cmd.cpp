@@ -47,6 +47,9 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_util.h"
 #include "mongo/util/log.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/config_server_client.h"
+
 
 namespace mongo {
 
@@ -102,21 +105,22 @@ public:
                      int options,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
-        const NamespaceString nss(parseNs(dbname, cmdObj));
-        uassert(ErrorCodes::InvalidNamespace,
-                str::stream() << nss.ns() << " is not a valid namespace",
-                nss.isValid());
 
+
+
+        LOG(0)<<"[split] run, dbname:"<<dbname<<", cmdObj:"<<cmdObj<< ", options:"<<options;                   
+        const NamespaceString nss(parseNs(dbname, cmdObj));
         auto status = grid.catalogCache()->getDatabase(txn, nss.db().toString());
         if (!status.isOK()) {
             return appendCommandStatus(result, status.getStatus());
         }
 
         std::shared_ptr<DBConfig> config = status.getValue();
-        if (!config->isSharded(nss.ns())) {
+        if (CollectionType::TableType::kNonShard == config->getCollTabType(nss.ns())) {
             config->reload(txn);
 
-            if (!config->isSharded(nss.ns())) {
+            if (CollectionType::TableType::kNonShard == config->getCollTabType(nss.ns())) {
+
                 return appendCommandStatus(result,
                                            Status(ErrorCodes::NamespaceNotSharded,
                                                   "ns [" + nss.ns() + " is not sharded."));
@@ -194,7 +198,7 @@ public:
                 errmsg = stream() << "no shard key found in chunk query " << find;
                 return false;
             }
-
+            
             chunk = info->findIntersectingChunkWithSimpleCollation(txn, shardKey);
         } else if (!bounds.isEmpty()) {
             if (!info->getShardKeyPattern().isShardKey(bounds[0].Obj()) ||
@@ -247,25 +251,20 @@ public:
 
         invariant(chunk.get());
 
-        log() << "splitting chunk [" << redact(chunk->getMin().toString()) << ","
+        LOG(0) << "[split] chunk [" << redact(chunk->getMin().toString()) << ","
               << redact(chunk->getMax().toString()) << ")"
               << " in collection " << nss.ns() << " on shard " << chunk->getShardId();
 
-        BSONObj res;
-        if (middle.isEmpty()) {
-            uassertStatusOK(chunk->split(txn, Chunk::atMedian, nullptr));
-        } else {
-            uassertStatusOK(shardutil::splitChunkAtMultiplePoints(txn,
-                                                                  chunk->getShardId(),
-                                                                  nss,
-                                                                  info->getShardKeyPattern(),
-                                                                  info->getVersion(),
-                                                                  chunk->getMin(),
-                                                                  chunk->getMax(),
-                                                                  chunk->getLastmod(),
-                                                                  {middle}));
-        }
 
+        ChunkType chunkType;
+        chunkType.setNS(nss.ns());
+        chunk->constructChunkType(&chunkType);
+
+        LOG(0) << "[splitCollectionCmd] split point is : " << middle;
+        auto splitStatus = configsvr_client::splitChunk(txn, chunkType, middle);
+        if (!splitStatus.isOK()) {
+            return appendCommandStatus(result, splitStatus);
+        }
         // Proactively refresh the chunk manager. Not really necessary, but this way it's
         // immediately up-to-date the next time it's used.
         info->reload(txn);

@@ -51,6 +51,12 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/set_shard_version_request.h"
 #include "mongo/util/log.h"
+//add
+#include "mongo/util/assert_util.h"
+#include "mongo/s/config_server_client.h"
+#include "mongo/s/balancer_configuration.h"
+#include "mongo/s/chunk_manager.h"
+
 
 namespace mongo {
 
@@ -190,10 +196,38 @@ public:
                 return appendCommandStatus(result, getStatusFromCommandResult(res));
             }
         }
+        //move chunks of non sharded collections
+        set<string> nonShardedColls;
+        config->getAllNonShardedCollections(nonShardedColls);
+        long long maxChunkSizeBytes = cmdObj["maxChunkSizeBytes"].numberLong();
+        if (maxChunkSizeBytes == 0) {
+            maxChunkSizeBytes = Grid::get(txn)->getBalancerConfiguration()->getMaxChunkSizeBytes();
+        }
+    const auto secondaryThrottle =
+            uassertStatusOK(MigrationSecondaryThrottleOptions::createFromCommand(cmdObj));
+        for (set<string>::iterator it = nonShardedColls.begin(),end = nonShardedColls.end(); it != end; ++it) {
+
+            ChunkType chunkType;
+            chunkType.setNS(*it);
+        shared_ptr<ChunkManager> cm = config->getChunkManager(txn, *it);
+        ChunkMap chunkMap = cm->getChunkMap();
+            
+        for (ChunkMap::const_iterator ite = chunkMap.begin(), end = chunkMap.end(); ite != end; ++ite) {
+                //shared_ptr<Chunk> chunk = *ite->second;
+        ite->second->constructChunkType(&chunkType);
+        uassertStatusOK(configsvr_client::moveChunk(txn,
+                                                    chunkType,
+                                                    toShard->getId(),
+                                                    maxChunkSizeBytes,
+                                                    secondaryThrottle,
+                                                    cmdObj["_waitForDelete"].trueValue()));
+            }                         
+            
+    }
 
         // TODO ERH - we need a clone command which replays operations from clone start to now
         //            can just use local.oplog.$main
-        BSONObj cloneRes;
+        /*BSONObj cloneRes;
         bool worked = toconn->runCommand(
             dbname.c_str(),
             BSON("clone" << fromShard->getConnString().toString() << "collsToIgnore" << barr.arr()
@@ -214,15 +248,15 @@ public:
             appendWriteConcernErrorToCmdResponse(toShard->getId(), wcErrorElem, result);
             hasWCError = true;
         }
-
+        */
         const string oldPrimary = fromShard->getConnString().toString();
 
-        ScopedDbConnection fromconn(fromShard->getConnString());
+        //ScopedDbConnection fromconn(fromShard->getConnString());
 
         config->setPrimary(txn, toShard->getId());
         config->reload(txn);
 
-        if (shardedColls.empty()) {
+        /*if (shardedColls.empty()) {
             // TODO: Collections can be created in the meantime, and we should handle in the future.
             log() << "movePrimary dropping database on " << oldPrimary
                   << ", no sharded collections in " << dbname;
@@ -285,7 +319,7 @@ public:
         }
 
         fromconn.done();
-
+        */
         result << "primary" << toShard->toString();
 
         // Record finish in changelog

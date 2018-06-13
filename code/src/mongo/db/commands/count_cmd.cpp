@@ -45,6 +45,7 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/util/log.h"
+#include "mongo/db/catalog/database_holder.h"
 
 namespace mongo {
 namespace {
@@ -99,6 +100,12 @@ public:
         ActionSet actions;
         actions.addAction(ActionType::find);
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
+    }
+    
+    virtual Status checkAuthForCommand(Client* client,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj) {
+        return Status::OK();
     }
 
     virtual Status explain(OperationContext* txn,
@@ -165,6 +172,8 @@ public:
                      string& errmsg,
                      BSONObjBuilder& result) {
         const bool isExplain = false;
+        const NamespaceString ns(parseNs(dbname, cmdObj));
+        NamespaceString nss = ns2chunkHolder().getNsWithChunkId(ns);
         auto request = CountRequest::parseFromBSON(dbname, cmdObj, isExplain);
         if (!request.isOK()) {
             return appendCommandStatus(result, request.getStatus());
@@ -180,8 +189,16 @@ public:
                        "http://dochub.mongodb.org/core/3.4-feature-compatibility."));
         }
 
-        AutoGetCollectionOrViewForRead ctx(txn, request.getValue().getNs());
+        AutoGetCollectionOrViewForRead ctx(txn, nss);
         Collection* collection = ctx.getCollection();
+        if( collection == NULL){
+            LOG(1)<<"[CmdCount].. Collection:"<< nss <<" not found ";
+        }
+        // if find with chunkid, but no collection here, we should return stale config, so mongos will retry
+        if (!collection && nss.isChunk()) {
+            return appendCommandStatus(
+                result, {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});            
+        }
 
         if (ctx.getView()) {
             ctx.releaseLocksForView();

@@ -69,6 +69,11 @@ Status parseProcStatFile(StringData filename,
                          const std::vector<StringData>& keys,
                          BSONObjBuilder* builder);
 
+// parse /proc/self/status
+Status parseProcSelfStatusFile(StringData filename,
+                            const std::vector<StringData>& keys,
+                            BSONObjBuilder* builder);
+
 /**
  * Read a string matching /proc/meminfo format, and write the specified list of keys in builder.
  *

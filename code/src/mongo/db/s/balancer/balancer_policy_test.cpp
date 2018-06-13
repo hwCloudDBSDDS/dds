@@ -90,7 +90,8 @@ std::pair<ShardStatisticsVector, ShardToChunksMap> generateCluster(
 
         for (size_t i = 0; i < numChunks; i++, currentChunk++) {
             ChunkType chunk;
-
+            
+            chunk.setName (std::to_string(i+1));
             chunk.setNS(kNamespace.ns());
             chunk.setMin(currentChunk == 0 ? shardKeyPattern.globalMin()
                                            : BSON("x" << currentChunk));

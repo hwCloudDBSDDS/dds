@@ -40,6 +40,7 @@
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/record_id.h"
 #include "mongo/platform/decimal128.h"
+#include "mongo/db/keypattern.h"
 
 namespace mongo {
 
@@ -52,6 +53,8 @@ public:
     static StringData versionToString(Version version) {
         return version == Version::V0 ? "V0" : "V1";
     }
+
+    static constexpr uint8_t kEnd = 0x4;
 
     /**
      * Encodes info needed to restore the original BSONTypes from a KeyString. They cannot be
@@ -74,15 +77,25 @@ public:
         static const uint8_t kStoredDecimalExponentBits = 6;
         static const uint32_t kStoredDecimalExponentMask = (1U << kStoredDecimalExponentBits) - 1;
 
-        explicit TypeBits(Version version) : version(version) {
+        explicit TypeBits(Version version = Version::V1) : version(version) {
             reset();
         }
+
+        //  Save type bits into the buffer, if readFromEnd=true the first byte of the type bits will be
+        // written as the last byte to the buffer, which allows to read type bits from the end
+        void Write(StackBufBuilder& buffer, bool readFromEnd = false) const;
+
+        //  Return how more bytes for type bits needed to be read after first byte
+        static size_t getRemainingBytesSize(uint8_t firstByte);
+
+        Status readFromEnd(uint8_t* buffer, size_t bufferSize);
 
         /**
          * If there are no bytes remaining, assumes AllZeros. Otherwise, reads bytes out of the
          * BufReader in the format described on the getBuffer() method.
          */
         void resetFromBuffer(BufReader* reader);
+        void resetFromBuffer(uint8_t firstByte, uint8_t* remainingBuffer);
         static TypeBits fromBuffer(Version version, BufReader* reader) {
             TypeBits out(version);
             out.resetFromBuffer(reader);
@@ -238,7 +251,10 @@ public:
          * size only includes data bytes, not the size byte itself.
          */
         uint8_t getSizeByte() const {
-            return _buf[0] & 0x7f;
+            return getSizeByte(_buf[0]);
+        }
+        static uint8_t getSizeByte(const uint8_t firstByte) {
+            return firstByte & 0x7f;
         }
         void setSizeByte(uint8_t size) {
             dassert(size < kMaxBytesNeeded);
@@ -293,7 +309,8 @@ public:
     }
 
     static BSONObj toBson(StringData data, Ordering ord, const TypeBits& types);
-    static BSONObj toBson(const char* buffer, size_t len, Ordering ord, const TypeBits& types);
+    static BSONObj toBson(const char* buffer, size_t len, Ordering ord, const TypeBits& types,
+        const KeyPattern* keyPattern = nullptr);
 
     /**
      * Decodes a RecordId from the end of a buffer.
@@ -302,11 +319,14 @@ public:
 
     /**
      * Decodes a RecordId, consuming all bytes needed from reader.
+     * Note: caller should expect what type recordId has.
+     * decodeRecordId works for int64_t, decodeDataRecordId works for 
+     * keys separated by delimiter.
      */
     static RecordId decodeRecordId(BufReader* reader);
-
-    void appendRecordId(RecordId loc);
-    void appendTypeBits(const TypeBits& bits);
+    
+    void appendRecordId(const RecordId& loc);
+    void appendTypeBits(const TypeBits& bits, bool readFromEnd = false);
 
     /**
      * Resets to an empty state.
@@ -351,10 +371,18 @@ public:
      */
     const Version version;
 
-private:
+protected:
+    void _appendElements(
+        const BSONObj& obj,
+        Ordering ord,
+        Discriminator discriminator,
+        bool ignoreFieldNames = false);
+
     void _appendAllElementsForIndexing(const BSONObj& obj,
                                        Ordering ord,
                                        Discriminator discriminator);
+
+    void _appendKeyEnd();
 
     void _appendBool(bool val, bool invert);
     void _appendDate(Date_t val, bool invert);

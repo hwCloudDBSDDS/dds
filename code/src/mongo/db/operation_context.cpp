@@ -78,6 +78,7 @@ MONGO_FP_DECLARE(checkForInterruptFail);
 OperationContext::OperationContext(Client* client, unsigned int opId)
     : _client(client),
       _opId(opId),
+      _cmdFlag(NONE),
       _elapsedTime(client ? client->getServiceContext()->getTickSource()
                           : SystemTickSource::get()) {}
 
@@ -407,5 +408,9 @@ void OperationContext::setLockState(std::unique_ptr<Locker> locker) {
     dassert(locker);
     _locker = std::move(locker);
 }
+
+
+
+
 
 }  // namespace mongo

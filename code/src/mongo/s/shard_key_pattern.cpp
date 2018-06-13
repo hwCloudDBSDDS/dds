@@ -25,7 +25,7 @@
  *    delete this exception statement from all source files in the program,
  *    then also delete it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/platform/basic.h"
 
 #include "mongo/s/shard_key_pattern.h"
@@ -40,7 +40,7 @@
 #include "mongo/db/ops/path_support.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/util/mongoutils/str.h"
-
+#include "mongo/util/log.h"
 namespace mongo {
 
 using std::make_pair;

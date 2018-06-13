@@ -250,5 +250,29 @@ StatusWith<boost::optional<ChunkRange>> splitChunkAtMultiplePoints(
     return boost::optional<ChunkRange>();
 }
 
+StatusWith<BSONObj> retrieveShardStatistics(OperationContext* txn, const ShardId& shardId) {
+    auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, shardId);
+    if (!shardStatus.isOK()) {
+        return shardStatus.getStatus();
+    }
+
+    auto getShardStatisticsStatus = shardStatus.getValue()->runCommandWithFixedRetryAttempts(
+        txn,
+        ReadPreferenceSetting{ReadPreference::PrimaryPreferred},
+        "admin",
+        BSON("getShardStatistics" << 1),
+        Shard::RetryPolicy::kIdempotent);
+    if (!getShardStatisticsStatus.isOK()) {
+        log() << "!getShardStatisticsStatus.isOK()";
+        return std::move(getShardStatisticsStatus.getStatus());
+    }
+    if (!getShardStatisticsStatus.getValue().commandStatus.isOK()) {
+        log() << "!getShardStatisticsStatus.getValue().commandStatus.isOK()";
+        return std::move(getShardStatisticsStatus.getValue().commandStatus);
+    }
+
+    return std::move(getShardStatisticsStatus.getValue().response);
+}
+
 }  // namespace shardutil
 }  // namespace mongo

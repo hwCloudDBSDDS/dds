@@ -25,6 +25,7 @@
  * exception statement from all source files in the program, then also delete
  * it in the license file.
  */
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kIndex
 
 #include "mongo/platform/basic.h"
 
@@ -32,6 +33,8 @@
 
 #include "mongo/stdx/memory.h"
 #include "mongo/util/destructor_guard.h"
+#include "mongo/util/log.h"
+#include "mongo/util/stacktrace.h"
 
 namespace mongo {
 

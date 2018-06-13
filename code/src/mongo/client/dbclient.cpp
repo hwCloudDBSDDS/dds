@@ -1016,7 +1016,7 @@ unique_ptr<DBClientCursor> DBClientBase::query(const string& ns,
                                                int queryOptions,
                                                int batchSize) {
     unique_ptr<DBClientCursor> c(new DBClientCursor(
-        this, ns, query.obj, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize));
+        this, ns, query.obj, ChunkId(), nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize));
     if (c->init())
         return c;
     return nullptr;

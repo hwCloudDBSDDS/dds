@@ -40,6 +40,15 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
 
+
+#include "mongo/db/operation_context.h"
+#include "mongo/db/server_options.h"
+
+#include "mongo/s/catalog/sharding_catalog_client_impl.h"
+#include "mongo/s/grid.h"
+#include <iomanip>
+
+
 namespace mongo {
 
 const std::string ChunkType::ConfigNS = "config.chunks";
@@ -49,9 +58,15 @@ const BSONField<std::string> ChunkType::ns("ns");
 const BSONField<BSONObj> ChunkType::min("min");
 const BSONField<BSONObj> ChunkType::max("max");
 const BSONField<std::string> ChunkType::shard("shard");
+const BSONField<std::string> ChunkType::processIdentity("processIdentity");
 const BSONField<bool> ChunkType::jumbo("jumbo");
 const BSONField<Date_t> ChunkType::DEPRECATED_lastmod("lastmod");
 const BSONField<OID> ChunkType::DEPRECATED_epoch("lastmodEpoch");
+const BSONField<std::string> ChunkType::rootFolder("rootFolder");
+const BSONField<ChunkType::ChunkStatus> ChunkType::status("status");
+
+// the width of chunkID, 
+const int kChunkIDDigitWidth(16); //support billions of chunks
 
 namespace {
 
@@ -152,6 +167,15 @@ StatusWith<ChunkType> ChunkType::fromBSON(const BSONObj& source) {
     }
 
     {
+        std::string processIdentityStr;
+        Status status = bsonExtractStringField(source, processIdentity.name(), &processIdentityStr);
+        if (!status.isOK()) {
+            return status;
+        } 
+        chunk._processIdentity = processIdentityStr;
+    }
+
+    {
         bool chunkJumbo;
         Status status = bsonExtractBooleanField(source, jumbo.name(), &chunkJumbo);
         if (status.isOK()) {
@@ -171,7 +195,46 @@ StatusWith<ChunkType> ChunkType::fromBSON(const BSONObj& source) {
         chunk._version = std::move(versionStatus.getValue());
     }
 
-    return chunk;
+    {
+        long long chunkStatus;
+        Status chunkstatus = bsonExtractIntegerField(source, status.name(), &chunkStatus);
+        if (chunkstatus.isOK()) {
+            // Make sure the state field falls within the valid range of ChunkState values.
+            if (!isStatusValid(static_cast<ChunkStatus>(chunkStatus))) {
+                return Status(ErrorCodes::BadValue,
+                              str::stream() << "Invalid chunk status value: " << chunkStatus);
+            } else {
+                chunk._status = static_cast<ChunkStatus>(chunkStatus);
+            }
+        } else {
+            return chunkstatus;
+        }
+    }
+
+    {
+        std::string rootFolderData;
+        Status status = bsonExtractStringField(source, rootFolder.name(), &rootFolderData);
+
+        if (status.isOK()) {
+            chunk._rootFolder = rootFolderData;
+        } else if (status == ErrorCodes::NoSuchKey) {
+            // root folder is missing, so it will be presumed false
+        } else {
+            return status;
+        }
+    }
+
+    {
+        std::string chunkID;
+        Status status = bsonExtractStringField(source, name.name(), &chunkID);
+
+        if (!status.isOK())
+            return status;
+
+        chunk._id = std::move(chunkID);
+    }
+
+    return StatusWith<ChunkType>(chunk);
 }
 
 std::string ChunkType::genID(StringData ns, const BSONObj& o) {
@@ -185,6 +248,23 @@ std::string ChunkType::genID(StringData ns, const BSONObj& o) {
     }
 
     return buf.str();
+}
+
+std::string ChunkType::toID(const std::string& id) {
+    invariant(!id.empty());
+    std::string newId;
+    if (id.size() < kChunkIDDigitWidth)
+    {
+        std::stringstream ss;
+        ss << std::setfill('0') << std::setw(kChunkIDDigitWidth) << id;
+        newId = ss.str();
+    }
+    else
+    {
+        newId = id;
+    }
+
+    return newId;
 }
 
 Status ChunkType::validate() const {
@@ -234,13 +314,21 @@ Status ChunkType::validate() const {
                 str::stream() << "max is not greater than min: " << *_min << ", " << *_max};
     }
 
+    if (!isStatusValid(_status)) {
+        return {ErrorCodes::BadValue,
+                str::stream() << "chunk status("
+                              << static_cast<int>(_status)
+                              << ") is invalid"};
+    }
+
     return Status::OK();
 }
 
 BSONObj ChunkType::toBSON() const {
     BSONObjBuilder builder;
-    if (_ns && _min)
-        builder.append(name.name(), getName());
+
+    builder.append(name.name(), getID());
+
     if (_ns)
         builder.append(ns.name(), getNS());
     if (_min)
@@ -249,10 +337,18 @@ BSONObj ChunkType::toBSON() const {
         builder.append(max.name(), getMax());
     if (_shard)
         builder.append(shard.name(), getShard().toString());
+    if (!_processIdentity.empty())
+        builder.append(processIdentity(), getProcessIdentity());
     if (_version)
         _version->appendForChunk(&builder);
     if (_jumbo)
         builder.append(jumbo.name(), getJumbo());
+
+    if (_rootFolder)
+        builder.append(rootFolder.name(), getRootFolder());
+
+    if (isStatusValid(_status))
+        builder.append(status.name(), static_cast<std::underlying_type<ChunkStatus>::type>(getStatus()));
 
     return builder.obj();
 }
@@ -261,11 +357,29 @@ std::string ChunkType::toString() const {
     return toBSON().toString();
 }
 
-std::string ChunkType::getName() const {
-    invariant(_ns);
-    invariant(_min);
-    return genID(*_ns, *_min);
+std::string ChunkType::getName() const{
+    //remove the leading 0
+    std::string id_to_print = _id;
+    id_to_print = id_to_print.erase(0, std::min(id_to_print.find_first_not_of('0'), id_to_print.size()-1));
+
+    return id_to_print;
 }
+
+void ChunkType::setName(const std::string& id) {
+    invariant(!id.empty());
+    _id = id;
+    
+    if (id.size() < kChunkIDDigitWidth){
+        std::stringstream ss;
+        ss << std::setfill('0') << std::setw(kChunkIDDigitWidth) << id;
+        _id = ss.str();
+    }
+    else{
+        _id = id;
+    }    
+    return;
+}
+
 
 void ChunkType::setNS(const std::string& ns) {
     invariant(!ns.empty());
@@ -292,8 +406,26 @@ void ChunkType::setShard(const ShardId& shard) {
     _shard = shard;
 }
 
+void ChunkType::setProcessIdentity(const std::string& processIdentity) {
+    invariant(!processIdentity.empty());
+    _processIdentity = processIdentity;
+}
+
 void ChunkType::setJumbo(bool jumbo) {
     _jumbo = jumbo;
+}
+
+void ChunkType::setRootFolder(const std::string& rootFolder) {
+    invariant(!rootFolder.empty());
+    _rootFolder = rootFolder;
+}
+
+void ChunkType::clearRootFolder() {
+    _rootFolder = "";
+}
+
+void ChunkType::setStatus(const ChunkStatus chunkstatus) {
+    _status = chunkstatus;
 }
 
 }  // namespace mongo

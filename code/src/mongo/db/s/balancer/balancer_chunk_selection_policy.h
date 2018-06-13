@@ -76,6 +76,14 @@ public:
         std::vector<BSONObj> splitKeys;
     };
 
+    struct IndexSplitInfo {
+        IndexSplitInfo(ChunkType inChunk, BSONObj inSplitPoint);
+        ChunkType chunk;
+        BSONObj splitPoint;
+    };
+
+    typedef std::vector<IndexSplitInfo> IndexSplitInfoVector;
+
     typedef std::vector<SplitInfo> SplitInfoVector;
 
     typedef std::vector<MigrateInfo> MigrateInfoVector;
@@ -87,7 +95,9 @@ public:
      * they violate the policy for some reason. The reason is decided by the policy and may include
      * chunk is too big or chunk straddles a tag range.
      */
-    virtual StatusWith<SplitInfoVector> selectChunksToSplit(OperationContext* txn) = 0;
+    virtual StatusWith<IndexSplitInfoVector> selectChunksToSplit(OperationContext* txn) = 0;
+
+    virtual StatusWith<IndexSplitInfoVector> indexSelectChunksToSplit(OperationContext* txn) = 0;
 
     /**
      * Potentially blocking method, which gives out a set of chunks to be moved. The

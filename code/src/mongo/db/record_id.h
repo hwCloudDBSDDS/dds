@@ -38,7 +38,12 @@
 #include "mongo/logger/logstream_builder.h"
 #include "mongo/util/bufreader.h"
 
+#include "RecordIdVariant.h"
+#include "mongo/bson/bsonobjbuilder.h"
+
 namespace mongo {
+
+#ifdef STANDARD_MONGO_DB    //  Need to make some unified interface in the future
 
 /**
  * The key that uniquely identifies a Record in a Collection or RecordStore.
@@ -57,6 +62,8 @@ public:
      * TODO consider removing.
      */
     RecordId(int high, int low) : _repr((uint64_t(high) << 32) | uint32_t(low)) {}
+
+    RecordId(const BSONElement& bson) : _repr(bson.Long()) {}
 
     /**
      * A RecordId that compares less than all ids that represent documents in a collection.
@@ -126,7 +133,190 @@ private:
     static const int64_t kMinRepr = LLONG_MIN;
 
     int64_t _repr;
+
+public:
+    void AppendTo(BSONObjBuilder& buider, const StringData& fieldName) const
+    {
+        buider.append(it->first, static_cast<long long>(repr()));
+    }
+
+    std::string ToString() const
+    {
+        return std::toString(_repr);
+    }
 };
+
+#else
+
+/**
+ * The key that uniquely identifies a Record in a Collection or RecordStore.
+ */
+class RecordId {
+protected:
+    RecordId(RecordIdVariant&& recordVar) : _repr(recordVar) {}
+public:
+    /**
+     * Constructs a Null RecordId.
+     */
+    RecordId() : _repr() {}
+
+    explicit RecordId(int64_t repr) : _repr(repr) {}
+
+    /**
+     * Construct a RecordId from two halves.
+     * TODO consider removing.
+     */
+    RecordId(int high, int low) : _repr((uint64_t(high) << 32) | uint32_t(low)) {}
+
+
+    RecordId(const void *data, int len) : _repr(data, len) {}
+
+    /**
+     * A RecordId that compares less than all ids that represent documents in a collection.
+     */
+    static RecordId min() {
+        return RecordId(RecordIdVariant::Min());
+    }
+
+    /**
+     * A RecordId that compares greater than all ids that represent documents in a collection.
+     */
+    static RecordId max() {
+        return RecordId(RecordIdVariant::Max());
+    }
+
+    bool isNull() const {
+        return _repr.IsNull();
+    }
+
+    const RecordIdVariant& repr() const {
+        return _repr;
+    }
+
+    /**
+     * Normal RecordIds are the only ones valid for representing Records. All RecordIds outside
+     * of this range are sentinel values.
+     */
+    bool isNormal() const {
+        return !_repr.IsNull() && !_repr.IsMin() && !_repr.IsMax();
+    }
+
+    int compare(const RecordId& rhs) const {
+        return RecordIdVariant::Compare(_repr, rhs._repr);
+    }
+
+    /**
+     * Hash value for this RecordId. The hash implementation may be modified, and its behavior
+     * may differ across platforms. Hash values should not be persisted.
+     */
+    struct Hasher {
+        size_t operator()(const RecordId& rid) const {
+            size_t hash = 0;            
+            if(rid.repr().IsConvertableToInt64())
+                // TODO consider better hashes
+                boost::hash_combine(hash, rid.repr().ToInt64());            
+            else
+                boost::hash_range(hash, rid.repr().Data(), rid.repr().Data()+rid.repr().Size());            
+
+            return hash;
+        }
+    };
+
+    /// members for Sorter
+    struct SorterDeserializeSettings {};  // unused
+    void serializeForSorter(BufBuilder& buf) const {        
+        buf.appendChar(_repr.type);
+        if(_repr.type == RecordIdVariant::ObjectType::Int64)
+        {
+            buf.appendNum(_repr.intNum);
+            return;
+        }
+            
+        if(_repr.IsData())
+        {
+            buf.appendNum(_repr.Size());
+            buf.appendBuf(_repr.Data(), _repr.Size());
+        }            
+    }
+
+    static RecordId deserializeForSorter(BufReader& buf, const SorterDeserializeSettings&) {
+        auto type = (RecordIdVariant::ObjectType)buf.read<char>();
+        if(type == RecordIdVariant::ObjectType::Int64)
+            return RecordId(buf.read<LittleEndian<int64_t>>());
+
+        if(type == RecordIdVariant::ObjectType::Minimum)
+            return min();
+
+        if(type == RecordIdVariant::ObjectType::Minimum)
+            return max();
+
+        if(type == RecordIdVariant::ObjectType::Null)
+            return RecordId();
+
+        //
+        //  Data type
+        //
+        RecordIdVariant recordId;
+        int size = buf.read<LittleEndian<int>>();
+        recordId.AllocateData(size);
+        invariant((int)buf.remaining() >= size);
+        std::memcpy((void*)recordId.Data(), buf.pos(), size);
+        buf.skip(size);
+
+        return recordId;
+    }
+    int memUsageForSorter() const {
+        return _repr.GetMemoryUsage();
+    }
+    RecordId getOwned() const {
+        return *this;
+    }
+
+private:
+    RecordIdVariant _repr;
+
+public:
+    void AppendTo(BSONObjBuilder& builder, const StringData& fieldName) const
+    {
+        if(_repr.IsConvertableToInt64())
+        {
+            builder.append(fieldName, _repr.ToInt64());
+            return;
+        }
+
+        builder.appendBinData(fieldName,
+            _repr.Size(),
+            BinDataType::BinDataGeneral,
+            _repr.Data()
+            );
+    }
+
+    RecordId(const BSONElement& bson)
+    {
+        if(bson.type() == BSONType::NumberLong)
+        {
+            _repr = RecordIdVariant(bson.Long());
+            return;
+        }
+
+        if(bson.type() == BSONType::BinData)
+        {
+            int size = 0;
+            const char* data = bson.binData(size);
+            _repr = RecordIdVariant(data, bson.valuestrsize());
+            return;
+        }
+
+        invariant(false);                
+    }
+
+    std::string ToString() const
+    {
+        return _repr.ToString();
+    }
+};
+
+#endif
 
 inline bool operator==(RecordId lhs, RecordId rhs) {
     return lhs.repr() == rhs.repr();
@@ -148,15 +338,15 @@ inline bool operator>=(RecordId lhs, RecordId rhs) {
 }
 
 inline StringBuilder& operator<<(StringBuilder& stream, const RecordId& id) {
-    return stream << "RecordId(" << id.repr() << ')';
+    return stream << "RecordId(" << id.ToString() << ')';
 }
 
 inline std::ostream& operator<<(std::ostream& stream, const RecordId& id) {
-    return stream << "RecordId(" << id.repr() << ')';
+    return stream << "RecordId(" << id.ToString() << ')';
 }
 
 inline std::ostream& operator<<(std::ostream& stream, const boost::optional<RecordId>& id) {
-    return stream << "RecordId(" << (id ? id.get().repr() : 0) << ')';
+    return stream << "RecordId(" << (id ? id.get().ToString() : std::string("null")) << ')';
 }
 
 inline logger::LogstreamBuilder& operator<<(logger::LogstreamBuilder& stream, const RecordId& id) {

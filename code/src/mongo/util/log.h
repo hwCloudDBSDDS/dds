@@ -165,6 +165,11 @@ inline bool shouldLog(logger::LogSeverity severity) {
 
 #define LOG MONGO_LOG
 
+#define index_log() log() << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
+#define index_warning() warning() << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
+#define index_err() error() << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
+#define index_LOG(DLEVEL) LOG(DLEVEL) << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
+
 #define MONGO_LOG_COMPONENT(DLEVEL, COMPONENT1)                                            \
     if (!(::mongo::logger::globalLogDomain())                                              \
              ->shouldLog((COMPONENT1), ::mongo::LogstreamBuilder::severityCast(DLEVEL))) { \

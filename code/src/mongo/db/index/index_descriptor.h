@@ -81,6 +81,17 @@ public:
     static constexpr StringData kTextVersionFieldName = "textIndexVersion"_sd;
     static constexpr StringData kUniqueFieldName = "unique"_sd;
     static constexpr StringData kWeightsFieldName = "weights"_sd;
+    static constexpr StringData kPrefix = "prefix"_sd;
+
+    static BSONObj getKeyPattern(const BSONObj& infoObj)
+    {
+        return infoObj.getObjectField(kKeyPatternFieldName).getOwned();
+    }
+    
+    static bool hasUniqueModifier(const BSONObj& infoObj) //  Index is unique if it's _id or has unique modifier
+    {
+        return infoObj[kUniqueFieldName].trueValue();
+    }
 
     /**
      * OnDiskIndexData is a pointer to the memory mapped per-index data.
@@ -89,16 +100,17 @@ public:
     IndexDescriptor(Collection* collection, const std::string& accessMethodName, BSONObj infoObj)
         : _collection(collection),
           _accessMethodName(accessMethodName),
-          _infoObj(infoObj.getOwned()),
-          _numFields(infoObj.getObjectField(IndexDescriptor::kKeyPatternFieldName).nFields()),
-          _keyPattern(infoObj.getObjectField(IndexDescriptor::kKeyPatternFieldName).getOwned()),
+          _infoObj(infoObj.getOwned()),          
+          _keyPattern(getKeyPattern(infoObj)),
+          _numFields(_keyPattern.nFields()),
           _indexName(infoObj.getStringField(IndexDescriptor::kIndexNameFieldName)),
           _parentNS(infoObj.getStringField(IndexDescriptor::kNamespaceFieldName)),
           _isIdIndex(isIdIndexPattern(_keyPattern)),
           _sparse(infoObj[IndexDescriptor::kSparseFieldName].trueValue()),
-          _unique(_isIdIndex || infoObj[kUniqueFieldName].trueValue()),
+          _unique(_isIdIndex || hasUniqueModifier(infoObj)),
           _partial(!infoObj[kPartialFilterExprFieldName].eoo()),
-          _cachedEntry(NULL) {
+          _cachedEntry(NULL),
+          _prefix(infoObj[IndexDescriptor::kPrefix].numberLong()){
         _indexNamespace = makeIndexNamespace(_parentNS, _indexName);
 
         _version = IndexVersion::kV0;
@@ -255,6 +267,21 @@ public:
 
     bool areIndexOptionsEquivalent(const IndexDescriptor* other) const;
 
+    static bool isIdIndexPatternEqual(const BSONObj& p1,const BSONObj &p2) {
+        BSONObjIterator i(p1);
+        BSONObjIterator j(p2);
+        BSONElement e1 = i.next();   
+        BSONElement e2 = j.next();     
+          
+        if( (strcmp(e1.fieldName(), "_id") == 0) && (strcmp(e2.fieldName(), "_id")==0)){
+            if(e1.numberInt() == e2.numberInt()){
+               if( i.next().eoo() && j.next().eoo() )
+                   return true;
+            }
+        }
+        return false;
+
+    }
     static bool isIdIndexPattern(const BSONObj& pattern) {
         BSONObjIterator i(pattern);
         BSONElement e = i.next();
@@ -270,6 +297,10 @@ public:
         return ns.toString() + ".$" + name.toString();
     }
 
+    int64_t getPrefix () const{
+        return _prefix;
+    }
+
 private:
     // Related catalog information of the parent collection
     Collection* _collection;
@@ -282,8 +313,8 @@ private:
 
     // --- cached data from _infoObj
 
-    int64_t _numFields;  // How many fields are indexed?
     BSONObj _keyPattern;
+    int64_t _numFields;  // How many fields are indexed?
     std::string _indexName;
     std::string _parentNS;
     std::string _indexNamespace;
@@ -292,10 +323,13 @@ private:
     bool _unique;
     bool _partial;
     IndexVersion _version;
-
+    	
     // only used by IndexCatalogEntryContainer to do caching for perf
     // users not allowed to touch, and not part of API
     IndexCatalogEntry* _cachedEntry;
+
+    // prefix for the index, given by assign command from config server
+    int64_t _prefix;
 
     friend class IndexCatalog;
     friend class IndexCatalogEntry;

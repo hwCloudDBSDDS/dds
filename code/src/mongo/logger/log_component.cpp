@@ -121,6 +121,8 @@ StringData LogComponent::toStringData() const {
             return "bridge"_sd;
         case kTracking:
             return "tracking"_sd;
+        case kBackupd:
+            return "backupd"_sd;
         case kNumLogComponents:
             return "total"_sd;
             // No default. Compiler should complain if there's a log component that's not handled.
@@ -193,6 +195,8 @@ StringData LogComponent::getNameForLog() const {
             return "BRIDGE  "_sd;
         case kTracking:
             return "TRACKING"_sd;
+        case kBackupd:
+            return "BACKUPD "_sd;
         case kNumLogComponents:
             return "TOTAL   "_sd;
             // No default. Compiler should complain if there's a log component that's not handled.

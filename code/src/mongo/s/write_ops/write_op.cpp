@@ -109,7 +109,8 @@ Status WriteOp::targetWrites(OperationContext* txn,
     if (targetStatus.isOK() && endpoints.size() > 1u && !isIndexInsert) {
         endpointsOwned.clear();
         invariant(endpoints.empty());
-        targetStatus = targeter.targetAllShards(&endpoints);
+        // targeting everywhere means every chunk, BSONObj() meas no filter
+        targetStatus = targeter.targetAllChunks(txn, &endpoints);
     }
 
     // If we had an error, stop here
@@ -124,12 +125,8 @@ Status WriteOp::targetWrites(OperationContext* txn,
         WriteOpRef ref(_itemRef.getItemIndex(), _childOps.size() - 1);
 
         // For now, multiple endpoints imply no versioning - we can't retry half a multi-write
-        if (endpoints.size() == 1u) {
-            targetedWrites->push_back(new TargetedWrite(*endpoint, ref));
-        } else {
-            ShardEndpoint broadcastEndpoint(endpoint->shardName, ChunkVersion::IGNORED());
-            targetedWrites->push_back(new TargetedWrite(broadcastEndpoint, ref));
-        }
+        // TODO:  every endpoint will carry ver,  why the original imply no versioning when multiple endpoints
+        targetedWrites->push_back(new TargetedWrite(*endpoint, ref));
 
         _childOps.back()->pendingWrite = targetedWrites->back();
         _childOps.back()->state = WriteOpState_Pending;

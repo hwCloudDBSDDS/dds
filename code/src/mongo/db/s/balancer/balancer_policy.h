@@ -51,9 +51,10 @@ struct MigrateInfo {
     MigrateInfo(const ShardId& a_to, const ChunkType& a_chunk);
 
     std::string getName() const;
-
+    
     std::string toString() const;
 
+    std::string id;
     std::string ns;
     ShardId to;
     ShardId from;
@@ -210,6 +211,11 @@ private:
                                            const DistributionStatus& distribution,
                                            const std::string& chunkTag,
                                            const std::set<ShardId>& excludedShards);
+
+    // choose the smallest chunk to move for a particular shard
+    static ChunkId _getSmallestChunk(const ShardStatisticsVector& shardStats,
+                                          const std::string& ns,
+                                          const ShardId& shardId);
 
     /**
      * Selects one chunk for the specified zone (if appropriate) to be moved in order to bring the

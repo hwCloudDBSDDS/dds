@@ -159,26 +159,18 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* txn,
                                              BSONObj* viewDefinition) {
     auto shardRegistry = Grid::get(txn)->shardRegistry();
 
-    // Get the set of shards on which we will run the query.
-    std::vector<std::shared_ptr<Shard>> shards;
+    // Get the set of shardendpoints on which we will run the query. query on the chunk level
+    OwnedPointerVector<ShardEndpoint> endpointsOwned;
+    vector<ShardEndpoint*>& endpoints = endpointsOwned.mutableVector();
     if (primary) {
-        shards.emplace_back(std::move(primary));
+        endpoints.push_back(new ShardEndpoint(ChunkId(), primary->getId(), ChunkVersion::UNSHARDED()));
     } else {
         invariant(chunkManager);
-
-        std::set<ShardId> shardIds;
-        chunkManager->getShardIdsForQuery(txn,
+        chunkManager->getShardEndpointsForQuery(txn,
                                           query.getQueryRequest().getFilter(),
                                           query.getQueryRequest().getCollation(),
-                                          &shardIds);
+                                          &endpoints);        
 
-        for (auto id : shardIds) {
-            auto shardStatus = shardRegistry->getShard(txn, id);
-            if (!shardStatus.isOK()) {
-                return shardStatus.getStatus();
-            }
-            shards.emplace_back(shardStatus.getValue());
-        }
     }
 
     ClusterClientCursorParams params(query.nss(), readPref);
@@ -212,24 +204,34 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* txn,
         return qrToForward.getStatus();
     }
 
-    // Use read pref to target a particular host from each shard. Also construct the find command
-    // that we will forward to each shard.
-    for (const auto& shard : shards) {
+    // target a particular host for each chunk
+    for(const auto& it : endpoints) {
+        auto shardStatus = shardRegistry->getShard(txn, it->shardName);
+        if (!shardStatus.isOK()) {
+            return shardStatus.getStatus();
+        }
+        auto shard = shardStatus.getValue();
         invariant(!shard->isConfig() || shard->getConnString().type() != ConnectionString::INVALID);
 
-        // Build the find command, and attach shard version if necessary.
+        // Build the find command, and attach chunk version if necessary.
         BSONObjBuilder cmdBuilder;
         qrToForward.getValue()->asFindCommand(&cmdBuilder);
 
         if (chunkManager) {
-            ChunkVersion version(chunkManager->getVersion(shard->getId()));
+            // append chunkver instead of shardver
+            ChunkVersion version(it->shardVersion);
             version.appendForCommands(&cmdBuilder);
-        } else if (!query.nss().isOnInternalDb()) {
-            ChunkVersion version(ChunkVersion::UNSHARDED());
-            version.appendForCommands(&cmdBuilder);
+            // for chunk level req, so we add chunkid
+            ChunkId chunkId(it->chunkId);
+            chunkId.appendForCommands(&cmdBuilder);
+            params.remotes.emplace_back(shard->getId(), chunkId, cmdBuilder.obj());
+        } else {
+            if (!query.nss().isOnInternalDb()) {
+                ChunkVersion version(ChunkVersion::UNSHARDED());
+                version.appendForCommands(&cmdBuilder);
+            }
+            params.remotes.emplace_back(shard->getId(), cmdBuilder.obj());
         }
-
-        params.remotes.emplace_back(shard->getId(), cmdBuilder.obj());
     }
 
     auto ccc = ClusterClientCursorImpl::make(
@@ -329,7 +331,10 @@ StatusWith<CursorId> ClusterFind::runQuery(OperationContext* txn,
 
     std::shared_ptr<ChunkManager> chunkManager;
     std::shared_ptr<Shard> primary;
-    dbConfig.getValue()->getChunkManagerOrPrimary(txn, query.nss().ns(), chunkManager, primary);
+    auto cmOrPrimaryStatus = dbConfig.getValue()->getChunkManagerOrPrimary(txn, query.nss().ns(), chunkManager, primary);
+    if (!cmOrPrimaryStatus.isOK()) {
+        return cmOrPrimaryStatus;
+    }
 
     // Re-target and re-send the initial find command to the shards until we have established the
     // shard version.
@@ -342,7 +347,9 @@ StatusWith<CursorId> ClusterFind::runQuery(OperationContext* txn,
         auto status = std::move(cursorId.getStatus());
 
         if (!ErrorCodes::isStaleShardingError(status.code()) &&
-            status != ErrorCodes::ShardNotFound) {
+            status != ErrorCodes::ShardNotFound &&
+            status != ErrorCodes::FailedToSatisfyReadPreference &&
+            !ErrorCodes::isNetworkError(status.code())) {
             // Errors other than trying to reach a non existent shard or receiving a stale
             // metadata message from MongoD are fatal to the operation. Network errors and
             // replication retries happen at the level of the AsyncResultsMerger.
@@ -364,8 +371,11 @@ StatusWith<CursorId> ClusterFind::runQuery(OperationContext* txn,
         chunkManager =
             dbConfig.getValue()->getChunkManagerIfExists(txn, query.nss().ns(), true, staleEpoch);
         if (!chunkManager) {
-            dbConfig.getValue()->getChunkManagerOrPrimary(
+            auto cmOrPrimaryStatus = dbConfig.getValue()->getChunkManagerOrPrimary(
                 txn, query.nss().ns(), chunkManager, primary);
+            if (!cmOrPrimaryStatus.isOK()) {
+                return cmOrPrimaryStatus;
+            }
         }
     }
 

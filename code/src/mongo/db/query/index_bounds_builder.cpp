@@ -1021,4 +1021,25 @@ bool IndexBoundsBuilder::isSingleInterval(const IndexBounds& bounds,
     }
 }
 
+bool IndexBoundsBuilder::isAllPointIntervals(const IndexBounds& bounds) {
+
+    size_t fieldNo = 0;
+
+    for (; fieldNo < bounds.fields.size(); ++fieldNo) {
+        const OrderedIntervalList& oil = bounds.fields[fieldNo];
+        if (1 != oil.intervals.size()) {
+            break;
+        }
+        if (!oil.intervals[0].isPoint()) {
+            break;
+        }
+    }
+
+    if (fieldNo >= bounds.fields.size()) {
+        return true;
+    }
+
+    return false;
+}
+
 }  // namespace mongo

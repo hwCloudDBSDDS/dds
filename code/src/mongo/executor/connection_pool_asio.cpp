@@ -28,7 +28,7 @@
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kASIO
 
 #include "mongo/platform/basic.h"
-
+#include "mongo/base/remote_command_timeout.h"
 #include "mongo/executor/connection_pool_asio.h"
 
 #include <asio.hpp>
@@ -180,7 +180,8 @@ std::unique_ptr<NetworkInterfaceASIO::AsyncOp> ASIOConnection::makeAsyncOp(ASIOC
                              std::string("admin"),
                              BSON("isMaster" << 1),
                              BSONObj(),
-                             nullptr},
+                             nullptr,
+                             Milliseconds(kIsMasterTimeoutMS)},
         [conn](const TaskExecutor::ResponseStatus& rs) {
             auto cb = std::move(conn->_setupCallback);
             cb(conn, rs.status);

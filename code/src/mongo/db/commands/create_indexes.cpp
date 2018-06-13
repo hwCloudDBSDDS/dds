@@ -26,6 +26,8 @@
  *    then also delete it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kIndex
+
 #include "mongo/platform/basic.h"
 
 #include <string>
@@ -54,19 +56,26 @@
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/s/grid.h"
+#include "mongo/s/catalog/type_collection.h"
+#include "mongo/util/log.h"
+#include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/client/shard.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
 
 namespace mongo {
 
 using std::string;
-
+using std::vector;
 using IndexVersion = IndexDescriptor::IndexVersion;
 
-namespace {
+
 
 const StringData kIndexesFieldName = "indexes"_sd;
 const StringData kCommandName = "createIndexes"_sd;
 const StringData kWriteConcern = "writeConcern"_sd;
-
+const StringData kchunkIdFieldName = "chunkId"_sd;
 /**
  * Parses the index specifications from 'cmdObj', validates them, and returns equivalent index
  * specifications that have any missing attributes filled in. If any index specification is
@@ -81,7 +90,6 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
     std::vector<BSONObj> indexSpecs;
     for (auto&& cmdElem : cmdObj) {
         auto cmdElemFieldName = cmdElem.fieldNameStringData();
-
         if (kIndexesFieldName == cmdElemFieldName) {
             if (cmdElem.type() != BSONType::Array) {
                 return {ErrorCodes::TypeMismatch,
@@ -104,7 +112,6 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
                     return indexSpecStatus.getStatus();
                 }
                 auto indexSpec = indexSpecStatus.getValue();
-
                 if (IndexDescriptor::isIdIndexPattern(
                         indexSpec[IndexDescriptor::kKeyPatternFieldName].Obj())) {
                     auto status = index_key_validate::validateIdIndexSpec(indexSpec);
@@ -118,11 +125,11 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
                                           << indexSpec[IndexDescriptor::kKeyPatternFieldName]};
                 }
 
-                indexSpecs.push_back(std::move(indexSpec));
+                indexSpecs.push_back(std::move(indexSpec.getOwned()));
             }
 
             hasIndexesField = true;
-        } else if (kCommandName == cmdElemFieldName || kWriteConcern == cmdElemFieldName) {
+        } else if (kchunkIdFieldName == cmdElemFieldName || kCommandName == cmdElemFieldName || kWriteConcern == cmdElemFieldName) {
             // Both the command name and writeConcern are valid top-level fields.
             continue;
         } else {
@@ -147,6 +154,8 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
     return indexSpecs;
 }
 
+
+const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
 /**
  * Returns index specifications with attributes (such as "collation") that are inherited from the
  * collection filled in.
@@ -198,7 +207,6 @@ StatusWith<std::vector<BSONObj>> resolveCollectionDefaultProperties(
     return indexSpecsWithDefaults;
 }
 
-}  // namespace
 
 /**
  * { createIndexes : "bar", indexes : [ { ns : "test.bar", key : { x : 1 }, name: "x_1" } ] }
@@ -226,28 +234,44 @@ public:
     }
 
     virtual bool run(OperationContext* txn,
-                     const string& dbname,
-                     BSONObj& cmdObj,
-                     int options,
-                     string& errmsg,
-                     BSONObjBuilder& result) {
-        const NamespaceString ns(parseNs(dbname, cmdObj));
-
-        Status status = userAllowedWriteNS(ns);
-        if (!status.isOK())
-            return appendCommandStatus(result, status);
-
+            const string& dbname,
+            BSONObj& cmdObj,
+            int options,
+            string& errmsg,
+            BSONObjBuilder& result) {
+        NamespaceString ns(parseNs(dbname, cmdObj));
+        log()<<"CmdCreateIndex CMD: "<<cmdObj;
+        txn->setNs(ns);
+        if (ns.isSystemDotIndexes())
+             return appendCommandStatus(result,Status(ErrorCodes::CannotCreateIndex,
+                      "cannot have an index on the system.indexes collection"));        
+        log()<<" create indexes ..001";
         auto specsWithStatus =
             parseAndValidateIndexSpecs(ns, cmdObj, serverGlobalParams.featureCompatibility);
         if (!specsWithStatus.isOK()) {
+            log()<<"create indexes ..002";
             return appendCommandStatus(result, specsWithStatus.getStatus());
         }
         auto specs = std::move(specsWithStatus.getValue());
+        
+        // create index metadata on config server
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && dbname != "config" && dbname != "system" && dbname !="admin"){
+            // if succeed to create index metadata, then pass the commands to 
+            // all the shard servers
+            Status status = createIndexMetadata(txn, ns, specs,cmdObj,dbname,result);
+            if( status.isOK() ){
+                return true;
+            }else{
+                return appendCommandStatus(result,status);
+            } 
+            //grid.catalogClient(txn)->createIndexOnShards(txn, ns, cmdObj);
+
+        }
 
         // now we know we have to create index(es)
         // Note: createIndexes command does not currently respect shard versioning.
         ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock dbLock(txn->lockState(), ns.db(), MODE_X);
+        Lock::DBLock dbLock(txn->lockState(), ns.db(), MODE_IX);
         if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(ns)) {
             return appendCommandStatus(
                 result,
@@ -257,12 +281,19 @@ public:
 
         Database* db = dbHolder().get(txn, ns.db());
         if (!db) {
+            dbLock.relockWithMode(MODE_X);
             db = dbHolder().openDb(txn, ns.db());
+            dbLock.relockWithMode(MODE_IX);
         }
+        Lock::CollectionLock collLock(txn->lockState(), ns.ns(), MODE_X);
 
-        Collection* collection = db->getCollection(ns.ns());
+        Collection* collection = db->getCollection(ns,true);
         if (collection) {
             result.appendBool("createdCollectionAutomatically", false);
+            if(collection->isAssigning()){
+                //chunk is assigning, return ChunkNotAssigned let CS retry.
+                return appendCommandStatus(result, Status(ErrorCodes::ChunkNotAssigned, "chunk not assigned."));
+            }
         } else {
             if (db->getViewCatalog()->lookup(txn, ns.ns())) {
                 errmsg = "Cannot create indexes on a view";
@@ -315,10 +346,14 @@ public:
         for (size_t i = 0; i < specs.size(); i++) {
             const BSONObj& spec = specs[i];
             if (spec["unique"].trueValue()) {
-                status = checkUniqueIndexConstraints(txn, ns.ns(), spec["key"].Obj());
+                //can't create unique index if shard collection and index isn't _id
+                if(CollectionType::TableType::kSharded == collection->getCollTabType())
+                {
+                    Status status = checkUniqueIndexConstraints(txn, ns.ns(), spec["key"].Obj());
 
-                if (!status.isOK()) {
-                    return appendCommandStatus(result, status);
+                    if (!status.isOK()) {
+                        return appendCommandStatus(result, status);
+                    }
                 }
             }
         }
@@ -397,7 +432,15 @@ public:
                     opObserver->onCreateIndex(txn, systemIndexes, infoObj);
                 }
             }
-
+            //get all indexes
+            BSONArray indexes;
+            collection->getAllIndexes(txn,indexes);
+            //update chunkMeatadata
+            Database* db = dbHolder().get(txn, ns.db());
+            uassert(90551, "database dropped during index build", db);
+            uassert(90552, "collection dropped during index build", db->getCollection(ns.ns()));
+            db->toUpdateChunkMetadata(txn,ns.ns(),indexes);
+            
             wunit.commit();
         }
         MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, kCommandName, ns.ns());

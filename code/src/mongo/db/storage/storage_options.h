@@ -40,6 +40,7 @@
  * that allow the user to change a different subset of these options.
  */
 
+
 namespace mongo {
 
 struct StorageGlobalParams {
@@ -101,6 +102,7 @@ struct StorageGlobalParams {
     AtomicDouble syncdelay{60.0};  // seconds between fsyncs
 
     bool readOnly = false;
+    bool usingPlogEnv = false;
 };
 
 extern StorageGlobalParams storageGlobalParams;

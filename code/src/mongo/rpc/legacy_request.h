@@ -90,6 +90,11 @@ public:
 
     Protocol getProtocol() const final;
 
+    // for core test
+    void setCommandArgs(const BSONObj& commandArgs){
+        _upconvertedCommandArgs = commandArgs;
+    }
+
 private:
     const Message* _message;
     // TODO: metadata will be handled in SERVER-18236

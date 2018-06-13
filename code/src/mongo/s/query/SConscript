@@ -13,7 +13,7 @@ env.Library(
         "cluster_client_cursor",
         "cluster_cursor_cleanup_job",
         "store_possible_cursor",
-    ],
+    ]
 )
 
 env.Library(

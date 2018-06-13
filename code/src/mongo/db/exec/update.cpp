@@ -49,6 +49,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
+
 namespace mongo {
 
 using std::string;
@@ -497,6 +498,7 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
     bool docWasModified = false;
 
     Status status = Status::OK();
+
     if (!driver->needMatchDetails()) {
         // If we don't need match details, avoid doing the rematch
         status = driver->update(StringData(), &_doc, &logObj, &updatedFields, &docWasModified);
@@ -595,7 +597,6 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
             newRecordId = recordId;
         } else {
             // The updates were not in place. Apply them through the file manager.
-
             newObj = _doc.getObject();
             uassert(17419,
                     str::stream() << "Resulting document after update is larger than "
@@ -625,7 +626,8 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
         }
 
         invariant(oldObj.snapshotId() == getOpCtx()->recoveryUnit()->getSnapshotId());
-        wunit.commit();
+
+            wunit.commit();
 
         // If the document moved, we might see it again in a collection scan (maybe it's
         // a document after our current document).
@@ -645,7 +647,6 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
     if (docWasModified || request->isExplain()) {
         _specificStats.nModified++;
     }
-
     return newObj;
 }
 
@@ -662,6 +663,7 @@ Status UpdateStage::applyUpdateOpsForInsert(OperationContext* txn,
     // as an insert in the oplog. We don't need the driver's help to build the
     // oplog record, then. We also set the context of the update driver to the INSERT_CONTEXT.
     // Some mods may only work in that context (e.g. $setOnInsert).
+
     driver->setLogOp(false);
     driver->setContext(ModifierInterface::ExecInfo::INSERT_CONTEXT);
 
@@ -760,7 +762,6 @@ void UpdateStage::doInsert() {
         const bool enforceQuota = !request->isGod();
         uassertStatusOK(_collection->insertDocument(
             getOpCtx(), newObj, _params.opDebug, enforceQuota, request->isFromMigration()));
-
         // Technically, we should save/restore state here, but since we are going to return
         // immediately after, it would just be wasted work.
         wunit.commit();
@@ -825,7 +826,6 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
     // If we're here, then we still have to ask for results from the child and apply
     // updates to them. We should only get here if the collection exists.
     invariant(_collection);
-
     // It is possible that after an update was applied, a WriteConflictException
     // occurred and prevented us from returning ADVANCED with the requested version
     // of the document.
@@ -853,6 +853,7 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
     }
 
     if (PlanStage::ADVANCED == status) {
+
         // Need to get these things from the result returned by the child.
         RecordId recordId;
 
@@ -962,6 +963,7 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
                 memberFreer.Dismiss();
             }
             *out = WorkingSet::INVALID_ID;
+
             return NEED_YIELD;
         }
 
@@ -973,7 +975,6 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
             *out = id;
             return PlanStage::ADVANCED;
         }
-
         return PlanStage::NEED_TIME;
     } else if (PlanStage::IS_EOF == status) {
         // The child is out of results, but we might not be done yet because we still might

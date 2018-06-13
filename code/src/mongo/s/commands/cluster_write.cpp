@@ -50,7 +50,9 @@
 #include "mongo/s/write_ops/batch_write_exec.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
-
+#include "mongo/s/sharding_raii.h"
+#include "mongo/db/commands.h"
+#include "mongo/bson/bsonobj.h"
 namespace mongo {
 
 using std::shared_ptr;
@@ -111,15 +113,25 @@ BSONObj createIndexDoc(const string& ns,
     return indexDoc.obj();
 }
 
-void toBatchError(const Status& status, BatchedCommandResponse* response) {
+void toBatchError(const Status& status, BatchedCommandResponse* response,bool flag=false) {
     response->clear();
-    response->setErrCode(status.code());
-    response->setErrMessage(status.reason());
-    response->setOk(false);
+    if( flag ){
+        response->clear();
+        WriteErrorDetail* error = new WriteErrorDetail();
+        error->setIndex(0);
+        error->setErrCode(status.code());
+        error->setErrMessage(status.reason());
+        response->setOk(true);
+        response->setN(0);
+        response->addToErrDetails(error);
+    }else{
+        response->setErrCode(status.code());
+        response->setErrMessage(status.reason());
+        response->setOk(false);
+    }
     dassert(response->isValid(NULL));
 }
-
-/**
+ /**
  * Splits the chunks touched based from the targeter stats if needed.
  */
 void splitIfNeeded(OperationContext* txn, const NamespaceString& nss, const TargeterStats& stats) {
@@ -134,7 +146,10 @@ void splitIfNeeded(OperationContext* txn, const NamespaceString& nss, const Targ
 
     shared_ptr<ChunkManager> chunkManager;
     shared_ptr<Shard> dummyShard;
-    config->getChunkManagerOrPrimary(txn, nss.ns(), chunkManager, dummyShard);
+    auto cmOrPrimaryStatus = config->getChunkManagerOrPrimary(txn, nss.ns(), chunkManager, dummyShard);
+    if (!cmOrPrimaryStatus.isOK()) {
+        return;
+    }
 
     if (!chunkManager) {
         return;
@@ -220,10 +235,8 @@ void ClusterWriter::write(OperationContext* txn,
         toBatchError(Status(ErrorCodes::InvalidOptions, errMsg), response);
         return;
     }
-
-    // Config writes and shard writes are done differently
     const string dbName = nss.db().toString();
-
+    // Config writes and shard writes are done differently
     unique_ptr<BatchedCommandRequest> requestWithWriteConcern;
     if (dbName == "config" || dbName == "admin") {
         // w:majority is the only valid write concern for writes to the config servers.
@@ -263,11 +276,190 @@ void ClusterWriter::write(OperationContext* txn,
 
         grid.catalogClient(txn)->writeConfigServerDirect(txn, *request, response);
     } else {
+        //TODO: if nss exists go on, else create collections and then run insert
+        auto dbStatus = ScopedShardDatabase::getOrCreate(txn, dbName);
+        if (!dbStatus.isOK()) {
+             Status st = dbStatus.getStatus();
+             toBatchError(Status(st.code(),
+                                    str::stream()
+                                        << "unable to target"
+                                        << (request->isInsertIndexRequest() ? " index" : "")
+                                        << " write op for collection "
+                                        << request->getTargetingNS()
+                                        << causedBy(st)),
+                             response);
+             return;
+        }
+        auto config = uassertStatusOK(grid.catalogCache()->getDatabase(txn,dbName));
+        bool isExist = config->isCollectionExist(dbName+"."+nss.coll());
+        if(!isExist){
+            config->reload(txn);
+        }
+        {
+        if((!config->isCollectionExist(dbName+"."+nss.coll())) && (request->getBatchType() == BatchedCommandRequest::BatchType_Insert )){
+           BatchedInsertRequest* insertRequest = request->getInsertRequest();
+           invariant( insertRequest != NULL );
+           std::vector<BSONObj> docs = insertRequest->getDocuments();
+           log()<<" insert docs size: "<<docs.size();
+           for( BSONObj& doc : docs ){
+               log()<<"doc: "<<doc;
+               if (doc.objsize() > BSONObjMaxUserSize){
+                   toBatchError(Status(ErrorCodes::BadValue,
+                                   str::stream() << "object to insert too large"
+                                                 << ". size in bytes: "
+                                                 << doc.objsize()
+                                                 << ", max size: "
+                                                 << BSONObjMaxUserSize),response,true);
+                   return;
+               }
+               bool firstElementIsId = false;
+               bool hasTimestampToFix = false;
+               bool hadId = false;
+               BSONObjIterator i(doc);
+               for (bool isFirstElement = true; i.more(); isFirstElement = false) {
+                   BSONElement e = i.next();
+                   if (e.type() == bsonTimestamp && e.timestampValue() == 0) {
+                       hasTimestampToFix = true;
+                   }
+                   auto fieldName = e.fieldNameStringData();
+                   if (fieldName[0] == '$') {
+                       toBatchError(Status(ErrorCodes::BadValue,
+                                        str::stream() << "Document can't have $ prefixed field names: " << fieldName),response,true);
+                       return;
+                   }
+                   if (fieldName == "_id") {
+                       if (e.type() == RegEx) {
+                           toBatchError(Status(ErrorCodes::BadValue, "can't use a regex for _id"),
+                                                response,true);
+                           return;
+                       }
+                       if(e.type() == Undefined) {
+                           toBatchError(Status(ErrorCodes::BadValue,
+                                               "can't use a undefined for _id"),
+                                               response,true);
+                           return;
+                       }
+                       if(e.type() == Array) {
+                           toBatchError(Status(ErrorCodes::BadValue, "can't use an array for _id"),response,true);
+                           return;
+                       }
+                       if (e.type() == Object) {
+                           BSONObj o = e.Obj();
+                           Status s = o.storageValidEmbedded();
+                           if (!s.isOK()){
+                               toBatchError(s,response,true);
+                               return;
+                           }
+                       }
+                       if (hadId) {
+                           toBatchError(Status(ErrorCodes::BadValue,
+                                               "can't have multiple _id fields in one document"),
+                                               response,true);
+                           return;
+                       }else{
+                           hadId = true;
+                           firstElementIsId = isFirstElement;
+                       }
+                     }
+                  }
+              }
+           }
+        }
+        NamespaceString _nss(dbName,nss.coll());
+        if(_nss.isSystemDotIndexes()){
+           vector<BSONObj> documents;
+           if(origRequest.getBatchType() == BatchedCommandRequest::BatchType_Insert){
+               const BatchedInsertRequest *irq =origRequest.getInsertRequest();
+               for (auto doc : irq->getDocuments()){
+                   documents.push_back(doc);
+               }
+               uassert(ErrorCodes::InvalidLength,
+                    "Insert commands to system.indexes are limited to a single insert",
+                    documents.size() == 1);
+               Command* createIndexCmd = Command::findCommand("createIndexes");
+               string errmsg;
+               BSONObj spec = documents[0];
+               BSONElement nsElement = spec["ns"];
+               const NamespaceString new_ns(nsElement.valueStringData());
+               uassert(ErrorCodes::InvalidOptions,
+                      str::stream() <<"Cannot create an index on "<<new_ns.ns()<<" with an insert to "                     << _nss.ns(),
+                      new_ns.db() == _nss.db());
+               BSONObjBuilder cmdBuilder;
+               cmdBuilder << "createIndexes" << new_ns.coll();
+               cmdBuilder << "indexes" << BSON_ARRAY(spec);
+               BSONObj cmd = cmdBuilder.done();
+               BSONObjBuilder result;
+               int queryOptions = 0;
+               bool ok = false;
+               try {
+                   ok = createIndexCmd->run(txn, dbName,cmd,queryOptions,errmsg,result);
+                   BSONObj res = result.done();
+                   auto firstEle = res.firstElement().Obj();
+                   auto firstEle2 = firstEle.firstElement().Obj();
+                   long before = firstEle2.getField("numIndexesBefore").numberLong();
+                   long after = firstEle2.getField("numIndexesAfter").numberLong();
+                   response->setOk(true);
+                   response->setN(after-before);
+                   return;
+               } catch (const DBException& e) {
+                   log()<<"DBException :" <<e.what();
+                   response->clear();
+                   WriteErrorDetail* error = new WriteErrorDetail();
+                   error->setIndex(0);
+                   error->setErrCode(e.getCode());
+                   error->setErrMessage(e.what());
+                   response->setN(0);
+                   response->setOk(true);
+                   response->addToErrDetails(error);
+                   return ;
+               }
+               if(!ok)
+               {
+                   return;
+               }
+            }
+        }
+        
+        int count=0;
+        while(true){
+            if(count++ >10 ){
+                 return;
+            }
+            if(!config->isCollectionExist(dbName+"."+nss.coll()))
+            {
+                Command* createCmd = Command::findCommand("create");
+                int queryOptions = 0;
+                string errmsg;
+                BSONObjBuilder cmdBob;
+                cmdBob.append("create", nss.coll());
+                auto createCmdObj = cmdBob.obj();
+                BSONObjBuilder result;
+                int code = 0;
+                bool ok = false;
+                try{ 
+                    ok = createCmd->run(txn,dbName,createCmdObj,queryOptions,errmsg,result);
+                }catch(const DBException& e){
+                    if( e.getCode() != ErrorCodes::NamespaceExists){
+                        response->clear();
+                        response->setErrCode(e.getCode());
+                        response->setErrMessage(errmsg);
+                        response->setOk(false);
+                    }else{
+                        code = ErrorCodes::NamespaceExists;
+                    }
+                    continue;
+                }
+                if(!ok && (code != ErrorCodes::NamespaceExists))
+                {
+                    continue;
+                }
+                break;
+            }
+            break;
+        }
         TargeterStats targeterStats;
-
         {
             ChunkManagerTargeter targeter(request->getTargetingNSS(), &targeterStats);
-
             Status targetInitStatus = targeter.init(txn);
             if (!targetInitStatus.isOK()) {
                 toBatchError(Status(targetInitStatus.code(),
@@ -280,7 +472,6 @@ void ClusterWriter::write(OperationContext* txn,
                              response);
                 return;
             }
-
             DBClientMultiCommand dispatcher;
             BatchWriteExec exec(&targeter, &dispatcher);
             exec.executeBatch(txn, *request, response, &_stats);

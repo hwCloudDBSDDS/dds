@@ -717,7 +717,7 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
     LOG(5) << "Rated tree:" << endl << redact(query.root()->toString());
 
     // If there is a GEO_NEAR it must have an index it can use directly.
-    const MatchExpression* gnNode = NULL;
+    /*const MatchExpression* gnNode = NULL;
     if (QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR, &gnNode)) {
         // No index for GEO_NEAR?  No query.
         RelevantTag* tag = static_cast<RelevantTag*>(gnNode->getTag());
@@ -729,7 +729,7 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
         }
 
         LOG(5) << "Rated tree after geonear processing:" << redact(query.root()->toString());
-    }
+    } end  */
 
     // Likewise, if there is a TEXT it must have an index it can use directly.
     const MatchExpression* textNode = NULL;

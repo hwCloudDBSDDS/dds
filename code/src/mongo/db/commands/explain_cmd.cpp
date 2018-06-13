@@ -25,7 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/commands.h"
@@ -33,6 +33,7 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/rpc/metadata/server_selection_metadata.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -115,14 +116,22 @@ public:
                      std::string& errmsg,
                      BSONObjBuilder& result) {
         ExplainCommon::Verbosity verbosity;
+        LOG(1)<<"[explain_cmd.cpp:117]............cmdObj: "<<cmdObj;
         Status parseStatus = ExplainCommon::parseCmdBSON(cmdObj, &verbosity);
         if (!parseStatus.isOK()) {
             return appendCommandStatus(result, parseStatus);
         }
-
+        BSONObjBuilder queryBuilder;
         // This is the nested command which we are explaining.
         BSONObj explainObj = cmdObj.firstElement().Obj();
-
+        queryBuilder.appendElements(explainObj);
+        BSONElement chunkid;
+        auto extractStatus =
+        bsonExtractTypedField(cmdObj,"chunkId",BSONType::String, &chunkid);
+        if (extractStatus.isOK()) {
+            queryBuilder.append(chunkid);
+        }
+        LOG(1)<<"[explainObj.firstElementFieldName()] ...... "<<explainObj.firstElementFieldName();
         Command* commToExplain = Command::findCommand(explainObj.firstElementFieldName());
         if (NULL == commToExplain) {
             mongoutils::str::stream ss;
@@ -155,7 +164,7 @@ public:
 
         // Actually call the nested command's explain(...) method.
         Status explainStatus = commToExplain->explain(
-            txn, dbname, explainObj, verbosity, rpc::ServerSelectionMetadata::get(txn), &result);
+            txn, dbname,queryBuilder.obj(), verbosity, rpc::ServerSelectionMetadata::get(txn), &result);
         if (!explainStatus.isOK()) {
             return appendCommandStatus(result, explainStatus);
         }

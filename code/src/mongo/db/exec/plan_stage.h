@@ -34,7 +34,6 @@
 #include "mongo/db/exec/plan_stats.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/invalidation_type.h"
-
 namespace mongo {
 
 class ClockSource;

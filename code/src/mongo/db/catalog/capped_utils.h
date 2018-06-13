@@ -38,6 +38,7 @@ class OperationContext;
  */
 Status emptyCapped(OperationContext* txn, const NamespaceString& collectionName);
 
+Status emptyCappedOnCfgSrv(OperationContext* txn, const NamespaceString& collectionName);
 /**
  * Clones the collection "shortFrom" to the capped collection "shortTo" with a size of "size".
  */

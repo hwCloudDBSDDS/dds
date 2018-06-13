@@ -51,6 +51,7 @@
 #include "mongo/rpc/write_concern_error_detail.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/log.h"
+#include "mongo/bson/util/bson_extract.h"
 
 namespace mongo {
 
@@ -65,6 +66,7 @@ Command::CommandMap* Command::_commands;
 Counter64 Command::unknownCommands;
 static ServerStatusMetricField<Counter64> displayUnknownCommands("commands.<UNKNOWN>",
                                                                  &Command::unknownCommands);
+const char kChunkIdField[] = "chunkId";
 
 namespace {
 
@@ -101,22 +103,24 @@ NamespaceString Command::parseNsCollectionRequired(const string& dbname, const B
     return nss;
 }
 
-string Command::parseNs(const string& dbname, const BSONObj& cmdObj) const {
-    BSONElement first = cmdObj.firstElement();
-    if (first.type() != mongo::String)
+string Command::parseNs(const std::string& dbname, const BSONObj& cmdObj) const {
+    std::string collforchunk;
+
+    BSONElement collElement = cmdObj.firstElement();
+    if (collElement.type() != mongo::String)
         return dbname;
 
-    string coll = cmdObj.firstElement().valuestr();
-#if defined(CLC)
-    DEV if (mongoutils::str::startsWith(coll, dbname + '.')) {
-        log() << "DEBUG parseNs Command's collection name looks like it includes the db name\n"
-              << dbname << '\n'
-              << coll << '\n'
-              << cmdObj.toString();
-        dassert(false);
+    BSONElement chunkidElement;
+    Status chunkidElementStatus =
+        bsonExtractTypedField(cmdObj, kChunkIdField, BSONType::String, &chunkidElement);
+    if (chunkidElementStatus.isOK()) {
+        collforchunk = collElement.valueStringData() + "$" + chunkidElement.valueStringData();
     }
-#endif
-    return dbname + '.' + coll;
+    else {
+        collforchunk = collElement.valuestr();
+    }
+
+    return dbname + '.' + collforchunk;
 }
 
 ResourcePattern Command::parseResourcePattern(const std::string& dbname,
@@ -138,14 +142,20 @@ Command::Command(StringData name, bool webUI, StringData oldName)
         _commands = new CommandMap();
     if (_commandsByBestName == 0)
         _commandsByBestName = new CommandMap();
-    Command*& c = (*_commands)[name];
-    if (c)
-        log() << "warning: 2 commands with name: " << _name;
-    c = this;
-    (*_commandsByBestName)[name] = this;
+    
+    if( _name != "copydb" && _name != "convertToCapped"){
+        Command*& c = (*_commands)[name];
+	
+        if (c)
+            log() << "warning: 2 commands with name: " << _name;
+    
+        c = this;
+        (*_commandsByBestName)[name] = this;
 
-    if (!oldName.empty())
-        (*_commands)[oldName.toString()] = this;
+        if (!oldName.empty())
+            (*_commands)[oldName.toString()] = this;
+    }
+
 }
 
 void Command::help(stringstream& help) const {

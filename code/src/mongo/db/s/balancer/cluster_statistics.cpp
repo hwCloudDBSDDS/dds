@@ -32,6 +32,7 @@
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/bson/util/bson_extract.h"
 
 namespace mongo {
 
@@ -39,48 +40,238 @@ ClusterStatistics::ClusterStatistics() = default;
 
 ClusterStatistics::~ClusterStatistics() = default;
 
-ClusterStatistics::ShardStatistics::ShardStatistics(ShardId inShardId,
-                                                    uint64_t inMaxSizeMB,
-                                                    uint64_t inCurrSizeMB,
-                                                    bool inIsDraining,
-                                                    std::set<std::string> inShardTags,
-                                                    std::string inMongoVersion)
-    : shardId(std::move(inShardId)),
-      maxSizeMB(inMaxSizeMB),
-      currSizeMB(inCurrSizeMB),
-      isDraining(inIsDraining),
-      shardTags(std::move(inShardTags)),
-      mongoVersion(std::move(inMongoVersion)) {}
-
-bool ClusterStatistics::ShardStatistics::isSizeMaxed() const {
-    if (!maxSizeMB || !currSizeMB) {
-        return false;
-    }
-
-    return currSizeMB >= maxSizeMB;
+bool ClusterStatistics::ChunkStatistics::isAboveSplitThreshold(uint64_t splitThreshold) const {
+    // TODO:  caculate according to the statistics
+    return (sstfilesize * 1024 * 1024) > splitThreshold;
 }
 
-bool ClusterStatistics::ShardStatistics::isSizeExceeded() const {
-    if (!maxSizeMB || !currSizeMB) {
-        return false;
+bool ClusterStatistics::ChunkStatistics::isUnderSplitThreshold(uint64_t splitThreshold) const {
+    // TODO:  caculate according to the statistics
+    return false;
+}
+
+BSONObj ClusterStatistics::ChunkStatistics::toBSON() const {
+    BSONObjBuilder builder;
+    builder.append("id", chunkId.toString());
+    builder.append("currSizeMB", static_cast<long long>(currSizeMB));
+    builder.append("documentNum", static_cast<long long>(documentNum));
+    builder.append("tps", static_cast<long long>(tps));
+    builder.append("sstfileNum", static_cast<long long>(sstfileNum));
+    builder.append("sstfilesize", static_cast<long long>(sstfilesize));
+
+    return builder.obj();
+}
+
+StatusWith<ClusterStatistics::ChunkStatistics> ClusterStatistics::ChunkStatistics::fromBSON(const BSONObj& source) {
+    ClusterStatistics::ChunkStatistics chunkStatistics;
+
+    {
+        std::string ns;
+        Status status = bsonExtractStringField(source, "ns", &ns);
+        if (!status.isOK()) {
+            return status;
+        }
+        chunkStatistics.ns = ns;
     }
 
-    return currSizeMB > maxSizeMB;
+    {
+        std::string chunkIdstr;
+        Status status = bsonExtractStringField(source, "chunkid", &chunkIdstr);
+        if (!status.isOK()) {
+            return status;
+        }
+        ChunkId chunkId(chunkIdstr);
+        chunkStatistics.chunkId = chunkId;
+    }
+
+    {
+        long long size;
+        Status status = bsonExtractIntegerField(source, "size", &size);
+        if (!status.isOK()) {
+            return status;
+        }
+        chunkStatistics.currSizeMB = size;
+    }
+
+    {
+        long long numRecords;
+        Status status = bsonExtractIntegerField(source, "count", &numRecords);
+        if (!status.isOK()) {
+            return status;
+        }
+        chunkStatistics.documentNum = numRecords;
+    }
+
+    {
+        long long tps;
+        Status status = bsonExtractIntegerField(source, "tps", &tps);
+        if (!status.isOK()) {
+            return status;
+        }
+        chunkStatistics.tps = tps;
+    }
+
+    {
+        BSONElement rockdb;
+        Status status = bsonExtractTypedField(source, "rocksdb", Object, &rockdb);
+        if (status.isOK()) {
+            BSONObj obj = rockdb.Obj();
+            long long num;
+            status = bsonExtractIntegerField(obj, "count", &num);
+            if (status.isOK()) {
+                chunkStatistics.sstfileNum = num;
+            }
+            long long size;
+            status = bsonExtractIntegerField(obj, "size", &size);
+            if (status.isOK()) {
+                chunkStatistics.sstfilesize = size;
+            }
+        }
+    }
+
+    return chunkStatistics;
+}
+
+bool ClusterStatistics::ShardStatistics::isAboveThreshold() const {
+    // TODO:  caculate according to the statistics
+    return false;
 }
 
 BSONObj ClusterStatistics::ShardStatistics::toBSON() const {
     BSONObjBuilder builder;
     builder.append("id", shardId.toString());
-    builder.append("maxSizeMB", static_cast<long long>(maxSizeMB));
-    builder.append("currSizeMB", static_cast<long long>(currSizeMB));
-    builder.append("draining", isDraining);
-    if (!shardTags.empty()) {
-        BSONArrayBuilder arrayBuilder(builder.subarrayStart("tags"));
-        arrayBuilder.append(shardTags);
+
+    BSONArrayBuilder b;
+    for (const ClusterStatistics::ChunkStatistics& chunkStat : chunkStatistics) {
+        b << chunkStat.toBSON();
+    }
+    builder.append("chunks", b.arr());
+
+    return builder.obj();
+}
+
+StatusWith<ClusterStatistics::ShardStatistics> ClusterStatistics::ShardStatistics::fromBSON(const BSONObj& source) {
+    ClusterStatistics::ShardStatistics shardStatistics;
+
+    // TODO: parse cpu and mem
+    {
+        std::string version;
+        Status status = bsonExtractStringField(source, "mongoVersion", &version);
+        if (!status.isOK()) {
+            return status;
+        }
+        shardStatistics.mongoVersion = version;
+    }            
+
+    // TODO: parse cpu and mem
+    {
+        BSONElement cpuInfo;
+        Status status = bsonExtractTypedField(source, "cpu", Object, &cpuInfo);
+        if (!status.isOK()) {
+            return status;
+        }
     }
 
-    builder.append("version", mongoVersion);
-    return builder.obj();
+    {
+        BSONElement memInfo;
+        Status status = bsonExtractTypedField(source, "memory", Object, &memInfo);
+        if (!status.isOK()) {
+            return status;
+        }
+    }
+
+    {
+        BSONElement bandwidthInfo;
+        Status status = bsonExtractTypedField(source, "bandwidth", Object, &bandwidthInfo);
+        if (!status.isOK()) {
+            return status;
+        }
+
+        BSONObj obj = bandwidthInfo.Obj();
+
+        long long read;
+        status = bsonExtractIntegerField(obj, "read", &read);
+        if (!status.isOK()) {
+            return status;
+        }
+        shardStatistics.netWorkInfo.readBandWidth = read;
+
+        long long write;
+        status = bsonExtractIntegerField(obj, "write", &write);
+        if (!status.isOK()) {
+            return status;
+        }
+        shardStatistics.netWorkInfo.writeBandWidth = write;
+    }
+
+    {
+        BSONElement opsInfo;
+        Status status = bsonExtractTypedField(source, "ops", Object, &opsInfo);
+        if (!status.isOK()) {
+            return status;
+        }
+
+        BSONObj obj = opsInfo.Obj();
+
+        long long ops;
+        status = bsonExtractIntegerField(obj, "insert", &ops);
+        if (!status.isOK()) {
+            return status;
+        }
+        shardStatistics.opsInfo.insertOps = ops;
+
+        status = bsonExtractIntegerField(obj, "query", &ops);
+        if (!status.isOK()) {
+            return status;
+        }
+        shardStatistics.opsInfo.queryOps = ops;
+
+        status = bsonExtractIntegerField(obj, "update", &ops);
+        if (!status.isOK()) {
+            return status;
+        }
+        shardStatistics.opsInfo.updateOps = ops;
+
+        status = bsonExtractIntegerField(obj, "delete", &ops);
+        if (!status.isOK()) {
+            return status;
+        }
+        shardStatistics.opsInfo.deleteOps = ops;
+
+        status = bsonExtractIntegerField(obj, "getmore", &ops);
+        if (!status.isOK()) {
+            return status;
+        }
+        shardStatistics.opsInfo.getmoreOps = ops;
+
+        status = bsonExtractIntegerField(obj, "command", &ops);
+        if (!status.isOK()) {
+            return status;
+        }
+        shardStatistics.opsInfo.commandOps = ops;
+    }
+
+    {
+        BSONElement chunksElem;
+        Status status = bsonExtractTypedField(source, "chunks", Array, &chunksElem);
+        if (status.isOK()) {
+            BSONObjIterator it(chunksElem.Obj());
+            while (it.more()) {
+                auto chunkStatistics = ClusterStatistics::ChunkStatistics::fromBSON(it.next().Obj());
+                if (!chunkStatistics.isOK()) {
+                    return chunkStatistics.getStatus();
+                }
+
+                shardStatistics.chunkStatistics.push_back(chunkStatistics.getValue());
+            }
+        } else if (status == ErrorCodes::NoSuchKey) {
+
+        } else {
+            return status;
+        }
+    }
+
+    return shardStatistics;
 }
 
 }  // namespace mongo

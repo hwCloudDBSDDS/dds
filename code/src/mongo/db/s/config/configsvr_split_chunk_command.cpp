@@ -119,7 +119,6 @@ public:
         if (!splitChunkResult.isOK()) {
             return appendCommandStatus(result, splitChunkResult);
         }
-
         return true;
     }
 } configsvrSplitChunkCmd;

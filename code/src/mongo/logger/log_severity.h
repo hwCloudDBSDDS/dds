@@ -79,7 +79,7 @@ public:
      *
      * See toStringData(), below.
      */
-    inline std::string toString() const;
+    std::string toString() const;
 
     /**
      * Returns a StringData naming this security level.

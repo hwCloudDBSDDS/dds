@@ -25,7 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
 #include "mongo/platform/basic.h"
 
 #include "mongo/client/dbclientinterface.h"
@@ -33,7 +33,7 @@
 #include "mongo/db/query/explain.h"
 #include "mongo/rpc/metadata/server_selection_metadata.h"
 #include "mongo/s/query/cluster_find.h"
-
+#include "mongo/util/log.h"
 namespace mongo {
 namespace {
 

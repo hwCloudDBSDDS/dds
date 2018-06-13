@@ -119,10 +119,10 @@ public:
             config = status.getValue();
         }
 
-        if (!config->isSharded(nss.ns())) {
+        if (CollectionType::TableType::kNonShard == config->getCollTabType(nss.ns())) {
             config->reload(txn);
 
-            if (!config->isSharded(nss.ns())) {
+            if (CollectionType::TableType::kNonShard == config->getCollTabType(nss.ns())) {
                 return appendCommandStatus(result,
                                            Status(ErrorCodes::NamespaceNotSharded,
                                                   "ns [" + nss.ns() + " is not sharded."));
@@ -210,11 +210,8 @@ public:
 
         ChunkType chunkType;
         chunkType.setNS(nss.ns());
-        chunkType.setMin(chunk->getMin());
-        chunkType.setMax(chunk->getMax());
-        chunkType.setShard(chunk->getShardId());
-        chunkType.setVersion(info->getVersion());
-
+        chunk->constructChunkType(&chunkType);
+        
         uassertStatusOK(configsvr_client::moveChunk(txn,
                                                     chunkType,
                                                     to->getId(),

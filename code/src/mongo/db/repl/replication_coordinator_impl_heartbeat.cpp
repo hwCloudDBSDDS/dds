@@ -55,6 +55,8 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/util_extend/default_parameters.h"
+#include "mongo/db/modules/rocks/src/GlobalConfig.h"
 
 namespace mongo {
 namespace repl {
@@ -71,6 +73,7 @@ MONGO_FP_DECLARE(blockHeartbeatStepdown);
 }  // namespace
 
 using executor::RemoteCommandRequest;
+using str::stream;
 
 void ReplicationCoordinatorImpl::_doMemberHeartbeat(ReplicationExecutor::CallbackArgs cbData,
                                                     const HostAndPort& target,
@@ -95,8 +98,7 @@ void ReplicationCoordinatorImpl::_doMemberHeartbeat(ReplicationExecutor::Callbac
             _topCoord->prepareHeartbeatRequest(now, _settings.ourSetName(), target);
         heartbeatObj = hbRequest.first.toBSON();
         timeout = hbRequest.second;
-    }
-
+    }   
     const RemoteCommandRequest request(
         target, "admin", heartbeatObj, BSON(rpc::kReplSetMetadataFieldName << 1), nullptr, timeout);
     const ReplicationExecutor::RemoteCommandCallbackFn callback =
@@ -154,7 +156,7 @@ void ReplicationCoordinatorImpl::_handleHeartbeatResponse(
             replMetadata.getValue().getReplicaSetId().isSet() &&
             _rsConfig.getReplicaSetId() != replMetadata.getValue().getReplicaSetId()) {
             responseStatus = Status(ErrorCodes::InvalidReplicaSetConfig,
-                                    str::stream() << "replica set IDs do not match, ours: "
+                                    stream() << "replica set IDs do not match, ours: "
                                                   << _rsConfig.getReplicaSetId()
                                                   << "; remote node's: "
                                                   << replMetadata.getValue().getReplicaSetId());
@@ -848,6 +850,9 @@ void ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1(bool isPriorityTake
         log() << "Starting an election, since we've seen no PRIMARY in the past "
               << _rsConfig.getElectionTimeoutPeriod();
     }
+    getGlobalServiceContext()->registerProcessStageTime("secondaryToPrimary");
+    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
+        "startElectSelfV1");
     _startElectSelfV1();
 }
 

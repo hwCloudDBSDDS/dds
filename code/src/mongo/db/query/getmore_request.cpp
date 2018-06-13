@@ -48,6 +48,7 @@ const char kBatchSizeField[] = "batchSize";
 const char kAwaitDataTimeoutField[] = "maxTimeMS";
 const char kTermField[] = "term";
 const char kLastKnownCommittedOpTimeField[] = "lastKnownCommittedOpTime";
+const char kChunkIdField[] = "chunkId";
 
 }  // namespace
 
@@ -93,7 +94,14 @@ std::string GetMoreRequest::parseNs(const std::string& dbname, const BSONObj& cm
     BSONElement collElt = cmdObj["collection"];
     const std::string coll = (collElt.type() == BSONType::String) ? collElt.String() : "";
 
-    return str::stream() << dbname << "." << coll;
+    BSONElement chunkIdElement = cmdObj["chunkId"];
+    const std::string chunkId = (chunkIdElement.type() == BSONType::String) ? chunkIdElement.String() : "";
+
+    if (0 == chunkId.size()) {
+        return str::stream() << dbname << "." << coll;
+    } else {
+        return str::stream() << dbname << "." << coll << "$" << chunkId;
+    }
 }
 
 // static
@@ -157,6 +165,8 @@ StatusWith<GetMoreRequest> GetMoreRequest::parseFromBSON(const std::string& dbna
                 return status;
             }
             lastKnownCommittedOpTime = ot;
+        } else if (str::equals(fieldName, kChunkIdField)) {
+            // do nothing
         } else if (!str::startsWith(fieldName, "$")) {
             return {ErrorCodes::FailedToParse,
                     str::stream() << "Failed to parse: " << cmdObj << ". "

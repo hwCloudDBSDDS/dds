@@ -160,6 +160,7 @@ int ConfigDiffTracker<ValType>::calculateConfigDiff(OperationContext* txn,
         // TODO: This checks for overlap, we also should check for holes here iff we're
         // tracking all chunks.
         if (_isOverlapping(chunk.getMin(), chunk.getMax())) {
+            LOG(3) << "overchunk: " << chunk;
             return -1;
         }
 

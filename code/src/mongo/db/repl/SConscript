@@ -408,6 +408,8 @@ env.Library('repl_coordinator_impl',
                 'replication_coordinator_impl_elect_v1.cpp',
                 'replication_coordinator_impl_heartbeat.cpp',
                 'vote_requester.cpp',
+                'repl_extend/shard_server_heartbeat_response_action.cpp',
+                'repl_extend/shard_server_heartbeat_coordinator.cpp'
             ],
             LIBDEPS=[
                      '$BUILD_DIR/mongo/db/common',
@@ -640,6 +642,7 @@ env.Library('replica_set_messages',
                 'replica_set_tag.cpp',
                 'update_position_args.cpp',
                 'last_vote.cpp',
+                'repl_extend/shard_server_heartbeat_args.cpp',
             ],
             LIBDEPS=[
                 '$BUILD_DIR/mongo/base',
@@ -679,6 +682,7 @@ env.Library(
         'replset_commands.cpp',
         'repl_set_command.cpp',
         'repl_set_request_votes.cpp',
+        'repl_extend/shard_server_heartbeat_command.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',

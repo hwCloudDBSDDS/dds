@@ -35,7 +35,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
-
+#include "mongo/bson/bsonobj.h"
 namespace mongo {
 
 class BSONObjBuilder;
@@ -111,6 +111,13 @@ public:
                                     bool stayTemp) = 0;
 
     virtual Status dropCollection(OperationContext* opCtx, StringData ns) = 0;
+
+    virtual Status postInitRecordStore(OperationContext* opCtx, StringData ns, const CollectionOptions& options) {
+        return Status::OK();
+    }
+    virtual Status updateChunkMetadataViaRecordStore(OperationContext* opCtx, StringData ns,BSONArray &indexes){
+        return Status::OK();
+    }
 
 private:
     std::string _name;

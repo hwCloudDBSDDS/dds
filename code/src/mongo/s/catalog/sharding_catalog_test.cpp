@@ -461,6 +461,7 @@ TEST_F(ShardingCatalogClientTest, GetChunksForNSWithSortAndLimit) {
     chunkA.setMax(BSON("a" << 100));
     chunkA.setVersion({1, 2, oid});
     chunkA.setShard(ShardId("shard0000"));
+    chunkA.setName("1");
 
     ChunkType chunkB;
     chunkB.setNS("TestDB.TestColl");
@@ -468,6 +469,7 @@ TEST_F(ShardingCatalogClientTest, GetChunksForNSWithSortAndLimit) {
     chunkB.setMax(BSON("a" << 200));
     chunkB.setVersion({3, 4, oid});
     chunkB.setShard(ShardId("shard0001"));
+    chunkA.setName("2");
 
     ChunkVersion queryChunkVersion({1, 2, oid});
 
@@ -1359,6 +1361,7 @@ TEST_F(ShardingCatalogClientTest, ApplyChunkOpsDeprecatedSuccessfulWithCheck) {
     onFindCommand([this](const RemoteCommandRequest& request) {
         OID oid = OID::gen();
         ChunkType chunk;
+        chunk.setName("1");
         chunk.setNS("TestDB.TestColl");
         chunk.setMin(BSON("a" << 1));
         chunk.setMax(BSON("a" << 100));

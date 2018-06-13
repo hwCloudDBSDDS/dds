@@ -336,6 +336,13 @@ public:
                      int,
                      string& errmsg,
                      BSONObjBuilder& result) {
+        StorageEngine* storageEngine = getGlobalServiceContext()->getGlobalStorageEngine();
+        if (storageEngine == NULL) {
+            return appendCommandStatus(result,
+                                       Status(ErrorCodes::NotYetInitialized,
+                                              "Storage engine has not been initialized"));
+        }
+
         BSONObj configObj;
         if (cmdObj["replSetInitiate"].type() == Object) {
             configObj = cmdObj["replSetInitiate"].Obj();
@@ -773,6 +780,13 @@ public:
         status = args.initialize(cmdObj);
         if (!status.isOK()) {
             return appendCommandStatus(result, status);
+        }
+        StorageEngine* storageEngine = getGlobalServiceContext()->getGlobalStorageEngine();
+        if (storageEngine == NULL) {
+            Status storageEngineErrorStatus = Status(ErrorCodes::NotYetInitialized, 
+                "Storage engine has not initialized yet");
+            return appendCommandStatus(result, storageEngineErrorStatus);
+            
         }
 
         // ugh.

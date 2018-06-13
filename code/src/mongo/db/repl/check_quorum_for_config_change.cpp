@@ -190,6 +190,7 @@ void QuorumChecker::_tabulateHeartbeatResponse(const RemoteCommandRequest& reque
     ReplSetHeartbeatResponse hbResp;
     Status hbStatus = hbResp.initialize(resBSON, 0);
 
+    log() << "QuorumChecker::_tabulateHeartbeatResponse initializa Bson" << resBSON;
     if (hbStatus.code() == ErrorCodes::InconsistentReplicaSetNames) {
         std::string message = str::stream() << "Our set name did not match that of "
                                             << request.target.toString();

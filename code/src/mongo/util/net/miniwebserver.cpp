@@ -131,7 +131,8 @@ bool MiniWebServer::fullReceive(const char* buf) {
 }
 
 void MiniWebServer::_accepted(const std::shared_ptr<Socket>& psock, long long connectionId) {
-    char buf[4096];
+    // The buf length from 4096 to 4096 * 17, in order to accept 4096 ip address.
+    char buf[4096*17];
     int len = 0;
     try {
 #ifdef MONGO_CONFIG_SSL

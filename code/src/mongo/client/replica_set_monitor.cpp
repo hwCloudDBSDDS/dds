@@ -170,8 +170,8 @@ struct HostNotIn {
 const Seconds kRefreshPeriod(30);
 }  // namespace
 
-// If we cannot find a host after 15 seconds of refreshing, give up
-const Seconds ReplicaSetMonitor::kDefaultFindHostTimeout(15);
+// If we cannot find a host after 10 seconds of refreshing, give up
+const Seconds ReplicaSetMonitor::kDefaultFindHostTimeout(2);
 
 // Defaults to random selection as required by the spec
 bool ReplicaSetMonitor::useDeterministicHostSelection = false;

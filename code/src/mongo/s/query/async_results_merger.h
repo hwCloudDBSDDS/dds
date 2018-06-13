@@ -42,6 +42,7 @@
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
+#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -197,6 +198,10 @@ private:
          */
         RemoteCursorData(HostAndPort hostAndPort, CursorId establishedCursorId);
 
+        RemoteCursorData(ShardId shardId, ChunkId chunkId, BSONObj cmdObj);
+
+        RemoteCursorData(HostAndPort hostAndPort, ChunkId chunkId, CursorId establishedCursorId);
+
         /**
          * Returns the resolved host and port on which the remote cursor resides.
          */
@@ -229,6 +234,8 @@ private:
         // ShardId on which a cursor will be created.
         // TODO: This should always be set.
         const boost::optional<ShardId> shardId;
+
+        const boost::optional<ChunkId> chunkId;
 
         // The command object for sending to the remote to establish the cursor. If a remote cursor
         // has not been established yet, this member will be set to a valid command object. If a

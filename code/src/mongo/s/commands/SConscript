@@ -2,6 +2,17 @@
 
 Import("env")
 
+env.Library(
+    target='cluster_write',
+    source=[
+        'cluster_write.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/s/coreshard',
+        '$BUILD_DIR/mongo/s/write_ops/cluster_write_op',
+    ],
+)
+
 # These commands are linked both in MongoS and MongoD
 env.Library(
     target='shared_cluster_commands',
@@ -67,13 +78,14 @@ env.Library(
         'cluster_update_zone_key_range_cmd.cpp',
         'cluster_user_management_commands.cpp',
         'cluster_whats_my_uri_cmd.cpp',
-        'cluster_write.cpp',
         'cluster_write_cmd.cpp',
         'commands_public.cpp',
         'request.cpp',
         'run_on_all_shards_cmd.cpp',
         'sharded_command_processing.cpp',
         'strategy.cpp',
+        'cluster_offload_chunk_cmd.cpp',
+        'cluster_assign_chunk_cmd.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/client/parallel',
@@ -85,5 +97,6 @@ env.Library(
         '$BUILD_DIR/mongo/s/coreshard',
         '$BUILD_DIR/mongo/s/mongoscore',
         '$BUILD_DIR/mongo/transport/transport_layer_common',
+        'cluster_write',
     ]
 )

@@ -50,6 +50,12 @@
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/util_extend/default_parameters.h"
+#include "mongo/s/client/version_manager.h"
+#include "mongo/s/stale_exception.h"
+#include "mongo/s/client/shard_connection.h"
+#include <sys/time.h>
+#include <unordered_map>
 
 namespace mongo {
 
@@ -66,6 +72,97 @@ bool isMongos() {
  */
 void usingAShardConnection(const std::string& addr) {
     ClusterLastErrorInfo::get(cc()).addShardHost(addr);
+}
+
+// Get status code from result
+int getStatusCodeOfResult(BSONObjBuilder& result, const bool ok) {
+    BSONObj tmp    = result.asTempObj();
+    BSONElement code_el = tmp.getField("code");
+    if (!code_el.eoo() && code_el.isNumber()) {
+        return code_el.numberInt();
+    }
+
+    BSONElement writeError_el = tmp.getField("writeErrors");
+    if (writeError_el.eoo() || writeError_el.type() !=  mongo::Array){
+        return ErrorCodes::OK;
+    }
+
+    std::vector<BSONElement> arrElems = writeError_el.Array();
+    for (auto& element : arrElems) {
+        if (!element.isABSONObj()) {
+            return ErrorCodes::OK;
+        }
+
+        BSONObj code_obj = element.Obj().getOwned();
+        if (code_obj.isEmpty()){
+            continue;
+        }
+
+        BSONElement eleCode = code_obj.getField("code");
+        if (!eleCode.eoo() && eleCode.isNumber()) {
+            return eleCode.numberInt();
+        }
+    }
+
+    return ErrorCodes::OK;
+}
+
+// err code need try
+std::map<ErrorCodes::Error,ErrorCodes::Error> g_need_retry_errcode;
+// init g_need_retry_errcode
+void Command::initNeedRetryCode()
+{
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::HostUnreachable,ErrorCodes::HostUnreachable));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::HostNotFound,ErrorCodes::HostNotFound));
+    //g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::FailedToParse,ErrorCodes::FailedToParse));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::LockTimeout,ErrorCodes::LockTimeout));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::LockBusy,ErrorCodes::LockBusy));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::ExceededTimeLimit,ErrorCodes::ExceededTimeLimit));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::ShardNotFound,ErrorCodes::ShardNotFound));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::ReplicaSetNotFound,ErrorCodes::ReplicaSetNotFound));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NodeNotFound,ErrorCodes::NodeNotFound));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NetworkTimeout,ErrorCodes::NetworkTimeout));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::ShutdownInProgress,ErrorCodes::ShutdownInProgress));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NotYetInitialized,ErrorCodes::NotYetInitialized));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::CannotSatisfyWriteConcern,ErrorCodes::CannotSatisfyWriteConcern));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::LockFailed,ErrorCodes::LockFailed));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::OBSOLETE_ReadAfterOptimeTimeout,ErrorCodes::OBSOLETE_ReadAfterOptimeTimeout));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::PrimarySteppedDown,ErrorCodes::PrimarySteppedDown));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::ShardServerNotFound,ErrorCodes::ShardServerNotFound));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::SocketException,ErrorCodes::SocketException));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::RecvStaleConfig,ErrorCodes::RecvStaleConfig));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NotMaster,ErrorCodes::NotMaster));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NoPrimary,ErrorCodes::NoPrimary));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::InterruptedAtShutdown,ErrorCodes::InterruptedAtShutdown));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::Interrupted,ErrorCodes::Interrupted));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::InterruptedDueToReplStateChange,ErrorCodes::InterruptedDueToReplStateChange));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NotMasterOrSecondary,ErrorCodes::NotMasterOrSecondary));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::SendStaleConfig,ErrorCodes::SendStaleConfig));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NoProgressMade,ErrorCodes::NoProgressMade));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::StaleShardVersion,ErrorCodes::StaleShardVersion));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::WriteConcernFailed,ErrorCodes::WriteConcernFailed));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::FailedToSatisfyReadPreference,ErrorCodes::FailedToSatisfyReadPreference));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::SocketError,ErrorCodes::SocketError));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NoShardingEnabled,ErrorCodes::NoShardingEnabled));
+    g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::OperationFailed,ErrorCodes::OperationFailed));
+    //g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NoReplicaSetMonitor,ErrorCodes::NoReplicaSetMonitor));
+    //g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NoGoodNodeAvailableForSet,ErrorCodes::NoGoodNodeAvailableForSet));
+    //g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NoGoodNodeForQuery,ErrorCodes::NoGoodNodeForQuery));
+    //g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NoGoodNodeForFindOne,ErrorCodes::NoGoodNodeForFindOne));
+    //g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NoGoodNodeForSay,ErrorCodes::NoGoodNodeForSay));
+    //g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::NoGoodNodeForSelect,ErrorCodes::NoGoodNodeForSelect));
+    //g_need_retry_errcode.insert(std::pair<ErrorCodes::Error,ErrorCodes::Error>(ErrorCodes::ReplicaSetMonitorRemoved,ErrorCodes::ReplicaSetMonitorRemoved));
+
+    return ;
+}
+
+bool isNeedRetryErrCode(const ErrorCodes::Error errCode) {
+    auto it = g_need_retry_errcode.find(errCode);
+    if(it != g_need_retry_errcode.end())
+    {
+        return true;
+    }
+    return false;
 }
 
 // called into by the web server. For now we just translate the parameters
@@ -140,34 +237,149 @@ void Command::execCommandClient(OperationContext* txn,
     trackingMetadata.initWithOperName(c->getName());
     rpc::TrackingMetadata::get(txn) = trackingMetadata;
 
+    int code = ErrorCodes::OK;
     std::string errmsg;
     bool ok = false;
-    try {
-        if (!supportsWriteConcern) {
-            ok = c->run(txn, dbname, cmdObj, queryOptions, errmsg, result);
-        } else {
-            // Change the write concern while running the command.
-            const auto oldWC = txn->getWriteConcern();
-            ON_BLOCK_EXIT([&] { txn->setWriteConcern(oldWC); });
-            txn->setWriteConcern(wcResult.getValue());
+    Milliseconds execTimeUsed(0);
+    Date_t initExecTime = Date_t::now();
+    unsigned int retryTimes = 0;
 
-            ok = c->run(txn, dbname, cmdObj, queryOptions, errmsg, result);
+    BSONObj cmd_obj = cmdObj;
+    do {
+        try {
+            if (!supportsWriteConcern) {
+                ok = c->run(txn, dbname, cmd_obj, queryOptions, errmsg, result);
+            } else {
+                // Change the write concern while running the command.
+                const auto oldWC = txn->getWriteConcern();
+                ON_BLOCK_EXIT([&] { txn->setWriteConcern(oldWC); });
+                txn->setWriteConcern(wcResult.getValue());
+
+                ok = c->run(txn, dbname, cmd_obj, queryOptions, errmsg, result);
+            }
+
+            code = getStatusCodeOfResult(result, ok);
+            if (!isNeedRetryErrCode(ErrorCodes::fromInt(code))) {
+                break;
+            }
+
+            execTimeUsed = Date_t::now() - initExecTime;
+            if (kDefaultClientExecCommandMaxRetryTimeout > execTimeUsed) {
+                result.resetToEmpty();
+                retryTimes++;
+                index_warning() << "Exec command client fail, retry! name: " << c->getName()
+                                << ", dbname: " << dbname
+                                << ", cmdObj: " << cmd_obj.toString()
+                                << ", execTimeUsed: " << execTimeUsed
+                                << ", retryTimes: " << retryTimes
+                                << ",code: " << code
+                                << ", errCode: " << ErrorCodes::errorString(ErrorCodes::fromInt(code))
+                                << ".";
+                if (retryTimes > 1) {
+                    stdx::this_thread::sleep_for(kDefaultClientExecCommandRetryInterval.toSystemDuration());
+                }
+                BSONObjBuilder cmd_builder;
+                if(!cmd_obj.hasField(StringData("isRetry")))
+                {
+                    if(cmd_obj.hasField(StringData("shardCollection"))){
+                        cmd_builder.appendElements(cmd_obj);
+                        cmd_builder.append("isRetry", true);
+                        cmd_obj = cmd_builder.obj();
+                    }
+                }
+                continue;
+            }
+        } catch (const StaleConfigException& e) {
+            result.resetToEmpty();
+            code = e.getCode();
+            execTimeUsed = Date_t::now() - initExecTime;
+            if (!isNeedRetryErrCode(ErrorCodes::fromInt(code))
+                || kDefaultClientExecCommandMaxRetryTimeout <= execTimeUsed) {
+                throw e;
+            }
+
+            errmsg.clear();
+            retryTimes++;
+            index_warning() << "Exec command client StaleConfigException, retry! name: " << c->getName()
+                            << ", dbname: " << dbname
+                            << ", cmdObj: " << cmd_obj.toString()
+                            << ", execTimeUsed: " << execTimeUsed
+                            << ", retryTimes: " << retryTimes
+                            << ", code: " << code
+                            << ", errCode: " << ErrorCodes::errorString(ErrorCodes::fromInt(code))
+                            << ", errmsg: " << e.what()
+                            << ".";
+
+            // means shard has old version and shard need to reload chunkmap, mongos just retry
+            if ((e.getVersionReceived() > e.getVersionWanted())
+                && (e.getVersionWanted().toLong() != 0
+                || e.getVersionWanted() == ChunkVersion::UNSHARDED())) {
+                if (retryTimes > 3 ) {
+                    stdx::this_thread::sleep_for(kDefaultClientExecCommandRetryInterval.toSystemDuration());
+                }
+                continue;
+            }
+
+            // for now, means "chunk not on the shard" or "chunk is splitting" , mongos need to reload
+            // for get response as soon as possible, we do not sleep at firt 2 times
+            if (e.getVersionReceived() == e.getVersionWanted()) {
+                if (retryTimes > 3 ) {
+                    stdx::this_thread::sleep_for(kDefaultClientExecCommandRetryInterval.toSystemDuration());
+                }
+            }
+
+            // the ns in the exception may include chunkid, we need to remove it
+            NamespaceString nss(e.getns());
+            string staleNS = nss.nsFilteredOutChunkId();
+
+            // For legacy reasons, ns may not actually be set in the exception :-(
+            if (staleNS.size() == 0) {
+                nss = parseNsCollectionRequired(dbname, cmd_obj);
+                staleNS = nss.ns();
+            }
+
+            versionManager.forceRemoteCheckShardVersionCB(txn, staleNS);
+         } catch (const DBException& e) {
+            result.resetToEmpty();
+            code = e.getCode();
+            execTimeUsed = Date_t::now() - initExecTime;
+            if (isNeedRetryErrCode(ErrorCodes::fromInt(code))
+                && kDefaultClientExecCommandMaxRetryTimeout > execTimeUsed) {
+                errmsg.clear();
+                retryTimes++;
+                index_warning() << "Exec command client rcv exception, retry! name: " << c->getName()
+                                << ", dbname: " << dbname
+                                << ", cmdObj: " << cmd_obj.toString()
+                                << ", execTimeUsed: " << execTimeUsed
+                                << ", retryTimes: " << retryTimes
+                                << ", code: " << code
+                                << ", errCode: " << ErrorCodes::errorString(ErrorCodes::fromInt(code))
+                                << ", errmsg: " << e.what()
+                                << ".";
+                if (retryTimes > 1) {
+                    stdx::this_thread::sleep_for(kDefaultClientExecCommandRetryInterval.toSystemDuration());
+                }
+                continue;
+            }
+
+            errmsg = e.what();
+            result.append("code", code);
+            break;
         }
-    } catch (const DBException& e) {
-        result.resetToEmpty();
-        const int code = e.getCode();
-
-        // Codes for StaleConfigException
-        if (code == ErrorCodes::RecvStaleConfig || code == ErrorCodes::SendStaleConfig) {
-            throw;
-        }
-
-        errmsg = e.what();
-        result.append("code", code);
-    }
+    }while(kDefaultClientExecCommandMaxRetryTimeout > execTimeUsed);
 
     if (!ok) {
         c->_commandsFailed.increment();
+        index_err() << "Exec client command fail! name: " << c->getName()
+                    << ", dbname: " << dbname
+                    << ", cmdObj: " << cmd_obj.toString()
+                    << ", execTimeUsed: " << execTimeUsed
+                    << ", maxTime: " << kDefaultClientExecCommandMaxRetryTimeout
+                    << ", retryTimes: " << retryTimes
+                    << ", code: " << code
+                    << ", errCode: " << ErrorCodes::errorString(ErrorCodes::fromInt(code))
+                    << ", errmsg: " << errmsg
+                    << ".";
     }
 
     appendCommandStatus(result, ok, errmsg);

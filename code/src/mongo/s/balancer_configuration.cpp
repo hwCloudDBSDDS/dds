@@ -61,7 +61,7 @@ const char BalancerSettingsType::kKey[] = "balancer";
 const char* BalancerSettingsType::kBalancerModes[] = {"full", "autoSplitOnly", "off"};
 
 const char ChunkSizeSettingsType::kKey[] = "chunksize";
-const uint64_t ChunkSizeSettingsType::kDefaultMaxChunkSizeBytes{64 * 1024 * 1024};
+const uint64_t ChunkSizeSettingsType::kDefaultMaxChunkSizeBytes{10ULL * 1024ULL * 1024ULL * 1024ULL}; // Default Chunk Size: 10GB
 
 const char AutoSplitSettingsType::kKey[] = "autosplit";
 
@@ -382,11 +382,15 @@ StatusWith<ChunkSizeSettingsType> ChunkSizeSettingsType::fromBSON(const BSONObj&
 }
 
 bool ChunkSizeSettingsType::checkMaxChunkSizeValid(uint64_t maxChunkSizeBytes) {
+#if 0
     if (maxChunkSizeBytes >= (1024 * 1024) && maxChunkSizeBytes <= (1024 * 1024 * 1024)) {
         return true;
     }
 
     return false;
+#endif
+    // We always set it to true because chunk size is not limit currently
+    return true;
 }
 
 AutoSplitSettingsType::AutoSplitSettingsType() = default;

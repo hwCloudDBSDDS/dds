@@ -178,6 +178,13 @@ Status waitForLinearizableReadConcern(OperationContext* txn) {
         return Status(ErrorCodes::LinearizableReadConcernError,
                       "Failed to confirm that read was linearizable.");
     }
+
+    if (awaitReplResult.duration >= Milliseconds(500)) {
+        warning() << "time-consuming awaitReplication in "
+            << "waitForLinearizableReadConcern with OpTime: " << lastOpApplied
+            << ", total time: " << awaitReplResult.duration;
+    }        
+    
     return awaitReplResult.status;
 }
 

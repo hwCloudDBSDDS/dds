@@ -25,6 +25,7 @@
  *    delete this exception statement from all source files in the program,
  *    then also delete it in the license file.
  */
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -56,6 +57,7 @@
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 

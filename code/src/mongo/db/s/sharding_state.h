@@ -138,6 +138,7 @@ public:
 
     CollectionShardingState* getNS(const std::string& ns, OperationContext* txn);
 
+    CollectionShardingState* getNS(const std::string& ns);
     /**
      * Iterates through all known sharded collections and marks them (in memory only) as not sharded
      * so that no filtering will be happening for slaveOk queries.
@@ -177,6 +178,8 @@ public:
     Status refreshMetadataNow(OperationContext* txn,
                               const NamespaceString& nss,
                               ChunkVersion* latestShardVersion);
+
+    void updateMetadata(OperationContext* txn, const NamespaceString& nss, const ChunkType& chunkType);
 
     void appendInfo(OperationContext* txn, BSONObjBuilder& b);
 
@@ -276,6 +279,11 @@ public:
     static bool commandInitializesShardingAwareness(const std::string& commandName) {
         return _commandsThatInitializeShardingAwareness.find(commandName) !=
             _commandsThatInitializeShardingAwareness.end();
+    }
+
+    // resize the tickets holder
+    Status resizeConfigServerTickets(int newSize) {
+        return _configServerTickets.resize(newSize);
     }
 
 private:

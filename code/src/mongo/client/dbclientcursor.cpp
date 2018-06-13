@@ -197,6 +197,9 @@ void DBClientCursor::requestMore() {
     b.appendStr(ns);
     b.appendNum(nextBatchSize());
     b.appendNum(cursorId);
+    if (chunkId.isValid()) {
+       b.appendStr(chunkId.toString()); 
+    }
 
     Message toSend;
     toSend.setData(dbGetMore, b.buf(), b.len());
@@ -459,6 +462,7 @@ void DBClientCursor::attach(AScopedConnection* conn) {
 DBClientCursor::DBClientCursor(DBClientBase* client,
                                const std::string& ns,
                                const BSONObj& query,
+                               const ChunkId& chunkId,
                                int nToReturn,
                                int nToSkip,
                                const BSONObj* fieldsToReturn,
@@ -467,6 +471,7 @@ DBClientCursor::DBClientCursor(DBClientBase* client,
     : DBClientCursor(client,
                      ns,
                      query,
+                     chunkId,
                      0,  // cursorId
                      nToReturn,
                      nToSkip,
@@ -482,6 +487,7 @@ DBClientCursor::DBClientCursor(DBClientBase* client,
     : DBClientCursor(client,
                      ns,
                      BSONObj(),  // query
+                     ChunkId(),
                      cursorId,
                      nToReturn,
                      0,        // nToSkip
@@ -492,6 +498,7 @@ DBClientCursor::DBClientCursor(DBClientBase* client,
 DBClientCursor::DBClientCursor(DBClientBase* client,
                                const std::string& ns,
                                const BSONObj& query,
+                               const ChunkId& chunkId,
                                long long cursorId,
                                int nToReturn,
                                int nToSkip,
@@ -503,6 +510,7 @@ DBClientCursor::DBClientCursor(DBClientBase* client,
       ns(ns),
       _isCommand(nsIsFull(ns) ? nsToCollectionSubstring(ns) == "$cmd" : false),
       query(query),
+      chunkId(chunkId),
       nToReturn(nToReturn),
       haveLimit(nToReturn > 0 && !(queryOptions & QueryOption_CursorTailable)),
       nToSkip(nToSkip),

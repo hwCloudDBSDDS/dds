@@ -145,7 +145,6 @@ public:
              BSONObjBuilder& result) {
         int numSet = 0;
         bool found = false;
-
         const ServerParameter::Map& parameterMap = ServerParameterSet::getGlobal()->getMap();
 
         // First check that we aren't setting the same parameter twice and that we actually are
@@ -388,7 +387,6 @@ private:
     Status _set(const BSONObj& bsonSettings) const {
         StatusWith<std::vector<LogComponentSetting>> parseStatus =
             parseLogComponentSettings(bsonSettings);
-
         if (!parseStatus.isOK()) {
             return parseStatus.getStatus();
         }
@@ -407,6 +405,14 @@ private:
             LogSeverity newSeverity =
                 (newSetting.level > 0) ? LogSeverity::Debug(newSetting.level) : LogSeverity::Log();
             globalLogDomain()->setMinimumLoggedSeverity(newSetting.component, newSeverity);
+
+            if (LogComponent::Value::kDefault == newSetting.component 
+                || LogComponent::Value::kStorage  == newSetting.component) {
+                    if (getGlobalServiceContext() && getGlobalServiceContext()->getGlobalStorageEngine())
+                    {
+                        getGlobalServiceContext()->getGlobalStorageEngine()->setStorageEngineLogLevel(newSetting.level);
+                    }
+            }
         }
 
         return Status::OK();

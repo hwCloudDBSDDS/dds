@@ -116,5 +116,8 @@ StatusWith<boost::optional<ChunkRange>> splitChunkAtMultiplePoints(
     ChunkVersion chunkVersion,
     const std::vector<BSONObj>& splitPoints);
 
+// run command against the specified shard and collect statistics info: request, mem, cpu, and chunk statistics
+StatusWith<BSONObj> retrieveShardStatistics(OperationContext* txn, const ShardId& shardId);
+
 }  // namespace shardutil
 }  // namespace mongo

@@ -37,6 +37,8 @@
 #include "mongo/db/storage/kv/kv_catalog.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/storage_engine.h"
+#include "mongo/db/server_options.h"
+
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {
@@ -96,6 +98,12 @@ public:
     SnapshotManager* getSnapshotManager() const final;
 
     void setJournalListener(JournalListener* jl) final;
+
+    virtual void resetEngineStats() override;
+
+    virtual void getEngineStats( std::vector<std::string> & vs) override;
+
+    virtual void setStorageEngineLogLevel(int level) override;
 
     // ------ kv ------
 

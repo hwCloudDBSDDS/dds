@@ -143,7 +143,7 @@ public:
         }
 
         std::shared_ptr<DBConfig> config = status.getValue();
-        if (!config->isSharded(nss.ns())) {
+        if (CollectionType::TableType::kNonShard == config->getCollTabType(nss.ns())) {
             return appendCommandStatus(
                 result,
                 Status(ErrorCodes::NamespaceNotSharded, "ns [" + nss.ns() + " is not sharded."));

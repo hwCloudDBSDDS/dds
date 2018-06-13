@@ -88,8 +88,8 @@ public:
         }
 
         string ns = dbname + "." + cmdObj.firstElement().valuestrsafe();
-
-        NamespaceString ns_string(ns);
+        NamespaceString ns_string(parseNs(dbname,cmdObj));
+        NamespaceString nss(ns);
         const bool full = cmdObj["full"].trueValue();
         const bool scanData = cmdObj["scandata"].trueValue();
 
@@ -101,13 +101,13 @@ public:
             level = kValidateRecordStore;
         }
 
-        if (!ns_string.isNormal() && full) {
+        if (!nss.isNormal() && full) {  //check ns have '$' ? so,we don't use ns_string
             errmsg = "Can only run full validate on a regular collection";
             return false;
         }
 
         if (!serverGlobalParams.quiet) {
-            LOG(0) << "CMD: validate " << ns;
+            LOG(0) << "CMD: validate " << ns_string.ns() << "CMD: "<< cmdObj.toString();
         }
 
         AutoGetDb ctx(txn, ns_string.db(), MODE_IX);
@@ -123,7 +123,7 @@ public:
             return false;
         }
 
-        result.append("ns", ns);
+        result.append("ns", nss.ns());
 
         ValidateResults results;
         Status status = collection->validate(txn, level, &results, &result);

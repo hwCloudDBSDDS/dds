@@ -150,7 +150,6 @@ PlanStage::StageState IndexScan::doWork(WorkingSetID* out) {
         *out = WorkingSet::INVALID_ID;
         return PlanStage::NEED_YIELD;
     }
-
     if (kv) {
         // In debug mode, check that the cursor isn't lying to us.
         if (kDebugBuild && !_startKey.isEmpty()) {

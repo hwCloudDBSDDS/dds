@@ -516,7 +516,6 @@ Status IndexAccessMethod::commitBulk(OperationContext* txn,
                     continue;
                 }
             }
-
             return status;
         }
 

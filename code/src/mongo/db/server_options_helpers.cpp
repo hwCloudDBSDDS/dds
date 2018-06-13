@@ -189,7 +189,13 @@ Status addGeneralServerOptions(moe::OptionSection* options) {
         "bind_ip",
         moe::String,
         "comma separated list of ip addresses to listen on - all local ips by default");
-
+#if 0
+    options->addOptionChaining(
+        "net.extendIPs",
+        "extendIPs",
+        moe::String,
+        "comma separated list of manage ip addresses");
+#endif
     options->addOptionChaining(
         "net.ipv6", "ipv6", moe::Switch, "enable IPv6 support (disabled by default)");
 
@@ -829,7 +835,12 @@ Status storeServerOptions(const moe::Environment& params) {
     if (params.count("net.bindIp")) {
         serverGlobalParams.bind_ip = params["net.bindIp"].as<std::string>();
     }
-
+#if 0
+    // Add extend IPs for OAM as manage IPs
+    if (params.count("net.extendIPs")) {
+        serverGlobalParams.extendIPs = params["net.extendIPs"].as<std::string>();
+    } 
+#endif
     if (params.count("net.ipv6") && params["net.ipv6"].as<bool>() == true) {
         enableIPv6();
     }

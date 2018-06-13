@@ -87,6 +87,14 @@ public:
         return _recordStore.get();
     }
 
+    /*
+    this function is only used by rename collection command.
+    */
+    std::unique_ptr<RecordStore> getUniquePtrRecordStore()
+    {
+        return std::move(_recordStore);
+    }
+
 protected:
     MetaData _getMetaData(OperationContext* txn) const final;
 

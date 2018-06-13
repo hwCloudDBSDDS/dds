@@ -90,8 +90,20 @@ public:
              int,
              string& errmsg,
              BSONObjBuilder& result) {
-        const NamespaceString nss = parseNsCollectionRequired(dbname, jsobj);
-        return appendCommandStatus(result, dropIndexes(txn, nss, jsobj, &result));
+        //const NamespaceString nss = parseNsCollectionRequired(dbname, jsobj);
+        const NamespaceString nss(parseNs(dbname, jsobj));
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && dbname != "config" && dbname != "system"){
+            log()<<"[drop_indexes].. on configServer : "<<jsobj.toString();
+            Status st = dropIndexesOnCfgSrv(txn,dbname, nss, jsobj, result);
+            if( st.isOK()){
+                return true;
+            }else{
+                return  appendCommandStatus(result,st);
+            }
+        }else{
+            log()<<"[drop_indexes].. on shardServer  : "<<jsobj.toString();
+            return appendCommandStatus(result, dropIndexes(txn, nss, jsobj, &result));
+        }
     }
 
 } cmdDropIndexes;
@@ -125,8 +137,17 @@ public:
         DBDirectClient db(txn);
 
         const NamespaceString toReIndexNs = parseNsCollectionRequired(dbname, jsobj);
-
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && dbname != "config" && dbname != "system"){
+           log()<<"[CmdReIndex] reindex on configServer start...";
+           Status st = reIndexesOnCfgSrv(txn,dbname,toReIndexNs,jsobj,result);
+           if( st.isOK() ){
+               return true;  
+           }else{
+               return appendCommandStatus(result,st);
+           }
+        }
         LOG(0) << "CMD: reIndex " << toReIndexNs;
+        txn->setNs(toReIndexNs);
 
         ScopedTransaction transaction(txn, MODE_IX);
         Lock::DBLock dbXLock(txn->lockState(), dbname, MODE_X);

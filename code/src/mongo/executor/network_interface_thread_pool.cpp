@@ -107,7 +107,7 @@ Status NetworkInterfaceThreadPool::schedule(Task task) {
     if (_inShutdown) {
         return {ErrorCodes::ShutdownInProgress, "Shutdown in progress"};
     }
-    _tasks.emplace_back(std::move(task));
+    _tasks.push_back(std::move(task));
 
     if (_started)
         consumeTasks(std::move(lk));

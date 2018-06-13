@@ -35,11 +35,11 @@
 #include "mongo/platform/atomic_word.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/util/concurrency/mutex.h"
+#include "mongo/s/catalog/type_collection.h"
 
 namespace mongo {
 
 class ChunkManager;
-class CollectionType;
 class DatabaseType;
 class DBConfig;
 class OperationContext;
@@ -54,11 +54,15 @@ struct CollectionInfo {
     ~CollectionInfo();
 
     bool isSharded() const {
+        //return _tableType == CollectionType::TableType::kSharded ? true:false;
         return _cm.get();
     }
 
     std::shared_ptr<ChunkManager> getCM() const {
         return _cm;
+    }
+    CollectionType::TableType getCollTabType()const{
+        return _tableType;
     }
 
     void resetCM(ChunkManager* cm);
@@ -96,6 +100,7 @@ private:
     bool _dirty;
     bool _dropped;
     repl::OpTime _configOpTime;
+    CollectionType::TableType _tableType = CollectionType::TableType::kNonShard;
 };
 
 /**
@@ -138,9 +143,15 @@ public:
      */
     bool isSharded(const std::string& ns);
 
+    bool isCollectionExist(const std::string& ns);
+    
+    CollectionType::TableType getCollTabType(const std::string& ns);
+
+    
+
     // Atomically returns *either* the chunk manager *or* the primary shard for the collection,
     // neither if the collection doesn't exist.
-    void getChunkManagerOrPrimary(OperationContext* txn,
+    Status getChunkManagerOrPrimary(OperationContext* txn,
                                   const std::string& ns,
                                   std::shared_ptr<ChunkManager>& manager,
                                   std::shared_ptr<Shard>& primary);
@@ -164,9 +175,12 @@ public:
     bool reload(OperationContext* txn);
 
     bool dropDatabase(OperationContext*, std::string& errmsg);
-
     void getAllShardIds(std::set<ShardId>* shardIds);
     void getAllShardedCollections(std::set<std::string>& namespaces);
+    void getAllNonShardedCollections(std::set<std::string>& namespaces);
+    //get all non sharded collections
+    // we have to re-check after reload in case that other mongos already create a new sharded collection
+    bool isShardedAfterReload(OperationContext* txn, const std::string& ns);
 
 protected:
     typedef std::map<std::string, CollectionInfo> CollectionInfoMap;

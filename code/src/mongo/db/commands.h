@@ -111,6 +111,7 @@ public:
     // mongo::String, then that field is interpreted as the collection name, and is
     // appended to 'dbname' after a '.' character. If the first field is not of type
     // mongo::String, then 'dbname' is returned unmodified.
+    // if cmdObj carries chunkid, then we will add it to the ns
     virtual std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const;
 
     // Utility that returns a ResourcePattern for the namespace returned from
@@ -298,6 +299,11 @@ public:
 
     static Command* findCommand(StringData name);
 
+    /**
+    *init need retry errcode.
+    */
+    static void initNeedRetryCode();
+    
     /**
      * Executes a command after stripping metadata, performing authorization checks,
      * handling audit impersonation, and (potentially) setting maintenance mode. This method

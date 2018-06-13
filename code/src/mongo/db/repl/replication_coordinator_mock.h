@@ -225,6 +225,8 @@ public:
 
     virtual Status processHeartbeatV1(const ReplSetHeartbeatArgsV1& args,
                                       ReplSetHeartbeatResponse* response);
+    virtual Status processShardServerHeartbeat(OperationContext* txn,
+                                               const ShardServerHeartbeatArgs& args);
 
     virtual bool isV1ElectionProtocol() const override;
 
@@ -269,6 +271,7 @@ public:
      */
     void alwaysAllowWrites(bool allowWrites);
 
+    virtual mongo::Status checkIfIAmPrimary(){return Status::OK();};
 private:
     AtomicUInt64 _snapshotNameGenerator;
     const ReplSettings _settings;

@@ -36,6 +36,7 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/db/ops/insert.h"
 
 namespace mongo {
 namespace {
@@ -90,6 +91,10 @@ void parseWriteCommand(StringData dbName,
             // The key is the command name and the value is the collection name
             checkBSONType(String, field);
             op->ns = NamespaceString(dbName, field.valueStringData());
+            /*uassert(ErrorCodes::BadValue,
+                    str::stream() << "invalid ns string",
+                    Status::OK() == userAllowedWriteNS(op->ns));
+            */
             firstElement = false;
             continue;
         }
@@ -100,7 +105,16 @@ void parseWriteCommand(StringData dbName,
         } else if (fieldName == "ordered") {
             checkBSONType(Bool, field);
             op->continueOnError = !field.Bool();
-        } else if (fieldName == uniqueFieldName) {
+        } else if (fieldName == "atomicity") {
+            checkBSONType(Bool, field);
+            op->atomicityInBulk = field.Bool();
+        } else if (fieldName == "prewarm") {
+            checkBSONType(Bool, field);
+            op->prewarmInBulk = field.Bool();
+        } else if (fieldName == "chunkId") {
+            op->ns = NamespaceString(dbName, op->ns.coll() + "$" + field.valueStringData());
+        } 
+        else if (fieldName == uniqueFieldName) {
             haveUniqueField = true;
             *uniqueField = field;
         } else if (fieldName[0] != '$') {
@@ -114,6 +128,10 @@ void parseWriteCommand(StringData dbName,
                         ignoredFields.end());
         }
     }
+
+    //attach chunkid if need
+    op->ns = mongo::ns2chunkHolder().getNsWithChunkId(op->ns);
+
 
     uassert(ErrorCodes::FailedToParse,
             str::stream() << "The " << uniqueFieldName << " option is required to the "
@@ -180,10 +198,14 @@ UpdateOp parseUpdateCommand(StringData dbName, const BSONObj& cmd) {
             }
         }
 
+        update.atomicity = op.atomicityInBulk;
+
         uassert(ErrorCodes::FailedToParse, "The 'q' field is required for all updates", haveQ);
         uassert(ErrorCodes::FailedToParse, "The 'u' field is required for all updates", haveU);
     }
     checkOpCountForCommand(op.updates.size());
+    op.updates.front().first = true;
+    op.updates.back().last = true;
     return op;
 }
 

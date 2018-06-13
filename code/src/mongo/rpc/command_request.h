@@ -88,6 +88,18 @@ public:
 
     Protocol getProtocol() const final;
 
+    void setMetadata(const BSONObj& metaData){
+        _metadata = metaData;
+    }
+
+    virtual void setCommandArgs(const BSONObj& commandArgs) override{
+        _commandArgs = commandArgs;
+    }
+
+    virtual void setCommandName(const StringData& commandName) override{
+        _commandName = commandName;
+    }
+
     friend bool operator==(const CommandRequest& lhs, const CommandRequest& rhs);
     friend bool operator!=(const CommandRequest& lhs, const CommandRequest& rhs);
 

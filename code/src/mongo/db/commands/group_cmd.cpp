@@ -46,6 +46,7 @@
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/server_options.h"
 #include "mongo/util/log.h"
+#include "mongo/db/catalog/database_holder.h"
 
 namespace mongo {
 
@@ -151,7 +152,7 @@ private:
             warning() << "The group command is deprecated. See "
                          "http://dochub.mongodb.org/core/group-command-deprecation.";
         }
-
+        LOG(1)<<"[GroupCommand] dbname:"<<dbname<<", cmdObj:"<<cmdObj;
         GroupRequest groupRequest;
         Status parseRequestStatus = _parseRequest(dbname, cmdObj, &groupRequest);
         if (!parseRequestStatus.isOK()) {
@@ -230,8 +231,10 @@ private:
     Status _parseRequest(const std::string& dbname,
                          const BSONObj& cmdObj,
                          GroupRequest* request) const {
-        request->ns = parseNs(dbname, cmdObj);
 
+        const NamespaceString ns(parseNs(dbname, cmdObj));
+        LOG(1) <<"GroupCommand _parseRequest cmdObj: " << cmdObj << "; ns:" << ns;
+        request->ns = ns2chunkHolder().getNsWithChunkId(ns).ns();  
         // By default, group requests are regular group not explain of group.
         request->explain = false;
 

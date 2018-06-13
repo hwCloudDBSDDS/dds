@@ -31,6 +31,7 @@
 #include <string>
 
 #include "mongo/base/status.h"
+#include "mongo/db/namespace_string.h"
 
 namespace mongo {
 
@@ -121,7 +122,7 @@ private:
      */
     static Status _initChunks(OperationContext* txn,
                               ShardingCatalogClient* catalogClient,
-                              const std::string& ns,
+                              const NamespaceString& nss,
                               const std::string& shard,
                               const CollectionMetadata* oldMetadata,
                               CollectionMetadata* metadata);

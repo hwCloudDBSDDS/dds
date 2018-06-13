@@ -161,6 +161,9 @@ public:
 
     int numWriteOpsIn(WriteOpState state) const;
 
+    // for target shard fail(shard not exist or dead), we need to cancle the writeops, and re-target
+    void cancelWriteOps(const TargetedWriteBatch& targetedBatch);
+
 private:
     // Incoming client request, not owned here
     const BatchedCommandRequest* _clientRequest;

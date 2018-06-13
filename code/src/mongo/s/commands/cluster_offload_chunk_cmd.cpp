@@ -1,0 +1,133 @@
+
+#include "mongo/platform/basic.h"
+
+#include "mongo/db/audit.h"
+#include "mongo/db/auth/action_set.h"
+#include "mongo/db/auth/action_type.h"
+#include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/client.h"
+#include "mongo/db/commands.h"
+#include "mongo/db/write_concern_options.h"
+#include "mongo/s/balancer_configuration.h"
+#include "mongo/s/catalog/catalog_cache.h"
+#include "mongo/s/client/shard_connection.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/config.h"
+#include "mongo/s/config_server_client.h"
+#include "mongo/s/grid.h"
+#include "mongo/s/sharding_raii.h"
+
+
+namespace mongo {
+
+using std::shared_ptr;
+
+namespace {
+
+class CmdOffloadChunk : public Command {
+public:
+    CmdOffloadChunk() : Command("offloadChunk", false, "offloadchunk") {}
+
+    virtual bool slaveOk() const {
+        return true;
+    }
+
+    virtual bool adminOnly() const {
+        return true;
+    }
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return true;
+    }
+
+    virtual void help(std::stringstream& help) const {
+        help << "offload a chunk specified by find\n";
+    }
+
+    virtual Status checkAuthForCommand(Client* client,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj) {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forExactNamespace(NamespaceString(parseNs(dbname, cmdObj))),
+                ActionType::offloadChunk)) {
+            return Status(ErrorCodes::Unauthorized, "Unauthorized");
+        }
+
+        return Status::OK();
+    }
+
+    virtual std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const {
+        return parseNsFullyQualified(dbname, cmdObj);
+    }
+
+    virtual bool run(OperationContext* txn,
+                     const std::string& dbname,
+                     BSONObj& cmdObj,
+                     int options,
+                     std::string& errmsg,
+                     BSONObjBuilder& result) {
+        const NamespaceString nss(parseNs(dbname, cmdObj));
+
+        std::shared_ptr<DBConfig> config;
+        {
+            auto status = grid.catalogCache()->getDatabase(txn, nss.db().toString());
+            if (!status.isOK()) {
+                return appendCommandStatus(result, status.getStatus());
+            }
+
+            config = status.getValue();
+        }
+        if (!config->isSharded(nss.ns())) {
+            config->reload(txn);
+
+            if (!config->isSharded(nss.ns())) {
+                return appendCommandStatus(result,
+                                           Status(ErrorCodes::NamespaceNotSharded,
+                                                  "ns [" + nss.ns() + " is not sharded."));
+            }
+        }
+
+        BSONObj find = cmdObj.getObjectField("find");
+        if (find.isEmpty()) {
+            errmsg = "need to specify a find query.";
+            return false;
+        }
+
+        auto chunkManagerStatus = ScopedChunkManager::getExisting(txn, nss);
+        if (!chunkManagerStatus.isOK()) {
+            return appendCommandStatus(result, chunkManagerStatus.getStatus());
+        }
+        ChunkManager* const info = chunkManagerStatus.getValue().cm();
+
+        StatusWith<BSONObj> status =
+            info->getShardKeyPattern().extractShardKeyFromQuery(txn, find);
+        if (!status.isOK())
+            return appendCommandStatus(result, status.getStatus());
+
+        BSONObj shardKey = status.getValue();
+        if (shardKey.isEmpty()) {
+            errmsg = str::stream() << "no shard key found in chunk query " << find;
+            return false;
+        }
+
+        shared_ptr<Chunk> chunk;        
+        chunk = info->findIntersectingChunkWithSimpleCollation(txn, shardKey);
+
+        ChunkType chunkType;
+        chunkType.setNS(nss.ns());
+        chunk->constructChunkType(&chunkType);
+
+        auto offloadStatus = configsvr_client::offloadChunk(txn, chunkType);
+        if (!offloadStatus.isOK()) {
+            return appendCommandStatus(result, offloadStatus);
+        }
+
+        info->reload(txn);
+        return true;
+    }
+} cmdOffloadChunk;
+
+}  // namespace
+}  // namespace mongo
+

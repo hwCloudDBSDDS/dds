@@ -74,6 +74,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/timer.h"
+#include "mongo/s/sharding_raii.h"
 
 namespace mongo {
 
@@ -107,6 +108,7 @@ void runAgainstRegistered(OperationContext* txn,
         Command::unknownCommands.increment();
         return;
     }
+
 
     Command::execCommandClient(txn, c, queryOptions, ns, jsobj, anObjBuilder);
 }
@@ -314,42 +316,24 @@ void Strategy::clientCommandOp(OperationContext* txn, Request& request) {
         txn->setDeadlineAfterNowBy(Milliseconds{maxTimeMS});
     }
 
-    int loops = 5;
-
-    while (true) {
-        try {
-            OpQueryReplyBuilder reply;
-            {
-                BSONObjBuilder builder(reply.bufBuilderForResults());
-                runAgainstRegistered(txn, q.ns, cmdObj, builder, q.queryOptions);
-            }
-            reply.sendCommandReply(request.session(), request.m());
-            return;
-        } catch (const StaleConfigException& e) {
-            if (loops <= 0)
-                throw e;
-
-            loops--;
-
-            log() << "Retrying command " << redact(q.query) << causedBy(e);
-
-            // For legacy reasons, ns may not actually be set in the exception :-(
-            string staleNS = e.getns();
-            if (staleNS.size() == 0)
-                staleNS = q.ns;
-
-            ShardConnection::checkMyConnectionVersions(txn, staleNS);
-            if (loops < 4)
-                versionManager.forceRemoteCheckShardVersionCB(txn, staleNS);
-        } catch (const DBException& e) {
-            OpQueryReplyBuilder reply;
-            {
-                BSONObjBuilder builder(reply.bufBuilderForResults());
-                Command::appendCommandStatus(builder, e.toStatus());
-            }
-            reply.sendCommandReply(request.session(), request.m());
-            return;
+    try {
+        OpQueryReplyBuilder reply;
+        {
+            BSONObjBuilder builder(reply.bufBuilderForResults());
+            runAgainstRegistered(txn, q.ns, cmdObj, builder, q.queryOptions);
         }
+        reply.sendCommandReply(request.session(), request.m());
+        return;
+    } catch (const StaleConfigException& e) {
+            throw e;
+    } catch (const DBException& e) {
+        OpQueryReplyBuilder reply;
+        {
+            BSONObjBuilder builder(reply.bufBuilderForResults());
+            Command::appendCommandStatus(builder, e.toStatus());
+        }
+        reply.sendCommandReply(request.session(), request.m());
+        return;
     }
 }
 
@@ -369,16 +353,16 @@ void Strategy::commandOp(OperationContext* txn,
     // Initialize the cursor
     cursor.init(txn);
 
-    set<ShardId> shardIds;
-    cursor.getQueryShardIds(shardIds);
+    std::map<ChunkId, ShardId> shardIdMap;
+    cursor.getQueryShardIds(shardIdMap);
 
-    for (const ShardId& shardId : shardIds) {
+    for (const auto& it : shardIdMap) {
         CommandResult result;
-        result.shardTargetId = shardId;
+        result.shardTargetId = it.second;
 
         result.target = fassertStatusOK(
-            34417, ConnectionString::parse(cursor.getShardCursor(shardId)->originalHost()));
-        result.result = cursor.getShardCursor(shardId)->peekFirst().getOwned();
+            34417, ConnectionString::parse(cursor.getChunkCursor(it.first)->originalHost()));
+        result.result = cursor.getChunkCursor(it.first)->peekFirst().getOwned();
         results->push_back(result);
     }
 }

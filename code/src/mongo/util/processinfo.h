@@ -150,6 +150,8 @@ public:
      */
     void getExtraInfo(BSONObjBuilder& info);
 
+    void getCpuInfo(BSONObjBuilder& info);
+
     bool supported();
 
     static bool blockCheckSupported();

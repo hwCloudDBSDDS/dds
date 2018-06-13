@@ -41,14 +41,18 @@
 #include "mongo/s/client/shard.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/concurrency/ticketholder.h"
+#include "mongo/s/ns_targeter.h"
 
 namespace mongo {
+
+using std::vector;
 
 class CanonicalQuery;
 class Chunk;
 class CollectionType;
 struct QuerySolutionNode;
 class OperationContext;
+
 
 // The key for the map is max for each Chunk or ChunkRange
 typedef BSONObjIndexedMap<std::shared_ptr<Chunk>> ChunkMap;
@@ -204,6 +208,17 @@ public:
      */
     repl::OpTime getConfigOpTime() const;
 
+    void getShardEndpointsForQuery(OperationContext* txn,
+                             const BSONObj& query,
+                             const BSONObj& collation,
+                             vector<ShardEndpoint*>* endpoints,
+                             bool isUseLowerBoundForMax = false) const;
+
+    void getShardEndpointsForRange(vector<ShardEndpoint*>* endpoints,
+                             const BSONObj& min,
+                             const BSONObj& max,
+                             bool isUseLowerBoundForMax = false) const;
+
 private:
     /**
      * Represents a range of chunk keys [getMin(), getMax()) and the id of the shard on which they
@@ -211,8 +226,16 @@ private:
      */
     class ShardAndChunkRange {
     public:
-        ShardAndChunkRange(const BSONObj& min, const BSONObj& max, ShardId inShardId)
-            : _range(min, max), _shardId(std::move(inShardId)) {}
+        ShardAndChunkRange(ChunkId chunkId, ChunkVersion lastmod, const BSONObj& min, const BSONObj& max, ShardId inShardId)
+            : _chunkId(std::move(chunkId)), _lastmod(lastmod), _range(min, max), _shardId(std::move(inShardId)) {}
+
+        const ChunkId& getChunkId() const {
+            return _chunkId;
+        }
+
+        ChunkVersion getLastmod() const {
+            return _lastmod;
+        }
 
         const BSONObj& getMin() const {
             return _range.getMin();
@@ -227,6 +250,8 @@ private:
         }
 
     private:
+        ChunkId _chunkId;
+        ChunkVersion _lastmod;
         ChunkRange _range;
         ShardId _shardId;
     };

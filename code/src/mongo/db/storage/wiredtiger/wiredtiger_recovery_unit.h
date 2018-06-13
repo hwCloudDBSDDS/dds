@@ -73,6 +73,9 @@ public:
     virtual SnapshotId getSnapshotId() const;
 
     Status setReadFromMajorityCommittedSnapshot() final;
+
+    void clearReadFromMajorityCommittedSnapshot() final;
+
     bool isReadingFromMajorityCommittedSnapshot() const final {
         return _readFromMajorityCommittedSnapshot;
     }

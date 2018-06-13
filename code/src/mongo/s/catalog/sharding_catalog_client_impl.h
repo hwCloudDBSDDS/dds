@@ -89,7 +89,8 @@ public:
                            const BSONObj& defaultCollation,
                            bool unique,
                            const std::vector<BSONObj>& initPoints,
-                           const std::set<ShardId>& initShardsIds) override;
+                           const std::set<ShardId>& initShardsIds,
+                           const BSONObj& cmdObj = BSONObj()) override;
 
     StatusWith<ShardDrainingStatus> removeShard(OperationContext* txn,
                                                 const ShardId& name) override;
@@ -110,6 +111,9 @@ public:
     Status getDatabasesForShard(OperationContext* txn,
                                 const ShardId& shardName,
                                 std::vector<std::string>* dbs) override;
+
+    Status generateNewChunkID(OperationContext* txn, 
+                              std::string &chunkID) override;
 
     Status getChunks(OperationContext* txn,
                      const BSONObj& query,
@@ -166,6 +170,13 @@ public:
                                           bool upsert,
                                           const WriteConcernOptions& writeConcern) override;
 
+    Status updateConfigDocuments(OperationContext* txn,
+                                          const std::string& ns,
+                                          const BSONObj& query,
+                                          const BSONObj& update,
+                                          bool upsert,
+                                          const WriteConcernOptions& writeConcern) override;
+
     Status removeConfigDocuments(OperationContext* txn,
                                  const std::string& ns,
                                  const BSONObj& query,
@@ -183,6 +194,9 @@ public:
                                const std::string& dbname,
                                const BSONObj& cmdObj,
                                BSONObjBuilder* result);
+
+    Status createIndexOnShards(OperationContext* txn, NamespaceString ns, BSONObj& cmdObj);
+
 
 private:
     /**

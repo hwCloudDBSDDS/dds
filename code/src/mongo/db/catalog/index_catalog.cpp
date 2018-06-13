@@ -293,6 +293,7 @@ StatusWith<BSONObj> IndexCatalog::prepareSpecForCreate(OperationContext* txn,
         return StatusWith<BSONObj>(status);
 
     status = _doesSpecConflictWithExisting(txn, fixed.getValue());
+    LOG(1) << "IndexCatalog::prepareSpecForCreate()-> status: " << status; 
     if (!status.isOK())
         return StatusWith<BSONObj>(status);
 
@@ -407,7 +408,8 @@ void IndexCatalog::IndexBuildBlock::success() {
     Collection* collection = _catalog->_collection;
     fassert(17207, collection->ok());
     NamespaceString ns(_indexNamespace);
-    invariant(_txn->lockState()->isDbLockedForMode(ns.db(), MODE_X));
+    invariant(_txn->lockState()->isDbLockedForMode(ns.db(), MODE_IX));
+    invariant(_txn->lockState()->isCollectionLockedForMode(collection->ns().ns(), MODE_X));
 
     collection->getCatalogEntry()->indexBuildSuccess(_txn, _indexName);
 
@@ -534,14 +536,14 @@ Status IndexCatalog::_isSpecOk(OperationContext* txn, const BSONObj& spec) const
     if (specNamespace.type() != String)
         return Status(ErrorCodes::CannotCreateIndex,
                       "the index spec is missing a \"ns\" string field");
-
-    if (nss.ns() != specNamespace.valueStringData())
-        return Status(ErrorCodes::CannotCreateIndex,
-                      str::stream() << "the \"ns\" field of the index spec '"
-                                    << specNamespace.valueStringData()
-                                    << "' does not match the collection name '"
-                                    << nss.ns()
-                                    << "'");
+//TODO
+//    if (nss.ns() != specNamespace.valueStringData())
+//        return Status(ErrorCodes::CannotCreateIndex,
+//                      str::stream() << "the \"ns\" field of the index spec '"
+//                                    << specNamespace.valueStringData()
+//                                    << "' does not match the collection name '"
+//                                    << nss.ns()
+//                                    << "'");
 
     // logical name of the index
     const BSONElement nameElem = spec["name"];
@@ -695,7 +697,12 @@ Status IndexCatalog::_isSpecOk(OperationContext* txn, const BSONObj& spec) const
 
     return Status::OK();
 }
-
+static string  _nsGetCollection(const string& ns) {
+    string::size_type pos = ns.find("$");
+    if (pos == string::npos)
+        return ns;
+    return ns.substr(0,pos);
+}
 Status IndexCatalog::_doesSpecConflictWithExisting(OperationContext* txn,
                                                    const BSONObj& spec) const {
     const char* name = spec.getStringField("name");
@@ -703,13 +710,13 @@ Status IndexCatalog::_doesSpecConflictWithExisting(OperationContext* txn,
 
     const BSONObj key = spec.getObjectField("key");
     const BSONObj collation = spec.getObjectField("collation");
-
+    LOG(1) << "IndexCatalog::_doesSpecConflictWithExisting()-> spec: " << spec;
     {
         // Check both existing and in-progress indexes (2nd param = true)
         const IndexDescriptor* desc = findIndexByName(txn, name, true);
         if (desc) {
             // index already exists with same name
-
+            LOG(1) << "IndexCatalog::_doesSpecConflictWithExisting()-> desc: " << *desc;
             if (SimpleBSONObjComparator::kInstance.evaluate(desc->keyPattern() == key) &&
                 SimpleBSONObjComparator::kInstance.evaluate(
                     desc->infoObj().getObjectField("collation") != collation)) {
@@ -728,7 +735,7 @@ Status IndexCatalog::_doesSpecConflictWithExisting(OperationContext* txn,
             if (SimpleBSONObjComparator::kInstance.evaluate(desc->keyPattern() != key) ||
                 SimpleBSONObjComparator::kInstance.evaluate(
                     desc->infoObj().getObjectField("collation") != collation)) {
-                return Status(ErrorCodes::IndexKeySpecsConflict,
+                        return Status(ErrorCodes::IndexKeySpecsConflict,
                               str::stream() << "Index must have unique name."
                                             << "The existing index: "
                                             << desc->infoObj()
@@ -737,11 +744,11 @@ Status IndexCatalog::_doesSpecConflictWithExisting(OperationContext* txn,
             }
 
             IndexDescriptor temp(_collection, _getAccessMethodName(txn, key), spec);
-            if (!desc->areIndexOptionsEquivalent(&temp))
+            if (!desc->areIndexOptionsEquivalent(&temp)){
                 return Status(ErrorCodes::IndexOptionsConflict,
                               str::stream() << "Index with name: " << name
                                             << " already exists with different options");
-
+            }
             // Index already exists with the same options, so no need to build a new
             // one (not an error). Most likely requested by a client using ensureIndex.
             return Status(ErrorCodes::IndexAlreadyExists,
@@ -755,6 +762,7 @@ Status IndexCatalog::_doesSpecConflictWithExisting(OperationContext* txn,
         const IndexDescriptor* desc =
             findIndexByKeyPatternAndCollationSpec(txn, key, collation, findInProgressIndexes);
         if (desc) {
+            LOG(1) << "IndexCatalog::_doesSpecConflictWithExisting()-> index already exists with diff nam";
             LOG(2) << "index already exists with diff name " << name << " pattern: " << key
                    << " collation: " << collation;
 
@@ -771,8 +779,9 @@ Status IndexCatalog::_doesSpecConflictWithExisting(OperationContext* txn,
     }
 
     if (numIndexesTotal(txn) >= _maxNumIndexesAllowed) {
+        string coll = _nsGetCollection(_collection->ns().ns());
         string s = str::stream() << "add index fails, too many indexes for "
-                                 << _collection->ns().ns() << " key:" << key;
+                                 << coll << " key:" << key;
         log() << s;
         return Status(ErrorCodes::CannotCreateIndex, s);
     }
@@ -841,6 +850,7 @@ Status IndexCatalog::dropAllIndexes(OperationContext* txn, bool includingIdIndex
                 continue;
             }
             indexNamesToDrop.push_back(desc->indexName());
+            LOG(1) << "IndexCatalog::dropAllIndexes()-> indexname: " << desc->indexName();
         }
         invariant(seen == numIndexesTotal(txn));
     }
@@ -1131,9 +1141,16 @@ IndexDescriptor* IndexCatalog::findIndexByKeyPatternAndCollationSpec(
     const BSONObj& key,
     const BSONObj& collationSpec,
     bool includeUnfinishedIndexes) const {
+    LOG(1) << "IndexCatalog::findIndexByKeyPatternAndCollationSpec()-> key: "
+         << key;
+
+    LOG(1) << "IndexCatalog::findIndexByKeyPatternAndCollationSpec()-> collationSpec: "
+        << collationSpec;
     IndexIterator ii = getIndexIterator(txn, includeUnfinishedIndexes);
     while (ii.more()) {
         IndexDescriptor* desc = ii.next();
+        LOG(1) << "IndexCatalog::findIndexByKeyPatternAndCollationSpec()-> desc: "
+            << *desc;
         if (SimpleBSONObjComparator::kInstance.evaluate(desc->keyPattern() == key) &&
             SimpleBSONObjComparator::kInstance.evaluate(
                 desc->infoObj().getObjectField("collation") == collationSpec)) {
@@ -1258,6 +1275,7 @@ Status IndexCatalog::_indexFilteredRecords(OperationContext* txn,
 
     for (auto bsonRecord : bsonRecords) {
         int64_t inserted;
+        LOG(1) << "IndexCatalog::_indexFilteredRecords RecordId=" << bsonRecord.id.repr().ToString();
         invariant(bsonRecord.id != RecordId());
         Status status = index->accessMethod()->insert(
             txn, *bsonRecord.docPtr, bsonRecord.id, options, &inserted);

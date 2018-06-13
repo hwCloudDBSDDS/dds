@@ -90,7 +90,10 @@ void OpObserver::onInserts(OperationContext* txn,
     if (strstr(ns, ".system.js")) {
         Scope::storedFuncMod(txn);
     }
-    if (nss.coll() == DurableViewCatalog::viewsCollectionName()) {
+
+
+    NamespaceString ns_without_chunkid(nss.nsFilteredOutChunkId());
+    if (ns_without_chunkid.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(txn, nss);
     }
 }
@@ -116,7 +119,8 @@ void OpObserver::onUpdate(OperationContext* txn, const OplogUpdateEntryArgs& arg
     }
 
     NamespaceString nss(args.ns);
-    if (nss.coll() == DurableViewCatalog::viewsCollectionName()) {
+    NamespaceString ns_without_chunkid(nss.nsFilteredOutChunkId());
+    if (ns_without_chunkid.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(txn, nss);
     }
 
@@ -160,7 +164,8 @@ void OpObserver::onDelete(OperationContext* txn,
     if (ns.coll() == "system.js") {
         Scope::storedFuncMod(txn);
     }
-    if (ns.coll() == DurableViewCatalog::viewsCollectionName()) {
+    NamespaceString ns_without_chunkid(ns.nsFilteredOutChunkId());
+    if (ns_without_chunkid.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(txn, ns);
     }
     if (ns.ns() == FeatureCompatibilityVersion::kCollection) {
@@ -234,8 +239,8 @@ void OpObserver::onDropCollection(OperationContext* txn, const NamespaceString& 
         // do not replicate system.profile modifications
         repl::logOp(txn, "c", dbName.c_str(), cmdObj, nullptr, false);
     }
-
-    if (collectionName.coll() == DurableViewCatalog::viewsCollectionName()) {
+    NamespaceString ns_without_chunkid(collectionName.nsFilteredOutChunkId());
+    if (ns_without_chunkid.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(txn, collectionName);
     }
 
@@ -269,8 +274,11 @@ void OpObserver::onRenameCollection(OperationContext* txn,
                                 << dropTarget);
 
     repl::logOp(txn, "c", dbName.c_str(), cmdObj, nullptr, false);
-    if (fromCollection.coll() == DurableViewCatalog::viewsCollectionName() ||
-        toCollection.coll() == DurableViewCatalog::viewsCollectionName()) {
+
+    NamespaceString ns_without_chunkid_f(fromCollection.nsFilteredOutChunkId());
+    NamespaceString ns_without_chunkid_t(toCollection.nsFilteredOutChunkId());
+    if (ns_without_chunkid_f.coll() == DurableViewCatalog::viewsCollectionName() ||
+        ns_without_chunkid_t.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(
             txn, NamespaceString(DurableViewCatalog::viewsCollectionName()));
     }

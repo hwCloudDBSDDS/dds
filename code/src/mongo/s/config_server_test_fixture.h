@@ -40,6 +40,7 @@ class ShardingCatalogClient;
 class ShardingCatalogManager;
 class ShardRegistry;
 class ShardType;
+class ShardServerType;
 template <typename T>
 class StatusWith;
 
@@ -82,6 +83,9 @@ public:
     /**
      * Setup the config.chunks collection to contain the given chunks.
      */
+
+    StatusWith<ShardServerType> getShardServerDoc(OperationContext* txn, const std::string& host);
+    StatusWith<std::vector<BSONObj>> getAllDoc(OperationContext* txn, const NamespaceString& ns);
     Status setupChunks(const std::vector<ChunkType>& chunks);
 
     /**

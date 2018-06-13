@@ -214,6 +214,79 @@ BSONObjBuilder& BSONObjBuilder::appendElementsUnique(BSONObj x) {
     return *this;
 }
 
+// rebuild element with new fieldname
+BSONObjBuilder& BSONObjBuilder::appendElementForType(StringData fieldName, BSONElement e) {
+    int type = e.type();
+    switch (type) {
+        // Shared canonical types
+        case NumberInt:
+        case NumberDouble:
+        case NumberLong:
+        case NumberDecimal:
+            appendNumber(fieldName, e.numberInt());
+            break;
+        case Symbol:
+        case String:
+            append(fieldName, e.str());
+            break;
+        case Date:
+            appendDate(fieldName, e.date());
+            break;
+        case bsonTimestamp:
+            append(fieldName, e.timestamp());
+            break;
+        case Undefined:  // shared with EOO
+            appendUndefined(fieldName);
+            break;
+
+        // Separate canonical types
+        case MinKey:
+            appendMinKey(fieldName);
+            break;
+        case MaxKey:
+            appendMaxKey(fieldName);
+            break;
+        case jstOID:
+            append(fieldName, e.OID());
+            break;
+        case Bool:
+            appendBool(fieldName, e.boolean());
+            break;
+        case jstNULL:
+            appendNull(fieldName);
+            break;
+        case Object:
+            append(fieldName, e.Obj().getOwned());
+            break;
+        case Array:
+            appendArray(fieldName, e.Obj().getOwned());
+            break;
+        case BinData: {
+            int len = 0;
+            const char* data = e.binData(len);
+            appendBinData(fieldName, len, e.binDataType(), data);
+        }
+            break;
+        case RegEx:
+            appendRegex(fieldName, e.regex());
+            break;
+        case DBRef:
+            appendDBRef(fieldName, e.dbrefNS(), e.dbrefOID());
+            break;
+        case Code:
+            appendCode(fieldName, e.codeWScopeCode());
+            break;
+        case CodeWScope:
+            // This upper bound may change if a new bson type is added.
+            appendCodeWScope(fieldName, e.codeWScopeCode(), e.codeWScopeObject());
+            break;
+        default:
+            log() << "type not supported for appendElementForType: " << type;
+            break;
+    }
+    return *this;
+}
+
 void BSONObjBuilder::appendKeys(const BSONObj& keyPattern, const BSONObj& values) {
     BSONObjIterator i(keyPattern);
     BSONObjIterator j(values);

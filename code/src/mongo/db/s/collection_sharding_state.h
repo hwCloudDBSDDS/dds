@@ -146,7 +146,7 @@ public:
      * response is constructed, this function should be the only means of checking for shard version
      * match.
      */
-    void checkShardVersionOrThrow(OperationContext* txn);
+    void checkChunkVersionOrThrow(OperationContext* txn);
 
     /**
      * Returns whether this collection is sharded. Valid only if mongoD is primary.
@@ -167,26 +167,16 @@ public:
 
     void onDropCollection(OperationContext* txn, const NamespaceString& collectionName);
 
+    void updateChunkInfo(OperationContext* txn, const ChunkType& chunkType);
+
 private:
     friend class CollectionRangeDeleter;
 
-    /**
-     * Checks whether the shard version of the operation matches that of the collection.
-     *
-     * txn - Operation context from which to retrieve the operation's expected version.
-     * errmsg (out) - On false return contains an explanatory error message.
-     * expectedShardVersion (out) - On false return contains the expected collection version on this
-     *  shard. Obtained from the operation sharding state.
-     * actualShardVersion (out) - On false return contains the actual collection version on this
-     *  shard. Obtained from the collection sharding state.
-     *
-     * Returns true if the expected collection version on the shard matches its actual version on
-     * the shard and false otherwise. Upon false return, the output parameters will be set.
-     */
-    bool _checkShardVersionOk(OperationContext* txn,
+    // Checks whether the chunk version of the operation matches that of the collection.
+    bool _checkChunkVersionOk(OperationContext* txn,
                               std::string* errmsg,
-                              ChunkVersion* expectedShardVersion,
-                              ChunkVersion* actualShardVersion);
+                              ChunkVersion* expectedChunkVersion,
+                              ChunkVersion* actualChunkVersion);
 
     // Namespace to which this state belongs.
     const NamespaceString _nss;

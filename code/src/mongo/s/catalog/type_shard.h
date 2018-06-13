@@ -52,8 +52,10 @@ class StatusWith;
 class ShardType {
 public:
     enum class ShardState : int {
-        kNotShardAware = 0,
-        kShardAware,
+        kShardRegistering = 0,
+        kShardActive = 1,
+        kShardFault = 2,
+        kShardRestarting = 3
     };
 
     // Name of the shards collection in the config server.
@@ -66,7 +68,8 @@ public:
     static const BSONField<long long> maxSizeMB;
     static const BSONField<BSONArray> tags;
     static const BSONField<ShardState> state;
-
+    static const BSONField<std::string> extendIPs;
+    static const BSONField<std::string> processIdentity;
 
     /**
      * Constructs a new ShardType object from BSON.
@@ -116,10 +119,22 @@ public:
     void setTags(const std::vector<std::string>& tags);
 
     ShardState getState() const {
-        return _state.value_or(ShardState::kNotShardAware);
+        return _state.value_or(ShardState::kShardRegistering);
     }
     void setState(const ShardState state);
 
+    void setExtendIPs(const std::string& extendIPs);
+
+    const std::string& getExtendIPs() const {
+        return _extendIPs.get();
+    } 
+    
+    void setProcessIdentity(const std::string& processIdentity);
+
+    const std::string& getProcessIdentity() const {
+        return _processIdentity.get();
+    }
+    
 private:
     // Convention: (M)andatory, (O)ptional, (S)pecial rule.
 
@@ -135,6 +150,10 @@ private:
     boost::optional<std::vector<std::string>> _tags;
     // (O) shard state
     boost::optional<ShardState> _state;
+    // (O) shard manage IPs
+    boost::optional<std::string> _extendIPs;
+    // (O) shard process identity, format <ip:port_pid_time>
+    boost::optional<std::string> _processIdentity;
 };
 
 }  // namespace mongo

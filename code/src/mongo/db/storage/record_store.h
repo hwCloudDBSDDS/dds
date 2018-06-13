@@ -38,6 +38,8 @@
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/record_data.h"
 #include "mongo/db/storage/record_fetcher.h"
+#include "mongo/s/split_chunk_request.h"
+#include "mongo/s/confirm_split_request.h"
 
 namespace mongo {
 
@@ -294,6 +296,10 @@ public:
     virtual const std::string& ns() const {
         return _ns;
     }
+    virtual void resetNs(StringData ns) {
+        _ns = ns.toString();
+    }
+
 
     /**
      * The dataSize is an approximation of the sum of the sizes (in bytes) of the
@@ -617,6 +623,19 @@ public:
     virtual void updateStatsAfterRepair(OperationContext* txn,
                                         long long numRecords,
                                         long long dataSize) = 0;
+
+    virtual Status split(OperationContext* txn, 
+                        const SplitChunkReq& request,
+                        BSONObj& splitPoint) {
+            return Status::OK();
+    }
+
+    virtual Status confirmSplit(OperationContext* txn,
+                                const ConfirmSplitRequest& request) {
+            return Status::OK();
+    }
+
+    virtual void stopBackGround4Chunk() {}
 
 protected:
     std::string _ns;

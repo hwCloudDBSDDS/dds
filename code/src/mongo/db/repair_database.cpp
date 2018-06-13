@@ -51,6 +51,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
+
 namespace mongo {
 
 using std::endl;
@@ -71,10 +72,11 @@ Status rebuildIndexesOnCollection(OperationContext* txn,
         cce->getAllIndexes(txn, &indexNames);
         indexSpecs.reserve(indexNames.size());
 
+        log() << " === RebuildIndexesOnCollection IndexName size: " << indexNames.size();
         for (size_t i = 0; i < indexNames.size(); i++) {
             const string& name = indexNames[i];
             BSONObj spec = cce->getIndexSpec(txn, name);
-
+            log() << " === RebuildIndexesOnCollection spec: " << spec.toString();
             IndexVersion newIndexVersion = IndexVersion::kV0;
             {
                 BSONObjBuilder bob;
@@ -134,8 +136,9 @@ Status rebuildIndexesOnCollection(OperationContext* txn,
         {  // 1
             for (size_t i = 0; i < indexNames.size(); i++) {
                 Status s = cce->removeIndex(txn, indexNames[i]);
-                if (!s.isOK())
+                if (!s.isOK()) {
                     return s;
+                }
             }
         }
 
@@ -196,9 +199,9 @@ Status rebuildIndexesOnCollection(OperationContext* txn,
     }
 
     Status status = indexer->doneInserting();
-    if (!status.isOK())
+    if (!status.isOK()) {
         return status;
-
+    }
     {
         WriteUnitOfWork wunit(txn);
         indexer->commit();

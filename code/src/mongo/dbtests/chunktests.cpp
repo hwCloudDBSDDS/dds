@@ -59,10 +59,12 @@ public:
             _shardIds.insert(shardId);
 
             std::shared_ptr<Chunk> chunk(new Chunk(this,
+                                                   ChunkId("1"),
                                                    mySplitPoints[i - 1],
                                                    mySplitPoints[i],
                                                    shardId,
                                                    ChunkVersion(0, 0, OID()),
+                                                   "dummyfolder",
                                                    0));
             _chunkMap[mySplitPoints[i]] = chunk;
         }

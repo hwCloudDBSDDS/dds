@@ -38,6 +38,8 @@
 #include "mongo/rpc/request_interface.h"
 #include "mongo/util/log.h"
 
+#include "mongo/util/time_support.h"
+
 namespace mongo {
 
 void runCommands(OperationContext* txn,
@@ -51,6 +53,7 @@ void runCommands(OperationContext* txn,
         // to avoid displaying potentially sensitive information in the logs,
         // we restrict the log message to the name of the unrecognized command.
         // However, the complete command object will still be echoed to the client.
+        LOG(1) << "runCommands: " << request.getCommandName() << "; cmd: (" << request.getCommandArgs();
         if (!(c = Command::findCommand(request.getCommandName()))) {
             Command::unknownCommands.increment();
             std::string msg = str::stream() << "no such command: '" << request.getCommandName()
@@ -61,7 +64,7 @@ void runCommands(OperationContext* txn,
                                     << "'");
         }
 
-        LOG(2) << "run command " << request.getDatabase() << ".$cmd" << ' '
+        LOG(1) << "run command " <<c->getName()<<" "<< request.getDatabase() << ".$cmd" << ' '
                << c->getRedactedCopyForLogging(request.getCommandArgs());
 
         {
@@ -69,8 +72,15 @@ void runCommands(OperationContext* txn,
             stdx::lock_guard<Client> lk(*txn->getClient());
             CurOp::get(txn)->setLogicalOp_inlock(c->getLogicalOp());
         }
-
+        
+        const auto start = Date_t::now();
         Command::execCommand(txn, c, request, replyBuilder);
+        const Milliseconds totalTime = Date_t::now() - start;
+        if (totalTime >= Milliseconds(500)) {
+            LOG(1) << "time-consuming command " << request.getDatabase() << ".$cmd" << ' '
+                   << c->getRedactedCopyForLogging(request.getCommandArgs()) 
+                   << ", total time: " << totalTime;
+        }        
     }
 
     catch (const DBException& ex) {

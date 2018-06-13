@@ -49,6 +49,15 @@ class StatusWith;
  */
 class CollectionType {
 public:
+
+    // Event type, used in the recovery process
+    enum class TableType : int {
+        kNonShard     = 0,
+        kCapped       = 1,
+        kSharded      = 2,
+        kView         = 3,
+    };
+
     // Name of the collections collection in the config server.
     static const std::string ConfigNS;
 
@@ -58,11 +67,21 @@ public:
     static const BSONField<BSONObj> keyPattern;
     static const BSONField<BSONObj> defaultCollation;
     static const BSONField<bool> unique;
-
+    static const BSONField<TableType> tabType;
+    static const BSONField<long long> prefix; 
+    static const BSONField<BSONObj> index; 
+    static const BSONField<BSONObj> options; 
+    
     /**
      * Constructs a new DatabaseType object from BSON. Also does validation of the contents.
      */
     static StatusWith<CollectionType> fromBSON(const BSONObj& source);
+
+    // Sanity check the status
+    static bool isValidTabType(TableType tab) {
+        return (tab >= TableType::kNonShard && tab <= TableType::kView);
+    }
+
 
     /**
      * Returns OK if all fields have been set. Otherwise returns NoSuchKey and information
@@ -121,10 +140,33 @@ public:
         _unique = unique;
     }
 
+    TableType getTabType() const {
+        return _tableType;
+    }
+    void setTabType(TableType tabType) ;
+
+
     bool getAllowBalance() const {
         return _allowBalance.get_value_or(true);
     }
 
+    
+    long long getPrefix() const {
+        return _prefix.get_value_or(0);
+    }
+
+    void setPrefix (long long prefix);
+   
+    const BSONArray& getIndex() const {
+        return _index;
+    }
+    void setIndex (const BSONArray& index);
+    void setOptions(const BSONObj& options){
+        _options = options;
+    }
+    const BSONObj& getOptions(){
+       return _options;
+    }  
 private:
     // Required full namespace (with the database prefix).
     boost::optional<NamespaceString> _fullNs;
@@ -149,6 +191,16 @@ private:
 
     // Optional whether balancing is allowed for this collection. If missing, implies true.
     boost::optional<bool> _allowBalance;
+
+    // prefix for collection and index 
+    boost::optional<long long> _prefix;
+
+    // metadata for indexes of collection
+    BSONArray _index;
+
+    TableType _tableType = TableType::kNonShard;
+    //Optional collection options,include capped,autoIndexId,size,max,storageEngine,validator and so on
+    BSONObj _options;
 };
 
 }  // namespace mongo

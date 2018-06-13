@@ -35,6 +35,7 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/s/client/shard.h"
+#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -52,52 +53,102 @@ class ClusterStatistics {
     MONGO_DISALLOW_COPYING(ClusterStatistics);
 
 public:
+    struct CpuStatistics {
+        int CpuUsage;
+        int mongodCpuUsage;
+    };
+
+    struct MemStatistics {
+        int totalMem;
+        int MemUsage;
+        int mongodMemUsage;
+    };
+
+    struct netWorkStatistics {
+        uint64_t readBandWidth;
+        uint64_t writeBandWidth;
+    };
+
+    struct OpsStatistics {
+        int insertOps;
+        int queryOps;
+        int updateOps;
+        int deleteOps;
+        int getmoreOps;
+        int commandOps;
+    };
+
+    // Structure, which describes the statistics of a single chunk.
+    struct ChunkStatistics {
+    public:
+        // chunk need to split
+        bool isAboveSplitThreshold(uint64_t splitThreshold) const;
+
+        // chunk need to merge
+        bool isUnderSplitThreshold(uint64_t splitThreashold) const;
+
+        BSONObj toBSON() const;
+
+        static StatusWith<ChunkStatistics> fromBSON(const BSONObj& source);
+
+        std::string ns;
+
+        ChunkId chunkId;
+
+        // The current size of the chunk
+        uint64_t currSizeMB{0};
+
+        // The doc num of the chunk
+        uint64_t documentNum{0};
+
+        // The TPS of the chunk
+        uint64_t tps{0};
+
+        // rocksdb: filenum
+        uint64_t sstfileNum{0};
+
+        // rocksdb: filesize
+        uint64_t sstfilesize{0};
+    };
+
     /**
      * Structure, which describes the statistics of a single shard host.
      */
     struct ShardStatistics {
     public:
-        ShardStatistics(ShardId shardId,
-                        uint64_t maxSizeMB,
-                        uint64_t currSizeMB,
-                        bool isDraining,
-                        std::set<std::string> shardTags,
-                        std::string mongoVersion);
 
-        /**
-         * Returns true if a shard is not allowed to receive any new chunks because it has reached
-         * the per-shard data size limit.
-         */
-        bool isSizeMaxed() const;
-
-        /**
-         * Returns true if a shard must be relieved (if possible) of some of the chunks it hosts
-         * because it has exceeded its per-shard data size limit.
-         */
-        bool isSizeExceeded() const;
+        // TODO: whether this shard has some chunks to move away
+        bool isAboveThreshold() const;
 
         /**
          * Returns BSON representation of this shard's statistics, for reporting purposes.
          */
         BSONObj toBSON() const;
 
+        static StatusWith<ShardStatistics> fromBSON(const BSONObj& source);
+
         // The id of the shard for which this statistic applies
         ShardId shardId;
 
-        // The maximum size allowed for the shard
-        uint64_t maxSizeMB{0};
-
-        // The current size of the shard
-        uint64_t currSizeMB{0};
-
-        // Whether the shard is in draining mode
-        bool isDraining{false};
-
+        // TODO: maybe we donnt need tag and version
         // Set of tags for the shard
         std::set<std::string> shardTags;
+       
+        bool isDraining{false};
 
         // Version of mongod, which runs on this shard's primary
         std::string mongoVersion;
+        
+        CpuStatistics cpuInfo;
+
+        MemStatistics memInfo;
+
+        netWorkStatistics netWorkInfo;
+
+        OpsStatistics opsInfo;
+
+        // Statistics of chunks on this shard
+        std::vector<ChunkStatistics> chunkStatistics;
     };
 
     virtual ~ClusterStatistics();
@@ -106,7 +157,7 @@ public:
      * Retrieves a snapshot of the current shard utilization state. The implementation of this
      * method may block if necessary in order to refresh its state or may return a cached value.
      */
-    virtual StatusWith<std::vector<ShardStatistics>> getStats(OperationContext* txn) = 0;
+    virtual StatusWith<std::vector<ShardStatistics>> getStats(OperationContext* txn,bool isMoveCommand = false) = 0;
 
 protected:
     ClusterStatistics();

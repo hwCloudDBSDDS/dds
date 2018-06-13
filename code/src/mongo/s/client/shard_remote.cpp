@@ -219,7 +219,7 @@ Shard::HostWithResponse ShardRemote::_runCommand(OperationContext* txn,
 
     if (!swResponse.isOK()) {
         if (swResponse.status.compareCode(ErrorCodes::ExceededTimeLimit)) {
-            LOG(0) << "Operation timed out with status " << redact(swResponse.status);
+            warning() << "Operation timed out with status " << redact(swResponse.status);
         }
         return Shard::HostWithResponse(host.getValue(), swResponse.status);
     }
@@ -352,7 +352,7 @@ StatusWith<Shard::QueryResponse> ShardRemote::_exhaustiveFindOnConfig(
 
     if (!status.isOK()) {
         if (status.compareCode(ErrorCodes::ExceededTimeLimit)) {
-            LOG(0) << "Operation timed out " << causedBy(status);
+            warning() << "Operation timed out " << causedBy(status);
         }
         return status;
     }

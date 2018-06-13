@@ -213,6 +213,11 @@ BSONObj BatchedCommandRequest::toBSON() const {
         _shardVersion.get().appendForCommands(&builder);
     }
 
+    // append chunkid
+    if (_chunkId) {
+        _chunkId.get().appendForCommands(&builder);
+    }
+
     return builder.obj();
 }
 
@@ -316,6 +321,38 @@ void BatchedCommandRequest::setShouldBypassValidation(bool newVal) {
 
 bool BatchedCommandRequest::shouldBypassValidation() const {
     INVOKE(shouldBypassValidation);
+}
+
+void BatchedCommandRequest::setAtomicity(bool atomicity) {
+    INVOKE(setAtomicity, atomicity);
+}
+
+void BatchedCommandRequest::unsetAtomicity() {
+    INVOKE(unsetAtomicity);
+}
+
+bool BatchedCommandRequest::isAtomicitySet() const {
+    INVOKE(isAtomicitySet);
+}
+
+bool BatchedCommandRequest::getAtomicity() const {
+    INVOKE(getAtomicity);
+}
+
+void BatchedCommandRequest::setPrewarm(bool prewarm) {
+    INVOKE(setPrewarm, prewarm);
+}
+
+void BatchedCommandRequest::unsetPrewarm() {
+    INVOKE(unsetPrewarm);
+}
+
+bool BatchedCommandRequest::isPrewarmSet() const {
+    INVOKE(isPrewarmSet);
+}
+
+bool BatchedCommandRequest::getPrewarm() const {
+    INVOKE(getPrewarm);
 }
 
 /**

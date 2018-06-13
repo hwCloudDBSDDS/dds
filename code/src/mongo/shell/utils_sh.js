@@ -82,6 +82,8 @@ sh.help = function() {
     print("\tsh.disableAutoSplit()                   disable autoSplit on one collection");
     print("\tsh.enableAutoSplit()                    re-eable autoSplit on one colleciton");
     print("\tsh.getShouldAutoSplit()                 returns whether autosplit is enabled");
+    print("\tsh.offloadChunk(fullName,find)          offload the chunk that find is in at the median");
+    print("\tsh.assignChunk(fullName,find,to)        assign the chunk where 'find' is to 'to' (name of shard)");
 };
 
 sh.status = function(verbose, configDB) {
@@ -630,6 +632,16 @@ sh.getRecentMigrations = function(configDB) {
             .toArray());
 
     return result;
+};
+
+sh.offloadChunk = function(fullName, find) {
+    sh._checkFullName(fullName);
+    return sh._adminCommand({offloadChunk: fullName, find: find});
+};
+
+sh.assignChunk = function(fullName, find, to) {
+    sh._checkFullName(fullName);
+    return sh._adminCommand({assignChunk: fullName, find: find, to: to});
 };
 
 function printShardingStatus(configDB, verbose) {

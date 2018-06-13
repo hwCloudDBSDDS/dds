@@ -52,10 +52,29 @@ const BSONField<Date_t> CollectionType::updatedAt("lastmod");
 const BSONField<BSONObj> CollectionType::keyPattern("key");
 const BSONField<BSONObj> CollectionType::defaultCollation("defaultCollation");
 const BSONField<bool> CollectionType::unique("unique");
+const BSONField<CollectionType::TableType> CollectionType::tabType("tableType"); 
+const BSONField<long long> CollectionType::prefix("prefix");
+const BSONField<BSONObj> CollectionType::index("indexes");
+const BSONField<BSONObj> CollectionType::options("options");
+
 
 StatusWith<CollectionType> CollectionType::fromBSON(const BSONObj& source) {
     CollectionType coll;
+    {
+        BSONElement colloptions;
+        Status status =
+            bsonExtractTypedField(source, options.name(), Object, &colloptions);
+        if (status.isOK()) {
+            BSONObj obj = colloptions.Obj();
+            if (obj.isEmpty()) {
+                return Status(ErrorCodes::BadValue, "empty options");
+            }
 
+            coll._options = obj.getOwned();
+        } else if (status != ErrorCodes::NoSuchKey) {
+           //TODO // return status;
+        }
+    }
     {
         std::string collFullNs;
         Status status = bsonExtractStringField(source, fullNs.name(), &collFullNs);
@@ -159,6 +178,51 @@ StatusWith<CollectionType> CollectionType::fromBSON(const BSONObj& source) {
         }
     }
 
+	{
+        long long ll_prefix;
+        Status status = bsonExtractIntegerField(source, prefix.name(), &ll_prefix);
+        if (status.isOK()) {
+            coll._prefix = ll_prefix;
+        } else if (status == ErrorCodes::NoSuchKey) {
+            return status;
+        } else {
+            return status;
+        }
+    }
+
+	{
+        BSONElement collIndex;
+        Status status = bsonExtractTypedField(source, index.name(), Array, &collIndex);
+        if (status.isOK()) {
+            BSONArrayBuilder b;
+            BSONObjIterator it(collIndex.Obj());
+            while (it.more()) {
+                b << it.next().Obj().getOwned();
+            }
+            coll._index = b.arr();
+        } else if (status != ErrorCodes::NoSuchKey) {
+            return status;
+        }
+    }
+
+    {
+
+        long long tab;
+        Status t_status = bsonExtractIntegerField(source, tabType.name(), &tab);
+        if (t_status.isOK()) {
+            // Make sure the state field falls within the valid range of ChunkState values.
+            if (!isValidTabType(static_cast<TableType>(tab))) {
+                return Status(ErrorCodes::BadValue,
+                              str::stream() << "Invalid tabType value: " << tab);
+            } else {
+                coll._tableType = static_cast<TableType>(tab);
+            }
+        } else {
+            return t_status;
+        }
+
+    }
+
     return StatusWith<CollectionType>(coll);
 }
 
@@ -196,6 +260,16 @@ Status CollectionType::validate() const {
         }
     }
 
+    if (_prefix.get_value_or(0) <= 0) {
+        return Status(ErrorCodes::NoSuchKey, "missing prefix");
+    }
+    if (!isValidTabType(_tableType)) {
+        return {ErrorCodes::BadValue,
+                str::stream() << "tabType("
+                              << static_cast<int>(_tableType)
+                              << ") is invalid"};
+    }
+
     return Status::OK();
 }
 
@@ -208,6 +282,9 @@ BSONObj CollectionType::toBSON() const {
     builder.append(epoch.name(), _epoch.get_value_or(OID()));
     builder.append(updatedAt.name(), _updatedAt.get_value_or(Date_t()));
     builder.append(kDropped.name(), _dropped.get_value_or(false));
+
+    builder.append(prefix.name(), _prefix.get_value_or(0));
+
 
     // These fields are optional, so do not include them in the metadata for the purposes of
     // consuming less space on the config servers.
@@ -227,7 +304,16 @@ BSONObj CollectionType::toBSON() const {
     if (_allowBalance.is_initialized()) {
         builder.append(kNoBalance.name(), !_allowBalance.get());
     }
+    if (_index.isValid()) {
+        builder.append(index.name(), _index);
+    }
 
+    if (isValidTabType(_tableType)){
+        builder.append(tabType.name(), static_cast<std::underlying_type<TableType>::type>(getTabType()));
+    }
+    if( !_options.isEmpty()){
+        builder.append(options.name(),_options);
+    }
     return builder.obj();
 }
 
@@ -251,6 +337,19 @@ void CollectionType::setUpdatedAt(Date_t updatedAt) {
 void CollectionType::setKeyPattern(const KeyPattern& keyPattern) {
     invariant(!keyPattern.toBSON().isEmpty());
     _keyPattern = keyPattern;
+}
+
+void CollectionType::setPrefix(long long prefix) {
+    _prefix = prefix;
+}
+
+void CollectionType::setIndex(const BSONArray& index) {
+  // todo 
+   _index = index;  
+}
+
+void CollectionType::setTabType(TableType tab) {
+    _tableType = tab;
 }
 
 }  // namespace mongo

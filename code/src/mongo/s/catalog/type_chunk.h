@@ -94,6 +94,13 @@ private:
  */
 class ChunkType {
 public:
+    enum class ChunkStatus : int {
+        kOffloaded = 0, 
+        kAssigned,
+        kDisabled, // Chunk will not be processed by balancer
+        kFirstInvalidChunkStatus // make it easy to do the sanity check when adding new status
+    };
+
     // Name of the chunks collection in the config server.
     static const std::string ConfigNS;
 
@@ -103,9 +110,14 @@ public:
     static const BSONField<BSONObj> min;
     static const BSONField<BSONObj> max;
     static const BSONField<std::string> shard;
+    static const BSONField<std::string> processIdentity;
     static const BSONField<bool> jumbo;
     static const BSONField<Date_t> DEPRECATED_lastmod;
     static const BSONField<OID> DEPRECATED_epoch;
+    static const BSONField<ChunkStatus> status;
+    // When using persistent layer as the underlying storage, it means a rootploglist,
+    // when using HDFS as the underlying storage, it means a HDFS path.
+    static const BSONField<std::string> rootFolder;
 
     /**
      * Constructs a new ChunkType object from BSON.
@@ -117,6 +129,15 @@ public:
      * Generates chunk id based on the namespace name and the lower bound of the chunk.
      */
     static std::string genID(StringData ns, const BSONObj& min);
+
+    // Sanity check the status
+    static bool isStatusValid(ChunkStatus status) {
+        return (status >= ChunkStatus::kOffloaded &&
+                status < ChunkStatus::kFirstInvalidChunkStatus);
+    }
+
+    // add prefix "000000000" for chunkId
+    static std::string toID(const std::string& id);
 
     /**
      * Returns OK if all fields have been set. Otherwise returns NoSuchKey
@@ -134,7 +155,9 @@ public:
      */
     std::string toString() const;
 
+    //get id of the chunk without leading 0
     std::string getName() const;
+    void setName(const std::string& id);
 
     const std::string& getNS() const {
         return _ns.get();
@@ -169,6 +192,37 @@ public:
     }
     void setJumbo(bool jumbo);
 
+    ChunkStatus getStatus() const {
+        return _status;
+    }
+    void setStatus(const ChunkStatus status);
+
+    const std::string& getRootFolder() const {
+        return _rootFolder.get();
+    }
+
+    void setRootFolder(const std::string& rootFolder);
+    void clearRootFolder();
+    
+    // get the full id field
+    const std::string& getID() const {
+        return _id;
+    }
+
+    void setID(const std::string& id) {
+        _id = id;
+    }
+
+    bool isAssigned() const {
+        return (_status == ChunkStatus::kAssigned);
+    }
+
+    void setProcessIdentity(const std::string& processIdentity);
+
+    const std::string& getProcessIdentity() const {
+        return _processIdentity;
+    }
+    
 private:
     // Convention: (M)andatory, (O)ptional, (S)pecial rule.
 
@@ -184,6 +238,13 @@ private:
     boost::optional<ShardId> _shard;
     // (O)  too big to move?
     boost::optional<bool> _jumbo;
+    // (M) chunk status
+    ChunkStatus _status = ChunkStatus::kOffloaded;
+    // (O) chunk's root folder which could be rootploglist or hdfs path
+    boost::optional<std::string> _rootFolder;
+    // (M)  unique chunkID 
+    std::string _id = "";
+    std::string _processIdentity = "noidentity";
 };
 
 }  // namespace mongo

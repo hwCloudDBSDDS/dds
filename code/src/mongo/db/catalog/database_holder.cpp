@@ -41,6 +41,7 @@
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/util/log.h"
 
@@ -70,7 +71,8 @@ StringData _todb(StringData ns) {
 }
 
 
-DatabaseHolder _dbHolder;
+DatabaseHolder      _dbHolder;
+Ns2ChunkIdHolder    _ns2chunkHolder;
 
 }  // namespace
 
@@ -203,4 +205,85 @@ bool DatabaseHolder::closeAll(OperationContext* txn, BSONObjBuilder& result, boo
 
     return true;
 }
+
+
+
+Ns2ChunkIdHolder & ns2chunkHolder() {
+    return _ns2chunkHolder;
+}
+
+
+bool Ns2ChunkIdHolder::set(StringData ns, std::string chunkid) {
+    bool ret = false;
+
+    if(!ns.empty())
+    {
+        scoped_spinlock lock(_lock);
+        _ns2ChunkMap[ns.toString()] = chunkid;
+        ret = true;
+    }
+    else
+    {
+        log()<<"Ns2ChunkIdHolder::set ns is empty.";
+    }
+
+    return ret;
+}
+
+bool Ns2ChunkIdHolder::get(const StringData ns, std::string &chunkid) {
+    bool ret = false;
+
+    if(!ns.empty())
+    {
+        scoped_spinlock lock(_lock);
+        chunkid = _ns2ChunkMap[ns.toString()];
+        ret = true;
+    }
+    else
+    {
+        log()<<"Ns2ChunkIdHolder::get ns is empty.";
+    }
+
+    return ret;
+}
+bool Ns2ChunkIdHolder::del(StringData ns) {
+    bool ret = false;
+
+    if(!ns.empty())
+    {
+        scoped_spinlock lock(_lock);
+        _ns2ChunkMap.erase(ns.toString());
+        ret = true;
+    }
+    else
+    {
+        log()<<"Ns2ChunkIdHolder::get ns is empty.";
+    }
+
+    return ret;
+}
+
+NamespaceString Ns2ChunkIdHolder::getNsWithChunkId(const NamespaceString &ns)
+{
+    NamespaceString nss(ns);
+    bool withChunkId = (ns.ns().find('$') != std::string::npos);
+    if(!withChunkId && serverGlobalParams.clusterRole == ClusterRole::ShardServer)
+    {
+        std::string chunkid;
+        if(!ns.ns().empty())
+        {
+           scoped_spinlock lock(_lock);
+           chunkid = _ns2ChunkMap[ns.toString()];
+        }
+
+        if(chunkid.size() > 0)
+        {
+            nss = NamespaceString(StringData(ns.ns()+'$'+ chunkid));
+        }
+    } 
+
+    return nss;
+}
+
+
 }

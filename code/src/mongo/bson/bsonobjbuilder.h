@@ -140,6 +140,9 @@ public:
     /** add all the fields from the object specified to this object if they don't exist already */
     BSONObjBuilder& appendElementsUnique(BSONObj x);
 
+    // rebuild element with new fieldname
+    BSONObjBuilder& appendElementForType(StringData fieldName, BSONElement e);
+
     /** append element to the object we are building */
     BSONObjBuilder& append(const BSONElement& e) {
         // do not append eoo, that would corrupt us. the builder auto appends when done() is called.

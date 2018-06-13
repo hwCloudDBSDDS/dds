@@ -139,6 +139,8 @@ typedef std::shared_ptr<PCMData> PCMDataPtr;
  */
 class ParallelSortClusteredCursor {
 public:
+    typedef std::map<ChunkId, std::pair<ShardId, PCMData>> ChunkCursorMap;
+
     ParallelSortClusteredCursor(const QuerySpec& qSpec, const CommandInfo& cInfo = CommandInfo());
 
     // DEPRECATED legacy constructor for pure mergesort functionality - do not use
@@ -156,12 +158,10 @@ public:
     bool more();
     BSONObj next();
 
-    /**
-     * Returns the set of shards with open cursors.
-     */
-    void getQueryShardIds(std::set<ShardId>& shardIds);
+    //Returns the set of chunkIds with open cursors.
+    void getQueryShardIds(std::map<ChunkId, ShardId>& shardIdMap);
 
-    DBClientCursorPtr getShardCursor(const ShardId& shardId);
+    DBClientCursorPtr getChunkCursor(const ChunkId& chunkId);
 
 private:
     void fullInit(OperationContext* txn);
@@ -183,6 +183,10 @@ private:
                         bool forceReload,
                         bool fullReload);
 
+    // when get exception like shard not exist or socket error, we should reload chunkmap and retry
+    void _reloadChunkManager(OperationContext* txn,
+                        const NamespaceString& nss);
+
     bool _didInit;
     bool _done;
 
@@ -194,7 +198,7 @@ private:
 
     int _totalTries;
 
-    std::map<ShardId, PCMData> _cursorMap;
+    ChunkCursorMap _cursorMap;
 
     // LEGACY BELOW
     int _numServers;

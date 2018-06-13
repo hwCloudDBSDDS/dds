@@ -41,6 +41,7 @@ Status renameCollection(OperationContext* txn,
                         const NamespaceString& source,
                         const NamespaceString& target,
                         bool dropTarget,
-                        bool stayTemp);
+                        bool stayTemp,
+                        bool sharded = false);
 
 }  // namespace mongo

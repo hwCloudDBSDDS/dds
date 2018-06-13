@@ -86,7 +86,7 @@ string getTmpName(StringData coll) {
 BSONObj fixForShards(const BSONObj& orig,
                      const string& output,
                      string& badShardedField,
-                     int maxChunkSizeBytes) {
+                     long long maxChunkSizeBytes) {
     BSONObjBuilder b;
     BSONObjIterator i(orig);
     while (i.more()) {
@@ -257,7 +257,8 @@ public:
         }
 
         const bool shardedInput =
-            confIn && confIn->isShardingEnabled() && confIn->isSharded(nss.ns());
+            confIn && confIn->isShardingEnabled()
+                    && CollectionType::TableType::kSharded == confIn->getCollTabType(nss.ns());
 
         if (!shardedOutput) {
             uassert(15920,
@@ -269,7 +270,7 @@ public:
             //       transition client may see partial data.
         }
 
-        int64_t maxChunkSizeBytes = 0;
+        long long maxChunkSizeBytes = 0;
         if (shardedOutput) {
             // Will need to figure out chunks, ask shards for points
             maxChunkSizeBytes = cmdObj["maxChunkSizeBytes"].numberLong();
@@ -279,7 +280,7 @@ public:
             }
 
             // maxChunkSizeBytes is sent as int BSON field
-            invariant(maxChunkSizeBytes < std::numeric_limits<int>::max());
+            invariant(maxChunkSizeBytes < std::numeric_limits<long long>::max());
         }
 
         // modify command to run on shards with output to tmp collection

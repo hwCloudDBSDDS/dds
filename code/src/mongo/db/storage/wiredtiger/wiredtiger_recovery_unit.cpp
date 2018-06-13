@@ -225,6 +225,11 @@ Status WiredTigerRecoveryUnit::setReadFromMajorityCommittedSnapshot() {
     return Status::OK();
 }
 
+void WiredTigerRecoveryUnit::clearReadFromMajorityCommittedSnapshot() {
+    _readFromMajorityCommittedSnapshot = false;
+    return;
+}
+
 boost::optional<SnapshotName> WiredTigerRecoveryUnit::getMajorityCommittedSnapshot() const {
     if (!_readFromMajorityCommittedSnapshot)
         return {};

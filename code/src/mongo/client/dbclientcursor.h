@@ -36,6 +36,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
 #include "mongo/util/net/message.h"
+#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -158,6 +159,7 @@ public:
     DBClientCursor(DBClientBase* client,
                    const std::string& ns,
                    const BSONObj& query,
+                   const ChunkId& chunkId,
                    int nToReturn,
                    int nToSkip,
                    const BSONObj* fieldsToReturn,
@@ -239,6 +241,7 @@ private:
     DBClientCursor(DBClientBase* client,
                    const std::string& ns,
                    const BSONObj& query,
+                   const ChunkId& chunkId,
                    long long cursorId,
                    int nToReturn,
                    int nToSkip,
@@ -254,6 +257,7 @@ private:
     const std::string ns;
     const bool _isCommand;
     BSONObj query;
+    ChunkId chunkId;
     int nToReturn;
     bool haveLimit;
     int nToSkip;

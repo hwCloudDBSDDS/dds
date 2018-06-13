@@ -36,6 +36,11 @@
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/s/catalog/type_shard_server.h"
+#include "mongo/s/catalog/catalog_extend/root_folder_manager.h"
+#include "mongo/s/catalog/catalog_extend/root_folder.h"
+#include "mongo/db/s/balancer/state_machine.h"
+#include "mongo/util/string_map.h"
 
 namespace mongo {
 
@@ -43,6 +48,10 @@ class DatabaseType;
 class RemoteCommandTargeter;
 class ShardingCatalogClient;
 class VersionType;
+class ShardServerType;
+template <typename T>
+class StatusWith;
+class ShardServerManager;
 
 namespace executor {
 class TaskExecutor;
@@ -65,10 +74,23 @@ public:
 
     void shutDown(OperationContext* txn) override;
 
+    // Create chunk root folder for a chunk
+    Status createRootFolder(
+        OperationContext* txn,
+        const std::string& chunkId,
+        std::string& chunkRootFolder) override;
+
+    Status deleteRootFolder(
+        OperationContext* txn,
+        const std::string& chunkId) override;
+
+    Status deleteRootFolder(
+        const std::string& chunkRootFolder) override;
     StatusWith<std::string> addShard(OperationContext* txn,
-                                     const std::string* shardProposedName,
+                                     const std::string& shardProposedName,
                                      const ConnectionString& shardConnectionString,
-                                     const long long maxSize) override;
+                                     const long long maxSize,
+                                     const std::string& processIdentity) override;
 
     Status addShardToZone(OperationContext* txn,
                           const std::string& shardName,
@@ -119,12 +141,39 @@ public:
     Status setFeatureCompatibilityVersionOnShards(OperationContext* txn,
                                                   const std::string& version) override;
 
-private:
-    /**
-     * Generates a unique name to be given to a newly added shard.
-     */
-    StatusWith<std::string> _generateNewShardName(OperationContext* txn);
+    StatusWith<ShardType> insertOrUpdateShardDocument(OperationContext* txn,
+                                                      ShardType& shardType,
+                                                      const ConnectionString& shardServerConn) override;
 
+    virtual StatusWith<ShardType> insertShardDocument(OperationContext* txn,
+                        const ConnectionString& shardServerConn,
+                        const std::string& extendIPs,
+                        const std::string& processIdentity,
+                        bool& isRestart) override;
+
+    virtual StatusWith<std::string> updateShardStateWhenReady(OperationContext* txn,
+                        const std::string& shardName,
+                        const std::string& processIdentity) override;
+
+    virtual Status updateShardStateDuringFailover(OperationContext* txn,
+                        const ShardType& shardType,
+                        const ShardType::ShardState& targetState) override;
+
+    virtual Status updateMultiChunkStatePendingOpen(OperationContext* txn,
+                        const std::string& shardName) override;
+
+    virtual Status verifyShardConnectionString(OperationContext* txn,
+                const std::string& shardName, const ConnectionString& shardServerConn) override;
+
+    ShardServerManager* getShardServerManager() override;
+
+    StateMachine* getStateMachine() override;
+
+    virtual void resetMaxChunkVersionMap() override;
+
+    virtual StatusWith<uint64_t> newMaxChunkVersion(OperationContext* txn, const std::string& ns) override;
+
+private:
     /**
      * Used during addShard to determine if there is already an existing shard that matches the
      * shard that is currently being added.  An OK return with boost::none indicates that there
@@ -137,9 +186,25 @@ private:
      */
     StatusWith<boost::optional<ShardType>> _checkIfShardExists(
         OperationContext* txn,
-        const ConnectionString& propsedShardConnectionString,
-        const std::string* shardProposedName,
-        long long maxSize);
+        const std::string& shardName,
+        const ConnectionString& shardConnectionString,
+        long long maxSize,
+        const std::string& processIdentity);
+    StatusWith<std::string> updateShardStateInConfig(
+        OperationContext* txn, ShardType shard, const std::string& ns,const std::string& host);
+    StatusWith<ShardType> findShardByHost(OperationContext* txn,const std::string& ns,const std::string& host) override;
+    /**
+     * Used during addShardServer to determine if there is already an existing shard server that matches the
+     * shard server that is currently being added.  An OK return with boost::none indicates that there
+     * is no conflicting shard server, and we can proceed trying to add the new shard server.  An OK return
+     * with a ShardServerType indicates that there is an existing shard server that matches the shard server being added
+     * but since the options match, this addShardServer request can do nothing and return success.  A
+     * non-OK return either indicates a problem reading the existing shardservers from disk,
+     * so the addShardServer attempt must be aborted.
+     */
+    StatusWith<boost::optional<ShardServerType>> _checkIfShardServerExists(
+        OperationContext* txn,
+        const ConnectionString& shardConnectionString);
 
     /**
      * Validates that the specified endpoint can serve as a shard server. In particular, this
@@ -275,9 +340,15 @@ private:
     // valid for the lifetime of this ShardingCatalogManager.
     ShardingCatalogClient* _catalogClient;  // (R)
 
+    ChunkRootFolder* _rootFolderManager;
     // Executor specifically used for sending commands to servers that are in the process of being
     // added as shards.  Does not have any connection hook set on it, thus it can be used to talk
     // to servers that are not yet in the ShardRegistry.
+
+    ShardServerManager* _shardServerManager;
+
+    StateMachine* _stateMachine;
+
     std::unique_ptr<executor::TaskExecutor> _executorForAddShard;  // (R)
 
     // True if shutDown() has been called. False, otherwise.
@@ -301,6 +372,9 @@ private:
 
     // Protects the _addShardHandles map.
     stdx::mutex _addShardHandlesMutex;
+
+    stdx::mutex _maxChunkVersionMapMutex;
+    StringMap<uint64_t> _maxChunkVersionMap;
 
     /**
      * Lock for shard zoning operations. This should be acquired when doing any operations that

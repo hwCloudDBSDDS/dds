@@ -45,7 +45,9 @@ string Message::toString() const {
     ss << "op: " << networkOpToString(operation()) << " len: " << size();
     if (operation() >= 2000 && operation() < 2100) {
         DbMessage d(*this);
-        ss << " ns: " << d.getns();
+        if (d.messageShouldHaveNs()) {
+            ss << " ns: " << d.getns();
+        }
         switch (operation()) {
             case dbUpdate: {
                 int flags = d.pullInt();
@@ -113,6 +115,20 @@ int DbMessage::pullInt() {
 
 long long DbMessage::pullInt64() {
     return readAndAdvance<int64_t>();
+}
+
+const char* DbMessage::pullCString() {
+    size_t limit = (size_t)(_theEnd-_nextjsobj);
+    unsigned int len = strnlen(_nextjsobj, limit);
+
+    if (len >= limit) {
+        return NULL;
+    }
+
+    const char* result = _nextjsobj;
+    _nextjsobj += len + 1;
+
+    return result;
 }
 
 const char* DbMessage::getArray(size_t count) const {

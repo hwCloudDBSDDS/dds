@@ -31,6 +31,8 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy.h"
 #include "mongo/db/s/balancer/migration_manager.h"
+#include "mongo/db/s/balancer/state_machine.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
@@ -125,6 +127,10 @@ public:
      * in accordance with the active balancer policy. An error will be returned if the attempt to
      * move fails for any reason.
      *
+     * The last parameter userCommand indicate whether the function is executed by a Command request
+     * from user, such kind of request can fail. Otherwise, if the function is executed by internal
+     * balancer module, the chunk should always in Assigned status no matter what error happens.
+     *
      * NOTE: This call disregards the balancer enabled/disabled status and will proceed with the
      *       move regardless. If should be used only for user-initiated moves.
      */
@@ -133,14 +139,47 @@ public:
                            const ShardId& newShardId,
                            uint64_t maxChunkSizeBytes,
                            const MigrationSecondaryThrottleOptions& secondaryThrottle,
-                           bool waitForDelete);
+                           bool waitForDelete,
+                           bool userCommand);
 
+    Status assignChunk(OperationContext* txn,
+                           const ChunkType& chunk,
+                           bool newChunk,
+                           bool userCommand,
+                           ShardId newShardId = ShardId(),
+                           bool flag = false);
+
+    Status offloadChunk(OperationContext* txn,
+                           const ChunkType& chunk,
+                           bool userCommand);
+
+
+    Status splitChunk(OperationContext* txn,
+                      const ChunkType& chunk,
+                      const BSONObj& splitPoint,
+                      bool userCommand);
     /**
      * Appends the runtime state of the balancer instance to the specified builder.
      */
     void report(OperationContext* txn, BSONObjBuilder* builder);
 
+
+    Status checkGCCollection(OperationContext* txn, bool &existed);
+
+    void findAndRunCommand(OperationContext *txn, std::string command, std::string dbname, BSONObj &cmdObj);
+
+    void createGCCollection(OperationContext* txn);
+    //Traverse vector that Specified by ns,return error if it has something wrong with assignChunk's response
+    Status getResults(OperationContext* txn,const std::string& ns);
 private:
+    /** in order to make the assignChunk not to wait for the event to complete synchronously
+    */
+    stdx::mutex _nsToVectorMutex;
+    
+    typedef stdx::unordered_map<std::string, std::vector<IRebalanceEvent*>> NsEventVectorMap;
+    NsEventVectorMap events;
+    //1.delete all StateMachine's event  2. erase ns from events
+    void deleteAndClearEvent(OperationContext* txn,std::vector<IRebalanceEvent*> &evs,const std::string& ns);
     /**
      * Possible runtime states of the balancer. The comments indicate the allowed next state.
      */
@@ -164,13 +203,13 @@ private:
      * Signals the beginning and end of a balancing round.
      */
     void _beginRound(OperationContext* txn);
-    void _endRound(OperationContext* txn, Seconds waitTimeout);
+    void _endRound(OperationContext* txn, Milliseconds waitTimeout);
 
     /**
      * Blocks the caller for the specified timeout or until the balancer condition variable is
      * signaled, whichever comes first.
      */
-    void _sleepFor(OperationContext* txn, Seconds waitTimeout);
+    void _sleepFor(OperationContext* txn, Milliseconds waitTimeout);
 
     /**
      * Returns true if all the servers listed in configdb as being shards are reachable and are
@@ -190,6 +229,9 @@ private:
      */
     int _moveChunks(OperationContext* txn,
                     const BalancerChunkSelectionPolicy::MigrateInfoVector& candidateChunks);
+
+    // find all chunks, if it shoule be splited, then split them
+    Status _findAndSplitChunks(OperationContext* txn);
 
     /**
      * Performs a split on the chunk with min value "minKey". If the split fails, it is marked as

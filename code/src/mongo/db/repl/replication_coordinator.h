@@ -38,6 +38,7 @@
 #include "mongo/db/repl/sync_source_selector.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
+#include "mongo/db/repl/repl_extend/shard_server_heartbeat_args.h"
 
 namespace mongo {
 
@@ -535,6 +536,10 @@ public:
     virtual Status processHeartbeatV1(const ReplSetHeartbeatArgsV1& args,
                                       ReplSetHeartbeatResponse* response) = 0;
 
+    /**
+     * Check if this node is a primary node that can provide config service.
+     */
+    virtual Status checkIfIAmPrimary() = 0;
 
     /**
      * Arguments for the replSetReconfig command.

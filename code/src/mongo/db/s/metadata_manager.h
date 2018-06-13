@@ -131,6 +131,8 @@ public:
      */
     ChunkRange getNextRangeToClean();
 
+    void updateChunkInfo(OperationContext* txn, const ChunkType& chunkType);
+
 private:
     friend class ScopedCollectionMetadata;
 

@@ -47,13 +47,14 @@ TEST(ShardType, MissingName) {
 }
 
 TEST(ShardType, MissingHost) {
-    BSONObj obj = BSON(ShardType::name("shard0000"));
+    BSONObj obj = BSON(ShardType::name("shard00000000"));
     StatusWith<ShardType> shardRes = ShardType::fromBSON(obj);
     ASSERT_FALSE(shardRes.isOK());
 }
 
 TEST(ShardType, OnlyMandatory) {
-    BSONObj obj = BSON(ShardType::name("shard0000") << ShardType::host("localhost:27017"));
+    BSONObj obj = BSON(ShardType::name("shard00000000") << ShardType::host("localhost:27017") 
+                           << ShardType::processIdentity("identity0000"));
     StatusWith<ShardType> shardRes = ShardType::fromBSON(obj);
     ASSERT(shardRes.isOK());
     ShardType shard = shardRes.getValue();
@@ -61,9 +62,10 @@ TEST(ShardType, OnlyMandatory) {
 }
 
 TEST(ShardType, AllOptionalsPresent) {
-    BSONObj obj = BSON(ShardType::name("shard0000") << ShardType::host("localhost:27017")
+    BSONObj obj = BSON(ShardType::name("shard00000000") << ShardType::host("localhost:27017")
                                                     << ShardType::draining(true)
-                                                    << ShardType::maxSizeMB(100));
+                                                    << ShardType::maxSizeMB(100)
+                                                    << ShardType::processIdentity("identity0000"));
     StatusWith<ShardType> shardRes = ShardType::fromBSON(obj);
     ASSERT(shardRes.isOK());
     ShardType shard = shardRes.getValue();
@@ -71,7 +73,8 @@ TEST(ShardType, AllOptionalsPresent) {
 }
 
 TEST(ShardType, MaxSizeAsFloat) {
-    BSONObj obj = BSON(ShardType::name("shard0000") << ShardType::host("localhost:27017")
+    BSONObj obj = BSON(ShardType::name("shard00000000") << ShardType::host("localhost:27017") 
+                                                    << ShardType::processIdentity("identity0000")
                                                     << ShardType::maxSizeMB()
                                                     << 100.0);
     StatusWith<ShardType> shardRes = ShardType::fromBSON(obj);

@@ -58,7 +58,8 @@ public:
     static const BSONField<std::vector<BatchedUpdateDocument*>> updates;
     static const BSONField<BSONObj> writeConcern;
     static const BSONField<bool> ordered;
-
+    static const BSONField<bool> atomicity;
+    static const BSONField<bool> prewarm;
     //
     // construction / destruction
     //
@@ -104,6 +105,16 @@ public:
     bool isOrderedSet() const;
     bool getOrdered() const;
 
+    void setAtomicity(bool atomicity);
+    void unsetAtomicity();
+    bool isAtomicitySet() const;
+    bool getAtomicity() const;
+    
+    void setPrewarm(bool prewarm);
+    void unsetPrewarm();
+    bool isPrewarmSet() const;
+    bool getPrewarm() const;
+
     void setShouldBypassValidation(bool newVal) {
         _shouldBypassValidation = newVal;
     }
@@ -132,6 +143,15 @@ private:
 
     // (O)  should document validation be bypassed (default false)
     bool _shouldBypassValidation;
+
+    // (O)  whether batch is issued in parallel or not
+    bool _atomicity;
+    bool _isAtomicitySet;
+
+    // (O)  whether batch insert is in prewarm model or not for compatible
+    bool _prewarm;
+    bool _isPrewarmSet;
+
 };
 
 }  // namespace mongo

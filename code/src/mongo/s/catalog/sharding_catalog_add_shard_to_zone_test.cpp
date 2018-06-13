@@ -48,6 +48,7 @@ TEST_F(AddShardToZoneTest, AddSingleZoneToExistingShardShouldSucceed) {
     shard.setName("a");
     shard.setHost("a:1234");
 
+
     setupShards({shard});
 
     ASSERT_OK(catalogManager()->addShardToZone(operationContext(), shard.getName(), "z"));
@@ -65,6 +66,7 @@ TEST_F(AddShardToZoneTest, AddZoneToShardWithSameTagShouldSucceed) {
     shard.setName("a");
     shard.setHost("a:1234");
     shard.setTags({"x", "y"});
+
 
     setupShards({shard});
 
@@ -86,6 +88,7 @@ TEST_F(AddShardToZoneTest, AddZoneToShardWithNewTagShouldAppend) {
     shard.setHost("a:1234");
     shard.setTags({"x"});
 
+
     setupShards({shard});
 
     ASSERT_OK(catalogManager()->addShardToZone(operationContext(), shard.getName(), "y"));
@@ -104,6 +107,7 @@ TEST_F(AddShardToZoneTest, AddSingleZoneToNonExistingShardShouldFail) {
     ShardType shard;
     shard.setName("a");
     shard.setHost("a:1234");
+
 
     setupShards({shard});
 

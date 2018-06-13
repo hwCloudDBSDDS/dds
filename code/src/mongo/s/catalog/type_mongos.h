@@ -53,6 +53,7 @@ public:
     static const BSONField<bool> waiting;
     static const BSONField<std::string> mongoVersion;
     static const BSONField<long long> configVersion;
+    static const BSONField<std::string> extendIPs;
 
     /**
      * Returns the BSON representation of the entry.
@@ -111,6 +112,12 @@ public:
         return _configVersion.get();
     }
     void setConfigVersion(const long long configVersion);
+    
+    void setExtendIPs(const std::string& extendIPs);
+
+    const std::string& getExtendIPs() const {
+        return _extendIPs.get();
+    }
 
 private:
     // Convention: (M)andatory, (O)ptional, (S)pecial rule.
@@ -127,6 +134,8 @@ private:
     boost::optional<std::string> _mongoVersion;
     // (O) the config version of the pinging mongos
     boost::optional<long long> _configVersion;
+    // (O) mongos mange IPs
+    boost::optional<std::string> _extendIPs;
 };
 
 }  // namespace mongo

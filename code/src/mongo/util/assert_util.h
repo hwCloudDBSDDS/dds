@@ -178,6 +178,11 @@ MONGO_COMPILER_NORETURN void invariantOKFailed(const char* expr,
                                                const Status& status,
                                                const char* file,
                                                unsigned line) noexcept;
+MONGO_COMPILER_NORETURN void invariantOKFailedWithNoCore(const char* expr,
+                                     const Status& status,
+                                     const char* file,
+                                     unsigned line) noexcept;
+
 void wasserted(const char* expr, const char* file, unsigned line);
 
 #define fassertFailed MONGO_fassertFailed
@@ -325,7 +330,7 @@ inline void fassertNoTraceWithLocation(int msgid,
     ::mongo::uassertStatusOKWithLocation(__VA_ARGS__, __FILE__, __LINE__)
 inline void uassertStatusOKWithLocation(const Status& status, const char* file, unsigned line) {
     if (MONGO_unlikely(!status.isOK())) {
-        uassertedWithLocation((status.location() != 0 ? status.location() : status.code()),
+        uassertedWithLocation(status.code(),
                               status.reason(),
                               file,
                               line);

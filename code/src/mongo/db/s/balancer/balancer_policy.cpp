@@ -220,12 +220,12 @@ string DistributionStatus::toString() const {
 
 Status BalancerPolicy::isShardSuitableReceiver(const ClusterStatistics::ShardStatistics& stat,
                                                const string& chunkTag) {
-    if (stat.isSizeMaxed()) {
+    if (stat.isAboveThreshold()) {
         return {ErrorCodes::IllegalOperation,
                 str::stream() << stat.shardId
                               << " has already reached the maximum total chunk size."};
     }
-
+    
     if (stat.isDraining) {
         return {ErrorCodes::IllegalOperation,
                 str::stream() << stat.shardId << " is currently draining."};
@@ -290,6 +290,36 @@ ShardId BalancerPolicy::_getMostOverloadedShard(const ShardStatisticsVector& sha
     return worst;
 }
 
+ChunkId BalancerPolicy::_getSmallestChunk(const ShardStatisticsVector& shardStats,
+                                               const std::string& ns,
+                                               const ShardId& shardId) {
+    ChunkId  smallest;
+    uint64_t minSize = 0;
+
+    for (const auto& stat : shardStats) {
+        if (shardId == stat.shardId) {
+            for (const auto& chunk : stat.chunkStatistics) {
+                if (chunk.ns != ns) {
+                    continue;
+                }
+
+                if (!smallest.isValid()) {
+                    smallest = chunk.chunkId;
+                    minSize  = chunk.currSizeMB;
+                    continue;
+                }
+
+                if (chunk.currSizeMB < minSize) {
+                    smallest = chunk.chunkId;
+                    minSize  = chunk.currSizeMB;
+                }
+            }
+        }
+    }
+
+    return smallest;
+}
+
 vector<MigrateInfo> BalancerPolicy::balance(const ShardStatisticsVector& shardStats,
                                             const DistributionStatus& distribution,
                                             bool shouldAggressivelyBalance) {
@@ -303,7 +333,7 @@ vector<MigrateInfo> BalancerPolicy::balance(const ShardStatisticsVector& shardSt
     // chunks moved off of them
     {
         for (const auto& stat : shardStats) {
-            if (!stat.isDraining && !stat.isSizeExceeded())
+            if (!stat.isDraining && !stat.isAboveThreshold())
                 continue;
 
             if (usedShards.count(stat.shardId))
@@ -504,27 +534,20 @@ bool BalancerPolicy::_singleZoneBalance(const ShardStatisticsVector& shardStats,
 
     const vector<ChunkType>& chunks = distribution.getChunks(from);
 
-    unsigned numJumboChunks = 0;
+    // TODO: for now, we just move the smallest chunk from the most loaded shard
+    // TODO: need to consider about the chunk which cannt be moved
+    // there will be no such thing like Jumbo, because nocopy anymore
+    const ChunkId smallest = _getSmallestChunk(shardStats, distribution.nss().ns(), from);
+    if (!from.isValid())
+        return false;
 
     for (const auto& chunk : chunks) {
-        if (distribution.getTagForChunk(chunk) != tag)
-            continue;
-
-        if (chunk.getJumbo()) {
-            numJumboChunks++;
-            continue;
+        if (smallest == chunk.getName()) {
+            migrations->emplace_back(to, chunk);
+            invariant(usedShards->insert(chunk.getShard()).second);
+            invariant(usedShards->insert(to).second);
+            return true;
         }
-
-        migrations->emplace_back(to, chunk);
-        invariant(usedShards->insert(chunk.getShard()).second);
-        invariant(usedShards->insert(to).second);
-        return true;
-    }
-
-    if (numJumboChunks) {
-        warning() << "Shard: " << from << ", collection: " << distribution.nss().ns()
-                  << " has only jumbo chunks for zone \'" << tag
-                  << "\' and cannot be balanced. Jumbo chunks count: " << numJumboChunks;
     }
 
     return false;
@@ -543,6 +566,7 @@ MigrateInfo::MigrateInfo(const ShardId& a_to, const ChunkType& a_chunk) {
 
     to = a_to;
 
+    id = a_chunk.getID();
     ns = a_chunk.getNS();
     from = a_chunk.getShard();
     minKey = a_chunk.getMin();
@@ -551,11 +575,11 @@ MigrateInfo::MigrateInfo(const ShardId& a_to, const ChunkType& a_chunk) {
 }
 
 std::string MigrateInfo::getName() const {
-    return ChunkType::genID(ns, minKey);
+    return id;
 }
 
 string MigrateInfo::toString() const {
-    return str::stream() << ns << ": [" << minKey << ", " << maxKey << "), from " << from << ", to "
+    return str::stream() << id << ns << ": [" << minKey << ", " << maxKey << "), from " << from << ", to "
                          << to;
 }
 

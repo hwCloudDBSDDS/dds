@@ -32,6 +32,7 @@
 
 #include "mongo/db/service_context.h"
 #include "mongo/platform/unordered_set.h"
+#include "mongo/util/util_extend/process_stage_time.h"
 
 namespace mongo {
 
@@ -41,6 +42,7 @@ class StorageEngineLockFile;
 class ServiceContextMongoD final : public ServiceContext {
 public:
     typedef std::map<std::string, const StorageEngine::Factory*> FactoryMap;
+    typedef std::map<std::string, std::unique_ptr<ProcessStageTime>> ProcessStageTimeMap;
 
     ServiceContextMongoD();
 
@@ -65,6 +67,12 @@ public:
 
     OpObserver* getOpObserver() override;
 
+    void registerProcessStageTime(const std::string& processName) override;
+
+    ProcessStageTime* getProcessStageTime(const std::string& processName) override;
+
+    void cancelProcessStageTime(const std::string& processName) override;
+
 private:
     std::unique_ptr<OperationContext> _newOpCtx(Client* client, unsigned opId) override;
 
@@ -78,6 +86,9 @@ private:
 
     // All possible storage engines are registered here through MONGO_INIT.
     FactoryMap _storageFactories;
+
+    ProcessStageTimeMap _processStageTimeMap;
+    stdx::mutex _processStageTimeMapMutex;
 };
 
 class StorageFactoriesIteratorMongoD : public StorageFactoriesIterator {

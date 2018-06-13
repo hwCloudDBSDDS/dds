@@ -85,7 +85,7 @@ namespace {
 const auto getShardingState = ServiceContext::declareDecoration<ShardingState>();
 
 // Max number of concurrent config server refresh threads
-const int kMaxConfigServerRefreshThreads = 3;
+const int kMaxConfigServerRefreshThreads = 12;
 
 // Maximum number of times to try to refresh the collection metadata if conflicts are occurring
 const int kMaxNumMetadataRefreshAttempts = 3;
@@ -213,6 +213,16 @@ CollectionShardingState* ShardingState::getNS(const std::string& ns, OperationCo
                                               txn->getServiceContext(), NamespaceString(ns))));
         invariant(inserted.second);
         it = std::move(inserted.first);
+    }
+
+    return it->second.get();
+}
+
+CollectionShardingState* ShardingState::getNS(const std::string& ns) {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    CollectionShardingStateMap::iterator it = _collections.find(ns);
+    if (it == _collections.end()) {
+        return nullptr;
     }
 
     return it->second.get();
@@ -817,6 +827,25 @@ void ShardingState::_initializeRangeDeleterTaskExecutor() {
 
 executor::ThreadPoolTaskExecutor* ShardingState::getRangeDeleterTaskExecutor() {
     return _rangeDeleterTaskExecutor.get();
+}
+
+void ShardingState::updateMetadata(OperationContext* txn, const NamespaceString& nss, 
+                                   const ChunkType& chunkType)
+{
+    //std::unique_ptr<CollectionMetadata> newMetadata = (stdx::make_unique<CollectionMetadata>());
+
+    // Exclusive collection lock needed since we're now changing the metadata
+    ScopedTransaction transaction(txn, MODE_IX);
+    AutoGetCollection autoColl(txn, nss, MODE_IX, MODE_X);
+
+    //auto css = CollectionShardingState::get(txn, nss);
+    //css->refreshMetadata(txn, std::move(newMetadata));
+    CollectionShardingState* coll = getNS(nss.toString());
+    if (nullptr != coll) {
+        coll->updateChunkInfo(txn, chunkType);
+    } else {
+        log() << "[confirmSplit] ShardingState::updateMetadata() CollectionShardingState not exist: " << nss;
+    }
 }
 
 /**

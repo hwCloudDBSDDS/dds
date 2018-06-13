@@ -28,6 +28,8 @@
 #include "mongo/base/status.h"
 #include "mongo/util/mongoutils/str.h"
 
+#include "mongo/platform/basic.h"
+
 #include <ostream>
 #include <sstream>
 

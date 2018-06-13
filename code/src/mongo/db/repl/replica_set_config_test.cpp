@@ -74,10 +74,10 @@ TEST(ReplicaSetConfig, ParseMinimalConfigAndCheckDefaults) {
     ASSERT_EQUALS(0, config.membersBegin()->getId());
     ASSERT_EQUALS(1, config.getDefaultWriteConcern().wNumNodes);
     ASSERT_EQUALS("", config.getDefaultWriteConcern().wMode);
-    ASSERT_EQUALS(ReplicaSetConfig::kDefaultHeartbeatInterval, config.getHeartbeatInterval());
-    ASSERT_EQUALS(ReplicaSetConfig::kDefaultHeartbeatTimeoutPeriod,
+    ASSERT_EQUALS(kDefaultConfigHeartbeatInterval, config.getHeartbeatInterval());
+    ASSERT_EQUALS(kDefaultConfigHeartbeatTimeoutPeriod,
                   config.getHeartbeatTimeoutPeriod());
-    ASSERT_EQUALS(ReplicaSetConfig::kDefaultElectionTimeoutPeriod,
+    ASSERT_EQUALS(kDefaultConfigElectionTimeoutPeriod,
                   config.getElectionTimeoutPeriod());
     ASSERT_TRUE(config.isChainingAllowed());
     ASSERT_FALSE(config.getWriteConcernMajorityShouldJournal());
@@ -613,7 +613,7 @@ TEST(ReplicaSetConfig, ParseFailsWithNonNumericHeartbeatIntervalMillisField) {
     ASSERT_FALSE(config.isInitialized());
 
     // Uninitialized configuration should return default heartbeat interval.
-    ASSERT_EQUALS(ReplicaSetConfig::kDefaultHeartbeatInterval, config.getHeartbeatInterval());
+    ASSERT_EQUALS(kDefaultConfigHeartbeatInterval, config.getHeartbeatInterval());
 }
 
 TEST(ReplicaSetConfig, ParseFailsWithNonNumericElectionTimeoutMillisField) {

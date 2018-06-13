@@ -349,8 +349,8 @@ Status ProjectionExec::transform(WorkingSetMember* member) const {
             if (!sortKeyMetaStatus.isOK()) {
                 return sortKeyMetaStatus;
             }
-        } else if (META_RECORDID == it->second) {
-            bob.append(it->first, static_cast<long long>(member->recordId.repr()));
+        } else if (META_RECORDID == it->second) {            
+            member->recordId.AppendTo(bob, it->first);
         }
     }
 

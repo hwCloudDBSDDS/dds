@@ -100,7 +100,7 @@ ClusterStatisticsImpl::ClusterStatisticsImpl() = default;
 
 ClusterStatisticsImpl::~ClusterStatisticsImpl() = default;
 
-StatusWith<vector<ShardStatistics>> ClusterStatisticsImpl::getStats(OperationContext* txn) {
+StatusWith<vector<ShardStatistics>> ClusterStatisticsImpl::getStats(OperationContext* txn,bool isMoveCommand) {
     // Get a list of all the shards that are participating in this balance round along with any
     // maximum allowed quotas and current utilization. We get the latter by issuing
     // db.serverStatus() (mem.mapped) to all shards.
@@ -117,41 +117,44 @@ StatusWith<vector<ShardStatistics>> ClusterStatisticsImpl::getStats(OperationCon
     vector<ShardStatistics> stats;
 
     for (const auto& shard : shards) {
-        auto shardSizeStatus = shardutil::retrieveTotalShardSize(txn, shard.getName());
-        if (!shardSizeStatus.isOK()) {
-            const Status& status = shardSizeStatus.getStatus();
-
-            return {status.code(),
+        if (shard.getState() == ShardType::ShardState::kShardActive) {
+            // collect Statistics on the shard, including chunks Statistics
+            auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, shard.getName());
+            if (shardStatus.getValue()->getConnString().toString() != shard.getHost())
+            {
+                Grid::get(txn)->shardRegistry()->reload(txn);
+            }
+            auto shardStatisticsStatus = shardutil::retrieveShardStatistics(txn, shard.getName());
+            if (!shardStatisticsStatus.isOK()) {
+                //filter shard is not alive when moveChunk
+                if (isMoveCommand){
+                    continue;
+                }
+                const Status& status = shardStatisticsStatus.getStatus();               
+                return {status.code(),
                     str::stream() << "Unable to obtain shard utilization information for "
                                   << shard.getName()
                                   << " due to "
                                   << status.reason()};
+            }
+
+            auto shardstatsstatus = 
+                ClusterStatistics::ShardStatistics::fromBSON(shardStatisticsStatus.getValue());
+            if (!shardstatsstatus.isOK()) {
+                return shardstatsstatus.getStatus();
+            }
+
+            std::set<std::string> shardTags;
+            for (const auto& shardTag : shard.getTags()) {
+                shardTags.insert(shardTag);
+            }
+ 
+            shardstatsstatus.getValue().shardId = std::move(shard.getName());
+            shardstatsstatus.getValue().isDraining = std::move(shard.getDraining());
+            shardstatsstatus.getValue().shardTags = std::move(shardTags);
+
+            stats.push_back(std::move(shardstatsstatus.getValue()));
         }
-
-        string mongoDVersion;
-
-        auto mongoDVersionStatus = retrieveShardMongoDVersion(txn, shard.getName());
-        if (mongoDVersionStatus.isOK()) {
-            mongoDVersion = std::move(mongoDVersionStatus.getValue());
-        } else {
-            // Since the mongod version is only used for reporting, there is no need to fail the
-            // entire round if it cannot be retrieved, so just leave it empty
-            log() << "Unable to obtain shard version for " << shard.getName()
-                  << causedBy(mongoDVersionStatus.getStatus());
-        }
-
-        std::set<string> shardTags;
-
-        for (const auto& shardTag : shard.getTags()) {
-            shardTags.insert(shardTag);
-        }
-
-        stats.emplace_back(shard.getName(),
-                           shard.getMaxSizeMB(),
-                           shardSizeStatus.getValue() / 1024 / 1024,
-                           shard.getDraining(),
-                           std::move(shardTags),
-                           std::move(mongoDVersion));
     }
 
     return stats;

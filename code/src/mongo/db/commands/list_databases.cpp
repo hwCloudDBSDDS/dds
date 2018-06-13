@@ -117,7 +117,7 @@ public:
                 b.appendBool("empty", entry->isEmpty());
             }
 
-            dbInfos.push_back(b.obj());
+            dbInfos.push_back(std::move(b.obj()));
 
             seen.insert(i->c_str());
         }

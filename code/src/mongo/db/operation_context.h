@@ -75,9 +75,14 @@ public:
     enum RecoveryUnitState {
         kNotInUnitOfWork,   // not in a unit of work, no writes allowed
         kActiveUnitOfWork,  // in a unit of work that still may either commit or abort
-        kFailedUnitOfWork   // in a unit of work that has failed and must be aborted
+        kFailedUnitOfWork,  // in a unit of work that has failed and must be aborted
+        kContinueUnitOfWork
     };
-
+    enum cmdFlagOptions{
+        NONE,   //uneffctive
+        DROP_COLLECTION=1,   //1:dropCollection cmd
+        OFFLOAD   //unassign cmd
+    };
     virtual ~OperationContext() = default;
 
     /**
@@ -247,10 +252,18 @@ public:
         return _writeConcern;
     }
 
+    const NamespaceString& getNs() const {
+        return _ns;
+    }
+
     void setWriteConcern(const WriteConcernOptions& writeConcern) {
         _writeConcern = writeConcern;
     }
 
+    void setNs(const NamespaceString & ns) {
+        _ns = ns;
+    }
+    
     /**
      * Set whether or not operations should generate oplog entries.
      * TODO SERVER-26965: Make this private.
@@ -359,6 +372,44 @@ public:
      */
     Microseconds getRemainingMaxTimeMicros() const;
 
+    bool ruStateContinue() const {
+        return _ruState == kContinueUnitOfWork;
+    }
+
+    bool getShardkeyLockFlag() {
+        return _shardKeyLockFlag;
+    }
+
+    void setShardkeyLockFlag(bool flag)
+    {
+        _shardKeyLockFlag = flag;
+    }
+
+    void setShardkey(const BSONObj& shardKeyStr)
+    {
+        _shardKey = shardKeyStr;
+    }
+
+    BSONObj& getShardKey()
+    {
+        return _shardKey;
+    }
+
+    bool getPrewarm() {
+        return _prewarm;
+    }
+    
+    void setPrewarm(bool prewarm)
+    {
+        _prewarm = prewarm;
+    }
+    cmdFlagOptions getCmdFlag(){
+        return _cmdFlag;
+    }
+    void setCmdFlag(cmdFlagOptions flag){
+        _cmdFlag = flag;
+    } 
+  
 protected:
     OperationContext(Client* client, unsigned int opId);
 
@@ -378,12 +429,12 @@ private:
     friend class WriteUnitOfWork;
     Client* const _client;
     const unsigned int _opId;
-
+    cmdFlagOptions _cmdFlag;   //0:uneffctive 1:dropCollections 2:unassign 
     std::unique_ptr<Locker> _locker;
 
     std::unique_ptr<RecoveryUnit> _recoveryUnit;
     RecoveryUnitState _ruState = kNotInUnitOfWork;
-
+    
     // Follows the values of ErrorCodes::Error. The default value is 0 (OK), which means the
     // operation is not killed. If killed, it will contain a specific code. This value changes only
     // once from OK to some kill code.
@@ -419,6 +470,13 @@ private:
     Timer _elapsedTime;
 
     bool _writesAreReplicated = true;
+
+    bool _shardKeyLockFlag = false;
+
+    BSONObj _shardKey;
+
+    bool _prewarm = false;
+    NamespaceString _ns;
 };
 
 class WriteUnitOfWork {
@@ -428,7 +486,8 @@ public:
     WriteUnitOfWork(OperationContext* txn)
         : _txn(txn),
           _committed(false),
-          _toplevel(txn->_ruState == OperationContext::kNotInUnitOfWork) {
+          _toplevel(txn->_ruState == OperationContext::kNotInUnitOfWork ||
+                    txn->_ruState == OperationContext::kContinueUnitOfWork) {
         uassert(ErrorCodes::IllegalOperation,
                 "Cannot execute a write operation in read-only mode",
                 !storageGlobalParams.readOnly);
@@ -464,6 +523,14 @@ public:
         _committed = true;
     }
 
+    void pass() {
+        invariant(!_committed);
+        invariant(_txn->_ruState == OperationContext::kActiveUnitOfWork);
+        _txn->_ruState = OperationContext::kContinueUnitOfWork;
+        _txn->lockState()->endWriteUnitOfWork();
+        _committed = true;
+    }
+
 private:
     OperationContext* const _txn;
 
@@ -493,7 +560,7 @@ public:
     ScopedTransaction(OperationContext* txn, LockMode mode) : _txn(txn) {}
 
     ~ScopedTransaction() {
-        if (!_txn->lockState()->isLocked()) {
+        if (!_txn->lockState()->isLocked() && _txn->recoveryUnit()) {
             _txn->recoveryUnit()->abandonSnapshot();
         }
     }

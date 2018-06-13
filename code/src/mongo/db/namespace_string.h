@@ -168,6 +168,9 @@ public:
     bool isSystemDotViews() const {
         return coll() == kSystemDotViewsCollectionName;
     }
+    bool isSystemDotUsers() const {
+        return coll() == "system.users";
+    }
     bool isConfigDB() const {
         return db() == "config";
     }
@@ -187,16 +190,69 @@ public:
         return internalDb(db());
     }
     bool isNormal() const {
+        if (isChunk()) {
+            return true;
+        }
         return normal(_ns);
     }
 
     // Check if the NamespaceString references a special collection that cannot
     // be used for generic data storage.
     bool isVirtualized() const {
+        if (isChunk()) {
+            return false;
+        }
         return virtualized(_ns);
     }
     bool isListCollectionsCursorNS() const;
     bool isListIndexesCursorNS() const;
+
+    bool isChunk() const {
+        if (coll().startsWith("$")) {
+            return false;
+        }
+
+        if (coll().find('$') == std::string::npos) {
+            return false;
+        }
+        return true;
+    }
+
+    bool supportImplicitCreation() const {
+
+         return true;//support implicit create collection
+        if (isSystem()
+            || isLocal()
+            || isConfigDB()
+            || isOplog()
+            || isSpecial()) {
+            return true;
+        }
+    
+        return false;
+    }
+
+    std::string extractChunkId() const {
+        if (!isChunk()) {
+            return "";
+        }
+
+        StringData collname = coll();
+        size_t dollarIndex = collname.find('$');
+        return collname.substr(dollarIndex + 1, collname.size() - 1 - dollarIndex).toString();
+    }
+
+    std::string nsFilteredOutChunkId() const {
+        if (!isChunk()) {
+            return ns();
+        }
+    
+        StringData collname = coll();
+        size_t dollarIndex = collname.find('$');
+        return db().toString() + '.' + collname.substr(0, dollarIndex).toString();
+    }
+    
+    bool isSystemCollection() const;
 
     /**
      * Given a NamespaceString for which isListIndexesCursorNS() returns true, returns the

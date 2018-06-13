@@ -176,14 +176,14 @@ ReplTest.prototype.stop = function(master, signal) {
 /**
  * Returns a port number that has not been given out to any other caller from the same mongo shell.
  */
-allocatePort = (function() {
+allocatePort = (function(prev) {
     // Defer initializing these variables until the first call, as TestData attributes may be
     // initialized as part of the --eval argument (e.g. by resmoke.py), which will not be evaluated
     // until after this has loaded.
     var maxPort;
     var nextPort;
 
-    return function() {
+    return function(prev) {
         // The default port was chosen in an attempt to have a large number of unassigned ports that
         // are also outside the ephemeral port range.
         nextPort = nextPort || jsTestOptions().minPort || 20000;
@@ -192,7 +192,12 @@ allocatePort = (function() {
         if (nextPort === maxPort) {
             throw new Error("Exceeded maximum port range in allocatePort()");
         }
-        return nextPort++;
+        if (!prev) {
+            return nextPort++;
+        }
+        else {
+            return nextPort--;
+        }
     };
 })();
 

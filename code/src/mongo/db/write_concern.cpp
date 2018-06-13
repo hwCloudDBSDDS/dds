@@ -253,6 +253,12 @@ Status waitForWriteConcern(OperationContext* txn,
     gleWtimeStats.recordMillis(durationCount<Milliseconds>(replStatus.duration));
     result->wTime = durationCount<Milliseconds>(replStatus.duration);
 
+    if (replStatus.duration >= Milliseconds(500)) {
+        warning() << "time-consuming write concern. OpTime: " << replOpTime
+            << ", write concern: " << writeConcern.toBSON()
+            << ", total time: " << replStatus.duration;
+    }        
+
     return replStatus.status;
 }
 

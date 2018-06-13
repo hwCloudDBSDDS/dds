@@ -319,6 +319,8 @@ public:
 
     virtual Status stepUpIfEligible() override;
 
+    virtual Status checkIfIAmPrimary() override;
+
     // ================== Test support API ===================
 
     /**

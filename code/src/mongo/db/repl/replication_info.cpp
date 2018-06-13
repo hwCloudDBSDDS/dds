@@ -276,7 +276,18 @@ public:
                 txn->getClient(), std::move(swParseClientMetadata.getValue()));
         }
 
-        appendReplicationInfo(txn, result, 0);
+        if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
+            result.append("ismaster", true);
+            result.append("setName", serverGlobalParams.shardName);
+            HostAndPort myHostAndPort(serverGlobalParams.bind_ip, serverGlobalParams.port);
+            result.append("primary", myHostAndPort.toString());
+            std::vector<std::string> hosts;
+            hosts.push_back(myHostAndPort.toString());
+            result.append("hosts", hosts);
+        }
+        else {
+            appendReplicationInfo(txn, result, 0);
+        }
 
         if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
             // If we have feature compatibility version 3.4, use a config server mode that 3.2

@@ -294,6 +294,9 @@ static ExitCode runMongosServer() {
         web.detach();
     }
 
+    // init need retry code.
+    Command::initNeedRetryCode();
+
     Status status = getGlobalAuthorizationManager()->initialize(NULL);
     if (!status.isOK()) {
         error() << "Initializing authorization data failed: " << status;

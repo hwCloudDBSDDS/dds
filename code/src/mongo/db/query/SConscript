@@ -77,7 +77,7 @@ env.Library(
         # Depends on files from serverOnlyFiles, and has many other
         # missing dependencies.
         'incomplete',
-    ]
+    ],
 )
 
 # Shared mongod/mongos query code.

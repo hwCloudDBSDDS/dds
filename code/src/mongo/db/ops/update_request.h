@@ -128,6 +128,30 @@ public:
         return _upsert;
     }
 
+    inline void setAtomicity(bool value = true) {
+        _atomicity = value;
+    }
+
+    bool isAtomicity() const {
+        return _atomicity;
+    }
+
+    inline void setFirst(bool value = true) {
+        _first = value;
+    }
+
+    bool isFirst() const {
+        return _first;
+    }
+
+    inline void setLast(bool value = true) {
+        _last = value;
+    }
+
+    bool isLast() const {
+        return _last;
+    }
+
     inline void setMulti(bool value = true) {
         _multi = value;
     }
@@ -222,6 +246,12 @@ private:
 
     // True if this update is allowed to affect more than one document.
     bool _multi;
+
+    bool _atomicity;
+
+    bool _first;
+
+    bool _last;
 
     // True if this update is on behalf of a chunk migration.
     bool _fromMigration;

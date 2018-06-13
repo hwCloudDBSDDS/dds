@@ -47,6 +47,22 @@ class StatusWith;
  */
 class BalanceChunkRequest {
 public:
+    enum class BalanceType {
+        // offload a chunk from the shard it blongs, stop it from service.
+        offload,
+
+        // assign a chunk to the specified shard, start its service.
+        assign,
+
+        //move the chunk from the original shard it belongs to a specified shard
+        move,
+
+        //like the "move", but the shard is choosed by configserver itself according policy
+        rebalance,
+        //split chunk at the split point
+        split
+    };
+
     /**
      * Parses the provided BSON content and if it is correct construct a request object with the
      * request parameters.
@@ -69,6 +85,16 @@ public:
      * better location for a chunk.
      */
     static BSONObj serializeToRebalanceCommandForConfig(const ChunkType& chunk);
+
+    static BSONObj serializeToOffloadCommandForConfig(const ChunkType& chunk);
+
+    static BSONObj serializeToAssignCommandForConfig(const ChunkType& chunk, const ShardId& newShardId);
+
+    static BSONObj serializeToSplitCommandForConfig(const ChunkType & chunk, const BSONObj& splitPoint);
+    
+    const BalanceType& getBalanceType() const {
+        return _balanceType;
+    }
 
     const ChunkType& getChunk() const {
         return _chunk;
@@ -94,8 +120,17 @@ public:
         return _waitForDelete;
     }
 
+    const BSONObj& getSplitPoint() const {
+        return _splitPoint;
+    }
+
 private:
-    BalanceChunkRequest(ChunkType chunk, MigrationSecondaryThrottleOptions secondaryThrottle);
+    BalanceChunkRequest(BalanceType balanceType,
+                        ChunkType& chunk,
+                        MigrationSecondaryThrottleOptions secondaryThrottle);
+
+    // the BalanceChunkRequest have 4 type: offload/assign/move/rebalance
+    BalanceType _balanceType;
 
     // Complete description of the chunk to be manipulated
     ChunkType _chunk;
@@ -113,6 +148,8 @@ private:
     // Whether to block and wait for the range deleter to cleanup the orphaned documents at the end
     // of move.
     bool _waitForDelete;
+
+    BSONObj _splitPoint;
 };
 
 }  // namespace mongo

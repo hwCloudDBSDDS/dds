@@ -136,6 +136,9 @@ void ReplicationCoordinatorImpl::_startElectSelfV1() {
     log() << "conducting a dry run election to see if we could be elected";
     _voteRequester.reset(new VoteRequester);
 
+    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
+        "dryRunElection");
+
     // This is necessary because the voteRequester may call directly into winning an
     // election, if there are no other MaybeUp nodes.  Winning an election attempts to lock
     // _mutex again.
@@ -183,6 +186,10 @@ void ReplicationCoordinatorImpl::_onDryRunComplete(long long originalTerm) {
     }
 
     log() << "dry election run succeeded, running for election";
+
+    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
+        "runningForElection");
+    
     // Stepdown is impossible from this term update.
     TopologyCoordinator::UpdateTermResult updateTermResult;
     _updateTerm_incallback(originalTerm + 1, &updateTermResult);

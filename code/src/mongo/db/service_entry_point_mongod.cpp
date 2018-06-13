@@ -131,8 +131,14 @@ void ServiceEntryPointMongod::_sessionLoop(const transport::SessionHandle& sessi
         // 2. Pass sourced Message up to mongod
         DbResponse dbresponse;
         {
-            auto opCtx = cc().makeOperationContext();
-            assembleResponse(opCtx.get(), inMessage, dbresponse, session->remote());
+            OperationContext* opCtx = cc().getOperationContext();
+            ServiceContext::UniqueOperationContext opCtxPtr;
+
+            if (!opCtx) {
+                opCtxPtr = cc().makeOperationContext();
+                opCtx = opCtxPtr.get();
+            }
+            assembleResponse(opCtx, inMessage, dbresponse, session->remote());
 
             // opCtx must go out of scope here so that the operation cannot show
             // up in currentOp results after the response reaches the client

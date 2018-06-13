@@ -68,11 +68,15 @@ const std::string& DurableViewCatalogImpl::getName() const {
 Status DurableViewCatalogImpl::iterate(OperationContext* txn, Callback callback) {
     dassert(txn->lockState()->isDbLockedForMode(_db->name(), MODE_IS) ||
             txn->lockState()->isDbLockedForMode(_db->name(), MODE_IX));
-    Collection* systemViews = _db->getCollection(_db->getSystemViewsName());
+
+    NamespaceString systemViewsNs(_db->getSystemViewsName());
+    NamespaceString nss = ns2chunkHolder().getNsWithChunkId(systemViewsNs);
+
+    Collection* systemViews = _db->getCollection(nss);
     if (!systemViews)
         return Status::OK();
 
-    Lock::CollectionLock lk(txn->lockState(), _db->getSystemViewsName(), MODE_IS);
+    Lock::CollectionLock lk(txn->lockState(), nss.ns(), MODE_IS);
     auto cursor = systemViews->getCursor(txn);
     while (auto record = cursor->next()) {
         RecordData& data = record->data;
@@ -107,7 +111,7 @@ Status DurableViewCatalogImpl::iterate(OperationContext* txn, Callback callback)
             return {ErrorCodes::InvalidViewDefinition,
                     str::stream() << "found invalid view definition " << viewDef["_id"]
                                   << " while reading '"
-                                  << _db->getSystemViewsName()
+                                  << nss.ns()
                                   << "'"};
         }
 
@@ -123,8 +127,11 @@ void DurableViewCatalogImpl::upsert(OperationContext* txn,
                                     const NamespaceString& name,
                                     const BSONObj& view) {
     dassert(txn->lockState()->isDbLockedForMode(_db->name(), MODE_X));
+
     NamespaceString systemViewsNs(_db->getSystemViewsName());
-    Collection* systemViews = _db->getOrCreateCollection(txn, systemViewsNs.ns());
+    NamespaceString nss = ns2chunkHolder().getNsWithChunkId(systemViewsNs);
+
+    Collection* systemViews = _db->getOrCreateCollection(txn, nss.ns());
 
     const bool requireIndex = false;
     RecordId id = Helpers::findOne(txn, systemViews, BSON("_id" << name.ns()), requireIndex);
@@ -157,7 +164,11 @@ void DurableViewCatalogImpl::upsert(OperationContext* txn,
 
 void DurableViewCatalogImpl::remove(OperationContext* txn, const NamespaceString& name) {
     dassert(txn->lockState()->isDbLockedForMode(_db->name(), MODE_X));
-    Collection* systemViews = _db->getCollection(_db->getSystemViewsName());
+
+    NamespaceString systemViewsNs(_db->getSystemViewsName());
+    NamespaceString nss = ns2chunkHolder().getNsWithChunkId(systemViewsNs);
+
+    Collection* systemViews = _db->getCollection(nss);
     if (!systemViews)
         return;
     const bool requireIndex = false;

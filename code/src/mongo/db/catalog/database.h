@@ -42,6 +42,8 @@
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/string_map.h"
+#include "mongo/s/assign_chunk_request.h"
+#include "mongo/stdx/mutex.h"
 
 namespace mongo {
 
@@ -159,16 +161,32 @@ public:
                                  bool createDefaultIndexes = true,
                                  const BSONObj& idIndex = BSONObj());
 
+    Status mockAssignChunk(OperationContext* txn, 
+                           StringData ns,
+                           CollectionOptions options, 
+                           bool createDefaultIndexes,
+                           const BSONObj& idIndex);
+
+    Status assignChunk(OperationContext* txn,
+                        StringData ns,
+                        BSONObj cmdObj,
+                        const AssignChunkRequest& assignChunkRequest);
+
+
     Status createView(OperationContext* txn, StringData viewName, const CollectionOptions& options);
 
     /**
      * @param ns - this is fully qualified, which is maybe not ideal ???
      */
-    Collection* getCollection(StringData ns) const;
+    Collection* getCollection(StringData ns, bool including_assigning = false);
 
-    Collection* getCollection(const NamespaceString& ns) const {
-        return getCollection(ns.ns());
+    Collection* getCollection(const NamespaceString& ns, bool including_assigning = false) {
+        return getCollection(ns.ns(), including_assigning);
     }
+
+    void listCollections(std::vector<Collection*>& out) const;
+    Status toUpdateChunkMetadata(OperationContext* txn,StringData ns,BSONArray &indexes);
+    void listCollectionNSs(std::vector<NamespaceString>& out) const;
 
     /**
      * Get the view catalog, which holds the definition for all views created on this database. You
@@ -213,6 +231,8 @@ public:
         return _viewsName;
     }
 
+    void assignChunkFinalize(OperationContext* txn, StringData ns, const AssignChunkRequest& assignChunkRequest);
+
 private:
     /**
      * Gets or creates collection instance from existing metadata,
@@ -248,6 +268,7 @@ private:
     int _profile;  // 0=off.
 
     CollectionMap _collections;
+    mutable stdx::mutex  _collectionsMutex;
 
     DurableViewCatalogImpl _durableViews;  // interface for system.views operations
     ViewCatalog _views;                    // in-memory representation of _durableViews
@@ -271,5 +292,7 @@ Status userCreateNS(OperationContext* txn,
                     BSONObj options,
                     bool createDefaultIndexes = true,
                     const BSONObj& idIndex = BSONObj());
+
+
 
 }  // namespace mongo

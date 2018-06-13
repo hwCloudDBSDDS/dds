@@ -44,7 +44,6 @@ PlanStage::StageState PlanStage::work(WorkingSetID* out) {
     ++_commonStats.works;
 
     StageState workResult = doWork(out);
-
     if (StageState::ADVANCED == workResult) {
         ++_commonStats.advanced;
     } else if (StageState::NEED_TIME == workResult) {

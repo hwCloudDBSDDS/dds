@@ -1,30 +1,30 @@
 /**
- *    Copyright (C) 2012-2015 MongoDB Inc.
- *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
- *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- *    As a special exception, the copyright holders give permission to link the
- *    code of portions of this program with the OpenSSL library under certain
- *    conditions as described in each individual source file and distribute
- *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
- *    all of the code used other than as permitted herein. If you modify file(s)
- *    with this exception, you may extend this exception to your version of the
- *    file(s), but you are not obligated to do so. If you do not wish to do so,
- *    delete this exception statement from your version. If you delete this
- *    exception statement from all source files in the program, then also delete
- *    it in the license file.
- */
+*    Copyright (C) 2012-2015 MongoDB Inc.
+*
+*    This program is free software: you can redistribute it and/or  modify
+*    it under the terms of the GNU Affero General Public License, version 3,
+*    as published by the Free Software Foundation.
+*
+*    This program is distributed in the hope that it will be useful,
+*    but WITHOUT ANY WARRANTY; without even the implied warranty of
+*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*    GNU Affero General Public License for more details.
+*
+*    You should have received a copy of the GNU Affero General Public License
+*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*
+*    As a special exception, the copyright holders give permission to link the
+*    code of portions of this program with the OpenSSL library under certain
+*    conditions as described in each individual source file and distribute
+*    linked combinations including the program with the OpenSSL library. You
+*    must comply with the GNU Affero General Public License in all respects for
+*    all of the code used other than as permitted herein. If you modify file(s)
+*    with this exception, you may extend this exception to your version of the
+*    file(s), but you are not obligated to do so. If you do not wish to do so,
+*    delete this exception statement from your version. If you delete this
+*    exception statement from all source files in the program, then also delete
+*    it in the license file.
+*/
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 
@@ -111,6 +111,8 @@
 #include "mongo/util/md5.hpp"
 #include "mongo/util/print.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/db/catalog/database_holder.h"
+#include <vector>
 
 namespace mongo {
 
@@ -483,21 +485,27 @@ public:
                      int,
                      string& errmsg,
                      BSONObjBuilder& result) {
-        const NamespaceString nsToDrop = parseNsCollectionRequired(dbname, cmdObj);
-
-        if (NamespaceString::virtualized(nsToDrop.ns())) {
+        LOG(1)<<"[dropCollection] cmdObj : "<< cmdObj.toString();
+        const NamespaceString ns = parseNsCollectionRequired(dbname, cmdObj);
+        if (NamespaceString::virtualized(ns.ns())) {
             errmsg = "can't drop a virtual collection";
             return false;
         }
-
+        
+        const NamespaceString nsToDrop(parseNs(dbname, cmdObj));
         if ((repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
              repl::ReplicationCoordinator::modeNone) &&
             nsToDrop.isOplog()) {
             errmsg = "can't drop live oplog while replicating";
             return false;
         }
-
-        return appendCommandStatus(result, dropCollection(txn, nsToDrop, result));
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer 
+                && !nsToDrop.isSystemCollection()){
+            return appendCommandStatus(result, dropCollectionOnCfgSrv(txn, nsToDrop, result));
+        }else{
+            txn->setCmdFlag(OperationContext::DROP_COLLECTION);
+            return appendCommandStatus(result, dropCollection(txn, nsToDrop, result));
+        }
     }
 
 } cmdDrop;
@@ -530,13 +538,14 @@ public:
     }
 
     virtual bool run(OperationContext* txn,
-                     const string& dbname,
-                     BSONObj& cmdObj,
-                     int,
-                     string& errmsg,
-                     BSONObjBuilder& result) {
+        const string& dbname,
+        BSONObj& cmdObj,
+        int,
+        string& errmsg,
+        BSONObjBuilder& result){
         const NamespaceString ns(parseNs(dbname, cmdObj));
 
+        index_log() << "[createColletion] dbname: " << dbname << "; cmdobj: ( " << cmdObj;
         if (cmdObj.hasField("autoIndexId")) {
             const char* deprecationWarning =
                 "the autoIndexId option is deprecated and will be removed in a future release";
@@ -605,6 +614,7 @@ public:
             }
             idIndexSpec = uassertStatusOK(index_key_validate::validateIndexSpecCollation(
                 txn, idIndexSpec, defaultCollator.get()));
+            log()<<"idIndexSpec "<<idIndexSpec;
             std::unique_ptr<CollatorInterface> idIndexCollator;
             if (auto collationElem = idIndexSpec["collation"]) {
                 auto collatorStatus = CollatorFactoryInterface::get(txn->getServiceContext())
@@ -624,11 +634,23 @@ public:
             // Remove "idIndex" field from command.
             auto resolvedCmdObj = cmdObj.removeField("idIndex");
 
+            // config server create metadata for user collections
+            if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer 
+                && !ns.isSystemCollection()){
+                return  appendCommandStatus(result,createCollectionMetadata (txn, ns, resolvedCmdObj, idIndexSpec));
+            }
+
             return appendCommandStatus(result,
                                        createCollection(txn, dbname, resolvedCmdObj, idIndexSpec));
         }
 
+        log()<<"[createCollection] "<<cmdObj;
         BSONObj idIndexSpec;
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer 
+            && !ns.isOnInternalDb()){
+            return  appendCommandStatus(result,createCollectionMetadata (txn, ns, cmdObj, idIndexSpec));
+        }
+
         return appendCommandStatus(result, createCollection(txn, dbname, cmdObj, idIndexSpec));
     }
 } cmdCreate;
@@ -996,7 +1018,6 @@ public:
              string& errmsg,
              BSONObjBuilder& result) {
         const NamespaceString nss(parseNs(dbname, jsobj));
-
         if (nss.coll().empty()) {
             errmsg = "No collection name specified";
             return false;
@@ -1044,11 +1065,54 @@ public:
              int,
              string& errmsg,
              BSONObjBuilder& result) {
-        const NamespaceString nss = parseNsCollectionRequired(dbname, jsobj);
-        return appendCommandStatus(result, collMod(txn, nss, jsobj, &result));
+        const NamespaceString nss(parseNs(dbname, jsobj));
+        return appendCommandStatus(result, collMod(txn, nss, jsobj.removeField("chunkId"), &result));
     }
 
 } collectionModCommand;
+
+class RocksEngineStats : public Command{
+public:
+    RocksEngineStats() : Command("rocksStats"){}
+    virtual bool slaveOk() const{
+        return true;
+    }
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override{
+        return true;
+    }
+
+
+    virtual bool isWriteCommandForConfigServer() const{
+        return false;
+    }
+
+    virtual void help(stringstream& help) const{
+        help << "Get RocksdbEngine statistic.\n";
+    }
+
+    bool run(OperationContext* txn,
+        const string& dbname,
+        BSONObj& jsobj,
+        int,
+        string& errmsg,
+        BSONObjBuilder& result) {
+            int num = 1;
+            num = jsobj["num"].numberInt();
+            result.append("num",num);
+            auto *engine = getGlobalServiceContext()->getGlobalStorageEngine();
+            if(0 == num)
+            {
+                engine->resetEngineStats();
+            }else if(1 == num)
+            {
+                std::vector<std::string> vs;
+                engine->getEngineStats(vs);
+                result.append("rocks_stats", vs);
+            }
+            return true;
+        }
+} cmdRocksEngineStats;
 
 class DBStats : public Command {
 public:
@@ -1286,6 +1350,24 @@ void Command::execCommand(OperationContext* txn,
             CurOp::get(txn)->setCommand_inlock(command);
         }
 
+        {
+            std::string dbname = request.getDatabase().toString();
+            auto commandNS = NamespaceString(command->parseNs(dbname, request.getCommandArgs()));
+
+            if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
+                // Execute command (except those listed below) only when shard server becomes active
+                stdx::lock_guard<stdx::mutex> initLock(serverGlobalParams.shardStateMutex);
+                if ((serverGlobalParams.shardState != ShardType::ShardState::kShardActive) &&
+                    !((command->getName() == "isMaster") || (command->getName() == "setShardVersion"))) {
+                    LOG(0) << "Command (" << command->getName() 
+                          << ") is not allowed before shard becomes aware"
+                          << ", ns:"<< commandNS;
+                    uasserted(ErrorCodes::NotYetInitialized, "shard has not become aware,cmd:" +
+                              command->getName() + ", ns:" + commandNS.toString()
+                              );
+                }
+            }  
+        }
         // TODO: move this back to runCommands when mongos supports OperationContext
         // see SERVER-18515 for details.
         uassertStatusOK(rpc::readRequestMetadata(txn, request.getMetadata()));

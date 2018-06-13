@@ -39,7 +39,9 @@ public:
     BalancerChunkSelectionPolicyImpl(ClusterStatistics* clusterStats);
     ~BalancerChunkSelectionPolicyImpl();
 
-    StatusWith<SplitInfoVector> selectChunksToSplit(OperationContext* txn) override;
+    StatusWith<IndexSplitInfoVector> selectChunksToSplit(OperationContext* txn) override;
+
+    StatusWith<IndexSplitInfoVector> indexSelectChunksToSplit(OperationContext* txn) override;
 
     StatusWith<MigrateInfoVector> selectChunksToMove(OperationContext* txn,
                                                      bool aggressiveBalanceHint) override;
@@ -56,7 +58,10 @@ private:
      * Synchronous method, which iterates the collection's chunks and uses the tags information to
      * figure out whether some of them validate the tag range boundaries and need to be split.
      */
-    StatusWith<SplitInfoVector> _getSplitCandidatesForCollection(
+    StatusWith<IndexSplitInfoVector> _getSplitCandidatesForCollection(
+        OperationContext* txn, const NamespaceString& nss, const ShardStatisticsVector& shardStats);
+
+    StatusWith<IndexSplitInfoVector> _indexGetSplitCandidatesForCollection(
         OperationContext* txn, const NamespaceString& nss, const ShardStatisticsVector& shardStats);
 
     /**

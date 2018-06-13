@@ -43,6 +43,8 @@ const BSONField<std::string> BatchedDeleteRequest::collName("delete");
 const BSONField<std::vector<BatchedDeleteDocument*>> BatchedDeleteRequest::deletes("deletes");
 const BSONField<BSONObj> BatchedDeleteRequest::writeConcern("writeConcern");
 const BSONField<bool> BatchedDeleteRequest::ordered("ordered", true);
+const BSONField<bool> BatchedDeleteRequest::atomicity("atomicity", false);
+const BSONField<bool> BatchedDeleteRequest::prewarm("prewarm", false);
 
 BatchedDeleteRequest::BatchedDeleteRequest() {
     clear();
@@ -95,6 +97,12 @@ BSONObj BatchedDeleteRequest::toBSON() const {
     if (_isOrderedSet)
         builder.append(ordered(), _ordered);
 
+    if (_isAtomicitySet)
+        builder.append(atomicity(), _atomicity);
+
+    if (_isPrewarmSet)
+        builder.append(prewarm(), _prewarm);
+
     return builder.obj();
 }
 
@@ -130,6 +138,16 @@ bool BatchedDeleteRequest::parseBSON(StringData dbName, const BSONObj& source, s
             if (fieldState == FieldParser::FIELD_INVALID)
                 return false;
             _isOrderedSet = fieldState == FieldParser::FIELD_SET;
+        }else if (fieldName == atomicity.name()) {
+        	fieldState = FieldParser::extract(field, atomicity, &_atomicity, errMsg);
+            if (fieldState == FieldParser::FIELD_INVALID)
+                return false;
+            _isAtomicitySet = fieldState == FieldParser::FIELD_SET;
+        }else if (fieldName == prewarm.name()) {
+            fieldState = FieldParser::extract(field, prewarm, &_prewarm, errMsg);
+            if (fieldState == FieldParser::FIELD_INVALID)
+                return false;
+            _isPrewarmSet = fieldState == FieldParser::FIELD_SET;
         } else if (fieldName[0] != '$') {
             std::initializer_list<StringData> ignoredFields = {"maxTimeMS", "shardVersion"};
             if (std::find(ignoredFields.begin(), ignoredFields.end(), fieldName) ==
@@ -154,6 +172,12 @@ void BatchedDeleteRequest::clear() {
 
     _ordered = false;
     _isOrderedSet = false;
+
+    _atomicity = false;
+    _isAtomicitySet = false;
+
+    _prewarm = false;
+    _isPrewarmSet = false;
 }
 
 void BatchedDeleteRequest::cloneTo(BatchedDeleteRequest* other) const {
@@ -272,6 +296,48 @@ bool BatchedDeleteRequest::getOrdered() const {
         return _ordered;
     } else {
         return ordered.getDefault();
+    }
+}
+
+void BatchedDeleteRequest::setAtomicity(bool atomicity) {
+    _atomicity = atomicity;
+    _isAtomicitySet = true;
+}
+
+void BatchedDeleteRequest::unsetAtomicity() {
+    _isAtomicitySet = false;
+}
+
+bool BatchedDeleteRequest::isAtomicitySet() const {
+    return _isAtomicitySet;
+}
+
+bool BatchedDeleteRequest::getAtomicity() const {
+    if (_isAtomicitySet) {
+        return _atomicity;
+    } else {
+        return atomicity.getDefault();
+    }
+}
+
+void BatchedDeleteRequest::setPrewarm(bool prewarm) {
+    _prewarm = prewarm;
+    _isPrewarmSet = true;
+}
+
+void BatchedDeleteRequest::unsetPrewarm() {
+    _isPrewarmSet = false;
+}
+
+bool BatchedDeleteRequest::isPrewarmSet() const {
+    return _isPrewarmSet;
+}
+
+bool BatchedDeleteRequest::getPrewarm() const {
+    if (_isPrewarmSet) {
+        return _prewarm;
+    } else {
+        return prewarm.getDefault();
     }
 }
 

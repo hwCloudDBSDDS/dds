@@ -46,6 +46,9 @@ struct ParsedWriteOp {
     NamespaceString ns;
     bool bypassDocumentValidation = false;
     bool continueOnError = false;
+    bool atomicityInBulk = false;
+    // The option prewarmInBulk is just used to preparing the data for performance test.
+    bool prewarmInBulk   = false;                                                          
 };
 
 /**
@@ -65,6 +68,9 @@ struct UpdateOp : ParsedWriteOp {
         BSONObj collation;
         bool multi = false;
         bool upsert = false;
+        bool atomicity = false;
+        bool first = false;
+        bool last = false;
     };
 
     std::vector<SingleUpdate> updates;

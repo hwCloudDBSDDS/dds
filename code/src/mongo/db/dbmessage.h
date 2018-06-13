@@ -241,6 +241,9 @@ public:
 
     int pullInt();
     long long pullInt64();
+
+    const char* pullCString();
+
     const char* getArray(size_t count) const;
 
     /* for insert and update msgs */

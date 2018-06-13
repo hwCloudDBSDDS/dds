@@ -248,7 +248,7 @@ BSONObj BSONCollectionCatalogEntry::MetaData::toBSON() const {
                 subMultikeyPaths.doneFast();
             }
 
-            sub.append("head", static_cast<long long>(indexes[i].head.repr()));
+            indexes[i].head.AppendTo(sub, "head");
             sub.doneFast();
         }
         arr.doneFast();
@@ -272,7 +272,7 @@ void BSONCollectionCatalogEntry::MetaData::parse(const BSONObj& obj) {
             imd.spec = idx["spec"].Obj().getOwned();
             imd.ready = idx["ready"].trueValue();
             if (idx.hasField("head")) {
-                imd.head = RecordId(idx["head"].Long());
+                imd.head = RecordId(idx["head"]);
             } else {
                 imd.head = RecordId(idx["head_a"].Int(), idx["head_b"].Int());
             }

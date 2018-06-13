@@ -1,4 +1,4 @@
-/**
+/*
  *    Copyright (C) 2014 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -54,6 +54,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/util/log.h"
+#include "mongo/db/catalog/database_holder.h"
 
 namespace mongo {
 
@@ -140,7 +141,7 @@ public:
             return {ErrorCodes::InvalidNamespace,
                     str::stream() << "Invalid collection name: " << nss.ns()};
         }
-
+        //LOG(3)<<"[find_cmd explain]........"<<"dbname: "<<dbname <<"cmdObj: "<<cmdObj.toString();
         // Parse the command BSON to a QueryRequest.
         const bool isExplain = true;
         auto qrStatus = QueryRequest::makeFromFindCommand(nss, cmdObj, isExplain);
@@ -198,7 +199,9 @@ public:
         // The collection may be NULL. If so, getExecutor() should handle it by returning an
         // execution tree with an EOFStage.
         Collection* collection = ctx.getCollection();
-
+        if(collection == NULL){
+            LOG(3)<<"[find_cmd explain]............. collection is  null";
+        }
         // We have a parsed query. Time to get the execution plan for it.
         auto statusWithPlanExecutor =
             getExecutorFind(txn, collection, nss, std::move(cq), PlanExecutor::YIELD_AUTO);
@@ -227,7 +230,21 @@ public:
              int options,
              std::string& errmsg,
              BSONObjBuilder& result) override {
-        const NamespaceString nss(parseNs(dbname, cmdObj));
+        const NamespaceString ns(parseNs(dbname, cmdObj));
+        NamespaceString nss = ns2chunkHolder().getNsWithChunkId(ns);
+        /*StringData raw_nss(ns.ns()); 
+        NamespaceString nss(raw_nss);
+        LOG(1) <<"find cmdObj: " << cmdObj << "; ns:" << nss;
+        if(serverGlobalParams.clusterRole == ClusterRole::ShardServer)
+        {
+            std::string chunkid;
+            ns2chunkHolder().get(raw_nss, chunkid);
+            if(chunkid.size() > 0)
+            {
+                nss = NamespaceString(StringData(ns.ns()+'$'+ chunkid));
+            }
+        }*/
+        txn->setNs(nss);
         if (!nss.isValid() || nss.isCommand() || nss.isSpecialCommand()) {
             return appendCommandStatus(result,
                                        {ErrorCodes::InvalidNamespace,
@@ -242,7 +259,7 @@ public:
                 result,
                 Status(ErrorCodes::IllegalOperation, "Cannot run find command from eval()"));
         }
-
+	
         // Parse the command BSON to a QueryRequest.
         const bool isExplain = false;
         auto qrStatus = QueryRequest::makeFromFindCommand(nss, cmdObj, isExplain);
@@ -293,6 +310,15 @@ public:
         // request into an aggregation command.
         AutoGetCollectionOrViewForRead ctx(txn, nss);
         Collection* collection = ctx.getCollection();
+        if( collection == NULL){
+            LOG(3)<<"[find_cmd.cpp 298]................. Collection:"<< nss <<" not found ";
+        }
+        // if find with chunkid, but no collection here, we should return stale config, so mongos will retry
+        if (!collection && nss.isChunk()) {
+            return appendCommandStatus(
+                result, {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});            
+        }
+
         if (ctx.getView()) {
             // Relinquish locks. The aggregation command will re-acquire them.
             ctx.releaseLocksForView();
@@ -301,8 +327,9 @@ public:
             // necessary), if possible.
             const auto& qr = cq->getQueryRequest();
             auto viewAggregationCommand = qr.asAggregationCommand();
-            if (!viewAggregationCommand.isOK())
+            if (!viewAggregationCommand.isOK()) {
                 return appendCommandStatus(result, viewAggregationCommand.getStatus());
+            }
 
             Command* agg = Command::findCommand("aggregate");
             try {
@@ -379,7 +406,7 @@ public:
         // Before saving the cursor, ensure that whatever plan we established happened with the
         // expected collection version
         auto css = CollectionShardingState::get(txn, nss);
-        css->checkShardVersionOrThrow(txn);
+        css->checkChunkVersionOrThrow(txn);
 
         // Set up the cursor for getMore.
         CursorId cursorId = 0;
@@ -417,6 +444,10 @@ public:
             endQueryOp(txn, collection, *exec, numResults, cursorId);
         }
 
+        if(0 == numResults)
+        {
+            error() << "@@@@@@@ERR@@@@@@@ find cmd not find doc. cmdObj:"<<cmdObj;
+        }
         // Generate the response object to send to the client.
         firstBatch.done(cursorId, nss.ns());
         return true;

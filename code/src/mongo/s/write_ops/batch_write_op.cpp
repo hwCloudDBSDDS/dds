@@ -83,6 +83,10 @@ void BatchWriteOp::initClientRequest(const BatchedCommandRequest* clientRequest)
 
 // Arbitrary endpoint ordering, needed for grouping by endpoint
 static int compareEndpoints(const ShardEndpoint* endpointA, const ShardEndpoint* endpointB) {
+    int chunkIdDiff = endpointA->chunkId.compare(endpointB->chunkId);
+    if (chunkIdDiff != 0)
+        return chunkIdDiff;
+
     int shardNameDiff = endpointA->shardName.compare(endpointB->shardName);
     if (shardNameDiff != 0)
         return shardNameDiff;
@@ -459,7 +463,16 @@ void BatchWriteOp::buildBatchRequest(const TargetedWriteBatch& targetedBatch,
         request->setOrdered(_clientRequest->getOrdered());
     }
 
+    if (!request->isAtomicitySet()) {
+        request->setAtomicity(_clientRequest->getAtomicity());
+    }
+
+    if (!request->isPrewarmSet()) {
+        request->setPrewarm(_clientRequest->getPrewarm());
+    }
+
     request->setShardVersion(targetedBatch.getEndpoint().shardVersion);
+    request->setChunkId(targetedBatch.getEndpoint().chunkId);
 }
 
 //
@@ -742,6 +755,7 @@ void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
             WriteErrorDetail* error = new WriteErrorDetail();
             writeOp.getOpError().cloneTo(error);
             batchResp->addToErrDetails(error);
+            //batchResp->setOk(false);
         }
     }
 
@@ -771,6 +785,7 @@ void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
 
         error->setErrMessage(msg.str());
         batchResp->setWriteConcernError(error);
+       // batchResp->setOk(false);
     }
 
     //
@@ -824,6 +839,18 @@ int BatchWriteOp::numWriteOpsIn(WriteOpState opState) const {
     }
 
     return count;
+}
+
+void BatchWriteOp::cancelWriteOps(const TargetedWriteBatch& targetedBatch) {
+    for (const auto& write : targetedBatch.getWrites()) {
+        WriteOp& writeOp = _writeOps[write->writeOpRef.first];
+
+        dassert(writeOp.getWriteState() == WriteOpState_Pending);
+
+        writeOp.cancelWrites(NULL);
+    }
+
+    return;
 }
 
 void TrackedErrors::startTracking(int errCode) {

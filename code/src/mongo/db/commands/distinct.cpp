@@ -61,6 +61,7 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -166,9 +167,10 @@ public:
              int options,
              string& errmsg,
              BSONObjBuilder& result) {
-        const string ns = parseNs(dbname, cmdObj);
-        const NamespaceString nss(ns);
-
+        string ns = parseNs(dbname, cmdObj);
+        const NamespaceString nssTemp(ns);
+        NamespaceString nss = ns2chunkHolder().getNsWithChunkId(nssTemp);
+        ns = nss.ns();
         const ExtensionsCallbackReal extensionsCallback(txn, &nss);
         auto parsedDistinct = ParsedDistinct::parse(txn, nss, cmdObj, extensionsCallback, false);
         if (!parsedDistinct.isOK()) {

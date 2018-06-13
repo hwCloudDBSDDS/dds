@@ -72,6 +72,7 @@ namespace mongo {
 
 namespace {
 
+
 const UpdateStats* getUpdateStats(const PlanExecutor* exec) {
     // The stats may refer to an update stage, or a projection stage wrapping an update stage.
     if (StageType::STAGE_PROJECTION == exec->getRootStage()->stageType()) {
@@ -291,7 +292,7 @@ public:
             }
 
             auto css = CollectionShardingState::get(txn, nsString);
-            css->checkShardVersionOrThrow(txn);
+            css->checkChunkVersionOrThrow(txn);
 
             Collection* const collection = autoColl.getCollection();
             auto statusWithPlanExecutor =
@@ -322,7 +323,7 @@ public:
             }
 
             auto css = CollectionShardingState::get(txn, nsString);
-            css->checkShardVersionOrThrow(txn);
+            css->checkChunkVersionOrThrow(txn);
 
             Collection* collection = autoColl.getCollection();
             auto statusWithPlanExecutor =
@@ -345,17 +346,20 @@ public:
              BSONObjBuilder& result) override {
         // findAndModify command is not replicated directly.
         invariant(txn->writesAreReplicated());
-        const NamespaceString fullNs = parseNsCollectionRequired(dbName, cmdObj);
-        Status allowedWriteStatus = userAllowedWriteNS(fullNs.ns());
+        const NamespaceString fullNsforCheck = parseNsCollectionRequired(dbName, cmdObj);
+        Status allowedWriteStatus = userAllowedWriteNS(fullNsforCheck.ns());
         if (!allowedWriteStatus.isOK()) {
             return appendCommandStatus(result, allowedWriteStatus);
         }
 
+        const NamespaceString fullNs(parseNs(dbName, cmdObj));
         StatusWith<FindAndModifyRequest> parseStatus =
             FindAndModifyRequest::parseFromBSON(NamespaceString(fullNs.ns()), cmdObj);
         if (!parseStatus.isOK()) {
             return appendCommandStatus(result, parseStatus.getStatus());
         }
+
+        txn->setNs(fullNs);
 
         const FindAndModifyRequest& args = parseStatus.getValue();
         const NamespaceString& nsString = args.getNamespaceString();
@@ -405,7 +409,7 @@ public:
                 }
 
                 auto css = CollectionShardingState::get(txn, nsString);
-                css->checkShardVersionOrThrow(txn);
+                css->checkChunkVersionOrThrow(txn);
 
                 Status isPrimary = checkCanAcceptWritesForDatabase(nsString);
                 if (!isPrimary.isOK()) {
@@ -413,6 +417,19 @@ public:
                 }
 
                 Collection* const collection = autoDb.getDb()->getCollection(nsString.ns());
+
+                // if find with chunkid, but no collection here, we should return stale config, so mongos will retry
+                if (!collection && fullNs.isChunk()) {
+                    LOG(1)<<"remove fm: no collection "
+                         <<reinterpret_cast<unsigned long long>(autoDb.getDb())
+                         <<" "
+                         <<fullNs.ns()
+                         <<" "
+                         <<nsString.ns();
+                    return appendCommandStatus(
+                        result, {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});
+                }
+
                 if (!collection && autoDb.getDb()->getViewCatalog()->lookup(txn, nsString.ns())) {
                     return appendCommandStatus(result,
                                                {ErrorCodes::CommandNotSupportedOnView,
@@ -430,7 +447,6 @@ public:
                     stdx::lock_guard<Client>(*txn->getClient());
                     CurOp::get(txn)->setPlanSummary_inlock(Explain::getPlanSummary(exec.get()));
                 }
-
                 StatusWith<boost::optional<BSONObj>> advanceStatus =
                     advanceExecutor(txn, exec.get(), args.isRemove());
                 if (!advanceStatus.isOK()) {
@@ -470,10 +486,8 @@ public:
                 if (!parsedUpdateStatus.isOK()) {
                     return appendCommandStatus(result, parsedUpdateStatus);
                 }
-
                 AutoGetOrCreateDb autoDb(txn, dbName, MODE_IX);
                 Lock::CollectionLock collLock(txn->lockState(), nsString.ns(), MODE_IX);
-
                 // Attach the namespace and database profiling level to the current op.
                 {
                     stdx::lock_guard<Client> lk(*txn->getClient());
@@ -482,7 +496,7 @@ public:
                 }
 
                 auto css = CollectionShardingState::get(txn, nsString);
-                css->checkShardVersionOrThrow(txn);
+                css->checkChunkVersionOrThrow(txn);
 
                 Status isPrimary = checkCanAcceptWritesForDatabase(nsString);
                 if (!isPrimary.isOK()) {
@@ -490,12 +504,24 @@ public:
                 }
 
                 Collection* collection = autoDb.getDb()->getCollection(nsString.ns());
+
+                // if find with chunkid, but no collection here, we should return stale config, so mongos will retry
+                if (!collection && fullNs.isChunk()) {
+                    LOG(1)<<"fm: no collection "
+                         <<reinterpret_cast<unsigned long long>(autoDb.getDb())
+                         <<" "
+                         <<fullNs.ns()
+                         <<" "
+                         <<nsString.ns();
+                    return appendCommandStatus(
+                        result, {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});
+                }
+
                 if (!collection && autoDb.getDb()->getViewCatalog()->lookup(txn, nsString.ns())) {
                     return appendCommandStatus(result,
                                                {ErrorCodes::CommandNotSupportedOnView,
                                                 "findAndModify not supported on a view"});
                 }
-
                 // Create the collection if it does not exist when performing an upsert
                 // because the update stage does not create its own collection.
                 if (!collection && args.isUpsert()) {
@@ -511,6 +537,14 @@ public:
                     if (collection) {
                         // Someone else beat us to creating the collection, do nothing.
                     } else {
+                        if (!nsString.supportImplicitCreation()) {
+                            return appendCommandStatus(result,
+                                                        {ErrorCodes::ImplicitCreationNotSupported,
+                                                        str::stream() << "implicit creation of "
+                                                                      << nsString.ns()
+                                                                      << " is not supported"});
+                        }
+
                         WriteUnitOfWork wuow(txn);
                         Status createCollStatus =
                             userCreateNS(txn, autoDb.getDb(), nsString.ns(), BSONObj());
@@ -523,7 +557,6 @@ public:
                         invariant(collection);
                     }
                 }
-
                 auto statusWithPlanExecutor =
                     getExecutorUpdate(txn, opDebug, collection, &parsedUpdate);
                 if (!statusWithPlanExecutor.isOK()) {
@@ -545,7 +578,6 @@ public:
                 // Nothing after advancing the plan executor should throw a WriteConflictException,
                 // so the following bookkeeping with execution stats won't end up being done
                 // multiple times.
-
                 PlanSummaryStats summaryStats;
                 Explain::getSummaryStats(*exec, &summaryStats);
                 if (collection) {

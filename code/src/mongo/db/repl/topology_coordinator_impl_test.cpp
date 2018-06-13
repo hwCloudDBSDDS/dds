@@ -176,7 +176,7 @@ protected:
         ErrorCodes::Error errcode = ErrorCodes::HostUnreachable) {
         // timed out heartbeat to mark a node as down
 
-        Milliseconds roundTripTime{ReplicaSetConfig::kDefaultHeartbeatTimeoutPeriod};
+        Milliseconds roundTripTime{kDefaultConfigHeartbeatTimeoutPeriod};
         return _receiveHeartbeatHelper(Status(errcode, ""),
                                        member,
                                        setName,
@@ -1558,7 +1558,7 @@ TEST_F(TopoCoordTest, ReplSetGetStatus) {
         startupTime + Milliseconds(2), Milliseconds(1), member, hbResponseGood, OpTime());
     getTopoCoord().prepareHeartbeatRequest(startupTime + Milliseconds(3), setName, member);
     Date_t timeoutTime =
-        startupTime + Milliseconds(3) + ReplicaSetConfig::kDefaultHeartbeatTimeoutPeriod;
+        startupTime + Milliseconds(3) + kDefaultConfigHeartbeatTimeoutPeriod;
 
     StatusWith<ReplSetHeartbeatResponse> hbResponseDown =
         StatusWith<ReplSetHeartbeatResponse>(Status(ErrorCodes::HostUnreachable, ""));

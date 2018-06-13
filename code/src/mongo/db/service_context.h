@@ -41,6 +41,7 @@
 #include "mongo/util/clock_source.h"
 #include "mongo/util/decorable.h"
 #include "mongo/util/tick_source.h"
+#include "mongo/util/util_extend/process_stage_time.h"
 
 namespace mongo {
 
@@ -385,6 +386,16 @@ public:
      * Binds the service entry point implementation to the service context
      */
     void setServiceEntryPoint(std::unique_ptr<ServiceEntryPoint> sep);
+
+    virtual void registerProcessStageTime(const std::string& processName) {
+    }
+
+    virtual ProcessStageTime* getProcessStageTime(const std::string& processName) {
+        return NULL;
+    }
+
+    virtual void cancelProcessStageTime(const std::string& processName) {
+    }
 
 protected:
     ServiceContext();

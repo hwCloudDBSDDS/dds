@@ -102,6 +102,7 @@ public:
     void hitLogical(long long bytesIn, long long bytesOut);
     void append(BSONObjBuilder& b);
 
+    BSONObj getObj() const;
 private:
     AtomicInt64 _physicalBytesIn{0};
     AtomicInt64 _physicalBytesOut{0};

@@ -91,7 +91,8 @@ Status Shard::CommandResponse::processBatchWriteResponse(
     return status;
 }
 
-const Milliseconds Shard::kDefaultConfigCommandTimeout = Seconds{30};
+const Milliseconds Shard::kDefaultConfigCommandTimeout = Seconds{10};
+const Milliseconds Shard::kDefaultCommandTimeout = Seconds{10};
 
 bool Shard::shouldErrorBePropagated(ErrorCodes::Error code) {
     return std::find(RemoteCommandRetryScheduler::kAllRetriableErrors.begin(),
@@ -153,7 +154,7 @@ StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
     const BSONObj& cmdObj,
     RetryPolicy retryPolicy) {
     return runCommandWithFixedRetryAttempts(
-        txn, readPref, dbName, cmdObj, Milliseconds::max(), retryPolicy);
+        txn, readPref, dbName, cmdObj, kDefaultCommandTimeout, retryPolicy);
 }
 
 StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
@@ -166,6 +167,7 @@ StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
     for (int retry = 1; retry <= kOnErrorNumRetries; ++retry) {
         auto interruptStatus = txn->checkForInterruptNoAssert();
         if (!interruptStatus.isOK()) {
+            LOG(1) << "!interruptStatus.isOK() cause by " << interruptStatus;
             return interruptStatus;
         }
 
@@ -174,12 +176,11 @@ StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
         auto commandStatus = _getEffectiveCommandStatus(swCmdResponse);
 
         if (retry < kOnErrorNumRetries && isRetriableError(commandStatus.code(), retryPolicy)) {
-            LOG(2) << "Command " << redact(cmdObj)
+            LOG(0) << "Command " << redact(cmdObj)
                    << " failed with retriable error and will be retried"
                    << causedBy(redact(commandStatus));
             continue;
         }
-
         return swCmdResponse;
     }
     MONGO_UNREACHABLE;
@@ -228,6 +229,8 @@ StatusWith<Shard::QueryResponse> Shard::exhaustiveFindOnConfig(
     const BSONObj& query,
     const BSONObj& sort,
     const boost::optional<long long> limit) {
+    const auto start = Date_t::now();
+    
     // Do not allow exhaustive finds to be run against regular shards.
     invariant(isConfig());
 
@@ -238,6 +241,12 @@ StatusWith<Shard::QueryResponse> Shard::exhaustiveFindOnConfig(
         if (retry < kOnErrorNumRetries &&
             isRetriableError(result.getStatus().code(), RetryPolicy::kIdempotent)) {
             continue;
+        }
+        
+        const Milliseconds totalTime = Date_t::now() - start;
+        if (totalTime >= Milliseconds(500)) {
+            warning() << "time-consuming exhaustiveFindOnConfig (namespace: " << nss
+                   << ", query: " << query << "), total time: " << totalTime;
         }
 
         return result;

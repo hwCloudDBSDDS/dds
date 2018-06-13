@@ -132,6 +132,17 @@ public:
         return Status::OK();
     }
 
+    Status targetAllChunks(OperationContext* txn, std::vector<ShardEndpoint*>* endpoints) const {
+        const std::vector<MockRange*>& ranges = getRanges();
+        for (std::vector<MockRange*>::const_iterator it = ranges.begin(); it != ranges.end();
+             ++it) {
+            const MockRange* range = *it;
+            endpoints->push_back(new ShardEndpoint(range->endpoint));
+        }
+
+        return Status::OK();
+    }
+
     void noteCouldNotTarget() {
         // No-op
     }

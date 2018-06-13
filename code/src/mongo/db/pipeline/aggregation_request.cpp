@@ -54,6 +54,7 @@ const StringData AggregationRequest::kPipelineName = "pipeline"_sd;
 const StringData AggregationRequest::kCollationName = "collation"_sd;
 const StringData AggregationRequest::kExplainName = "explain"_sd;
 const StringData AggregationRequest::kAllowDiskUseName = "allowDiskUse"_sd;
+const StringData AggregationRequest::kChunkIdName = "chunkId"_sd;
 
 const long long AggregationRequest::kDefaultBatchSize = 101;
 
@@ -144,7 +145,10 @@ StatusWith<AggregationRequest> AggregationRequest::parseFromBSON(NamespaceString
             request.setAllowDiskUse(elem.Bool());
         } else if (bypassDocumentValidationCommandOption() == fieldName) {
             request.setBypassDocumentValidation(elem.trueValue());
-        } else {
+        }else if (kChunkIdName == fieldName) {
+            //ignore chunkId.
+        }
+        else {
             return {ErrorCodes::FailedToParse,
                     str::stream() << "unrecognized field '" << elem.fieldName() << "'"};
         }

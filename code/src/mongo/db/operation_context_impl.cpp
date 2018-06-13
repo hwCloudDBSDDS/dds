@@ -71,7 +71,9 @@ OperationContextImpl::OperationContextImpl(Client* client, unsigned opId)
     : OperationContext(client, opId) {
     setLockState(std::move(clientOperationInfoDecoration(client).locker()));
     StorageEngine* storageEngine = getServiceContext()->getGlobalStorageEngine();
-    setRecoveryUnit(storageEngine->newRecoveryUnit(), kNotInUnitOfWork);
+    if (storageEngine != NULL) {
+        setRecoveryUnit(storageEngine->newRecoveryUnit(), kNotInUnitOfWork);
+    }
 }
 
 OperationContextImpl::~OperationContextImpl() {

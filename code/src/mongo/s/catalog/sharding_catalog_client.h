@@ -146,7 +146,8 @@ public:
                                    const BSONObj& defaultCollation,
                                    bool unique,
                                    const std::vector<BSONObj>& initPoints,
-                                   const std::set<ShardId>& initShardIds) = 0;
+                                   const std::set<ShardId>& initShardIds,
+                                   const BSONObj& cmdObj = BSONObj()) = 0;
 
     /**
      * Tries to remove a shard. To completely remove a shard from a sharded cluster,
@@ -233,6 +234,9 @@ public:
     virtual Status getDatabasesForShard(OperationContext* txn,
                                         const ShardId& shardId,
                                         std::vector<std::string>* dbs) = 0;
+
+    // get unique chunkID for entry in config.chunks
+    virtual Status generateNewChunkID(OperationContext* txn, std::string  &chunkID) = 0;
 
     /**
      * Gets the requested number of chunks (of type ChunkType) that satisfy a query.
@@ -416,6 +420,15 @@ public:
                                                   bool upsert,
                                                   const WriteConcernOptions& writeConcern) = 0;
 
+    // Updates multi config documents in the specified namespace on the config server. Must only be
+    // used for updates to the 'config' database.
+    virtual Status updateConfigDocuments(OperationContext* txn,
+                                                  const std::string& ns,
+                                                  const BSONObj& query,
+                                                  const BSONObj& update,
+                                                  bool upsert,
+                                                  const WriteConcernOptions& writeConcern) = 0;
+
     /**
      * Removes documents matching a particular query predicate from the specified namespace on the
      * config server. Must only be used for deletions from the 'config' database.
@@ -442,6 +455,11 @@ public:
      * be cached.
      */
     virtual DistLockManager* getDistLockManager() = 0;
+
+    /**
+    * Config server send create index commands to all the shard servers
+    */
+    virtual Status createIndexOnShards(OperationContext* txn, NamespaceString ns, BSONObj& cmdObj) = 0;
 
 protected:
     ShardingCatalogClient() = default;

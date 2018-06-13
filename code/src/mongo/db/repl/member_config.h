@@ -53,6 +53,7 @@ public:
     static const std::string kVotesFieldName;
     static const std::string kPriorityFieldName;
     static const std::string kHostFieldName;
+    static const std::string kExtendIPsFieldName;
     static const std::string kHiddenFieldName;
     static const std::string kSlaveDelayFieldName;
     static const std::string kArbiterOnlyFieldName;
@@ -97,6 +98,11 @@ public:
      */
     const HostAndPort& getHostAndPort() const {
         return _host;
+    }
+
+    // Gets the extend IPs of this member
+    const std::string& getExtendIPs() const {
+        return _extendIPs;
     }
 
     /**
@@ -192,6 +198,7 @@ public:
 private:
     int _id;
     HostAndPort _host;
+    std::string _extendIPs; // Add extend IPs for OAM as manage IPs
     double _priority;  // 0 means can never be primary
     int _votes;        // Can this member vote? Only 0 and 1 are valid.  Default 1.
     bool _arbiterOnly;

@@ -83,6 +83,7 @@
 #include "mongo/util/stacktrace.h"
 #include "mongo/util/time_support.h"
 #include "mongo/util/timer.h"
+#include "mongo/util/util_extend/default_parameters.h"
 
 namespace mongo {
 namespace repl {
@@ -130,6 +131,8 @@ BSONObj incrementConfigVersionByRandom(BSONObj config) {
 }
 
 const Seconds kNoopWriterPeriod(10);
+
+const Milliseconds kDefaultRetryInterval(500);
 }  // namespace
 
 BSONObj ReplicationCoordinatorImpl::SlaveInfo::toBSON() const {
@@ -241,6 +244,7 @@ void ReplicationCoordinatorImpl::WaiterList::signalAndRemoveIf_inlock(
         if (it == _list.end()) {
             break;
         }
+        LOG(3) << "signal waiter " << *(*it) << " at " << Date_t::now();
         (*it)->notify();
         std::swap(*it, _list.back());
         _list.pop_back();
@@ -249,6 +253,7 @@ void ReplicationCoordinatorImpl::WaiterList::signalAndRemoveIf_inlock(
 
 void ReplicationCoordinatorImpl::WaiterList::signalAndRemoveAll_inlock() {
     for (auto& waiter : _list) {
+        LOG(3) << "signal waiter " << *waiter << " at " << Date_t::now();
         waiter->notify();
     }
     _list.clear();
@@ -911,6 +916,8 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* txn) {
     }
     lk.unlock();
 
+    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
+        "onDrainComplete");
     _externalState->onDrainComplete(txn);
 
     ScopedTransaction transaction(txn, MODE_X);
@@ -934,6 +941,8 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* txn) {
     _canAcceptNonLocalWrites = true;
 
     lk.unlock();
+    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
+        "onTransitionToPrimary");
     _setFirstOpTimeOfMyTerm(_externalState->onTransitionToPrimary(txn, isV1ElectionProtocol()));
     lk.lock();
 
@@ -943,6 +952,10 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* txn) {
 
     log() << "transition to primary complete; database writes are now permitted" << rsLog;
     _externalState->startNoopWriter(_getMyLastAppliedOpTime_inlock());
+    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteProcessEnd();
+    log() << "Time from secondary to primary: " 
+        << getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->toString();
+    getGlobalServiceContext()->cancelProcessStageTime("secondaryToPrimary");
 }
 
 Status ReplicationCoordinatorImpl::waitForDrainFinish(Milliseconds timeout) {
@@ -1115,7 +1128,9 @@ void ReplicationCoordinatorImpl::setMyHeartbeatMessage(const std::string& msg) {
 }
 
 void ReplicationCoordinatorImpl::setMyLastAppliedOpTimeForward(const OpTime& opTime) {
+
     stdx::unique_lock<stdx::mutex> lock(_mutex);
+
     if (opTime > _getMyLastAppliedOpTime_inlock()) {
         const bool allowRollback = false;
         _setMyLastAppliedOpTime_inlock(opTime, allowRollback);
@@ -1672,6 +1687,10 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     stdx::condition_variable condVar;
     WaiterInfoGuard waitInfo(
         &_replicationWaiterList, txn->getOpID(), opTime, &writeConcern, &condVar);
+
+    LOG(3) << "awaitReplication: waiting for replication " << waitInfo.waiter << " until "
+        << wTimeoutDate;
+        
     while (!_doneWaitingForReplication_inlock(opTime, minSnapshot, writeConcern)) {
 
         if (_inShutdown) {
@@ -2545,6 +2564,18 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock() {
         _opTimeWaiterList.signalAndRemoveAll_inlock();
         // _isCatchingUp and _isWaitingForDrainToComplete could be cleaned up asynchronously
         // by freshness scan.
+        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato newState is "
+            << newState.toString();
+        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato newState removed is "
+            << std::to_string(newState.removed());
+        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato newState rollback  is "
+            << std::to_string(newState.rollback());
+        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato _memberState is "
+            << std::to_string(_memberState.primary());
+        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato _memberState is "
+            << _memberState.toString();
+
+
         _canAcceptNonLocalWrites = false;
         _stepDownPending = false;
         serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(false);
@@ -2675,6 +2706,8 @@ void ReplicationCoordinatorImpl::_performPostMemberStateUpdateAction(
 }
 
 void ReplicationCoordinatorImpl::_scanOpTimeForCatchUp_inlock() {
+    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
+        "scanOpTimeForCatchUp");
     auto scanner = std::make_shared<FreshnessScanner>();
     auto scanStartTime = _replExecutor.now();
     auto evhStatus =
@@ -2701,6 +2734,8 @@ void ReplicationCoordinatorImpl::_scanOpTimeForCatchUp_inlock() {
 void ReplicationCoordinatorImpl::_catchUpOplogToLatest_inlock(const FreshnessScanner& scanner,
                                                               Milliseconds timeout,
                                                               long long originalTerm) {
+    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
+        "catchUpOplogToLatest");
     // On stepping down, the node doesn't update its term immediately due to SERVER-21425.
     // Term is also checked in case the catchup timeout is so long that the node becomes primary
     // again.
@@ -2756,6 +2791,8 @@ void ReplicationCoordinatorImpl::_catchUpOplogToLatest_inlock(const FreshnessSca
 }
 
 void ReplicationCoordinatorImpl::_finishCatchUpOplog_inlock(bool startToDrain) {
+    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
+        "finishCatchUpOplog");
     invariant(_isCatchingUp);
     _isCatchingUp = false;
     // If the node steps down during the catch-up, we don't go into drain mode.
@@ -3245,7 +3282,9 @@ bool ReplicationCoordinatorImpl::isV1ElectionProtocol() const {
 }
 
 bool ReplicationCoordinatorImpl::getWriteConcernMajorityShouldJournal() {
-    return getConfig().getWriteConcernMajorityShouldJournal();
+    // Avoid getConfig() that copies ReplicaSetConfig instance
+    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    return _rsConfig.getWriteConcernMajorityShouldJournal();
 }
 
 bool ReplicationCoordinatorImpl::getWriteConcernMajorityShouldJournal_inlock() const {
@@ -3656,6 +3695,32 @@ void ReplicationCoordinatorImpl::setIndexPrefetchConfig(
     _indexPrefetchConfig = cfg;
 }
 
+Status ReplicationCoordinatorImpl::checkIfIAmPrimary() {
+    LockGuard topoLock(_topoMutex);
+    LockGuard lk(_mutex);
+
+    if (!_settings.usingReplSets()) {
+        return Status(ErrorCodes::NoReplicationEnabled,
+            "Config servers are not running with --replSet");
+    }
+
+    if (_selfIndex == -1) {
+        return Status(ErrorCodes::InternalError,
+            "I am not in the current replset configuration");
+    }
+
+    if (!_rsConfig.isInitialized() || _rsConfigState != kConfigSteady) {
+        return Status(ErrorCodes::InternalError,
+            "I still have not finished initializing replication system");
+    }
+
+    if (!_memberState.primary()) {
+        return Status(ErrorCodes::InternalError,
+            "I am not a primary");
+    }
+
+    return Status::OK();
+}
 
 }  // namespace repl
 }  // namespace mongo

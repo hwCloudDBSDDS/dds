@@ -80,6 +80,19 @@ public:
                                      StringData ident,
                                      const CollectionOptions& options) = 0;
 
+    
+
+    virtual Status postInitRecordStore(StringData ns, StringData ident,
+                                           const CollectionOptions& options,
+                                           RecordStore* recordStore) {
+         return Status::OK();
+    }
+    
+    virtual Status updateChunkMetadata(OperationContext* opCtx,mongo::StringData ident,BSONArray& indexes,RecordStore* recordStore){
+        return Status::OK();
+    }
+
+
     virtual Status createSortedDataInterface(OperationContext* opCtx,
                                              StringData ident,
                                              const IndexDescriptor* desc) = 0;
@@ -89,6 +102,8 @@ public:
     virtual Status repairIdent(OperationContext* opCtx, StringData ident) = 0;
 
     virtual Status dropIdent(OperationContext* opCtx, StringData ident) = 0;
+    virtual Status dropUserCollections(OperationContext* opCtx, StringData ident){return Status::OK();};
+    virtual Status offloadUserCollections(OperationContext* opCtx, StringData ident){return Status::OK();};
 
     // optional
     virtual int flushAllFiles(bool sync) {
@@ -172,5 +187,17 @@ public:
      * cleanShutdown() hasn't been called.
      */
     virtual ~KVEngine() {}
+
+
+    virtual void resetEngineStats() {   
+        return ;
+    }
+
+    virtual void getEngineStats( std::vector<std::string> & vs) {   
+        return ;
+    } 
+
+    virtual void setStorageEngineLogLevel(int level) {}
+
 };
 }

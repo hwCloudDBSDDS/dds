@@ -270,7 +270,10 @@ bool checkShardVersion(OperationContext* txn,
     shared_ptr<Shard> primary;
     shared_ptr<ChunkManager> manager;
 
-    conf->getChunkManagerOrPrimary(txn, ns, manager, primary);
+    auto cmOrPrimaryStatus = conf->getChunkManagerOrPrimary(txn, ns, manager, primary);
+    if (!cmOrPrimaryStatus.isOK()) {
+        return false;
+    }
 
     unsigned long long officialSequenceNumber = 0;
 

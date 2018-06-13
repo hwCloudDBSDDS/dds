@@ -62,6 +62,7 @@
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 
@@ -323,6 +324,10 @@ Message getMore(OperationContext* txn,
                 ns == cc->ns());
         *isCursorAuthorized = true;
 
+        auto guard = MakeGuard([&] {
+            txn->recoveryUnit()->clearReadFromMajorityCommittedSnapshot();
+        });
+
         if (cc->isReadCommitted())
             uassertStatusOK(txn->recoveryUnit()->setReadFromMajorityCommittedSnapshot());
 
@@ -497,14 +502,18 @@ Message getMore(OperationContext* txn,
 
 std::string runQuery(OperationContext* txn,
                      QueryMessage& q,
-                     const NamespaceString& nss,
+                     const NamespaceString& ns,
                      Message& result) {
     CurOp& curOp = *CurOp::get(txn);
 
     uassert(ErrorCodes::InvalidNamespace,
-            str::stream() << "Invalid ns [" << nss.ns() << "]",
-            nss.isValid());
-    invariant(!nss.isCommand());
+            str::stream() << "Invalid ns [" << ns.ns() << "]",
+            ns.isValid());
+    invariant(!ns.isCommand());
+
+    NamespaceString nss = ns2chunkHolder().getNsWithChunkId(ns);
+    LOG(1)<<"runQuery ns:"<<ns <<", QueryMessage: "<<q.query;
+
 
     // Set CurOp information.
     beginQueryOp(txn, nss, q.query, q.ntoreturn, q.ntoskip);
@@ -652,7 +661,7 @@ std::string runQuery(OperationContext* txn,
     // Before saving the cursor, ensure that whatever plan we established happened with the expected
     // collection version
     auto css = CollectionShardingState::get(txn, nss);
-    css->checkShardVersionOrThrow(txn);
+    css->checkChunkVersionOrThrow(txn);
 
     // Fill out CurOp based on query results. If we have a cursorid, we will fill out CurOp with
     // this cursorid later.

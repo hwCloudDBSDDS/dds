@@ -105,10 +105,14 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* txn,
     // We have both the DB and collection locked, which is the prerequisite to do a stable shard
     // version check, but we'd like to do the check after we have a satisfactory snapshot.
     auto css = CollectionShardingState::get(txn, nss);
-    css->checkShardVersionOrThrow(txn);
+    css->checkChunkVersionOrThrow(txn);
 }
 
 AutoGetCollectionForRead::~AutoGetCollectionForRead() {
+    if (_txn->recoveryUnit())
+    {
+        _txn->recoveryUnit()->clearReadFromMajorityCommittedSnapshot();
+    }
     // Report time spent in read lock
     auto currentOp = CurOp::get(_txn);
     Top::get(_txn->getClient()->getServiceContext())
@@ -214,7 +218,7 @@ void OldClientContext::_checkNotStale() const {
             break;
         default:
             auto css = CollectionShardingState::get(_txn, _ns);
-            css->checkShardVersionOrThrow(_txn);
+            css->checkChunkVersionOrThrow(_txn);
     }
 }
 

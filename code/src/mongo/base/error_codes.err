@@ -198,13 +198,27 @@ error_code("InvalidIndexSpecificationOption", 197)
 error_code("OBSOLETE_ReceivedOpReplyMessage", 198)
 error_code("ReplicaSetMonitorRemoved", 199)
 error_code("ChunkRangeCleanupPending", 200)
+error_code("ShardServerNotFound", 201)
+error_code("ChunkNotFound", 202)
+error_code("ImplicitCreationNotSupported", 203)
+error_code("ChunkAlreadyAssigned", 204)
+error_code("ChunkAlreadyOffloaded", 205)
+error_code("ChunkNotAssigned", 206)
+error_code("ChunkBusy", 207)
+error_code("RebalanceEventFailed", 208)
+error_code("RebalanceEventInterrupted", 209)
+error_code("NeedRollBackSplit", 210)
+error_code("TargetShardMismatch", 211)
 
 # Non-sequential error codes (for compatibility only)
 error_code("SocketException", 9001)
 error_code("RecvStaleConfig", 9996)
 error_code("NotMaster", 10107)
+error_code("NoPrimary", 10201)
 error_code("CannotGrowDocumentInCappedNamespace", 10003)
+error_code("NotInOneChunk", 10301)
 error_code("DuplicateKey", 11000)
+error_code("SocketError", 11002)
 error_code("InterruptedAtShutdown", 11600)
 error_code("Interrupted", 11601)
 error_code("InterruptedDueToReplStateChange", 11602)
@@ -218,6 +232,31 @@ error_code("ShardKeyTooBig", 13334);
 error_code("SendStaleConfig", 13388);
 error_code("DatabaseDifferCase", 13297);
 error_code("OBSOLETE_PrepareConfigsFailed", 13104);
+
+# Error code for FC
+error_code("ChunkFC", 13105);
+
+#shard status not OK
+error_code("NoReplicaSetMonitor", 16340);
+error_code("NoGoodNodeAvailableForSet", 16369);
+error_code("NoGoodNodeForQuery", 16370);
+error_code("NoGoodNodeForFindOne", 16379);
+error_code("NoGoodNodeForSay", 16380);
+error_code("NoGoodNodeForSelect", 16532);
+
+
+# Error codes for query by 2nd index
+error_code("BadShardKey", 16837);
+error_code("HintIsEmpty", 20000);
+error_code("HintIsShardKey", 20001);
+error_code("FilterIsEmpty", 20002);
+error_code("FilterNotContainShardKeyIndex", 20003);
+error_code("FilterNotContain2ndIndex", 20004);
+error_code("ChunkChanged", 20005);
+error_code("FindNoFreeSpace", 20006);
+error_code("BadHintValue", 20007);
+error_code("BadCursorForFind", 20008);
+error_code("BadChunkRange", 20009);
 
 # SERVER-21428 explains the extra changes needed if error_class components change.
 error_class("NetworkError", ["HostUnreachable", "HostNotFound", "NetworkTimeout"])

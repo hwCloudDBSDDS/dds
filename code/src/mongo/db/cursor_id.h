@@ -28,8 +28,15 @@
 
 #pragma once
 
+#include "mongo/bson/bsonobj.h"
+
 namespace mongo {
 
 using CursorId = long long;
+
+struct CursorObj{
+    CursorId    cursorId;
+    BSONObj     cursorObj;
+};
 
 }  // namespace mongo

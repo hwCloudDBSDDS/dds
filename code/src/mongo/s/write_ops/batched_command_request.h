@@ -35,6 +35,7 @@
 #include "mongo/s/write_ops/batched_delete_request.h"
 #include "mongo/s/write_ops/batched_insert_request.h"
 #include "mongo/s/write_ops/batched_update_request.h"
+#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -131,6 +132,16 @@ public:
     bool isOrderedSet() const;
     bool getOrdered() const;
 
+    void setAtomicity(bool atomicity);
+    void unsetAtomicity();
+    bool isAtomicitySet() const;
+    bool getAtomicity() const;
+
+    void setPrewarm(bool prewarm);
+    void unsetPrewarm();
+    bool isPrewarmSet() const;
+    bool getPrewarm() const;
+
     void setShardVersion(ChunkVersion shardVersion) {
         _shardVersion = std::move(shardVersion);
     }
@@ -181,9 +192,18 @@ public:
                              std::string* nsToIndex,
                              std::string* errMsg);
 
+    void setChunkId(ChunkId chunkId) {
+        if (chunkId.isValid()) {
+            _chunkId = std::move(chunkId);
+        }
+    }
+
 private:
     BatchType _batchType;
 
+    boost::optional<ChunkId> _chunkId;
+
+    // TODO: it should be named chunkVersion since it is actually
     boost::optional<ChunkVersion> _shardVersion;
 
     std::unique_ptr<BatchedInsertRequest> _insertReq;

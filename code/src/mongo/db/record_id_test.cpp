@@ -33,6 +33,75 @@
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
+
+class TestRecordIdVariant
+{
+public:
+    static void Main()
+    {
+        ASSERT_TRUE(sizeof(RecordIdVariant) == 16);
+        ASSERT_TRUE(sizeof(RecordIdVariant::Header) == 8);
+
+        RecordIdVariant recNull();
+        auto recMin = RecordIdVariant::Min();
+        auto recMax = RecordIdVariant::Max();
+
+        RecordIdVariant rec3(3);
+        RecordIdVariant rec4(4);
+        
+        ASSERT_TRUE(recMin < recMax);
+        ASSERT_TRUE(rec3 <= recMax);
+        ASSERT_TRUE(rec3 < rec4);
+        ASSERT_TRUE(!(recMin >= recMax));
+
+        RecordIdVariant recManager("manager");
+        RecordIdVariant recMan("man");
+        RecordIdVariant recProgrammer("programmer");
+
+        char c1234[4] = { 1, 2, 3, 4 };
+        RecordIdVariant rec1234(c1234, sizeof(c1234));
+
+        ASSERT_TRUE(recManager > recMan);
+        ASSERT_TRUE(recManager < recProgrammer);    //  Revange
+
+        RecordIdVariant recBigKey("someBigBigBigKey");
+        ASSERT_TRUE(recBigKey.ToString() == "someBigBigBigKey");
+
+        {
+            RecordIdVariant recBigKeyAgain = recBigKey;
+
+            ASSERT_TRUE(recBigKeyAgain.header->refCount == 2);
+            ASSERT_TRUE(recBigKeyAgain == recBigKey);
+
+            RecordIdVariant recManagerAgain("manager");
+            ASSERT_TRUE(recManagerAgain == recManager);
+
+            RecordIdVariant recBigKeyAgainAgain(recBigKey);
+
+            RecordIdVariant recNewBigKey(RecordIdVariant("BIIIIIIIIIIIIIIIIIIIIIGGGKEEEEY"));
+            ASSERT_TRUE(recNewBigKey.header->refCount == 1);            
+
+            auto moreKey = std::move(recNewBigKey);
+            ASSERT_TRUE(recNewBigKey.IsNull());
+
+            ASSERT_TRUE(moreKey == RecordIdVariant("BIIIIIIIIIIIIIIIIIIIIIGGGKEEEEY"));
+        }
+
+        ASSERT_TRUE(recBigKey > recManager);
+
+        ASSERT_TRUE(recBigKey.header->refCount == 1);
+        recBigKey.Release();
+        ASSERT_TRUE(recBigKey.header == nullptr);
+
+        ASSERT_TRUE(recBigKey.ToString() == "Null");
+        ASSERT_TRUE(recProgrammer.ToString() == "programmer");
+        ASSERT_TRUE(rec4.ToString() == "4");
+        ASSERT_TRUE(recMin.ToString() == "Min");
+        ASSERT_TRUE(recMax.ToString() == "Max");
+        ASSERT_TRUE(rec1234.ToString() == "{1}{2}{3}{4}");
+    }
+};
+
 namespace {
 
 TEST(RecordId, HashEqual) {
@@ -63,6 +132,12 @@ TEST(RecordId, HashNotEqual) {
     ASSERT_NOT_EQUALS(hasher(original), hasher(diffBoth));
     ASSERT_NOT_EQUALS(hasher(original), hasher(reversed));
 }
+
+TEST(RecordId, TestRecordIdVariantMainTest)
+{
+    TestRecordIdVariant::Main();
+}
+
 
 }  // namespace
 }  // namespace mongo

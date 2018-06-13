@@ -67,7 +67,8 @@ void checkNS(OperationContext* txn, const std::list<std::string>& nsToCheck) {
         // This write lock is held throughout the index building process
         // for this namespace.
         ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock lk(txn->lockState(), nsToDatabaseSubstring(ns), MODE_X);
+        Lock::DBLock lk(txn->lockState(), nsToDatabaseSubstring(ns), MODE_IX);
+        Lock::CollectionLock colLock(txn->lockState(), ns, MODE_X);
         OldClientContext ctx(txn, ns);
 
         Collection* collection = ctx.db()->getCollection(ns);

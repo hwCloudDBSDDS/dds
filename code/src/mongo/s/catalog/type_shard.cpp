@@ -48,6 +48,8 @@ const BSONField<bool> ShardType::draining("draining");
 const BSONField<long long> ShardType::maxSizeMB("maxSize");
 const BSONField<BSONArray> ShardType::tags("tags");
 const BSONField<ShardType::ShardState> ShardType::state("state");
+const BSONField<std::string> ShardType::extendIPs("extendIPs");
+const BSONField<std::string> ShardType::processIdentity("processIdentity");
 
 StatusWith<ShardType> ShardType::fromBSON(const BSONObj& source) {
     ShardType shard;
@@ -119,21 +121,41 @@ StatusWith<ShardType> ShardType::fromBSON(const BSONObj& source) {
         if (status.isOK()) {
             // Make sure the state field falls within the valid range of ShardState values.
             if (!(shardState >= static_cast<std::underlying_type<ShardState>::type>(
-                                    ShardState::kNotShardAware) &&
+                                    ShardState::kShardRegistering) &&
                   shardState <= static_cast<std::underlying_type<ShardState>::type>(
-                                    ShardState::kShardAware))) {
+                                    ShardState::kShardRestarting))) {
                 return Status(ErrorCodes::BadValue,
                               str::stream() << "Invalid shard state value: " << shardState);
             } else {
                 shard._state = static_cast<ShardState>(shardState);
             }
         } else if (status == ErrorCodes::NoSuchKey) {
-            // state field can be mssing in which case it is presumed kNotShardAware
+            // state field can be mssing in which case it is presumed kShardRegistering
         } else {
             return status;
         }
     }
 
+    {
+        std::string extendIPsStr;
+        Status status = bsonExtractStringField(source, extendIPs.name(), &extendIPsStr);
+        if (!status.isOK()) {
+            return status;
+        } else {
+            shard._extendIPs = extendIPsStr;
+        }
+
+    }
+    
+    {
+        std::string processIdentityStr;
+        Status status = bsonExtractStringField(source, processIdentity.name(), &processIdentityStr);
+        if (!status.isOK()) {
+            return status;
+        } else {
+            shard._processIdentity = processIdentityStr;
+        }
+    }
     return shard;
 }
 
@@ -151,7 +173,11 @@ Status ShardType::validate() const {
     if (_maxSizeMB.is_initialized() && getMaxSizeMB() < 0) {
         return Status(ErrorCodes::BadValue, str::stream() << "maxSize can't be negative");
     }
-
+    
+    if (!_processIdentity.is_initialized() || _processIdentity->empty()) {
+        return Status(ErrorCodes::NoSuchKey, 
+                      str::stream() << "missing " << processIdentity.name() << " field");
+    }
     return Status::OK();
 }
 
@@ -170,6 +196,10 @@ BSONObj ShardType::toBSON() const {
         builder.append(tags(), getTags());
     if (_state)
         builder.append(state(), static_cast<std::underlying_type<ShardState>::type>(getState()));
+    if (_extendIPs)
+        builder.append(extendIPs(), getExtendIPs());    
+    if (_processIdentity)
+        builder.append(processIdentity(), getProcessIdentity());
 
     return builder.obj();
 }
@@ -200,9 +230,17 @@ void ShardType::setTags(const std::vector<std::string>& tags) {
     invariant(tags.size() > 0);
     _tags = tags;
 }
+
 void ShardType::setState(const ShardState state) {
-    invariant(!_state.is_initialized());
     _state = state;
+}
+
+void ShardType::setExtendIPs(const std::string& extendIPs) {
+    _extendIPs = extendIPs;
+}
+
+void ShardType::setProcessIdentity(const std::string& processIdentity) {
+    _processIdentity = processIdentity;
 }
 
 }  // namespace mongo

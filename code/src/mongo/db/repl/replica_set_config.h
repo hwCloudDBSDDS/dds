@@ -39,6 +39,7 @@
 #include "mongo/db/write_concern_options.h"
 #include "mongo/util/string_map.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/util_extend/default_parameters.h"
 
 namespace mongo {
 
@@ -60,10 +61,6 @@ public:
     static const size_t kMaxMembers = 50;
     static const size_t kMaxVotingMembers = 7;
 
-    static const Milliseconds kDefaultElectionTimeoutPeriod;
-    static const Milliseconds kDefaultHeartbeatInterval;
-    static const Seconds kDefaultHeartbeatTimeoutPeriod;
-    static const Milliseconds kDefaultCatchUpTimeoutPeriod;
     static const bool kDefaultChainingAllowed;
 
     /**
@@ -379,10 +376,10 @@ private:
     std::string _replSetName;
     std::vector<MemberConfig> _members;
     WriteConcernOptions _defaultWriteConcern;
-    Milliseconds _electionTimeoutPeriod = kDefaultElectionTimeoutPeriod;
-    Milliseconds _heartbeatInterval = kDefaultHeartbeatInterval;
-    Seconds _heartbeatTimeoutPeriod = kDefaultHeartbeatTimeoutPeriod;
-    Milliseconds _catchUpTimeoutPeriod = kDefaultCatchUpTimeoutPeriod;
+    Milliseconds _electionTimeoutPeriod = kDefaultConfigElectionTimeoutPeriod;
+    Milliseconds _heartbeatInterval = kDefaultConfigHeartbeatInterval;
+    Seconds _heartbeatTimeoutPeriod = kDefaultConfigHeartbeatTimeoutPeriod;
+    Milliseconds _catchUpTimeoutPeriod = kDefaultConfigCatchUpTimeoutPeriod;
     bool _chainingAllowed = kDefaultChainingAllowed;
     bool _writeConcernMajorityJournalDefault = false;
     int _majorityVoteCount = 0;

@@ -38,6 +38,7 @@
 #include "mongo/s/shard_id.h"
 #include "mongo/s/write_ops/batched_delete_document.h"
 #include "mongo/s/write_ops/batched_update_document.h"
+#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -119,6 +120,10 @@ public:
      */
     virtual Status targetAllShards(std::vector<ShardEndpoint*>* endpoints) const = 0;
 
+    // for targeting all chunks
+    virtual Status targetAllChunks(OperationContext* txn,
+                                        std::vector<ShardEndpoint*>* endpoints) const = 0;
+
     /**
      * Informs the targeter that a targeting failure occurred during one of the last targeting
      * operations.  If this is noted, we cannot note stale responses.
@@ -156,12 +161,17 @@ public:
  */
 struct ShardEndpoint {
     ShardEndpoint(const ShardEndpoint& other)
-        : shardName(other.shardName), shardVersion(other.shardVersion) {}
+        : chunkId(other.chunkId), shardName(other.shardName), shardVersion(other.shardVersion) {}
 
     ShardEndpoint(const ShardId& shardName, const ChunkVersion& shardVersion)
         : shardName(shardName), shardVersion(shardVersion) {}
 
+    ShardEndpoint(const ChunkId& chunkId, const ShardId& shardName, const ChunkVersion& shardVersion)
+        : chunkId(chunkId), shardName(shardName), shardVersion(shardVersion) {}
+
+    const ChunkId chunkId;
     const ShardId shardName;
+    // TODO: it should be named chunkVersion since it is actually
     const ChunkVersion shardVersion;
 };
 

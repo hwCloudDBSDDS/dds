@@ -77,7 +77,7 @@ using CallbackHandle = TaskExecutor::CallbackHandle;
 
 
 namespace {
-const Seconds kRefreshPeriod(30);
+const Seconds kRefreshPeriod(10);
 }  // namespace
 
 ShardRegistry::ShardRegistry(std::unique_ptr<ShardFactory> shardFactory,
@@ -275,7 +275,6 @@ bool ShardRegistry::reload(OperationContext* txn) {
     }
 
     _reloadState = ReloadState::Reloading;
-    reloadLock.unlock();
 
     auto nextReloadState = ReloadState::Failed;
 
