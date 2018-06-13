@@ -7,9 +7,7 @@
     assert.commandWorked(coll.getDB().createCollection(coll.getName()));
 
     function makeDocument(docSize) {
-        var doc = {
-            "fieldName": ""
-        };
+        var doc = {"fieldName": ""};
         var longString = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         while (Object.bsonsize(doc) < docSize) {
             if (Object.bsonsize(doc) < docSize - longString.length) {
@@ -22,16 +20,11 @@
     }
 
     function executeBenchRun(benchOps) {
-        var benchArgs = {
-            ops: benchOps,
-            parallel: 2,
-            seconds: 1,
-            host: db.getMongo().host
-        };
+        var benchArgs = {ops: benchOps, parallel: 2, seconds: 5, host: db.getMongo().host};
         if (jsTest.options().auth) {
             benchArgs['db'] = 'admin';
-            benchArgs['username'] = jsTest.options().adminUser;
-            benchArgs['password'] = jsTest.options().adminPassword;
+            benchArgs['username'] = jsTest.options().authUser;
+            benchArgs['password'] = jsTest.options().authPassword;
         }
         return benchRun(benchArgs);
     }
@@ -73,8 +66,8 @@
             assert.writeOK(coll.insert({}));
         }
 
-        var res = executeBenchRun(
-                [{ns: coll.getFullName(), op: "findOne", query: {}, readCmd: readCmd}]);
+        var res =
+            executeBenchRun([{ns: coll.getFullName(), op: "findOne", query: {}, readCmd: readCmd}]);
         assert.gt(res.findOne, 0, tojson(res));
     }
 
@@ -87,9 +80,16 @@
 
         testInsert([bigDoc], writeCmd, {});
         testInsert(docs, writeCmd, {});
-        testInsert(docs, writeCmd, {"writeConcern": {"w": "majority"}});
-        testInsert(docs, writeCmd, {"writeConcern": {"w": 1, "j": false}});
-        testInsert(docs, writeCmd, {"writeConcern": {"j": true}});
+        testInsert(docs, writeCmd, {"w": "majority"});
+        testInsert(docs, writeCmd, {"w": 1, "j": false});
+
+        var storageEnginesWithoutJournaling = new Set(["ephemeralForTest", "inMemory"]);
+        var runningWithoutJournaling = TestData.noJournal ||
+            storageEnginesWithoutJournaling.has(db.serverStatus().storageEngine.name);
+        if (!runningWithoutJournaling) {
+            // Only test journaled writes if the server actually supports them.
+            testInsert(docs, writeCmd, {"j": true});
+        }
     }
 
     testWriteConcern(false);

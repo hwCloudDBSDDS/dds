@@ -26,6 +26,7 @@
  *    then also delete it in the license file.
  */
 
+#include "mongo/platform/basic.h"
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/catalog/collection.h"
@@ -33,8 +34,9 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/head_manager.h"
 #include "mongo/db/catalog/index_create.h"
+#include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
-#include "mongo/db/operation_context_impl.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/record_id.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/unittest/unittest.h"
@@ -46,13 +48,15 @@ using std::string;
 namespace RollbackTests {
 
 namespace {
+const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
+
 void dropDatabase(OperationContext* txn, const NamespaceString& nss) {
     ScopedTransaction transaction(txn, MODE_X);
     Lock::GlobalWrite globalWriteLock(txn->lockState());
     Database* db = dbHolder().get(txn, nss.db());
 
     if (db) {
-        dropDatabase(txn, db);
+        Database::dropDatabase(txn, db);
     }
 }
 bool collectionExists(OldClientContext* ctx, const string& ns) {
@@ -87,7 +91,8 @@ Status truncateCollection(OperationContext* txn, const NamespaceString& nss) {
 
 void insertRecord(OperationContext* txn, const NamespaceString& nss, const BSONObj& data) {
     Collection* coll = dbHolder().get(txn, nss.db())->getCollection(nss.ns());
-    ASSERT_OK(coll->insertDocument(txn, data, false));
+    OpDebug* const nullOpDebug = nullptr;
+    ASSERT_OK(coll->insertDocument(txn, data, nullOpDebug, false));
 }
 void assertOnlyRecord(OperationContext* txn, const NamespaceString& nss, const BSONObj& data) {
     Collection* coll = dbHolder().get(txn, nss.db())->getCollection(nss.ns());
@@ -95,7 +100,7 @@ void assertOnlyRecord(OperationContext* txn, const NamespaceString& nss, const B
 
     auto record = cursor->next();
     ASSERT(record);
-    ASSERT_EQ(data, record->data.releaseToBson());
+    ASSERT_BSONOBJ_EQ(data, record->data.releaseToBson());
 
     ASSERT(!cursor->next());
 }
@@ -139,12 +144,13 @@ void dropIndex(OperationContext* txn, const NamespaceString& nss, const string& 
 }
 }  // namespace
 
-template <bool rollback, bool defaultIndexes>
+template <bool rollback, bool defaultIndexes, bool capped>
 class CreateCollection {
 public:
     void run() {
         string ns = "unittests.rollback_create_collection";
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         NamespaceString nss(ns);
         dropDatabase(&txn, nss);
 
@@ -154,7 +160,8 @@ public:
         {
             WriteUnitOfWork uow(&txn);
             ASSERT(!collectionExists(&ctx, ns));
-            ASSERT_OK(userCreateNS(&txn, ctx.db(), ns, BSONObj(), defaultIndexes));
+            auto options = capped ? BSON("capped" << true << "size" << 1000) : BSONObj();
+            ASSERT_OK(userCreateNS(&txn, ctx.db(), ns, options, defaultIndexes));
             ASSERT(collectionExists(&ctx, ns));
             if (!rollback) {
                 uow.commit();
@@ -168,12 +175,13 @@ public:
     }
 };
 
-template <bool rollback, bool defaultIndexes>
+template <bool rollback, bool defaultIndexes, bool capped>
 class DropCollection {
 public:
     void run() {
         string ns = "unittests.rollback_drop_collection";
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         NamespaceString nss(ns);
         dropDatabase(&txn, nss);
 
@@ -183,7 +191,8 @@ public:
         {
             WriteUnitOfWork uow(&txn);
             ASSERT(!collectionExists(&ctx, ns));
-            ASSERT_OK(userCreateNS(&txn, ctx.db(), ns, BSONObj(), defaultIndexes));
+            auto options = capped ? BSON("capped" << true << "size" << 1000) : BSONObj();
+            ASSERT_OK(userCreateNS(&txn, ctx.db(), ns, options, defaultIndexes));
             uow.commit();
         }
         ASSERT(collectionExists(&ctx, ns));
@@ -213,7 +222,8 @@ public:
     void run() {
         NamespaceString source("unittests.rollback_rename_collection_src");
         NamespaceString target("unittests.rollback_rename_collection_dest");
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
 
         dropDatabase(&txn, source);
         dropDatabase(&txn, target);
@@ -259,7 +269,8 @@ public:
     void run() {
         NamespaceString source("unittests.rollback_rename_droptarget_collection_src");
         NamespaceString target("unittests.rollback_rename_droptarget_collection_dest");
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
 
         dropDatabase(&txn, source);
         dropDatabase(&txn, target);
@@ -321,7 +332,8 @@ class ReplaceCollection {
 public:
     void run() {
         NamespaceString nss("unittests.rollback_replace_collection");
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         dropDatabase(&txn, nss);
 
         ScopedTransaction transaction(&txn, MODE_IX);
@@ -371,7 +383,8 @@ class CreateDropCollection {
 public:
     void run() {
         NamespaceString nss("unittests.rollback_create_drop_collection");
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         dropDatabase(&txn, nss);
 
         ScopedTransaction transaction(&txn, MODE_IX);
@@ -406,7 +419,8 @@ class TruncateCollection {
 public:
     void run() {
         NamespaceString nss("unittests.rollback_truncate_collection");
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         dropDatabase(&txn, nss);
 
         ScopedTransaction transaction(&txn, MODE_IX);
@@ -455,7 +469,8 @@ class CreateIndex {
 public:
     void run() {
         string ns = "unittests.rollback_create_index";
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         NamespaceString nss(ns);
         dropDatabase(&txn, nss);
         createCollection(&txn, nss);
@@ -467,7 +482,8 @@ public:
         IndexCatalog* catalog = coll->getIndexCatalog();
 
         string idxName = "a";
-        BSONObj spec = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxName);
+        BSONObj spec = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxName << "v"
+                                 << static_cast<int>(kIndexVersion));
 
         // END SETUP / START TEST
 
@@ -495,7 +511,8 @@ class DropIndex {
 public:
     void run() {
         string ns = "unittests.rollback_drop_index";
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         NamespaceString nss(ns);
         dropDatabase(&txn, nss);
         createCollection(&txn, nss);
@@ -507,7 +524,8 @@ public:
         IndexCatalog* catalog = coll->getIndexCatalog();
 
         string idxName = "a";
-        BSONObj spec = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxName);
+        BSONObj spec = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxName << "v"
+                                 << static_cast<int>(kIndexVersion));
 
         {
             WriteUnitOfWork uow(&txn);
@@ -547,7 +565,8 @@ class CreateDropIndex {
 public:
     void run() {
         string ns = "unittests.rollback_create_drop_index";
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         NamespaceString nss(ns);
         dropDatabase(&txn, nss);
         createCollection(&txn, nss);
@@ -559,7 +578,8 @@ public:
         IndexCatalog* catalog = coll->getIndexCatalog();
 
         string idxName = "a";
-        BSONObj spec = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxName);
+        BSONObj spec = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxName << "v"
+                                 << static_cast<int>(kIndexVersion));
 
         // END SETUP / START TEST
 
@@ -590,7 +610,8 @@ class SetIndexHead {
 public:
     void run() {
         string ns = "unittests.rollback_set_index_head";
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         NamespaceString nss(ns);
         dropDatabase(&txn, nss);
         createCollection(&txn, nss);
@@ -602,7 +623,8 @@ public:
         IndexCatalog* catalog = coll->getIndexCatalog();
 
         string idxName = "a";
-        BSONObj spec = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxName);
+        BSONObj spec = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxName << "v"
+                                 << static_cast<int>(kIndexVersion));
 
         {
             WriteUnitOfWork uow(&txn);
@@ -652,7 +674,8 @@ class CreateCollectionAndIndexes {
 public:
     void run() {
         string ns = "unittests.rollback_create_collection_and_indexes";
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         NamespaceString nss(ns);
         dropDatabase(&txn, nss);
 
@@ -663,9 +686,12 @@ public:
         string idxNameA = "indexA";
         string idxNameB = "indexB";
         string idxNameC = "indexC";
-        BSONObj specA = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxNameA);
-        BSONObj specB = BSON("ns" << ns << "key" << BSON("b" << 1) << "name" << idxNameB);
-        BSONObj specC = BSON("ns" << ns << "key" << BSON("c" << 1) << "name" << idxNameC);
+        BSONObj specA = BSON("ns" << ns << "key" << BSON("a" << 1) << "name" << idxNameA << "v"
+                                  << static_cast<int>(kIndexVersion));
+        BSONObj specB = BSON("ns" << ns << "key" << BSON("b" << 1) << "name" << idxNameB << "v"
+                                  << static_cast<int>(kIndexVersion));
+        BSONObj specC = BSON("ns" << ns << "key" << BSON("c" << 1) << "name" << idxNameC << "v"
+                                  << static_cast<int>(kIndexVersion));
 
         // END SETUP / START TEST
 
@@ -710,9 +736,20 @@ public:
     template <template <bool, bool> class T>
     void addAll() {
         add<T<false, false>>();
-        add<T<true, false>>();
         add<T<false, true>>();
+        add<T<true, false>>();
         add<T<true, true>>();
+    }
+    template <template <bool, bool, bool> class T>
+    void addAll() {
+        add<T<false, false, false>>();
+        add<T<false, false, true>>();
+        add<T<false, true, false>>();
+        add<T<false, true, true>>();
+        add<T<true, false, false>>();
+        add<T<true, false, true>>();
+        add<T<true, true, false>>();
+        add<T<true, true, true>>();
     }
 
     void setupTests() {

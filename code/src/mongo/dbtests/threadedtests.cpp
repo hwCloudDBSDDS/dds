@@ -39,9 +39,6 @@
 
 #include "mongo/config.h"
 #include "mongo/db/client.h"
-#include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/concurrency/lock_state.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/bits.h"
@@ -49,8 +46,6 @@
 #include "mongo/stdx/thread.h"
 #include "mongo/util/concurrency/old_thread_pool.h"
 #include "mongo/util/concurrency/rwlock.h"
-#include "mongo/util/concurrency/synchronization.h"
-#include "mongo/util/concurrency/old_thread_pool.h"
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
@@ -87,160 +82,6 @@ private:
         stdx::thread athread(stdx::bind(&ThreadedTest::subthread, this, remaining));
         launch_subthreads(remaining - 1);
         athread.join();
-    }
-};
-
-
-#ifdef MONGO_PLATFORM_32
-// Avoid OOM on Linux-32 by using fewer threads
-const int nthr = 45;
-#else
-const int nthr = 135;
-#endif
-class MongoMutexTest : public ThreadedTest<nthr> {
-#if defined(MONGO_CONFIG_DEBUG_BUILD)
-    enum { N = 2000 };
-#else
-    enum { N = 4000 /*0*/ };
-#endif
-    ProgressMeter pm;
-
-public:
-    MongoMutexTest() : pm(N * nthreads) {}
-
-    void run() {
-        Timer t;
-        cout << "MongoMutexTest N:" << N << endl;
-        ThreadedTest<nthr>::run();
-        cout << "MongoMutexTest " << t.millis() << "ms" << endl;
-    }
-
-private:
-    virtual void subthread(int tnumber) {
-        Client::initThread("mongomutextest");
-
-        OperationContextImpl txn;
-
-        sleepmillis(0);
-        for (int i = 0; i < N; i++) {
-            int x = std::rand();
-            bool sometimes = (x % 15 == 0);
-            if (i % 7 == 0) {
-                Lock::GlobalRead r(txn.lockState());  // nested test
-                Lock::GlobalRead r2(txn.lockState());
-            } else if (i % 7 == 1) {
-                Lock::GlobalRead r(txn.lockState());
-                ASSERT(txn.lockState()->isReadLocked());
-            } else if (i % 7 == 4 && tnumber == 1 /*only one upgrader legal*/) {
-                Lock::GlobalWrite w(txn.lockState());
-                ASSERT(txn.lockState()->isW());
-                if (i % 7 == 2) {
-                    Lock::TempRelease t(txn.lockState());
-                }
-            } else if (i % 7 == 2) {
-                Lock::GlobalWrite w(txn.lockState());
-                ASSERT(txn.lockState()->isW());
-                if (sometimes) {
-                    Lock::TempRelease t(txn.lockState());
-                }
-            } else if (i % 7 == 3) {
-                Lock::GlobalWrite w(txn.lockState());
-                { Lock::TempRelease t(txn.lockState()); }
-                Lock::GlobalRead r(txn.lockState());
-                ASSERT(txn.lockState()->isW());
-                if (sometimes) {
-                    Lock::TempRelease t(txn.lockState());
-                }
-            } else if (i % 7 == 5) {
-                {
-                    ScopedTransaction scopedXact(&txn, MODE_IS);
-                    Lock::DBLock r(txn.lockState(), "foo", MODE_S);
-                }
-                {
-                    ScopedTransaction scopedXact(&txn, MODE_IS);
-                    Lock::DBLock r(txn.lockState(), "bar", MODE_S);
-                }
-            } else if (i % 7 == 6) {
-                if (i > N / 2) {
-                    int q = i % 11;
-                    if (q == 0) {
-                        ScopedTransaction scopedXact(&txn, MODE_IS);
-
-                        Lock::DBLock r(txn.lockState(), "foo", MODE_S);
-                        ASSERT(txn.lockState()->isDbLockedForMode("foo", MODE_S));
-
-                        Lock::DBLock r2(txn.lockState(), "foo", MODE_S);
-                        ASSERT(txn.lockState()->isDbLockedForMode("foo", MODE_S));
-
-                        Lock::DBLock r3(txn.lockState(), "local", MODE_S);
-                        ASSERT(txn.lockState()->isDbLockedForMode("foo", MODE_S));
-                        ASSERT(txn.lockState()->isDbLockedForMode("local", MODE_S));
-                    } else if (q == 1) {
-                        // test locking local only -- with no preceding lock
-                        {
-                            ScopedTransaction scopedXact(&txn, MODE_IS);
-                            Lock::DBLock x(txn.lockState(), "local", MODE_S);
-                        }
-                        {
-                            ScopedTransaction scopedXact(&txn, MODE_IX);
-                            Lock::DBLock x(txn.lockState(), "local", MODE_X);
-
-                            //  No actual writing here, so no WriteUnitOfWork
-                            if (sometimes) {
-                                Lock::TempRelease t(txn.lockState());
-                            }
-                        }
-                    } else if (q == 1) {
-                        {
-                            ScopedTransaction scopedXact(&txn, MODE_IS);
-                            Lock::DBLock x(txn.lockState(), "admin", MODE_S);
-                        }
-
-                        {
-                            ScopedTransaction scopedXact(&txn, MODE_IX);
-                            Lock::DBLock x(txn.lockState(), "admin", MODE_X);
-                        }
-                    } else if (q == 3) {
-                        ScopedTransaction scopedXact(&txn, MODE_IX);
-
-                        Lock::DBLock x(txn.lockState(), "foo", MODE_X);
-                        Lock::DBLock y(txn.lockState(), "admin", MODE_S);
-                    } else if (q == 4) {
-                        ScopedTransaction scopedXact(&txn, MODE_IS);
-
-                        Lock::DBLock x(txn.lockState(), "foo2", MODE_S);
-                        Lock::DBLock y(txn.lockState(), "admin", MODE_S);
-                    } else {
-                        ScopedTransaction scopedXact(&txn, MODE_IX);
-
-                        Lock::DBLock w(txn.lockState(), "foo", MODE_X);
-
-                        { Lock::TempRelease t(txn.lockState()); }
-
-                        Lock::DBLock r2(txn.lockState(), "foo", MODE_S);
-                        Lock::DBLock r3(txn.lockState(), "local", MODE_S);
-                    }
-                } else {
-                    ScopedTransaction scopedXact(&txn, MODE_IS);
-
-                    Lock::DBLock r(txn.lockState(), "foo", MODE_S);
-                    Lock::DBLock r2(txn.lockState(), "foo", MODE_S);
-                    Lock::DBLock r3(txn.lockState(), "local", MODE_S);
-                }
-            }
-            pm.hit();
-        }
-    }
-
-    virtual void validate() {
-        {
-            MMAPV1LockerImpl ls;
-            Lock::GlobalWrite w(&ls);
-        }
-        {
-            MMAPV1LockerImpl ls;
-            Lock::GlobalRead r(&ls);
-        }
     }
 };
 
@@ -610,59 +451,6 @@ private:
     }
 };
 
-class CondSlack : public ThreadedTest<17> {
-    Notification n;
-
-public:
-    CondSlack() {
-        k = 0;
-        done = false;
-        a = b = 0;
-        locks = 0;
-    }
-
-private:
-    unsigned a, b;
-    virtual void validate() {
-        cout << "CondSlack useful work fraction: " << ((double)a) / b << " locks:" << locks << endl;
-    }
-    unsigned locks;
-    volatile int k;
-    void watch() {
-        while (1) {
-            b++;
-            if (k) {
-                a++;
-            }
-            sleepmillis(0);
-            if (done)
-                break;
-        }
-    }
-    volatile bool done;
-    virtual void subthread(int x) {
-        if (x == 1) {
-            n.notifyOne();
-            watch();
-            return;
-        }
-        Timer t;
-        while (1) {
-            n.waitToBeNotified();
-            verify(k == 0);
-            k = 1;
-            // not very long, we'd like to simulate about 100K locks per second
-            sleepalittle();
-            k = 0;
-            locks++;
-            n.notifyOne();
-            if (done || t.millis() > 1500)
-                break;
-        }
-        done = true;
-    }
-};
-
 const int WriteLocksAreGreedy_ThreadCount = 3;
 class WriteLocksAreGreedy : public ThreadedTest<WriteLocksAreGreedy_ThreadCount> {
 public:
@@ -778,7 +566,6 @@ public:
         // would have very little slack.
         add<Slack<SimpleMutex, stdx::lock_guard<SimpleMutex>>>();
         add<Slack<SimpleRWLock, SimpleRWLock::Exclusive>>();
-        add<CondSlack>();
 
         add<UpgradableTest>();
 
@@ -791,7 +578,6 @@ public:
         add<RWLockTest3>();
         add<RWLockTest4>();
 
-        add<MongoMutexTest>();
         add<TicketHolderWaits>();
     }
 };

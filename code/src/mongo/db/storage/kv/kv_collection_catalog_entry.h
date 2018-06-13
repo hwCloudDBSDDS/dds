@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/storage/bson_collection_catalog_entry.h"
 #include "mongo/db/storage/record_store.h"
@@ -41,8 +43,11 @@ class KVEngine;
 
 class KVCollectionCatalogEntry final : public BSONCollectionCatalogEntry {
 public:
-    KVCollectionCatalogEntry(
-        KVEngine* engine, KVCatalog* catalog, StringData ns, StringData ident, RecordStore* rs);
+    KVCollectionCatalogEntry(KVEngine* engine,
+                             KVCatalog* catalog,
+                             StringData ns,
+                             StringData ident,
+                             std::unique_ptr<RecordStore> rs);
 
     ~KVCollectionCatalogEntry() final;
 
@@ -52,9 +57,7 @@ public:
 
     bool setIndexIsMultikey(OperationContext* txn,
                             StringData indexName,
-                            bool multikey = true) final;
-
-    void removePathLevelMultikeyInfoFromAllIndexes(OperationContext* txn) final;
+                            const MultikeyPaths& multikeyPaths) final;
 
     void setIndexHead(OperationContext* txn, StringData indexName, const RecordId& newHead) final;
 
@@ -76,10 +79,7 @@ public:
                          const BSONObj& validator,
                          StringData validationLevel,
                          StringData validationAction) final;
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    void updateCappedSize(OperationContext* txn, long long cappedSize) final;
-    void updateCappedMaxDocs(OperationContext* txn, long long cappedMaxDocs) final;
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
     RecordStore* getRecordStore() {
         return _recordStore.get();
     }

@@ -1,5 +1,7 @@
 // Test that removing and re-adding shard works correctly.
 
+load("jstests/replsets/rslib.js");
+
 seedString = function(replTest) {
     members = replTest.getReplSetConfig().members.map(function(elem) {
         return elem.host;
@@ -8,36 +10,18 @@ seedString = function(replTest) {
 };
 
 removeShard = function(st, replTest) {
-    print("Removing shard with name: " + replTest.name);
-    res = st.admin.runCommand({removeshard: replTest.name});
-    printjson(res);
-    assert(res.ok, "failed to start draining shard");
-
-    checkRemoveShard = function() {
-        res = st.admin.runCommand({removeshard: replTest.name});
-        printjson(res);
-        return res.ok && res.msg == 'removeshard completed successfully';
-    };
-    assert.soon(checkRemoveShard, "failed to remove shard", 5 * 60000);
-
-    // Need to wait for migration to be over... only works for inline deletes
-    checkNSLock = function() {
-        printjson(st.s.getDB("config").locks.find().toArray());
-        return !st.isAnyBalanceInFlight();
-    };
-    assert.soon(checkNSLock, "migrations did not end?");
-
-    sleep(2000);
-
-    var directdb = replTest.getPrimary().getDB("admin");
+    jsTest.log("Removing shard with name: " + replTest.name);
+    var res = st.s.adminCommand({removeShard: replTest.name});
+    assert.commandWorked(res);
+    assert.eq('started', res.state);
     assert.soon(function() {
-        var res = directdb.currentOp({desc: /^clean/});
-        print("eliot: " + replTest.getPrimary() + "\t" + tojson(res));
-        return res.inprog.length == 0;
-    }, "never clean", 5 * 60 * 1000, 1000);
+        res = st.s.adminCommand({removeShard: replTest.name});
+        assert.commandWorked(res);
+        return ('completed' === res.state);
+    }, "failed to remove shard: " + tojson(res));
 
-    replTest.getPrimary().getDB(coll.getDB().getName()).dropDatabase();
-    print("Shard removed successfully");
+    // Drop the database so the shard can be re-added.
+    assert.commandWorked(replTest.getPrimary().getDB(coll.getDB().getName()).dropDatabase());
 };
 
 addShard = function(st, replTest) {
@@ -50,7 +34,7 @@ addShard = function(st, replTest) {
         // transport error on first attempt is expected.  Make sure second attempt goes through
         assert.eq(true, st.adminCommand({addshard: seed}));
     }
-    ReplSetTest.awaitRSClientHosts(
+    awaitRSClientHosts(
         new Mongo(st.s.host), replTest.getSecondaries(), {ok: true, secondary: true});
 
     assert.soon(function() {
@@ -83,15 +67,6 @@ var conn = new Mongo(st.s.host);
 var coll = conn.getCollection("test.remove2");
 coll.drop();
 
-// Decrease how long it will take for rst0 to time out its ReplicaSetMonitor for rst1 when rs1 is
-// shut down
-for (var i = 0; i < rst0.nodes.length; i++) {
-    node = rst0.nodes[i];
-    res = node.getDB('admin').runCommand({setParameter: 1, replMonitorMaxFailedChecks: 1});
-    printjson(res);
-    assert(res.ok);
-}
-
 st.admin.runCommand({enableSharding: coll.getDB().getName()});
 st.ensurePrimaryShard(coll.getDB().getName(), 'test-rs0');
 st.admin.runCommand({shardCollection: coll.getFullName(), key: {i: 1}});
@@ -118,7 +93,7 @@ assert.soon(function() {
 
 assert.eq(300, coll.find().itcount());
 
-st.admin.printShardingStatus();
+st.printShardingStatus();
 
 // Remove shard and add it back in, without shutting it down.
 jsTestLog("Attempting to remove shard and add it back in");
@@ -134,7 +109,7 @@ rst1.stopSet();
 print("Sleeping for 20 seconds to let the other shard's ReplicaSetMonitor time out");
 sleep(20000);  // 1 failed check should take 10 seconds, sleep for 20 just to be safe
 
-rst1.startSet();
+rst1.startSet({restart: true});
 rst1.initiate();
 rst1.awaitReplication();
 
@@ -178,11 +153,11 @@ assert( conn.getDB('test2').dropDatabase().ok );*/
 jsTestLog("Attempt removing shard and adding a new shard with the same Replica Set name");
 removeShard(st, rst1);
 rst1.stopSet();
-print("Sleeping for 20 seconds to let the other shard's ReplicaSetMonitor time out");
-sleep(20000);
+print("Sleeping for 60 seconds to let the other shards restart their ReplicaSetMonitors");
+sleep(60000);
 
 var rst2 = new ReplSetTest({name: rst1.name, nodes: 2, useHostName: true});
-rst2.startSet();
+rst2.startSet({shardsvr: ""});
 rst2.initiate();
 rst2.awaitReplication();
 
@@ -199,8 +174,10 @@ jsTestLog("Putting ShardingTest back to state it expects");
 printjson(st.admin.runCommand({movePrimary: 'test2', to: rst0.name}));
 removeShard(st, rst2);
 rst2.stopSet();
+print("Sleeping for 60 seconds to let the other shards restart their ReplicaSetMonitors");
+sleep(60000);
 
-rst1.startSet();
+rst1.startSet({restart: true});
 rst1.initiate();
 rst1.awaitReplication();
 
@@ -208,4 +185,5 @@ assert.eq(originalSeed, seedString(rst1), "Set didn't come back up with the same
 addShard(st, rst1);
 
 jsTestLog("finishing!");
-st.stop();
+// this should be fixed by SERVER-22176
+st.stop({allowedExitCodes: [MongoRunner.EXIT_ABRUPT]});

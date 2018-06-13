@@ -19,6 +19,10 @@ var blacklist = [
     'count_limit_skip.js',
     'count_noindex.js',
 
+    // $lookup and $graphLookup are not supported on sharded collections.
+    'agg_graph_lookup.js',
+    'view_catalog_cycle_lookup.js',
+
     // Disabled due to SERVER-20057, 'Concurrent, sharded mapReduces can fail when temporary
     // namespaces collide across mongos processes'
     'map_reduce_drop.js',
@@ -50,13 +54,25 @@ var blacklist = [
     'compact_simultaneous_padding_bytes.js',  // compact can only be run against a mongod
     'convert_to_capped_collection.js',        // convertToCapped can't be run on mongos processes
     'convert_to_capped_collection_index.js',  // convertToCapped can't be run on mongos processes
-    'findAndModify_remove_queue.js',          // remove cannot be {} for findAndModify
-    'findAndModify_update_collscan.js',       // findAndModify requires a shard key
-    'findAndModify_update_queue.js',          // findAndModify requires a shard key
+    'findAndModify_mixed_queue.js',           // findAndModify requires a shard key
+    'findAndModify_mixed_queue_unindexed.js',   // findAndModify requires a shard key
+    'findAndModify_remove_queue.js',            // remove cannot be {} for findAndModify
+    'findAndModify_remove_queue_unindexed.js',  // findAndModify requires a shard key
+    'findAndModify_update_collscan.js',         // findAndModify requires a shard key
+    'findAndModify_update_grow.js',             // can cause OOM kills on test hosts
+    'findAndModify_update_queue.js',            // findAndModify requires a shard key
+    'findAndModify_update_queue_unindexed.js',  // findAndModify requires a shard key
     'group.js',                // the group command cannot be issued against a sharded cluster
     'group_cond.js',           // the group command cannot be issued against a sharded cluster
     'indexed_insert_eval.js',  // eval doesn't work with sharded collections
     'indexed_insert_eval_nolock.js',  // eval doesn't work with sharded collections
+
+    // This workload sometimes triggers an 'unable to target write op for collection ... caused by
+    // ... database not found' error. Further investigation still needs to be done, but this
+    // workload may be failing due to SERVER-17397 'drops in a sharded cluster may not fully
+    // succeed' because it drops and reuses the same namespaces.
+    'kill_multicollection_aggregation.js',
+
     'plan_cache_drop_database.js',  // cannot ensureIndex after dropDatabase without sharding first
     'remove_single_document.js',    // our .remove(query, {justOne: true}) calls lack shard keys
     'remove_single_document_eval.js',         // eval doesn't work with sharded collections
@@ -73,6 +89,11 @@ var blacklist = [
     'rename_collection_dbname_droptarget.js',
     'rename_collection_droptarget.js',
 
+    // This workload assumes that the distributed lock can always be acquired when running the split
+    // command in its setup() function; however, a LockBusy error may be returned if the balancer is
+    // running.
+    'sharded_moveChunk_drop_shard_key_index.js',
+
     'update_simple_eval.js',           // eval doesn't work with sharded collections
     'update_simple_eval_nolock.js',    // eval doesn't work with sharded collections
     'update_upsert_multi.js',          // our update queries lack shard keys
@@ -88,4 +109,4 @@ runWorkloadsSerially(
     ls(dir).filter(function(file) {
         return !Array.contains(blacklist, file);
     }),
-    {sharded: true, replication: true, enableBalancer: true, useLegacyConfigServers: false});
+    {sharded: {enabled: true, enableBalancer: true}, replication: {enabled: true}});

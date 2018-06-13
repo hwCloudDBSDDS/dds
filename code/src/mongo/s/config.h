@@ -116,13 +116,9 @@ public:
     /**
      * Whether sharding is enabled for this database.
      */
-    bool isShardingEnabled() const {
-        return _shardingEnabled;
-    }
+    bool isShardingEnabled();
 
-    const ShardId& getPrimaryId() const {
-        return _primaryId;
-    }
+    ShardId getPrimaryId();
 
     /**
      * Removes all cached metadata for the specified namespace so that subsequent attempts to
@@ -157,11 +153,6 @@ public:
                                                           const std::string& ns,
                                                           bool reload = false,
                                                           bool forceReload = false);
-
-    /**
-     * Returns shard id for primary shard for the database for which this DBConfig represents.
-     */
-    const ShardId& getShardId(OperationContext* txn, const std::string& ns);
 
     void setPrimary(OperationContext* txn, const ShardId& newPrimaryId);
 
@@ -211,10 +202,10 @@ protected:
     const std::string _name;  // (I)
 
     // Primary shard id
-    ShardId _primaryId;  // (L) TODO: SERVER-22175 enforce this
+    ShardId _primaryId;  // (L)
 
     // Whether sharding has been enabled for this database
-    bool _shardingEnabled;  // (L) TODO: SERVER-22175 enforce this
+    bool _shardingEnabled;  // (L)
 
     // Set of collections and lock to protect access
     stdx::mutex _lock;
@@ -229,15 +220,13 @@ protected:
 
     // Increments every time this performs a full reload. Since a full reload can take a very
     // long time for very large clusters, this can be used to minimize duplicate work when multiple
-    // threads tries to perform full reload at roughly the same time.
+    // threads tries to perform full rerload at roughly the same time.
     AtomicUInt64 _reloadCount;  // (S)
 };
 
 
 class ConfigServer {
 public:
-    static void reloadSettings(OperationContext* txn);
-
     /**
      * For use in mongos and mongod which needs notifications about changes to shard and config
      * server replset membership to update the ShardRegistry.

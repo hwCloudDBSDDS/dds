@@ -38,6 +38,7 @@
 #include "mongo/db/auth/authz_session_external_state_mock.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression_parser.h"
+#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/ops/update_driver.h"
@@ -76,7 +77,8 @@ void addPrivilegeObjectsOrWarningsToArrayElement(mutablebson::Element privileges
                         std::string(mongoutils::str::stream()
                                     << "Skipped privileges on resource "
                                     << privileges[i].getResourcePattern().toString()
-                                    << ". Reason: " << errmsg)));
+                                    << ". Reason: "
+                                    << errmsg)));
         }
     }
 }
@@ -203,7 +205,7 @@ Status AuthzManagerExternalStateMock::updateOne(OperationContext* txn,
         if (query.hasField("_id")) {
             document.root().appendElement(query["_id"]);
         }
-        status = driver.populateDocumentWithQueryFields(query, NULL, document);
+        status = driver.populateDocumentWithQueryFields(txn, query, NULL, document);
         if (!status.isOK()) {
             return status;
         }
@@ -273,8 +275,9 @@ Status AuthzManagerExternalStateMock::_queryVector(
     const NamespaceString& collectionName,
     const BSONObj& query,
     std::vector<BSONObjCollection::iterator>* result) {
+    CollatorInterface* collator = nullptr;
     StatusWithMatchExpression parseResult =
-        MatchExpressionParser::parse(query, ExtensionsCallback());
+        MatchExpressionParser::parse(query, ExtensionsCallbackDisallowExtensions(), collator);
     if (!parseResult.isOK()) {
         return parseResult.getStatus();
     }

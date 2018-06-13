@@ -50,6 +50,7 @@ DEFAULTS = {
     "mongos": None,
     "mongosSetParameters": None,
     "nojournal": False,
+    "numClientsPerFixture": 1,
     "repeat": 1,
     "reportFile": None,
     "seed": long(time.time() * 256),  # Taken from random.py code in Python 2.7.
@@ -57,6 +58,7 @@ DEFAULTS = {
     "shellWriteMode": None,
     "shuffle": False,
     "storageEngine": None,
+    "storageEngineCacheSizeGB": None,
     "wiredTigerCollectionConfigString": None,
     "wiredTigerEngineConfigString": None,
     "wiredTigerIndexConfigString": None
@@ -128,6 +130,9 @@ NO_JOURNAL = None
 # journal files.
 NO_PREALLOC_JOURNAL = None
 
+# If set, then each fixture runs tests with the specified number of clients.
+NUM_CLIENTS_PER_FIXTURE = None
+
 # If set, then the RNG is seeded with the specified value. Otherwise uses a seed based on the time
 # this module was loaded.
 RANDOM_SEED = None
@@ -153,6 +158,10 @@ SHUFFLE = None
 STORAGE_ENGINE = None
 
 # If set, then all mongod's started by resmoke.py and by the mongo shell will use the specified
+# storage engine cache size.
+STORAGE_ENGINE_CACHE_SIZE = None
+
+# If set, then all mongod's started by resmoke.py and by the mongo shell will use the specified
 # WiredTiger collection configuration settings.
 WT_COLL_CONFIG = None
 
@@ -170,3 +179,17 @@ WT_INDEX_CONFIG = None
 
 # Default sort order for test execution. Will only be changed if --suites wasn't specified.
 ORDER_TESTS_BY_NAME = True
+
+# Default file names for externally generated lists of tests created during the build.
+DEFAULT_UNIT_TEST_LIST = "build/unittests.txt"
+DEFAULT_INTEGRATION_TEST_LIST = "build/integration_tests.txt"
+
+# External files or executables, used as suite selectors, that are created during the build and
+# therefore might not be available when creating a test membership map.
+EXTERNAL_SUITE_SELECTORS = [DEFAULT_UNIT_TEST_LIST,
+                            DEFAULT_INTEGRATION_TEST_LIST,
+                            DEFAULT_DBTEST_EXECUTABLE]
+
+# This is used internally to store the executor name that is passed on the command line.
+# Specifically it's used to record in the logs which executor a test is being run under.
+INTERNAL_EXECUTOR_NAME = None

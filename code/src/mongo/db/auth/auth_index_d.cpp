@@ -28,6 +28,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kAccessControl
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/auth/auth_index_d.h"
 
 #include "mongo/base/init.h"
@@ -37,10 +39,10 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
+#include "mongo/db/client.h"
+#include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/operation_context_impl.h"
-#include "mongo/db/db_raii.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 
@@ -59,16 +61,20 @@ std::string v3SystemRolesIndexName;
 
 MONGO_INITIALIZER(AuthIndexKeyPatterns)(InitializerContext*) {
     v1SystemUsersKeyPattern = BSON("user" << 1 << "userSource" << 1);
-    v3SystemUsersKeyPattern = BSON(AuthorizationManager::USER_NAME_FIELD_NAME
-                                   << 1 << AuthorizationManager::USER_DB_FIELD_NAME << 1);
-    v3SystemRolesKeyPattern = BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME
-                                   << 1 << AuthorizationManager::ROLE_DB_FIELD_NAME << 1);
+    v3SystemUsersKeyPattern = BSON(
+        AuthorizationManager::USER_NAME_FIELD_NAME << 1 << AuthorizationManager::USER_DB_FIELD_NAME
+                                                   << 1);
+    v3SystemRolesKeyPattern = BSON(
+        AuthorizationManager::ROLE_NAME_FIELD_NAME << 1 << AuthorizationManager::ROLE_DB_FIELD_NAME
+                                                   << 1);
     v3SystemUsersIndexName =
         std::string(str::stream() << AuthorizationManager::USER_NAME_FIELD_NAME << "_1_"
-                                  << AuthorizationManager::USER_DB_FIELD_NAME << "_1");
+                                  << AuthorizationManager::USER_DB_FIELD_NAME
+                                  << "_1");
     v3SystemRolesIndexName =
         std::string(str::stream() << AuthorizationManager::ROLE_NAME_FIELD_NAME << "_1_"
-                                  << AuthorizationManager::ROLE_DB_FIELD_NAME << "_1");
+                                  << AuthorizationManager::ROLE_DB_FIELD_NAME
+                                  << "_1");
 
     return Status::OK();
 }
@@ -91,10 +97,11 @@ Status verifySystemIndexes(OperationContext* txn) {
     }
 
     IndexCatalog* indexCatalog = collection->getIndexCatalog();
-    IndexDescriptor* oldIndex = NULL;
+    std::vector<IndexDescriptor*> indexes;
+    indexCatalog->findIndexesByKeyPattern(txn, v1SystemUsersKeyPattern, false, &indexes);
 
-    if (indexCatalog &&
-        (oldIndex = indexCatalog->findIndexByKeyPattern(txn, v1SystemUsersKeyPattern))) {
+    if (indexCatalog && !indexes.empty()) {
+        fassert(ErrorCodes::AmbiguousIndexKeyPattern, indexes.size() == 1);
         return Status(ErrorCodes::AuthSchemaIncompatible,
                       "Old 2.4 style user index identified. "
                       "The authentication schema needs to be updated by "
@@ -111,12 +118,16 @@ void createSystemIndexes(OperationContext* txn, Collection* collection) {
         collection->getIndexCatalog()->createIndexOnEmptyCollection(
             txn,
             BSON("name" << v3SystemUsersIndexName << "ns" << collection->ns().ns() << "key"
-                        << v3SystemUsersKeyPattern << "unique" << true));
+                        << v3SystemUsersKeyPattern
+                        << "unique"
+                        << true));
     } else if (ns == AuthorizationManager::rolesCollectionNamespace) {
         collection->getIndexCatalog()->createIndexOnEmptyCollection(
             txn,
             BSON("name" << v3SystemRolesIndexName << "ns" << collection->ns().ns() << "key"
-                        << v3SystemRolesKeyPattern << "unique" << true));
+                        << v3SystemRolesKeyPattern
+                        << "unique"
+                        << true));
     }
 }
 

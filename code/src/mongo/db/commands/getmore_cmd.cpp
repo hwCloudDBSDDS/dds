@@ -48,9 +48,10 @@
 #include "mongo/db/query/find.h"
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/getmore_request.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/s/operation_shard_version.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/s/chunk_version.h"
@@ -79,7 +80,8 @@ class GetMoreCmd : public Command {
 public:
     GetMoreCmd() : Command("getMore") {}
 
-    bool isWriteCommandForConfigServer() const override {
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -98,6 +100,10 @@ public:
     bool supportsReadConcern() const final {
         // Uses the readConcern setting from whatever created the cursor.
         return false;
+    }
+
+    ReadWriteType getReadWriteType() const {
+        return ReadWriteType::kRead;
     }
 
     void help(std::stringstream& help) const override {
@@ -126,7 +132,7 @@ public:
         return GetMoreRequest::parseNs(dbname, cmdObj);
     }
 
-    Status checkAuthForCommand(ClientBasic* client,
+    Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
                                const BSONObj& cmdObj) override {
         StatusWith<GetMoreRequest> parseStatus = GetMoreRequest::parseFromBSON(dbname, cmdObj);
@@ -135,35 +141,22 @@ public:
         }
         const GetMoreRequest& request = parseStatus.getValue();
 
-        return AuthorizationSession::get(client)
-            ->checkAuthForGetMore(request.nss, request.cursorid, request.term.is_initialized());
+        return AuthorizationSession::get(client)->checkAuthForGetMore(
+            request.nss, request.cursorid, request.term.is_initialized());
     }
 
-    bool run(OperationContext* txn,
-             const std::string& dbname,
-             BSONObj& cmdObj,
-             int options,
-             std::string& errmsg,
-             BSONObjBuilder& result) override {
-        // Counted as a getMore, not as a command.
-        globalOpCounters.gotGetMore();
+    bool runParsed(OperationContext* txn,
+                   const NamespaceString& origNss,
+                   const GetMoreRequest& request,
+                   BSONObj& cmdObj,
+                   std::string& errmsg,
+                   BSONObjBuilder& result) {
 
-        if (txn->getClient()->isInDirectClient()) {
-            return appendCommandStatus(
-                result,
-                Status(ErrorCodes::IllegalOperation, "Cannot run getMore command from eval()"));
-        }
-
-        StatusWith<GetMoreRequest> parseStatus = GetMoreRequest::parseFromBSON(dbname, cmdObj);
-        if (!parseStatus.isOK()) {
-            return appendCommandStatus(result, parseStatus.getStatus());
-        }
-        const GetMoreRequest& request = parseStatus.getValue();
-
-        CurOp::get(txn)->debug().cursorid = request.cursorid;
+        auto curOp = CurOp::get(txn);
+        curOp->debug().cursorid = request.cursorid;
 
         // Disable shard version checking - getmore commands are always unversioned
-        OperationShardVersion::get(txn).setShardVersion(request.nss, ChunkVersion::IGNORED());
+        OperationShardingState::get(txn).setShardVersion(request.nss, ChunkVersion::IGNORED());
 
         // Validate term before acquiring locks, if provided.
         if (request.term) {
@@ -201,9 +194,41 @@ public:
         if (request.nss.isListIndexesCursorNS() || request.nss.isListCollectionsCursorNS()) {
             cursorManager = CursorManager::getGlobalCursorManager();
         } else {
-            ctx = stdx::make_unique<AutoGetCollectionForRead>(txn, request.nss);
+            ctx = stdx::make_unique<AutoGetCollectionOrViewForRead>(txn, request.nss);
+            auto viewCtx = static_cast<AutoGetCollectionOrViewForRead*>(ctx.get());
             Collection* collection = ctx->getCollection();
             if (!collection) {
+                // Rewrite a getMore on a view to a getMore on the original underlying collection.
+                // If the view no longer exists, or has been rewritten, the cursor id will be
+                // unknown, resulting in an appropriate error.
+                if (viewCtx->getView()) {
+                    auto resolved =
+                        viewCtx->getDb()->getViewCatalog()->resolveView(txn, request.nss);
+                    if (!resolved.isOK()) {
+                        return appendCommandStatus(result, resolved.getStatus());
+                    }
+                    viewCtx->releaseLocksForView();
+
+                    // Only one shardversion can be set at a time for an operation, so unset it
+                    // here to allow setting it on the underlying namespace.
+                    OperationShardingState::get(txn).unsetShardVersion(request.nss);
+
+                    GetMoreRequest newRequest(resolved.getValue().getNamespace(),
+                                              request.cursorid,
+                                              request.batchSize,
+                                              request.awaitDataTimeout,
+                                              request.term,
+                                              request.lastKnownCommittedOpTime);
+
+                    bool retVal = runParsed(txn, origNss, newRequest, cmdObj, errmsg, result);
+                    {
+                        // Set the namespace of the curop back to the view namespace so ctx records
+                        // stats on this view namespace on destruction.
+                        stdx::lock_guard<Client>(*txn->getClient());
+                        curOp->setNS_inlock(origNss.ns());
+                    }
+                    return retVal;
+                }
                 return appendCommandStatus(result,
                                            Status(ErrorCodes::OperationFailed,
                                                   "collection dropped between getMore calls"));
@@ -274,7 +299,7 @@ public:
         // Reset timeout timer on the cursor since the cursor is still in use.
         cursor->setIdleTime(0);
 
-        const bool hasOwnMaxTime = CurOp::get(txn)->isMaxTimeSet();
+        const bool hasOwnMaxTime = txn->hasDeadline();
 
         if (!hasOwnMaxTime) {
             // There is no time limit set directly on this getMore command. If the cursor is
@@ -282,10 +307,15 @@ public:
             // any leftover time from the maxTimeMS of the operation that spawned this cursor,
             // applying it to this getMore.
             if (isCursorAwaitData(cursor)) {
-                Seconds awaitDataTimeout(1);
-                CurOp::get(txn)->setMaxTimeMicros(durationCount<Microseconds>(awaitDataTimeout));
-            } else {
-                CurOp::get(txn)->setMaxTimeMicros(cursor->getLeftoverMaxTimeMicros());
+                uassert(40117,
+                        "Illegal attempt to set operation deadline within DBDirectClient",
+                        !txn->getClient()->isInDirectClient());
+                txn->setDeadlineAfterNowBy(Seconds{1});
+            } else if (cursor->getLeftoverMaxTimeMicros() < Microseconds::max()) {
+                uassert(40118,
+                        "Illegal attempt to set operation deadline within DBDirectClient",
+                        !txn->getClient()->isInDirectClient());
+                txn->setDeadlineAfterNowBy(cursor->getLeftoverMaxTimeMicros());
             }
         }
         txn->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
@@ -298,6 +328,19 @@ public:
         PlanExecutor* exec = cursor->getExecutor();
         exec->reattachToOperationContext(txn);
         exec->restoreState();
+
+        auto planSummary = Explain::getPlanSummary(exec);
+        {
+            stdx::lock_guard<Client>(*txn->getClient());
+            curOp->setPlanSummary_inlock(planSummary);
+
+            // Ensure that the original query or command object is available in the slow query log,
+            // profiler and currentOp.
+            auto originatingCommand = cursor->getQuery();
+            if (!originatingCommand.isEmpty()) {
+                curOp->setOriginatingCommand_inlock(originatingCommand);
+            }
+        }
 
         uint64_t notifierVersion = 0;
         std::shared_ptr<CappedInsertNotifier> notifier;
@@ -319,6 +362,13 @@ public:
         BSONObj obj;
         PlanExecutor::ExecState state;
         long long numResults = 0;
+
+        // We report keysExamined and docsExamined to OpDebug for a given getMore operation. To
+        // obtain these values we need to take a diff of the pre-execution and post-execution
+        // metrics, as they accumulate over the course of a cursor's lifetime.
+        PlanSummaryStats preExecutionStats;
+        Explain::getSummaryStats(*exec, &preExecutionStats);
+
         Status batchStatus = generateBatch(cursor, request, &nextBatch, &state, &numResults);
         if (!batchStatus.isOK()) {
             return appendCommandStatus(result, batchStatus);
@@ -342,14 +392,14 @@ public:
                 ctx.reset();
 
                 // Block waiting for data.
-                Microseconds timeout(CurOp::get(txn)->getRemainingMaxTimeMicros());
+                const auto timeout = txn->getRemainingMaxTimeMicros();
                 notifier->wait(notifierVersion, timeout);
                 notifier.reset();
 
                 // Set expected latency to match wait time. This makes sure the logs aren't spammed
                 // by awaitData queries that exceed slowms due to blocking on the
                 // CappedInsertNotifier.
-                CurOp::get(txn)->setExpectedLatencyMs(durationCount<Milliseconds>(timeout));
+                curOp->setExpectedLatencyMs(durationCount<Milliseconds>(timeout));
 
                 ctx.reset(new AutoGetCollectionForRead(txn, request.nss));
                 exec->restoreState();
@@ -363,6 +413,22 @@ public:
             }
         }
 
+        PlanSummaryStats postExecutionStats;
+        Explain::getSummaryStats(*exec, &postExecutionStats);
+        postExecutionStats.totalKeysExamined -= preExecutionStats.totalKeysExamined;
+        postExecutionStats.totalDocsExamined -= preExecutionStats.totalDocsExamined;
+        curOp->debug().setPlanSummaryMetrics(postExecutionStats);
+
+        // We do not report 'execStats' for aggregation, both in the original request and
+        // subsequent getMore. The reason for this is that aggregation's source PlanExecutor
+        // could be destroyed before we know whether we need execStats and we do not want to
+        // generate for all operations due to cost.
+        if (!cursor->isAggCursor() && curOp->shouldDBProfile()) {
+            BSONObjBuilder execStatsBob;
+            Explain::getWinningPlanStats(exec, &execStatsBob);
+            curOp->debug().execStats = execStatsBob.obj();
+        }
+
         if (shouldSaveCursorGetMore(state, exec, isCursorTailable(cursor))) {
             respondWithId = request.cursorid;
 
@@ -373,19 +439,21 @@ public:
             // from a previous find, then don't roll remaining micros over to the next
             // getMore.
             if (!hasOwnMaxTime) {
-                cursor->setLeftoverMaxTimeMicros(CurOp::get(txn)->getRemainingMaxTimeMicros());
+                cursor->setLeftoverMaxTimeMicros(txn->getRemainingMaxTimeMicros());
             }
 
             cursor->incPos(numResults);
         } else {
-            CurOp::get(txn)->debug().cursorExhausted = true;
+            curOp->debug().cursorExhausted = true;
         }
 
-        nextBatch.done(respondWithId, request.nss.ns());
+        // Respond with the originally requested namespace, even if this is a getMore over a view
+        // that was resolved to a different backing namespace.
+        nextBatch.done(respondWithId, origNss.ns());
 
         // Ensure log and profiler include the number of results returned in this getMore's response
         // batch.
-        CurOp::get(txn)->debug().nreturned = numResults;
+        curOp->debug().nreturned = numResults;
 
         if (respondWithId) {
             cursorFreer.Dismiss();
@@ -401,6 +469,29 @@ public:
         }
 
         return true;
+    }
+
+    bool run(OperationContext* txn,
+             const std::string& dbname,
+             BSONObj& cmdObj,
+             int options,
+             std::string& errmsg,
+             BSONObjBuilder& result) override {
+        // Counted as a getMore, not as a command.
+        globalOpCounters.gotGetMore();
+
+        if (txn->getClient()->isInDirectClient()) {
+            return appendCommandStatus(
+                result,
+                Status(ErrorCodes::IllegalOperation, "Cannot run getMore command from eval()"));
+        }
+
+        StatusWith<GetMoreRequest> parsedRequest = GetMoreRequest::parseFromBSON(dbname, cmdObj);
+        if (!parsedRequest.isOK()) {
+            return appendCommandStatus(result, parsedRequest.getStatus());
+        }
+        auto request = parsedRequest.getValue();
+        return runParsed(txn, request.nss, request, cmdObj, errmsg, result);
     }
 
     /**
@@ -426,11 +517,11 @@ public:
         // timeout to the user.
         BSONObj obj;
         try {
-            while (PlanExecutor::ADVANCED == (*state = exec->getNext(&obj, NULL))) {
-                // If adding this object will cause us to exceed the BSON size limit, then we
+            while (!FindCommon::enoughForGetMore(request.batchSize.value_or(0), *numResults) &&
+                   PlanExecutor::ADVANCED == (*state = exec->getNext(&obj, NULL))) {
+                // If adding this object will cause us to exceed the message size limit, then we
                 // stash it for later.
-                if (nextBatch->bytesUsed() + obj.objsize() > BSONObjMaxUserSize &&
-                    *numResults > 0) {
+                if (!FindCommon::haveSpaceForNext(obj, *numResults, nextBatch->bytesUsed())) {
                     exec->enqueue(obj);
                     break;
                 }
@@ -438,11 +529,6 @@ public:
                 // Add result to output buffer.
                 nextBatch->append(obj);
                 (*numResults)++;
-
-                if (FindCommon::enoughForGetMore(
-                        request.batchSize.value_or(0), *numResults, nextBatch->bytesUsed())) {
-                    break;
-                }
             }
         } catch (const UserException& except) {
             if (isAwaitData && except.getCode() == ErrorCodes::ExceededTimeLimit) {
@@ -457,7 +543,7 @@ public:
             nextBatch->abandon();
 
             error() << "GetMore command executor error: " << PlanExecutor::statestr(*state)
-                    << ", stats: " << Explain::getWinningPlanStats(exec);
+                    << ", stats: " << redact(Explain::getWinningPlanStats(exec));
 
             return Status(ErrorCodes::OperationFailed,
                           str::stream() << "GetMore command executor error: "

@@ -5,7 +5,6 @@ Import("env")
 env.Library(
     target='metadata',
     source=[
-        'operation_shard_version.cpp',
         'collection_metadata.cpp',
         'metadata_loader.cpp',
     ],
@@ -13,7 +12,6 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/common',
         '$BUILD_DIR/mongo/db/range_arithmetic',
-        '$BUILD_DIR/mongo/s/catalog/catalog_types',
         '$BUILD_DIR/mongo/s/common',
         '$BUILD_DIR/mongo/db/service_context',
     ]
@@ -23,20 +21,46 @@ env.Library(
     target='migration_types',
     source=[
         'migration_session_id.cpp',
+        'start_chunk_clone_request.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/bson/util/bson_extract',
+        '$BUILD_DIR/mongo/s/common',
+    ],
+)
+
+env.Library(
+    target='type_shard_identity',
+    source=[
+        'type_shard_identity.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/s/write_ops/batch_write_types',
+        '$BUILD_DIR/mongo/bson/util/bson_extract',
+        '$BUILD_DIR/mongo/s/common',
     ],
 )
 
 env.Library(
     target='sharding',
     source=[
+        'active_migrations_registry.cpp',
+        'chunk_move_write_concern_options.cpp',
+        'collection_range_deleter.cpp',
+        'collection_sharding_state.cpp',
+        'metadata_manager.cpp',
+        'migration_chunk_cloner_source.cpp',
+        'migration_chunk_cloner_source_legacy.cpp',
         'migration_destination_manager.cpp',
-        'migration_impl.cpp',
         'migration_source_manager.cpp',
+        'migration_util.cpp',
+        'move_timing_helper.cpp',
+        'operation_sharding_state.cpp',
+        'shard_identity_rollback_notifier.cpp',
         'sharded_connection_info.cpp',
+        'sharding_initialization_mongod.cpp',
         'sharding_state.cpp',
         'sharding_state_recovery.cpp',
     ],
@@ -45,7 +69,9 @@ env.Library(
         '$BUILD_DIR/mongo/bson/util/bson_extract',
         '$BUILD_DIR/mongo/db/common',
         '$BUILD_DIR/mongo/s/sharding_initialization',
+        'metadata',
         'migration_types',
+        'type_shard_identity',
     ],
     LIBDEPS_TAGS=[
         # Depends on symbols defined in files in serverOnlyFiles, and has
@@ -55,20 +81,83 @@ env.Library(
 )
 
 env.Library(
-    target='commands',
+    target='balancer',
     source=[
-        'merge_chunks_command.cpp',
-        'move_chunk_command.cpp',
-        'set_shard_version_command.cpp',
+        'balancer/balancer.cpp',
+        'balancer/balancer_chunk_selection_policy.cpp',
+        'balancer/balancer_chunk_selection_policy_impl.cpp',
+        'balancer/balancer_policy.cpp',
+        'balancer/cluster_statistics.cpp',
+        'balancer/cluster_statistics_impl.cpp',
+        'balancer/migration_manager.cpp',
+        'balancer/scoped_migration_request.cpp',
+        'balancer/type_migration.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/bson/util/bson_extract',
+        '$BUILD_DIR/mongo/db/common',
+        '$BUILD_DIR/mongo/s/coreshard',
+    ],
+)
+
+env.CppUnitTest(
+    target='balancer_test',
+    source=[
+        'balancer/balancer_policy_test.cpp',
+        'balancer/cluster_statistics_test.cpp',
+        'balancer/migration_manager_test.cpp',
+        'balancer/scoped_migration_request_test.cpp',
+        'balancer/type_migration_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/s/config_server_test_fixture',
+        '$BUILD_DIR/mongo/s/coreshard',
+        '$BUILD_DIR/mongo/util/version_impl',
+        'balancer',
+    ]
+)
+
+env.Library(
+    target='commands',
+    source=[
+        'check_sharding_index_command.cpp',
+        'cleanup_orphaned_cmd.cpp',
+        'config/configsvr_add_shard_command.cpp',
+        'config/configsvr_add_shard_to_zone_command.cpp',
+        'config/configsvr_commit_chunk_migration_command.cpp',
+        'config/configsvr_control_balancer_command.cpp',
+        'config/configsvr_merge_chunk_command.cpp',
+        'config/configsvr_move_chunk_command.cpp',
+        'config/configsvr_remove_shard_from_zone_command.cpp',
+        'config/configsvr_set_feature_compatibility_version_command.cpp',
+        'config/configsvr_split_chunk_command.cpp',
+        'config/configsvr_update_zone_key_range_command.cpp',
+        'get_shard_version_command.cpp',
+        'merge_chunks_command.cpp',
+        'migration_chunk_cloner_source_legacy_commands.cpp',
+        'migration_destination_manager_legacy_commands.cpp',
+        'move_chunk_command.cpp',
+        'set_shard_version_command.cpp',
+        'sharding_server_status.cpp',
+        'sharding_state_command.cpp',
+        'split_chunk_command.cpp',
+        'split_vector_command.cpp',
+        'unset_sharding_command.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/bson/dotted_path_support',
+        '$BUILD_DIR/mongo/db/commands',
+        '$BUILD_DIR/mongo/db/db_raii',
+        '$BUILD_DIR/mongo/db/dbhelpers',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
         '$BUILD_DIR/mongo/s/serveronly',
+        'balancer',
         'metadata',
         'sharding',
     ],
     LIBDEPS_TAGS=[
-        # Depends on getDeleter, defined in s/serveronly, which would be circular.
+        # Depends on getDeleter from db/serveronly
         'incomplete',
     ],
 )
@@ -77,6 +166,7 @@ env.CppUnitTest(
     target='migration_types_test',
     source=[
         'migration_session_id_test.cpp',
+        'start_chunk_clone_request_test.cpp',
     ],
     LIBDEPS=[
         'migration_types',
@@ -84,7 +174,17 @@ env.CppUnitTest(
 )
 
 env.CppUnitTest(
-    target='metadata_test',
+    target='type_shard_identity_test',
+    source=[
+        'type_shard_identity_test.cpp'
+    ],
+    LIBDEPS=[
+        'type_shard_identity',
+    ]
+)
+
+env.CppUnitTest(
+    target='sharding_metadata_test',
     source=[
         'metadata_loader_test.cpp',
         'collection_metadata_test.cpp',
@@ -93,9 +193,40 @@ env.CppUnitTest(
         'metadata',
         '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
         '$BUILD_DIR/mongo/db/common',
-        '$BUILD_DIR/mongo/dbtests/mocklib',
-        '$BUILD_DIR/mongo/s/catalog/legacy/catalog_manager_legacy',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/s/catalog/sharding_catalog_test_fixture',
         '$BUILD_DIR/mongo/s/coreshard',
-        '$BUILD_DIR/mongo/s/mongoscore',
+        '$BUILD_DIR/mongo/s/catalog/dist_lock_manager_mock',
+        '$BUILD_DIR/mongo/s/sharding_test_fixture',
     ]
 )
+
+env.CppUnitTest(
+    target='sharding_state_test',
+    source=[
+        'active_migrations_registry_test.cpp',
+        'metadata_manager_test.cpp',
+        'sharding_state_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/s/sharding_mongod_test_fixture',
+    ],
+)
+
+env.CppUnitTest(
+    target='collection_sharding_state_test',
+    source=[
+        'collection_sharding_state_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/client/remote_command_targeter_mock',
+        '$BUILD_DIR/mongo/db/serveronly',
+        '$BUILD_DIR/mongo/executor/network_test_env',
+        '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
+        '$BUILD_DIR/mongo/s/catalog/sharding_catalog_mock',
+        '$BUILD_DIR/mongo/s/coreshard',
+        '$BUILD_DIR/mongo/util/clock_source_mock',
+        '$BUILD_DIR/mongo/util/net/message_port_mock',
+    ],
+)
+

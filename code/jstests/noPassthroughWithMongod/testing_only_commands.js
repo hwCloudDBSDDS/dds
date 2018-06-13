@@ -4,8 +4,6 @@
  */
 
 var testOnlyCommands = [
-    '_testDistLockWithSkew',
-    '_skewClockCommand',
     'configureFailPoint',
     '_hashBSONElement',
     'replSetTest',

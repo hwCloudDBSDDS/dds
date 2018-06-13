@@ -206,6 +206,7 @@ public:
 
     BSONObj filter;
     BSONObj sort;
+    BSONObj collation;
     long long limit;
 
     // functions
@@ -268,8 +269,6 @@ public:
     // ---- prep  -----
     bool sourceExists();
 
-    long long incomingDocuments();
-
     // ---- map stage ----
 
     /**
@@ -305,7 +304,7 @@ public:
 
     void finalReduce(BSONList& values);
 
-    void finalReduce(CurOp* op, ProgressMeterHolder& pm);
+    void finalReduce(OperationContext* txn, CurOp* op, ProgressMeterHolder& pm);
 
     // ------- cleanup/data positioning ----------
 
@@ -320,7 +319,8 @@ public:
     long long postProcessCollection(OperationContext* txn, CurOp* op, ProgressMeterHolder& pm);
     long long postProcessCollectionNonAtomic(OperationContext* txn,
                                              CurOp* op,
-                                             ProgressMeterHolder& pm);
+                                             ProgressMeterHolder& pm,
+                                             bool callerHoldsGlobalLock);
 
     /**
      * if INMEMORY will append
@@ -411,5 +411,11 @@ void addPrivilegesRequiredForMapReduce(Command* commandTemplate,
                                        const std::string& dbname,
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out);
+
+/**
+ * Returns true if the provided mapReduce command has an 'out' parameter.
+ */
+bool mrSupportsWriteConcern(const BSONObj& cmd);
+
 }  // end mr namespace
 }

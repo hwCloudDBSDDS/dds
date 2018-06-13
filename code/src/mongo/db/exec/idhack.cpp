@@ -38,7 +38,6 @@
 #include "mongo/db/exec/working_set_computed_data.h"
 #include "mongo/db/index/btree_access_method.h"
 #include "mongo/db/storage/record_fetcher.h"
-#include "mongo/s/d_state.h"
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
@@ -101,12 +100,7 @@ bool IDHackStage::isEOF() {
     return _done;
 }
 
-PlanStage::StageState IDHackStage::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState IDHackStage::doWork(WorkingSetID* out) {
     if (_done) {
         return PlanStage::IS_EOF;
     }
@@ -125,10 +119,10 @@ PlanStage::StageState IDHackStage::work(WorkingSetID* out) {
     WorkingSetID id = WorkingSet::INVALID_ID;
     try {
         // Look up the key by going directly to the index.
-        RecordId loc = _accessMethod->findSingle(getOpCtx(), _key);
+        RecordId recordId = _accessMethod->findSingle(getOpCtx(), _key);
 
         // Key not found.
-        if (loc.isNull()) {
+        if (recordId.isNull()) {
             _done = true;
             return PlanStage::IS_EOF;
         }
@@ -139,20 +133,19 @@ PlanStage::StageState IDHackStage::work(WorkingSetID* out) {
         // Create a new WSM for the result document.
         id = _workingSet->allocate();
         WorkingSetMember* member = _workingSet->get(id);
-        member->loc = loc;
-        _workingSet->transitionToLocAndIdx(id);
+        member->recordId = recordId;
+        _workingSet->transitionToRecordIdAndIdx(id);
 
         if (!_recordCursor)
             _recordCursor = _collection->getCursor(getOpCtx());
 
         // We may need to request a yield while we fetch the document.
-        if (auto fetcher = _recordCursor->fetcherForId(loc)) {
+        if (auto fetcher = _recordCursor->fetcherForId(recordId)) {
             // There's something to fetch. Hand the fetcher off to the WSM, and pass up a
             // fetch request.
             _idBeingPagedIn = id;
             member->setFetcher(fetcher.release());
             *out = id;
-            _commonStats.needYield++;
             return NEED_YIELD;
         }
 
@@ -174,7 +167,6 @@ PlanStage::StageState IDHackStage::work(WorkingSetID* out) {
             _workingSet->free(id);
 
         *out = WorkingSet::INVALID_ID;
-        _commonStats.needYield++;
         return NEED_YIELD;
     }
 }
@@ -192,7 +184,6 @@ PlanStage::StageState IDHackStage::advance(WorkingSetID id,
     }
 
     _done = true;
-    ++_commonStats.advanced;
     *out = id;
     return PlanStage::ADVANCED;
 }
@@ -223,23 +214,24 @@ void IDHackStage::doInvalidate(OperationContext* txn, const RecordId& dl, Invali
         return;
     }
 
-    // It's possible that the loc getting invalidated is the one we're about to
+    // It's possible that the RecordId getting invalidated is the one we're about to
     // fetch. In this case we do a "forced fetch" and put the WSM in owned object state.
     if (WorkingSet::INVALID_ID != _idBeingPagedIn) {
         WorkingSetMember* member = _workingSet->get(_idBeingPagedIn);
-        if (member->hasLoc() && (member->loc == dl)) {
-            // Fetch it now and kill the diskloc.
-            WorkingSetCommon::fetchAndInvalidateLoc(txn, member, _collection);
+        if (member->hasRecordId() && (member->recordId == dl)) {
+            // Fetch it now and kill the RecordId.
+            WorkingSetCommon::fetchAndInvalidateRecordId(txn, member, _collection);
         }
     }
 }
 
 // static
-bool IDHackStage::supportsQuery(const CanonicalQuery& query) {
-    return !query.getParsed().showRecordId() && query.getParsed().getHint().isEmpty() &&
-        !query.getParsed().getSkip() &&
-        CanonicalQuery::isSimpleIdQuery(query.getParsed().getFilter()) &&
-        !query.getParsed().isTailable();
+bool IDHackStage::supportsQuery(Collection* collection, const CanonicalQuery& query) {
+    return !query.getQueryRequest().showRecordId() && query.getQueryRequest().getHint().isEmpty() &&
+        !query.getQueryRequest().getSkip() &&
+        CanonicalQuery::isSimpleIdQuery(query.getQueryRequest().getFilter()) &&
+        !query.getQueryRequest().isTailable() &&
+        CollatorInterface::collatorsMatch(query.getCollator(), collection->getDefaultCollator());
 }
 
 unique_ptr<PlanStageStats> IDHackStage::getStats() {

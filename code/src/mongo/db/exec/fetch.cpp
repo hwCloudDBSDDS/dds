@@ -74,12 +74,7 @@ bool FetchStage::isEOF() {
     return child()->isEOF();
 }
 
-PlanStage::StageState FetchStage::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState FetchStage::doWork(WorkingSetID* out) {
     if (isEOF()) {
         return PlanStage::IS_EOF;
     }
@@ -102,21 +97,20 @@ PlanStage::StageState FetchStage::work(WorkingSetID* out) {
         if (member->hasObj()) {
             ++_specificStats.alreadyHasObj;
         } else {
-            // We need a valid loc to fetch from and this is the only state that has one.
-            verify(WorkingSetMember::LOC_AND_IDX == member->getState());
-            verify(member->hasLoc());
+            // We need a valid RecordId to fetch from and this is the only state that has one.
+            verify(WorkingSetMember::RID_AND_IDX == member->getState());
+            verify(member->hasRecordId());
 
             try {
                 if (!_cursor)
                     _cursor = _collection->getCursor(getOpCtx());
 
-                if (auto fetcher = _cursor->fetcherForId(member->loc)) {
+                if (auto fetcher = _cursor->fetcherForId(member->recordId)) {
                     // There's something to fetch. Hand the fetcher off to the WSM, and pass up
                     // a fetch request.
                     _idRetrying = id;
                     member->setFetcher(fetcher.release());
                     *out = id;
-                    _commonStats.needYield++;
                     return NEED_YIELD;
                 }
 
@@ -124,7 +118,6 @@ PlanStage::StageState FetchStage::work(WorkingSetID* out) {
                 // as well as an unowned object
                 if (!WorkingSetCommon::fetch(getOpCtx(), _ws, id, _cursor)) {
                     _ws->free(id);
-                    _commonStats.needTime++;
                     return NEED_TIME;
                 }
             } catch (const WriteConflictException& wce) {
@@ -133,7 +126,6 @@ PlanStage::StageState FetchStage::work(WorkingSetID* out) {
                 member->makeObjOwnedIfNeeded();
                 _idRetrying = id;
                 *out = WorkingSet::INVALID_ID;
-                _commonStats.needYield++;
                 return NEED_YIELD;
             }
         }
@@ -151,10 +143,7 @@ PlanStage::StageState FetchStage::work(WorkingSetID* out) {
             *out = WorkingSetCommon::allocateStatusMember(_ws, status);
         }
         return status;
-    } else if (PlanStage::NEED_TIME == status) {
-        ++_commonStats.needTime;
     } else if (PlanStage::NEED_YIELD == status) {
-        ++_commonStats.needYield;
         *out = id;
     }
 
@@ -182,13 +171,13 @@ void FetchStage::doReattachToOperationContext() {
 }
 
 void FetchStage::doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
-    // It's possible that the loc getting invalidated is the one we're about to
+    // It's possible that the recordId getting invalidated is the one we're about to
     // fetch. In this case we do a "forced fetch" and put the WSM in owned object state.
     if (WorkingSet::INVALID_ID != _idRetrying) {
         WorkingSetMember* member = _ws->get(_idRetrying);
-        if (member->hasLoc() && (member->loc == dl)) {
-            // Fetch it now and kill the diskloc.
-            WorkingSetCommon::fetchAndInvalidateLoc(txn, member, _collection);
+        if (member->hasRecordId() && (member->recordId == dl)) {
+            // Fetch it now and kill the recordId.
+            WorkingSetCommon::fetchAndInvalidateRecordId(txn, member, _collection);
         }
     }
 }
@@ -214,13 +203,9 @@ PlanStage::StageState FetchStage::returnIfMatches(WorkingSetMember* member,
 
     if (Filter::passes(member, _filter)) {
         *out = memberID;
-
-        ++_commonStats.advanced;
         return PlanStage::ADVANCED;
     } else {
         _ws->free(memberID);
-
-        ++_commonStats.needTime;
         return PlanStage::NEED_TIME;
     }
 }
@@ -231,7 +216,7 @@ unique_ptr<PlanStageStats> FetchStage::getStats() {
     // Add a BSON representation of the filter to the stats tree, if there is one.
     if (NULL != _filter) {
         BSONObjBuilder bob;
-        _filter->toBSON(&bob);
+        _filter->serialize(&bob);
         _commonStats.filter = bob.obj();
     }
 

@@ -35,12 +35,12 @@
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/auth_index_d.h"
 #include "mongo/db/background.h"
-#include "mongo/db/client.h"
-#include "mongo/db/clientcursor.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
-#include "mongo/db/service_context.h"
+#include "mongo/db/client.h"
+#include "mongo/db/clientcursor.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/util/log.h"
 
@@ -62,7 +62,9 @@ StringData _todb(StringData ns) {
     uassert(13075, "db name can't be empty", i > 0);
 
     const StringData d = ns.substr(0, i);
-    uassert(13280, "invalid db name: " + ns.toString(), NamespaceString::validDBName(d));
+    uassert(13280,
+            "invalid db name: " + ns.toString(),
+            NamespaceString::validDBName(d, NamespaceString::DollarInDbNameBehavior::Allow));
 
     return d;
 }

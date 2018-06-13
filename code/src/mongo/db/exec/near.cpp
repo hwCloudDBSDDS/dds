@@ -81,12 +81,7 @@ PlanStage::StageState NearStage::initNext(WorkingSetID* out) {
     return state;
 }
 
-PlanStage::StageState NearStage::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState NearStage::doWork(WorkingSetID* out) {
     WorkingSetID toReturn = WorkingSet::INVALID_ID;
     Status error = Status::OK();
     PlanStage::StageState nextState = PlanStage::NEED_TIME;
@@ -114,12 +109,8 @@ PlanStage::StageState NearStage::work(WorkingSetID* out) {
         *out = WorkingSetCommon::allocateStatusMember(_workingSet, error);
     } else if (PlanStage::ADVANCED == nextState) {
         *out = toReturn;
-        ++_commonStats.advanced;
     } else if (PlanStage::NEED_YIELD == nextState) {
         *out = toReturn;
-        ++_commonStats.needYield;
-    } else if (PlanStage::NEED_TIME == nextState) {
-        ++_commonStats.needTime;
     } else if (PlanStage::IS_EOF == nextState) {
         _commonStats.isEOF = true;
     }
@@ -195,8 +186,8 @@ PlanStage::StageState NearStage::bufferNext(WorkingSetID* toReturn, Status* erro
     WorkingSetMember* nextMember = _workingSet->get(nextMemberID);
 
     // The child stage may not dedup so we must dedup them ourselves.
-    if (_nextInterval->dedupCovering && nextMember->hasLoc()) {
-        if (_seenDocuments.end() != _seenDocuments.find(nextMember->loc)) {
+    if (_nextInterval->dedupCovering && nextMember->hasRecordId()) {
+        if (_seenDocuments.end() != _seenDocuments.find(nextMember->recordId)) {
             _workingSet->free(nextMemberID);
             return PlanStage::NEED_TIME;
         }
@@ -221,8 +212,8 @@ PlanStage::StageState NearStage::bufferNext(WorkingSetID* toReturn, Status* erro
     _resultBuffer.push(SearchResult(nextMemberID, memberDistance));
 
     // Store the member's RecordId, if available, for quick invalidation
-    if (nextMember->hasLoc()) {
-        _seenDocuments.insert(std::make_pair(nextMember->loc, nextMemberID));
+    if (nextMember->hasRecordId()) {
+        _seenDocuments.insert(std::make_pair(nextMember->recordId, nextMemberID));
     }
 
     return PlanStage::NEED_TIME;
@@ -244,8 +235,8 @@ PlanStage::StageState NearStage::advanceNext(WorkingSetID* toReturn) {
         // Throw out all documents with memberDistance < minDistance
         if (memberDistance < _nextInterval->minDistance) {
             WorkingSetMember* member = _workingSet->get(result.resultID);
-            if (member->hasLoc()) {
-                _seenDocuments.erase(member->loc);
+            if (member->hasRecordId()) {
+                _seenDocuments.erase(member->recordId);
             }
             _resultBuffer.pop();
             _workingSet->free(result.resultID);
@@ -278,8 +269,8 @@ PlanStage::StageState NearStage::advanceNext(WorkingSetID* toReturn) {
     // calls to invalidate don't cause us to take action for a RecordId we're done with.
     *toReturn = resultID;
     WorkingSetMember* member = _workingSet->get(*toReturn);
-    if (member->hasLoc()) {
-        _seenDocuments.erase(member->loc);
+    if (member->hasRecordId()) {
+        _seenDocuments.erase(member->recordId);
     }
 
     // This value is used by nextInterval() to determine the size of the next interval.
@@ -300,9 +291,9 @@ void NearStage::doInvalidate(OperationContext* txn, const RecordId& dl, Invalida
 
     if (seenIt != _seenDocuments.end()) {
         WorkingSetMember* member = _workingSet->get(seenIt->second);
-        verify(member->hasLoc());
-        WorkingSetCommon::fetchAndInvalidateLoc(txn, member, _collection);
-        verify(!member->hasLoc());
+        verify(member->hasRecordId());
+        WorkingSetCommon::fetchAndInvalidateRecordId(txn, member, _collection);
+        verify(!member->hasRecordId());
 
         // Don't keep it around in the seen map since there's no valid RecordId anymore
         _seenDocuments.erase(seenIt);

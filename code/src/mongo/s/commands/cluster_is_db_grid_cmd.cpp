@@ -29,7 +29,6 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/commands.h"
-#include "mongo/util/net/sock.h"
 
 namespace mongo {
 namespace {
@@ -38,7 +37,8 @@ class IsDbGridCmd : public Command {
 public:
     IsDbGridCmd() : Command("isdbgrid") {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 

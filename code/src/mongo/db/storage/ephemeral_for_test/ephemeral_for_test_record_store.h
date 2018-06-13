@@ -65,16 +65,17 @@ public:
                                               int len,
                                               bool enforceQuota);
 
-    virtual StatusWith<RecordId> insertRecord(OperationContext* txn,
-                                              const DocWriter* doc,
-                                              bool enforceQuota);
+    virtual Status insertRecordsWithDocWriter(OperationContext* txn,
+                                              const DocWriter* const* docs,
+                                              size_t nDocs,
+                                              RecordId* idsOut);
 
-    virtual StatusWith<RecordId> updateRecord(OperationContext* txn,
-                                              const RecordId& oldLocation,
-                                              const char* data,
-                                              int len,
-                                              bool enforceQuota,
-                                              UpdateNotifier* notifier);
+    virtual Status updateRecord(OperationContext* txn,
+                                const RecordId& oldLocation,
+                                const char* data,
+                                int len,
+                                bool enforceQuota,
+                                UpdateNotifier* notifier);
 
     virtual bool updateWithDamagesSupported() const;
 
@@ -92,8 +93,7 @@ public:
     virtual void temp_cappedTruncateAfter(OperationContext* txn, RecordId end, bool inclusive);
 
     virtual Status validate(OperationContext* txn,
-                            bool full,
-                            bool scanData,
+                            ValidateCmdLevel level,
                             ValidateAdaptor* adaptor,
                             ValidateResults* results,
                             BSONObjBuilder* output);
@@ -120,6 +120,8 @@ public:
 
     virtual boost::optional<RecordId> oplogStartHack(OperationContext* txn,
                                                      const RecordId& startingPosition) const;
+
+    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* txn) const override {}
 
     virtual void updateStatsAfterRepair(OperationContext* txn,
                                         long long numRecords,

@@ -31,9 +31,9 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/geo/geoconstants.h"
 #include "mongo/db/hasher.h"
-#include "mongo/db/index_names.h"
 #include "mongo/db/index/2d_common.h"
 #include "mongo/db/index/s2_common.h"
+#include "mongo/db/index_names.h"
 #include "mongo/util/mongoutils/str.h"
 #include "third_party/s2/s2.h"
 
@@ -123,8 +123,11 @@ void ExpressionParams::parseHaystackParams(const BSONObj& infoObj,
     }
 }
 
-void ExpressionParams::parse2dsphereParams(const BSONObj& infoObj, S2IndexingParams* out) {
+void ExpressionParams::initialize2dsphereParams(const BSONObj& infoObj,
+                                                const CollatorInterface* collator,
+                                                S2IndexingParams* out) {
     // Set up basic params.
+    out->collator = collator;
     out->maxKeysPerInsert = 200;
 
     // Near distances are specified in meters...sometimes.
@@ -189,8 +192,14 @@ void ExpressionParams::parse2dsphereParams(const BSONObj& infoObj, S2IndexingPar
 
     massert(17395,
             stream() << "unsupported geo index version { " << kIndexVersionFieldName << " : "
-                     << out->indexVersion << " }, only support versions: [" << S2_INDEX_VERSION_1
-                     << "," << S2_INDEX_VERSION_2 << "," << S2_INDEX_VERSION_3 << "]",
+                     << out->indexVersion
+                     << " }, only support versions: ["
+                     << S2_INDEX_VERSION_1
+                     << ","
+                     << S2_INDEX_VERSION_2
+                     << ","
+                     << S2_INDEX_VERSION_3
+                     << "]",
             out->indexVersion == S2_INDEX_VERSION_3 || out->indexVersion == S2_INDEX_VERSION_2 ||
                 out->indexVersion == S2_INDEX_VERSION_1);
 }

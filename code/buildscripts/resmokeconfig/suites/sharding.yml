@@ -2,8 +2,9 @@ selector:
   js_test:
     roots:
     - jstests/sharding/*.js
-    - jstests/sharding/replset_config/*.js
     exclude_files:
+    # TODO: Enable when SERVER-22672 is complete
+    - jstests/sharding/printShardingStatus.js
 
 executor:
   js_test:

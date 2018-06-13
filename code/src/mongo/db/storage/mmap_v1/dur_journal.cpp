@@ -38,26 +38,27 @@
 #include <boost/filesystem/operations.hpp>
 
 #include "mongo/base/init.h"
+#include "mongo/base/static_assert.h"
 #include "mongo/config.h"
 #include "mongo/db/client.h"
-#include "mongo/db/storage/mmap_v1/mmap.h"
 #include "mongo/db/storage/mmap_v1/aligned_builder.h"
 #include "mongo/db/storage/mmap_v1/compress.h"
 #include "mongo/db/storage/mmap_v1/dur_journalformat.h"
 #include "mongo/db/storage/mmap_v1/dur_journalimpl.h"
 #include "mongo/db/storage/mmap_v1/dur_stats.h"
 #include "mongo/db/storage/mmap_v1/logfile.h"
+#include "mongo/db/storage/mmap_v1/mmap.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/db/storage/paths.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/platform/random.h"
 #include "mongo/util/checksum.h"
+#include "mongo/util/clock_source.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/file.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
-#include "mongo/util/net/listen.h"  // getelapsedtimemillis
 #include "mongo/util/progress_meter.h"
 #include "mongo/util/timer.h"
 
@@ -96,12 +97,12 @@ MONGO_INITIALIZER(InitializeJournalingParams)(InitializerContext* context) {
     return Status::OK();
 }
 
-static_assert(sizeof(Checksum) == 16, "sizeof(Checksum) == 16");
-static_assert(sizeof(JHeader) == 8192, "sizeof(JHeader) == 8192");
-static_assert(sizeof(JSectHeader) == 20, "sizeof(JSectHeader) == 20");
-static_assert(sizeof(JSectFooter) == 32, "sizeof(JSectFooter) == 32");
-static_assert(sizeof(JEntry) == 12, "sizeof(JEntry) == 12");
-static_assert(sizeof(LSNFile) == 88, "sizeof(LSNFile) == 88");
+MONGO_STATIC_ASSERT(sizeof(Checksum) == 16);
+MONGO_STATIC_ASSERT(sizeof(JHeader) == 8192);
+MONGO_STATIC_ASSERT(sizeof(JSectHeader) == 20);
+MONGO_STATIC_ASSERT(sizeof(JSectFooter) == 32);
+MONGO_STATIC_ASSERT(sizeof(JEntry) == 12);
+MONGO_STATIC_ASSERT(sizeof(LSNFile) == 88);
 
 bool usingPreallocate = false;
 
@@ -125,7 +126,7 @@ void journalingFailure(const char* msg) {
         (2) make an indicator in the journal dir that something bad happened.
         (2b) refuse to do a recovery startup if that is there without manual override.
     */
-    log() << "journaling failure/error: " << msg << endl;
+    log() << "journaling failure/error: " << redact(msg) << endl;
     verify(false);
 }
 
@@ -193,11 +194,7 @@ Journal j;
 
 const unsigned long long LsnShutdownSentinel = ~((unsigned long long)0);
 
-Journal::Journal() {
-    _written = 0;
-    _nextFileNumber = 0;
-    _curLogFile = 0;
-    _curFileId = 0;
+Journal::Journal() : _written(0), _nextFileNumber(0), _curLogFile(0), _curFileId(0) {
     _lastSeqNumberWrittenToSharedView.store(0);
     _preFlushTime.store(0);
     _lastFlushTime.store(0);
@@ -212,7 +209,7 @@ boost::filesystem::path Journal::getFilePathFor(int filenumber) const {
 
 /** never throws
     @param anyFiles by default we only look at j._* files. If anyFiles is true, return true
-           if there are any files in the journal directory. acquirePathLock() uses this to
+           if there are any files in the journal directory. checkForUncleanShutdown() uses this to
            make sure that the journal directory is mounted.
     @return true if journal dir is not empty
 */
@@ -461,6 +458,8 @@ void removeOldJournalFile(boost::filesystem::path p) {
                         f.truncate(DataLimitPerJournalFile);
                         f.fsync();
                     }
+                    log() << "old journal file " << p.string() << " will be reused as "
+                          << filepath.string();
                     boost::filesystem::rename(temppath, filepath);
                     return;
                 }
@@ -474,6 +473,7 @@ void removeOldJournalFile(boost::filesystem::path p) {
 
     // already have 3 prealloc files, so delete this file
     try {
+        log() << "old journal file will be removed: " << p.string() << endl;
         boost::filesystem::remove(p);
     } catch (const std::exception& e) {
         log() << "warning exception removing " << p.string() << ": " << e.what() << endl;
@@ -495,8 +495,8 @@ boost::filesystem::path findPrealloced() {
 }
 
 /** assure journal/ dir exists. throws. call during startup. */
-void journalMakeDir() {
-    j.init();
+void journalMakeDir(ClockSource* cs, int64_t serverStartMs) {
+    j.init(cs, serverStartMs);
 
     boost::filesystem::path p = getJournalDir();
     j.dir = p.string();
@@ -549,8 +549,10 @@ void Journal::_open() {
     }
 }
 
-void Journal::init() {
+void Journal::init(ClockSource* cs, int64_t serverStartMs) {
     verify(_curLogFile == 0);
+    _clock = cs;
+    _serverStartMs = serverStartMs;
 }
 
 void Journal::open() {
@@ -568,10 +570,10 @@ void LSNFile::set(unsigned long long x) {
     if something highly surprising, throws to abort
 */
 unsigned long long LSNFile::get() {
-    uassert(
-        13614,
-        str::stream() << "unexpected version number of lsn file in journal/ directory got: " << ver,
-        ver == 0);
+    uassert(13614,
+            str::stream() << "unexpected version number of lsn file in journal/ directory got: "
+                          << ver,
+            ver == 0);
     if (~lsn != checkbytes) {
         log() << "lsnfile not valid. recovery will be from log start. lsn: " << hex << lsn
               << " checkbytes: " << hex << checkbytes << endl;
@@ -658,8 +660,9 @@ stdx::mutex lastGeneratedSeqNumberMutex;
 uint64_t lastGeneratedSeqNumber = 0;
 }
 
-uint64_t generateNextSeqNumber() {
-    const uint64_t now = Listener::getElapsedTimeMillis();
+uint64_t generateNextSeqNumber(ClockSource* cs, int64_t serverStartMs) {
+    const uint64_t now = cs->now().toMillisSinceEpoch() - serverStartMs;
+
     stdx::lock_guard<stdx::mutex> lock(lastGeneratedSeqNumberMutex);
     if (now > lastGeneratedSeqNumber) {
         lastGeneratedSeqNumber = now;
@@ -690,7 +693,7 @@ void Journal::closeCurrentJournalFile() {
 
     JFile jf;
     jf.filename = _curLogFile->_name;
-    jf.lastEventTimeMs = generateNextSeqNumber();
+    jf.lastEventTimeMs = generateNextSeqNumber(_clock, _serverStartMs);
     _oldJournalFiles.push_back(jf);
 
     delete _curLogFile;  // close
@@ -712,7 +715,6 @@ void Journal::removeUnneededJournalFiles() {
         if (f.lastEventTimeMs + ExtraKeepTimeMs < _lastFlushTime.load()) {
             // eligible for deletion
             boost::filesystem::path p(f.filename);
-            log() << "old journal file will be removed: " << f.filename << endl;
             removeOldJournalFile(p);
         } else {
             break;

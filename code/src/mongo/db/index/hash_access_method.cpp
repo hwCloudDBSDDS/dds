@@ -26,10 +26,10 @@
 *    it in the license file.
 */
 
+#include "mongo/db/index/hash_access_method.h"
 #include "mongo/db/hasher.h"
 #include "mongo/db/index/expression_keys_private.h"
 #include "mongo/db/index/expression_params.h"
-#include "mongo/db/index/hash_access_method.h"
 
 namespace mongo {
 
@@ -47,11 +47,15 @@ HashAccessMethod::HashAccessMethod(IndexCatalogEntry* btreeState, SortedDataInte
             !descriptor->unique());
 
     ExpressionParams::parseHashParams(descriptor->infoObj(), &_seed, &_hashVersion, &_hashedField);
+
+    _collator = btreeState->getCollator();
 }
 
-void HashAccessMethod::getKeys(const BSONObj& obj, BSONObjSet* keys) const {
+void HashAccessMethod::doGetKeys(const BSONObj& obj,
+                                 BSONObjSet* keys,
+                                 MultikeyPaths* multikeyPaths) const {
     ExpressionKeysPrivate::getHashKeys(
-        obj, _hashedField, _seed, _hashVersion, _descriptor->isSparse(), keys);
+        obj, _hashedField, _seed, _hashVersion, _descriptor->isSparse(), _collator, keys);
 }
 
 }  // namespace mongo

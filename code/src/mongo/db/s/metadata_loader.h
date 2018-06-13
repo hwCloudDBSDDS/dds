@@ -31,15 +31,12 @@
 #include <string>
 
 #include "mongo/base/status.h"
-#include "mongo/client/dbclientinterface.h"
-#include "mongo/db/jsobj.h"
 
 namespace mongo {
 
-class CatalogManager;
+class ShardingCatalogClient;
 class CollectionMetadata;
 class CollectionType;
-class DBClientCursor;
 class OperationContext;
 
 /**
@@ -57,20 +54,14 @@ class OperationContext;
  * remoteMetadata = makeCollectionMetadata( beforeMetadata, remoteMetadata );
  * DBLock lock(txn, dbname, MODE_X);
  * afterMetadata = <get latest local metadata>;
- * promotePendingChunks( afterMetadata, remoteMetadata );
  *
  * The loader will go out of its way to try to fetch the smaller amount possible of data
  * from the config server without sacrificing the freshness and accuracy of the metadata it
  * builds. (See ConfigDiffTracker class.)
  *
- * The class is not thread safe.
  */
 class MetadataLoader {
 public:
-    explicit MetadataLoader();
-
-    ~MetadataLoader();
-
     /**
      * Fills a new metadata instance representing the chunkset of the collection 'ns'
      * (or its entirety, if not sharded) that lives on 'shard' with data from the config server.
@@ -90,36 +81,12 @@ public:
      * @return HostUnreachable if there was an error contacting the config servers
      * @return RemoteChangeDetected if the data loaded was modified by another operation
      */
-    Status makeCollectionMetadata(OperationContext* txn,
-                                  CatalogManager* catalogManager,
-                                  const std::string& ns,
-                                  const std::string& shard,
-                                  const CollectionMetadata* oldMetadata,
-                                  CollectionMetadata* metadata) const;
-
-    /**
-     * Replaces the pending chunks of the remote metadata with the more up-to-date pending
-     * chunks of the 'after' metadata (metadata from after the remote load), and removes pending
-     * chunks which are now regular chunks.
-     *
-     * Pending chunks should always correspond to one or zero chunks in the remoteMetadata
-     * if the epochs are the same and the remote version is the same or higher, otherwise they
-     * are not applicable.
-     *
-     * Locking note:
-     *    + Must be called in a DBLock, to ensure validity of afterMetadata
-     *
-     * Returns OK if pending chunks correctly follow the rule above or are not applicable
-     * Returns RemoteChangeDetected if pending chunks do not follow the rule above, indicating
-     *                              either the config server or us has changed unexpectedly.
-     *                              This should only occur with manual editing of the config
-     *                              server.
-     *
-     * TODO:  This is a bit ugly but necessary for now.  If/when pending chunk info is stored on
-     * the config server, this should go away.
-     */
-    Status promotePendingChunks(const CollectionMetadata* afterMetadata,
-                                CollectionMetadata* remoteMetadata) const;
+    static Status makeCollectionMetadata(OperationContext* txn,
+                                         ShardingCatalogClient* catalogClient,
+                                         const std::string& ns,
+                                         const std::string& shard,
+                                         const CollectionMetadata* oldMetadata,
+                                         CollectionMetadata* metadata);
 
 private:
     /**
@@ -133,11 +100,11 @@ private:
      * @return RemoteChangeDetected if the collection doc loaded is unexpectedly different
      *
      */
-    Status _initCollection(OperationContext* txn,
-                           CatalogManager* catalogManager,
-                           const std::string& ns,
-                           const std::string& shard,
-                           CollectionMetadata* metadata) const;
+    static Status _initCollection(OperationContext* txn,
+                                  ShardingCatalogClient* catalogClient,
+                                  const std::string& ns,
+                                  const std::string& shard,
+                                  CollectionMetadata* metadata);
 
     /**
      * Returns OK and fills in the chunk state of 'metadata' to portray the chunks of the
@@ -152,12 +119,12 @@ private:
      * @return NamespaceNotFound if there are no chunks loaded and an epoch change is detected
      * TODO: @return FailedToParse
      */
-    Status initChunks(OperationContext* txn,
-                      CatalogManager* catalogManager,
-                      const std::string& ns,
-                      const std::string& shard,
-                      const CollectionMetadata* oldMetadata,
-                      CollectionMetadata* metadata) const;
+    static Status _initChunks(OperationContext* txn,
+                              ShardingCatalogClient* catalogClient,
+                              const std::string& ns,
+                              const std::string& shard,
+                              const CollectionMetadata* oldMetadata,
+                              CollectionMetadata* metadata);
 };
 
 }  // namespace mongo

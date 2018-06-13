@@ -28,13 +28,21 @@
 
 #pragma once
 
+#include <memory>
+
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
-#include "mongo/db/storage/recovery_unit.h"
+#include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/storage/recovery_unit.h"
+#include "mongo/db/storage/storage_options.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/platform/atomic_word.h"
+#include "mongo/stdx/condition_variable.h"
+#include "mongo/stdx/mutex.h"
 #include "mongo/util/decorable.h"
+#include "mongo/util/time_support.h"
+#include "mongo/util/timer.h"
 
 namespace mongo {
 
@@ -75,7 +83,9 @@ public:
     /**
      * Interface for durability.  Caller DOES NOT own pointer.
      */
-    virtual RecoveryUnit* recoveryUnit() const = 0;
+    RecoveryUnit* recoveryUnit() const {
+        return _recoveryUnit.get();
+    }
 
     /**
      * Returns the RecoveryUnit (same return value as recoveryUnit()) but the caller takes
@@ -89,7 +99,7 @@ public:
      * We rely on active cursors being killed when collections or databases are dropped,
      * or when collection metadata changes.
      */
-    virtual RecoveryUnit* releaseRecoveryUnit() = 0;
+    RecoveryUnit* releaseRecoveryUnit();
 
     /**
      * Associates the OperatingContext with a different RecoveryUnit for getMore or
@@ -97,26 +107,106 @@ public:
      * returned separately even though the state logically belongs to the RecoveryUnit,
      * as it is managed by the OperationContext.
      */
-    virtual RecoveryUnitState setRecoveryUnit(RecoveryUnit* unit, RecoveryUnitState state) = 0;
+    RecoveryUnitState setRecoveryUnit(RecoveryUnit* unit, RecoveryUnitState state);
 
     /**
      * Interface for locking.  Caller DOES NOT own pointer.
      */
     Locker* lockState() const {
-        return _locker;
+        return _locker.get();
     }
 
-    // --- operation level info? ---
+    /**
+     * Sets the locker for use by this OperationContext. Call during OperationContext
+     * initialization, only.
+     */
+    void setLockState(std::unique_ptr<Locker> locker);
 
     /**
-     * Raises a UserAssertion if this operation is in a killed state.
+     * Releases the locker to the caller. Call during OperationContext cleanup or initialization,
+     * only.
      */
-    virtual void checkForInterrupt() = 0;
+    std::unique_ptr<Locker> releaseLockState();
+
+    /**
+     * Raises a UserException if this operation is in a killed state.
+     */
+    void checkForInterrupt();
 
     /**
      * Returns Status::OK() unless this operation is in a killed state.
      */
-    virtual Status checkForInterruptNoAssert() = 0;
+    Status checkForInterruptNoAssert();
+
+    /**
+     * Waits for either the condition "cv" to be signaled, this operation to be interrupted, or the
+     * deadline on this operation to expire.  In the event of interruption or operation deadline
+     * expiration, raises a UserException with an error code indicating the interruption type.
+     */
+    void waitForConditionOrInterrupt(stdx::condition_variable& cv,
+                                     stdx::unique_lock<stdx::mutex>& m);
+
+    /**
+     * Waits on condition "cv" for "pred" until "pred" returns true, or this operation
+     * is interrupted or its deadline expires. Throws a DBException for interruption and
+     * deadline expiration.
+     */
+    template <typename Pred>
+    void waitForConditionOrInterrupt(stdx::condition_variable& cv,
+                                     stdx::unique_lock<stdx::mutex>& m,
+                                     Pred pred) {
+        while (!pred()) {
+            waitForConditionOrInterrupt(cv, m);
+        }
+    }
+
+    /**
+     * Same as waitForConditionOrInterrupt, except returns a Status instead of throwing
+     * a DBException to report interruption.
+     */
+    Status waitForConditionOrInterruptNoAssert(stdx::condition_variable& cv,
+                                               stdx::unique_lock<stdx::mutex>& m) noexcept;
+
+    /**
+     * Waits for condition "cv" to be signaled, or for the given "deadline" to expire, or
+     * for the operation to be interrupted, or for the operation's own deadline to expire.
+     *
+     * If the operation deadline expires or the operation is interrupted, throws a DBException.  If
+     * the given "deadline" expires, returns cv_status::timeout. Otherwise, returns
+     * cv_status::no_timeout.
+     */
+    stdx::cv_status waitForConditionOrInterruptUntil(stdx::condition_variable& cv,
+                                                     stdx::unique_lock<stdx::mutex>& m,
+                                                     Date_t deadline);
+
+    /**
+     * Waits on condition "cv" for "pred" until "pred" returns true, or the given "deadline"
+     * expires, or this operation is interrupted, or this operation's own deadline expires.
+     *
+     *
+     * If the operation deadline expires or the operation is interrupted, throws a DBException.  If
+     * the given "deadline" expires, returns cv_status::timeout. Otherwise, returns
+     * cv_status::no_timeout indicating that "pred" finally returned true.
+     */
+    template <typename Pred>
+    stdx::cv_status waitForConditionOrInterruptUntil(stdx::condition_variable& cv,
+                                                     stdx::unique_lock<stdx::mutex>& m,
+                                                     Date_t deadline,
+                                                     Pred pred) {
+        while (!pred()) {
+            if (stdx::cv_status::timeout == waitForConditionOrInterruptUntil(cv, m, deadline)) {
+                return stdx::cv_status::timeout;
+            }
+        }
+        return stdx::cv_status::no_timeout;
+    }
+
+    /**
+     * Same as waitForConditionOrInterruptUntil, except returns StatusWith<stdx::cv_status> and
+     * non-ok status indicates the error instead of a DBException.
+     */
+    StatusWith<stdx::cv_status> waitForConditionOrInterruptNoAssertUntil(
+        stdx::condition_variable& cv, stdx::unique_lock<stdx::mutex>& m, Date_t deadline) noexcept;
 
     /**
      * Delegates to CurOp, but is included here to break dependencies.
@@ -130,23 +220,18 @@ public:
                                              int secondsBetween = 3) = 0;
 
     /**
-     * Delegates to CurOp, but is included here to break dependencies.
-     *
-     * TODO: We return a string because of hopefully transient CurOp thread-unsafe insanity.
-     */
-    virtual std::string getNS() const = 0;
-
-    /**
      * Returns the service context under which this operation context runs.
      */
-    ServiceContext* getServiceContext() const;
+    ServiceContext* getServiceContext() const {
+        return _client->getServiceContext();
+    }
 
     /**
      * Returns the client under which this context runs.
      */
-    Client* getClient() const;
-
-    virtual uint64_t getRemainingMaxTimeMicros() const = 0;
+    Client* getClient() const {
+        return _client;
+    }
 
     /**
      * Returns the operation ID associated with this operation.
@@ -154,11 +239,6 @@ public:
     unsigned int getOpID() const {
         return _opId;
     }
-
-    /**
-     * @return true if this instance is primary for this namespace
-     */
-    virtual bool isPrimaryFor(StringData ns) = 0;
 
     /**
      * Returns WriteConcernOptions of the current operation
@@ -173,23 +253,29 @@ public:
 
     /**
      * Set whether or not operations should generate oplog entries.
+     * TODO SERVER-26965: Make this private.
      */
-    virtual void setReplicatedWrites(bool writesAreReplicated = true) = 0;
+    void setReplicatedWrites(bool writesAreReplicated = true) {
+        _writesAreReplicated = writesAreReplicated;
+    }
 
     /**
      * Returns true if operations should generate oplog entries.
      */
-    virtual bool writesAreReplicated() const = 0;
+    bool writesAreReplicated() const {
+        return _writesAreReplicated;
+    }
 
     /**
      * Marks this operation as killed so that subsequent calls to checkForInterrupt and
      * checkForInterruptNoAssert by the thread executing the operation will start returning the
      * specified error code.
      *
-     * If multiple threads kill the same operation with different codes, only the first code will
-     * be preserved.
+     * If multiple threads kill the same operation with different codes, only the first code
+     * will be preserved.
      *
-     * May be called by any thread that has locked the Client owning this operation context.
+     * May be called by any thread that has locked the Client owning this operation context, or
+     * by the thread executing this on behalf of this OperationContext.
      */
     void markKilled(ErrorCodes::Error killCode = ErrorCodes::Interrupted);
 
@@ -200,7 +286,9 @@ public:
      * May be called by any thread that has locked the Client owning this operation context, or
      * without lock by the thread executing on behalf of this operation context.
      */
-    ErrorCodes::Error getKillStatus() const;
+    ErrorCodes::Error getKillStatus() const {
+        return _killCode.loadRelaxed();
+    }
 
     /**
      * Shortcut method, which checks whether getKillStatus returns a non-OK value. Has the same
@@ -210,25 +298,127 @@ public:
         return getKillStatus() != ErrorCodes::OK;
     }
 
-protected:
-    OperationContext(Client* client, unsigned int opId, Locker* locker);
+    /**
+     * Returns the amount of time since the operation was constructed. Uses the system's most
+     * precise tick source, and may not be cheap to call in a tight loop.
+     */
+    Microseconds getElapsedTime() const {
+        return _elapsedTime.elapsed();
+    }
 
-    RecoveryUnitState _ruState = kNotInUnitOfWork;
+    /**
+     * Sets the deadline for this operation to the given point in time.
+     *
+     * To remove a deadline, pass in Date_t::max().
+     */
+    void setDeadlineByDate(Date_t when);
+
+    /**
+     * Sets the deadline for this operation to the maxTime plus the current time reported
+     * by the ServiceContext's fast clock source.
+     */
+    void setDeadlineAfterNowBy(Microseconds maxTime);
+    template <typename D>
+    void setDeadlineAfterNowBy(D maxTime) {
+        if (maxTime <= D::zero()) {
+            maxTime = D::zero();
+        }
+        if (maxTime <= Microseconds::max()) {
+            setDeadlineAfterNowBy(duration_cast<Microseconds>(maxTime));
+        } else {
+            setDeadlineByDate(Date_t::max());
+        }
+    }
+
+    /**
+     * Returns true if this operation has a deadline.
+     */
+    bool hasDeadline() const {
+        return getDeadline() < Date_t::max();
+    }
+
+    /**
+     * Returns the deadline for this operation, or Date_t::max() if there is no deadline.
+     */
+    Date_t getDeadline() const {
+        return _deadline;
+    }
+
+    /**
+     * Returns the number of milliseconds remaining for this operation's time limit or
+     * Milliseconds::max() if the operation has no time limit.
+     */
+    Milliseconds getRemainingMaxTimeMillis() const;
+
+    /**
+     * NOTE: This is a legacy "max time" method for controlling operation deadlines and it should
+     * not be used in new code. Use getRemainingMaxTimeMillis instead.
+     *
+     * Returns the number of microseconds remaining for this operation's time limit, or the special
+     * value Microseconds::max() if the operation has no time limit.
+     */
+    Microseconds getRemainingMaxTimeMicros() const;
+
+protected:
+    OperationContext(Client* client, unsigned int opId);
 
 private:
+    /**
+     * Returns true if this operation has a deadline and it has passed according to the fast clock
+     * on ServiceContext.
+     */
+    bool hasDeadlineExpired() const;
+
+    /**
+     * Sets the deadline and maxTime as described. It is up to the caller to ensure that
+     * these correctly correspond.
+     */
+    void setDeadlineAndMaxTime(Date_t when, Microseconds maxTime);
+
     friend class WriteUnitOfWork;
     Client* const _client;
     const unsigned int _opId;
 
-    // Not owned.
-    Locker* const _locker;
+    std::unique_ptr<Locker> _locker;
+
+    std::unique_ptr<RecoveryUnit> _recoveryUnit;
+    RecoveryUnitState _ruState = kNotInUnitOfWork;
 
     // Follows the values of ErrorCodes::Error. The default value is 0 (OK), which means the
     // operation is not killed. If killed, it will contain a specific code. This value changes only
     // once from OK to some kill code.
     AtomicWord<ErrorCodes::Error> _killCode{ErrorCodes::OK};
 
+
+    // If non-null, _waitMutex and _waitCV are the (mutex, condition variable) pair that the
+    // operation is currently waiting on inside a call to waitForConditionOrInterrupt...().
+    // All access guarded by the Client's lock.
+    stdx::mutex* _waitMutex = nullptr;
+    stdx::condition_variable* _waitCV = nullptr;
+
+    // If _waitMutex and _waitCV are non-null, this is the number of threads in a call to markKilled
+    // actively attempting to kill the operation. If this value is non-zero, the operation is inside
+    // waitForConditionOrInterrupt...() and must stay there until _numKillers reaches 0.
+    //
+    // All access guarded by the Client's lock.
+    int _numKillers = 0;
+
     WriteConcernOptions _writeConcern;
+
+    Date_t _deadline =
+        Date_t::max();  // The timepoint at which this operation exceeds its time limit.
+
+    // Max operation time requested by the user or by the cursor in the case of a getMore with no
+    // user-specified maxTime. This is tracked with microsecond granularity for the purpose of
+    // assigning unused execution time back to a cursor at the end of an operation, only. The
+    // _deadline and the service context's fast clock are the only values consulted for determining
+    // if the operation's timelimit has been exceeded.
+    Microseconds _maxTime = Microseconds::max();
+
+    // Timer counting the elapsed time since the construction of this OperationContext.
+    Timer _elapsedTime;
+
+    bool _writesAreReplicated = true;
 };
 
 class WriteUnitOfWork {
@@ -239,6 +429,9 @@ public:
         : _txn(txn),
           _committed(false),
           _toplevel(txn->_ruState == OperationContext::kNotInUnitOfWork) {
+        uassert(ErrorCodes::IllegalOperation,
+                "Cannot execute a write operation in read-only mode",
+                !storageGlobalParams.readOnly);
         _txn->lockState()->beginWriteUnitOfWork();
         if (_toplevel) {
             _txn->recoveryUnit()->beginUnitOfWork(_txn);
@@ -247,6 +440,7 @@ public:
     }
 
     ~WriteUnitOfWork() {
+        dassert(!storageGlobalParams.readOnly);
         if (!_committed) {
             invariant(_txn->_ruState != OperationContext::kNotInUnitOfWork);
             if (_toplevel) {
@@ -307,5 +501,29 @@ public:
 private:
     OperationContext* _txn;
 };
+
+namespace repl {
+/**
+ * RAII-style class to turn off replicated writes. Writes do not create oplog entries while the
+ * object is in scope.
+ */
+class UnreplicatedWritesBlock {
+    MONGO_DISALLOW_COPYING(UnreplicatedWritesBlock);
+
+public:
+    UnreplicatedWritesBlock(OperationContext* txn)
+        : _txn(txn), _shouldReplicateWrites(txn->writesAreReplicated()) {
+        txn->setReplicatedWrites(false);
+    }
+
+    ~UnreplicatedWritesBlock() {
+        _txn->setReplicatedWrites(_shouldReplicateWrites);
+    }
+
+private:
+    OperationContext* _txn;
+    const bool _shouldReplicateWrites;
+};
+}  // namespace repl
 
 }  // namespace mongo

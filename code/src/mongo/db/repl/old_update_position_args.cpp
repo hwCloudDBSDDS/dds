@@ -34,10 +34,18 @@
 #include "mongo/bson/util/bson_check.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/repl/bson_extract_optime.h"
 
 namespace mongo {
 namespace repl {
 
+const char OldUpdatePositionArgs::kCommandFieldName[] = "replSetUpdatePosition";
+const char OldUpdatePositionArgs::kUpdateArrayFieldName[] = "optimes";
+const char OldUpdatePositionArgs::kMemberRIDFieldName[] = "_id";
+const char OldUpdatePositionArgs::kMemberConfigFieldName[] = "config";
+const char OldUpdatePositionArgs::kOpTimeFieldName[] = "optime";
+const char OldUpdatePositionArgs::kMemberIdFieldName[] = "memberId";
+const char OldUpdatePositionArgs::kConfigVersionFieldName[] = "cfgver";
 
 OldUpdatePositionArgs::UpdateInfo::UpdateInfo(const OID& anRid,
                                               const OpTime& aTs,
@@ -47,25 +55,16 @@ OldUpdatePositionArgs::UpdateInfo::UpdateInfo(const OID& anRid,
 
 namespace {
 
-const std::string kCommandFieldName = "replSetUpdatePosition";
-const std::string kUpdateArrayFieldName = "optimes";
-
 const std::string kLegalUpdatePositionFieldNames[] = {
-    kCommandFieldName, kUpdateArrayFieldName,
+    OldUpdatePositionArgs::kCommandFieldName, OldUpdatePositionArgs::kUpdateArrayFieldName,
 };
 
-const std::string kMemberRIDFieldName = "_id";
-const std::string kMemberConfigFieldName = "config";
-const std::string kOpTimeFieldName = "optime";
-const std::string kMemberIdFieldName = "memberId";
-const std::string kConfigVersionFieldName = "cfgver";
-
 const std::string kLegalUpdateInfoFieldNames[] = {
-    kMemberConfigFieldName,
-    kMemberRIDFieldName,
-    kOpTimeFieldName,
-    kMemberIdFieldName,
-    kConfigVersionFieldName,
+    OldUpdatePositionArgs::kMemberConfigFieldName,
+    OldUpdatePositionArgs::kMemberRIDFieldName,
+    OldUpdatePositionArgs::kOpTimeFieldName,
+    OldUpdatePositionArgs::kMemberIdFieldName,
+    OldUpdatePositionArgs::kConfigVersionFieldName,
 };
 
 }  // namespace
@@ -142,8 +141,10 @@ BSONObj OldUpdatePositionArgs::toBSON() const {
              ++update) {
             updateArray.append(BSON(kMemberRIDFieldName << update->rid << kOpTimeFieldName
                                                         << update->ts.getTimestamp()
-                                                        << kConfigVersionFieldName << update->cfgver
-                                                        << kMemberIdFieldName << update->memberId));
+                                                        << kConfigVersionFieldName
+                                                        << update->cfgver
+                                                        << kMemberIdFieldName
+                                                        << update->memberId));
         }
         updateArray.doneFast();
     }

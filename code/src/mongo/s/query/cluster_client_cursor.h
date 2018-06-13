@@ -31,10 +31,12 @@
 #include <boost/optional.hpp>
 
 #include "mongo/db/jsobj.h"
+#include "mongo/s/query/cluster_query_result.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
 
+class OperationContext;
 template <typename T>
 class StatusWith;
 
@@ -57,12 +59,12 @@ public:
      * Returns the next available result document (along with an ok status). May block waiting
      * for results from remote nodes.
      *
-     * If there are no further results, the end of the stream is indicated with boost::none and
-     * an ok status.
+     * If there are no further results, the end of the stream is indicated with an empty
+     * QueryResult and an ok status.
      *
      * A non-ok status is returned in case of any error.
      */
-    virtual StatusWith<boost::optional<BSONObj>> next() = 0;
+    virtual StatusWith<ClusterQueryResult> next() = 0;
 
     /**
      * Must be called before destruction to abandon a not-yet-exhausted cursor. If next() has
@@ -83,14 +85,15 @@ public:
     virtual long long getNumReturnedSoFar() const = 0;
 
     /**
-     * Stash the BSONObj so that it gets returned from the CCC on a later call to next().
+     * Stash the ClusterQueryResult so that it gets returned from the CCC on a later call to
+     * next().
      *
      * Queued documents are returned in FIFO order. The queued results are exhausted before
      * generating further results from the underlying mongos query stages.
      *
      * 'obj' must be owned BSON.
      */
-    virtual void queueResult(const BSONObj& obj) = 0;
+    virtual void queueResult(const ClusterQueryResult& result) = 0;
 
     /**
      * Returns whether or not all the remote cursors underlying this cursor have been exhausted.
@@ -105,6 +108,13 @@ public:
      * the cursor is not tailable + awaitData).
      */
     virtual Status setAwaitDataTimeout(Milliseconds awaitDataTimeout) = 0;
+
+    /**
+     * Update the operation context for remote requests.
+     *
+     * Network requests depend on having a valid operation context for user initiated actions.
+     */
+    virtual void setOperationContext(OperationContext* txn) = 0;
 };
 
 }  // namespace mongo

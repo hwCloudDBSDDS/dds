@@ -119,7 +119,7 @@ class StageDebugCmd : public Command {
 public:
     StageDebugCmd() : Command("stageDebug") {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     bool slaveOk() const {
@@ -154,20 +154,24 @@ public:
         if (collElt.eoo() || (String != collElt.type())) {
             return false;
         }
-        string collName = collElt.String();
+
+        const NamespaceString nss(dbname, collElt.String());
+        uassert(ErrorCodes::InvalidNamespace,
+                str::stream() << nss.toString() << " is not a valid namespace",
+                nss.isValid());
 
         // Need a context to get the actual Collection*
         // TODO A write lock is currently taken here to accommodate stages that perform writes
         //      (e.g. DeleteStage).  This should be changed to use a read lock for read-only
         //      execution trees.
         ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock lk(txn->lockState(), dbname, MODE_X);
-        OldClientContext ctx(txn, dbname);
+        AutoGetCollection autoColl(txn, nss, MODE_IX);
 
         // Make sure the collection is valid.
-        Database* db = ctx.db();
-        Collection* collection = db->getCollection(db->name() + '.' + collName);
-        uassert(17446, "Couldn't find the collection " + collName, NULL != collection);
+        Collection* collection = autoColl.getCollection();
+        uassert(ErrorCodes::NamespaceNotFound,
+                str::stream() << "Couldn't find collection " << nss.ns(),
+                collection);
 
         // Pull out the plan
         BSONElement planElt = argObj["plan"];
@@ -206,14 +210,14 @@ public:
         if (PlanExecutor::FAILURE == state || PlanExecutor::DEAD == state) {
             error() << "Plan executor error during StageDebug command: "
                     << PlanExecutor::statestr(state)
-                    << ", stats: " << Explain::getWinningPlanStats(exec.get());
+                    << ", stats: " << redact(Explain::getWinningPlanStats(exec.get()));
 
-            return appendCommandStatus(
-                result,
-                Status(ErrorCodes::OperationFailed,
-                       str::stream()
-                           << "Executor error during "
-                           << "StageDebug command: " << WorkingSetCommon::toStatusString(obj)));
+            return appendCommandStatus(result,
+                                       Status(ErrorCodes::OperationFailed,
+                                              str::stream()
+                                                  << "Executor error during "
+                                                  << "StageDebug command: "
+                                                  << WorkingSetCommon::toStatusString(obj)));
         }
 
         return true;
@@ -245,8 +249,9 @@ public:
             }
             BSONObj argObj = e.Obj();
             if (filterTag == e.fieldName()) {
+                const CollatorInterface* collator = nullptr;
                 StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
-                    argObj, ExtensionsCallbackReal(txn, &collection->ns()));
+                    argObj, ExtensionsCallbackReal(txn, &collection->ns()), collator);
                 if (!statusWithMatcher.isOK()) {
                     return NULL;
                 }
@@ -268,19 +273,41 @@ public:
         string nodeName = firstElt.fieldName();
 
         if ("ixscan" == nodeName) {
-            // This'll throw if it's not an obj but that's OK.
-            BSONObj keyPatternObj = nodeArgs["keyPattern"].Obj();
-
-            IndexDescriptor* desc =
-                collection->getIndexCatalog()->findIndexByKeyPattern(txn, keyPatternObj);
-            uassert(16890, "Can't find index: " + keyPatternObj.toString(), desc);
+            IndexDescriptor* desc;
+            if (BSONElement keyPatternElement = nodeArgs["keyPattern"]) {
+                // This'll throw if it's not an obj but that's OK.
+                BSONObj keyPatternObj = keyPatternElement.Obj();
+                std::vector<IndexDescriptor*> indexes;
+                collection->getIndexCatalog()->findIndexesByKeyPattern(
+                    txn, keyPatternObj, false, &indexes);
+                uassert(16890,
+                        str::stream() << "Can't find index: " << keyPatternObj,
+                        !indexes.empty());
+                uassert(ErrorCodes::AmbiguousIndexKeyPattern,
+                        str::stream() << indexes.size() << " matching indexes for key pattern: "
+                                      << keyPatternObj
+                                      << ". Conflicting indexes: "
+                                      << indexes[0]->infoObj()
+                                      << ", "
+                                      << indexes[1]->infoObj(),
+                        indexes.size() == 1);
+                desc = indexes[0];
+            } else {
+                uassert(40306,
+                        str::stream() << "Index 'name' must be a string in: " << nodeArgs,
+                        nodeArgs["name"].type() == BSONType::String);
+                StringData name = nodeArgs["name"].valueStringData();
+                desc = collection->getIndexCatalog()->findIndexByName(txn, name);
+                uassert(40223, str::stream() << "Can't find index: " << name.toString(), desc);
+            }
 
             IndexScanParams params;
             params.descriptor = desc;
             params.bounds.isSimpleRange = true;
             params.bounds.startKey = stripFieldNames(nodeArgs["startKey"].Obj());
             params.bounds.endKey = stripFieldNames(nodeArgs["endKey"].Obj());
-            params.bounds.endKeyInclusive = nodeArgs["endKeyInclusive"].Bool();
+            params.bounds.boundInclusion = IndexBounds::makeBoundInclusionFromBoundBools(
+                nodeArgs["startKeyInclusive"].Bool(), nodeArgs["endKeyInclusive"].Bool());
             params.direction = nodeArgs["direction"].numberInt();
 
             return new IndexScan(txn, params, workingSet, matcher);

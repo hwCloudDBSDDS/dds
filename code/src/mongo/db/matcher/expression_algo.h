@@ -28,11 +28,22 @@
  *    it in the license file.
  */
 
+#pragma once
+
+#include <memory>
+#include <set>
+
+#include "mongo/base/string_data.h"
+#include "mongo/stdx/functional.h"
+
 namespace mongo {
 
 class MatchExpression;
+struct DepsTracker;
 
 namespace expression {
+
+using NodeTraversalFunc = stdx::function<void(MatchExpression*, std::string)>;
 
 /**
  * Returns true if the documents matched by 'lhs' are a subset of the documents matched by
@@ -58,6 +69,54 @@ namespace expression {
  *      ==> false
  */
 bool isSubsetOf(const MatchExpression* lhs, const MatchExpression* rhs);
+
+/**
+ * Determine if it is possible to split 'expr' into two MatchExpressions, where one is not
+ * dependent on any path from 'pathSet', such that applying the two in sequence is equivalent
+ * to applying 'expr'.
+ *
+ * For example, {a: "foo", b: "bar"} is splittable by "b", while
+ * {$or: [{a: {$eq: "foo"}}, {b: {$eq: "bar"}}]} is not splittable by "b", due to the $or.
+ */
+bool isSplittableBy(const MatchExpression& expr, const std::set<std::string>& pathSet);
+
+/**
+ * Determine if 'expr' is reliant upon any path from 'pathSet'.
+ */
+bool isIndependentOf(const MatchExpression& expr, const std::set<std::string>& pathSet);
+
+/**
+ * Returns whether the path represented by 'first' is an prefix of the path represented by 'second'.
+ * Equality is not considered a prefix. For example:
+ *
+ * a.b is a prefix of a.b.c
+ * a.b is not a prefix of a.balloon
+ * a is a prefix of a.b
+ * a is not a prefix of a
+ * a.b is not a prefix of a
+ */
+bool isPathPrefixOf(StringData first, StringData second);
+
+/**
+ * Applies 'func' to each node of 'expr', where the first argument is a pointer to that actual node
+ * (not a copy), and the second argument is the path to that node.
+ */
+void mapOver(MatchExpression* expr, NodeTraversalFunc func, std::string path = "");
+
+/**
+ * Attempt to split 'expr' into two MatchExpressions, where the first is not reliant upon any
+ * path from 'fields', such that applying the matches in sequence is equivalent to applying
+ * 'expr'. Takes ownership of 'expr'.
+ *
+ * If 'expr' cannot be split, returns {nullptr, expr}. If 'expr' is entirely independent of
+ * 'fields', returns {expr, nullptr}. If 'expr' is partially dependent on 'fields', and partially
+ * independent, returns {exprLeft, exprRight}, where each new MatchExpression contains a portion of
+ * 'expr'.
+ *
+ * Never returns {nullptr, nullptr}.
+ */
+std::pair<std::unique_ptr<MatchExpression>, std::unique_ptr<MatchExpression>>
+splitMatchExpressionBy(std::unique_ptr<MatchExpression> expr, const std::set<std::string>& fields);
 
 }  // namespace expression
 }  // namespace mongo

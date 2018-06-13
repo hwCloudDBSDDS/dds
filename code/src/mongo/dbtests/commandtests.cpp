@@ -28,9 +28,10 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/operation_context_impl.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/dbtests/dbtests.h"
 
 using namespace mongo;
@@ -51,7 +52,8 @@ struct Base {
         return "test.fs.chunks";
     }
 
-    OperationContextImpl _txn;
+    const ServiceContext::UniqueOperationContext _txnPtr = cc().makeOperationContext();
+    OperationContext& _txn = *_txnPtr;
     DBDirectClient db;
 };
 struct Type0 : Base {
@@ -126,7 +128,8 @@ public:
         return "symbolarg";
     }
 
-    OperationContextImpl _txn;
+    const ServiceContext::UniqueOperationContext _txnPtr = cc().makeOperationContext();
+    OperationContext& _txn = *_txnPtr;
     DBDirectClient db;
 };
 
@@ -159,6 +162,49 @@ public:
         bool ok = db.runCommand(nsDb(), cmd.obj(), result);
         log() << result.jsonString();
         ASSERT(ok);
+    }
+};
+
+class CreateIndexWithNoKey : Base {
+public:
+    void run() {
+        ASSERT(db.createCollection(ns()));
+
+        BSONObjBuilder indexSpec;
+
+        BSONArrayBuilder indexes;
+        indexes.append(indexSpec.obj());
+
+        BSONObjBuilder cmd;
+        cmd.append("createIndexes", nsColl());
+        cmd.append("indexes", indexes.arr());
+
+        BSONObj result;
+        bool ok = db.runCommand(nsDb(), cmd.obj(), result);
+        log() << result.jsonString();
+        ASSERT(!ok);
+    }
+};
+
+class CreateIndexWithDuplicateKey : Base {
+public:
+    void run() {
+        ASSERT(db.createCollection(ns()));
+
+        BSONObjBuilder indexSpec;
+        indexSpec.append("key", BSON("a" << 1 << "a" << 1 << "b" << 1));
+
+        BSONArrayBuilder indexes;
+        indexes.append(indexSpec.obj());
+
+        BSONObjBuilder cmd;
+        cmd.append("createIndexes", nsColl());
+        cmd.append("indexes", indexes.arr());
+
+        BSONObj result;
+        bool ok = db.runCommand(nsDb(), cmd.obj(), result);
+        log() << result.jsonString();
+        ASSERT(!ok);
     }
 };
 
@@ -212,9 +258,12 @@ public:
             cmd.append("indexes",
                        BSON_ARRAY(BSON("key" << BSON("loc"
                                                      << "geoHaystack"
-                                                     << "z" << 1.0) << "name"
+                                                     << "z"
+                                                     << 1.0)
+                                             << "name"
                                              << "loc_geoHaystack_z_1"
-                                             << "bucketSize" << static_cast<double>(0.7))));
+                                             << "bucketSize"
+                                             << static_cast<double>(0.7))));
 
             BSONObj result;
             ASSERT(db.runCommand(nsDb(), cmd.obj(), result));
@@ -268,6 +317,8 @@ public:
         add<SymbolArgument::Touch>();
         add<SymbolArgument::Drop>();
         add<SymbolArgument::GeoSearch>();
+        add<SymbolArgument::CreateIndexWithNoKey>();
+        add<SymbolArgument::CreateIndexWithDuplicateKey>();
     }
 };
 

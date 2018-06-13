@@ -36,9 +36,12 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/dbwebserver.h"
 #include "mongo/db/matcher/expression_parser.h"
+#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/fill_locker_info.h"
+#include "mongo/rpc/metadata/client_metadata.h"
+#include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/util/mongoutils/html.h"
 #include "mongo/util/stringutils.h"
 
@@ -62,7 +65,8 @@ public:
            << th(a("", "Connections to the database, both internal and external.", "Client"))
            << th(a("http://dochub.mongodb.org/core/viewingandterminatingcurrentoperation",
                    "",
-                   "OpId")) << "<th>Locking</th>"
+                   "OpId"))
+           << "<th>Locking</th>"
            << "<th>Waiting</th>"
            << "<th>SecsRunning</th>"
            << "<th>Op</th>"
@@ -139,7 +143,8 @@ class CurrentOpContexts : public Command {
 public:
     CurrentOpContexts() : Command("currentOpCtx") {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -147,7 +152,7 @@ public:
         return true;
     }
 
-    virtual Status checkAuthForCommand(ClientBasic* client,
+    virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
                                        const BSONObj& cmdObj) {
         if (AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
@@ -166,8 +171,9 @@ public:
              BSONObjBuilder& result) {
         unique_ptr<MatchExpression> filter;
         if (cmdObj["filter"].isABSONObj()) {
-            StatusWithMatchExpression statusWithMatcher =
-                MatchExpressionParser::parse(cmdObj["filter"].Obj());
+            const CollatorInterface* collator = nullptr;
+            StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
+                cmdObj["filter"].Obj(), ExtensionsCallbackDisallowExtensions(), collator);
             if (!statusWithMatcher.isOK()) {
                 return appendCommandStatus(result, statusWithMatcher.getStatus());
             }
@@ -194,6 +200,15 @@ private:
             stdx::lock_guard<Client> lk(*client);
 
             client->reportState(b);
+
+            const auto& clientMetadata =
+                ClientMetadataIsMasterState::get(client).getClientMetadata();
+            if (clientMetadata) {
+                auto appName = clientMetadata.get().getApplicationName();
+                if (!appName.empty()) {
+                    b.append("applicationName", appName);
+                }
+            }
 
             const OperationContext* txn = client->getOperationContext();
             b.appendBool("active", static_cast<bool>(txn));

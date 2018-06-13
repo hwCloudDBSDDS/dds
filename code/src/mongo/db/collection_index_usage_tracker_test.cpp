@@ -87,7 +87,7 @@ TEST_F(CollectionIndexUsageTrackerTest, IndexKey) {
     getTracker()->registerIndex("foo", BSON("foo" << 1));
     CollectionIndexUsageMap statsMap = getTracker()->getUsageStats();
     ASSERT(statsMap.find("foo") != statsMap.end());
-    ASSERT_EQUALS(BSON("foo" << 1), statsMap["foo"].indexKey);
+    ASSERT_BSONOBJ_EQ(BSON("foo" << 1), statsMap["foo"].indexKey);
 }
 
 // Test that index registration generates an entry in the stats map.
@@ -141,7 +141,7 @@ TEST_F(CollectionIndexUsageTrackerTest, DateTimeAfterDeregister) {
     ASSERT(statsMap.find("foo") == statsMap.end());
 
     // Increment clock source so that a new index registration has different start time.
-    getClockSource()->advance(stdx::chrono::milliseconds(1));
+    getClockSource()->advance(Milliseconds(1));
 
     getTracker()->registerIndex("foo", BSON("foo" << 1));
     statsMap = getTracker()->getUsageStats();

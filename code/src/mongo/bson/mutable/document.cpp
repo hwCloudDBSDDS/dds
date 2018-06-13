@@ -32,8 +32,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
+#include "mongo/base/static_assert.h"
 #include "mongo/bson/inline_decls.h"
 #include "mongo/bson/mutable/damage_vector.h"
 #include "mongo/util/debug_util.h"
@@ -408,7 +410,7 @@ namespace {
 #endif
 
 // The designated field name for the root element.
-const char kRootFieldName[] = "";
+constexpr auto kRootFieldName = ""_sd;
 
 // How many reps do we cache before we spill to heap. Use a power of two. For debug
 // builds we make this very small so it is less likely to mask vector invalidation
@@ -466,12 +468,12 @@ struct ElementRep {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(ElementRep) == 32, "sizeof(ElementRep) == 32");
+MONGO_STATIC_ASSERT(sizeof(ElementRep) == 32);
 
 // We want ElementRep to be a POD so Document::Impl can grow the std::vector with
 // memmove.
 //
-// TODO: C++11 static_assert(std::is_pod<ElementRep>::value);
+MONGO_STATIC_ASSERT(std::is_pod<ElementRep>::value);
 
 // The ElementRep for the root element is always zero.
 const Element::RepIdx kRootRepIdx = Element::RepIdx(0);
@@ -497,8 +499,8 @@ uint32_t getElementOffset(const BSONObj& object, const BSONElement& elt) {
     const ptrdiff_t offset = eltRaw - objRaw;
     // BSON documents express their size as an int32_t so we should always be able to
     // express the offset as a uint32_t.
-    verify(offset > 0);
-    verify(offset <= std::numeric_limits<int32_t>::max());
+    invariant(offset > 0);
+    invariant(offset <= std::numeric_limits<int32_t>::max());
     return offset;
 }
 
@@ -634,7 +636,7 @@ public:
         if (id < kFastReps) {
             return _fastElements[id] = defaultRep;
         } else {
-            verify(id <= Element::kMaxRepIdx);
+            invariant(id <= Element::kMaxRepIdx);
 
             if (kDebugBuild && paranoid) {
                 // Force all reps to new addresses to help catch invalid rep usage.
@@ -683,7 +685,7 @@ public:
     // Insert the given BSONObj and return an ID for it.
     ElementRep::ObjIdx insertObject(const BSONObj& newObj) {
         const size_t objIdx = _objects.size();
-        verify(objIdx <= kMaxObjIdx);
+        invariant(objIdx <= kMaxObjIdx);
         _objects.push_back(newObj);
         if (kDebugBuild && paranoid) {
             // Force reallocation to catch use after invalidation.
@@ -777,8 +779,9 @@ public:
 
         // It should be impossible to have an opaque left child and be non-serialized,
         dassert(rep->serialized);
-        BSONElement childElt = (hasValue(*rep) ? getSerializedElement(*rep).embeddedObject()
-                                               : getObject(rep->objIdx)).firstElement();
+        BSONElement childElt =
+            (hasValue(*rep) ? getSerializedElement(*rep).embeddedObject() : getObject(rep->objIdx))
+                .firstElement();
 
         if (!childElt.eoo()) {
             // Do this now before other writes so compiler can exploit knowing
@@ -1087,9 +1090,9 @@ private:
 };
 
 Status Element::addSiblingLeft(Element e) {
-    verify(ok());
-    verify(e.ok());
-    verify(_doc == e._doc);
+    invariant(ok());
+    invariant(e.ok());
+    invariant(_doc == e._doc);
 
     Document::Impl& impl = getDocument().getImpl();
     ElementRep& newRep = impl.getElementRep(e._repIdx);
@@ -1138,9 +1141,9 @@ Status Element::addSiblingLeft(Element e) {
 }
 
 Status Element::addSiblingRight(Element e) {
-    verify(ok());
-    verify(e.ok());
-    verify(_doc == e._doc);
+    invariant(ok());
+    invariant(e.ok());
+    invariant(_doc == e._doc);
 
     Document::Impl& impl = getDocument().getImpl();
     ElementRep* newRep = &impl.getElementRep(e._repIdx);
@@ -1200,7 +1203,7 @@ Status Element::addSiblingRight(Element e) {
 }
 
 Status Element::remove() {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     // We need to realize any opaque right sibling, because we are going to need to set its
@@ -1248,7 +1251,7 @@ Status Element::remove() {
 }
 
 Status Element::rename(StringData newName) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     if (_repIdx == kRootRepIdx)
@@ -1301,7 +1304,7 @@ Status Element::rename(StringData newName) {
 }
 
 Element Element::leftChild() const {
-    verify(ok());
+    invariant(ok());
 
     // Capturing Document::Impl by non-const ref exploits the constness loophole
     // created by our Impl so that we can let leftChild be lazily evaluated, even for a
@@ -1313,7 +1316,7 @@ Element Element::leftChild() const {
 }
 
 Element Element::rightChild() const {
-    verify(ok());
+    invariant(ok());
 
     // Capturing Document::Impl by non-const ref exploits the constness loophole
     // created by our Impl so that we can let leftChild be lazily evaluated, even for a
@@ -1325,7 +1328,7 @@ Element Element::rightChild() const {
 }
 
 bool Element::hasChildren() const {
-    verify(ok());
+    invariant(ok());
     // Capturing Document::Impl by non-const ref exploits the constness loophole
     // created by our Impl so that we can let leftChild be lazily evaluated, even for a
     // const Element.
@@ -1334,7 +1337,7 @@ bool Element::hasChildren() const {
 }
 
 Element Element::leftSibling(size_t distance) const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     Element::RepIdx current = _repIdx;
     while ((current != kInvalidRepIdx) && (distance-- != 0)) {
@@ -1345,7 +1348,7 @@ Element Element::leftSibling(size_t distance) const {
 }
 
 Element Element::rightSibling(size_t distance) const {
-    verify(ok());
+    invariant(ok());
 
     // Capturing Document::Impl by non-const ref exploits the constness loophole
     // created by our Impl so that we can let rightSibling be lazily evaluated, even for a
@@ -1358,7 +1361,7 @@ Element Element::rightSibling(size_t distance) const {
 }
 
 Element Element::parent() const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     const Element::RepIdx parentIdx = impl.getElementRep(_repIdx).parent;
     dassert(parentIdx != kOpaqueRepIdx);
@@ -1366,7 +1369,7 @@ Element Element::parent() const {
 }
 
 Element Element::findNthChild(size_t n) const {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = _doc->getImpl();
     Element::RepIdx current = _repIdx;
     current = impl.resolveLeftChild(current);
@@ -1376,7 +1379,7 @@ Element Element::findNthChild(size_t n) const {
 }
 
 Element Element::findFirstChildNamed(StringData name) const {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = _doc->getImpl();
     Element::RepIdx current = _repIdx;
     current = impl.resolveLeftChild(current);
@@ -1387,7 +1390,7 @@ Element Element::findFirstChildNamed(StringData name) const {
 }
 
 Element Element::findElementNamed(StringData name) const {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = _doc->getImpl();
     Element::RepIdx current = _repIdx;
     while ((current != kInvalidRepIdx) && (impl.getFieldName(impl.getElementRep(current)) != name))
@@ -1396,7 +1399,7 @@ Element Element::findElementNamed(StringData name) const {
 }
 
 size_t Element::countSiblingsLeft() const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     Element::RepIdx current = _repIdx;
     size_t result = 0;
@@ -1411,7 +1414,7 @@ size_t Element::countSiblingsLeft() const {
 }
 
 size_t Element::countSiblingsRight() const {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = _doc->getImpl();
     Element::RepIdx current = _repIdx;
     size_t result = 0;
@@ -1425,7 +1428,7 @@ size_t Element::countSiblingsRight() const {
 }
 
 size_t Element::countChildren() const {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = _doc->getImpl();
     Element::RepIdx current = _repIdx;
     current = impl.resolveLeftChild(current);
@@ -1438,14 +1441,14 @@ size_t Element::countChildren() const {
 }
 
 bool Element::hasValue() const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     return impl.hasValue(thisRep);
 }
 
 bool Element::isNumeric() const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     const BSONType type = impl.getType(thisRep);
@@ -1454,7 +1457,7 @@ bool Element::isNumeric() const {
 }
 
 bool Element::isIntegral() const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     const BSONType type = impl.getType(thisRep);
@@ -1462,7 +1465,7 @@ bool Element::isIntegral() const {
 }
 
 const BSONElement Element::getValue() const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     if (impl.hasValue(thisRep))
@@ -1473,9 +1476,9 @@ const BSONElement Element::getValue() const {
 SafeNum Element::getValueSafeNum() const {
     switch (getType()) {
         case mongo::NumberInt:
-            return static_cast<int>(getValueInt());
+            return static_cast<int32_t>(getValueInt());
         case mongo::NumberLong:
-            return static_cast<long long int>(getValueLong());
+            return static_cast<int64_t>(getValueLong());
         case mongo::NumberDouble:
             return getValueDouble();
         case mongo::NumberDecimal:
@@ -1485,9 +1488,11 @@ SafeNum Element::getValueSafeNum() const {
     }
 }
 
-int Element::compareWithElement(const ConstElement& other, bool considerFieldName) const {
-    verify(ok());
-    verify(other.ok());
+int Element::compareWithElement(const ConstElement& other,
+                                const StringData::ComparatorInterface* comparator,
+                                bool considerFieldName) const {
+    invariant(ok());
+    invariant(other.ok());
 
     // Short circuit a tautological compare.
     if ((_repIdx == other.getIdx()) && (_doc == &other.getDocument()))
@@ -1507,13 +1512,15 @@ int Element::compareWithElement(const ConstElement& other, bool considerFieldNam
     // TODO: Andy has suggested that this may not be legal since woCompare is not reflexive
     // in all cases.
     if (impl.hasValue(thisRep))
-        return -other.compareWithBSONElement(impl.getSerializedElement(thisRep), considerFieldName);
+        return -other.compareWithBSONElement(
+            impl.getSerializedElement(thisRep), comparator, considerFieldName);
 
     const Document::Impl& oimpl = other.getDocument().getImpl();
     const ElementRep& otherRep = oimpl.getElementRep(other.getIdx());
 
     if (oimpl.hasValue(otherRep))
-        return compareWithBSONElement(oimpl.getSerializedElement(otherRep), considerFieldName);
+        return compareWithBSONElement(
+            oimpl.getSerializedElement(otherRep), comparator, considerFieldName);
 
     // Leaf elements should always have a value, so we should only be dealing with Objects
     // or Arrays here.
@@ -1554,7 +1561,8 @@ int Element::compareWithElement(const ConstElement& other, bool considerFieldNam
         if (!otherIter.ok())
             return 1;
 
-        const int result = thisIter.compareWithElement(otherIter, considerChildFieldNames);
+        const int result =
+            thisIter.compareWithElement(otherIter, comparator, considerChildFieldNames);
         if (result != 0)
             return result;
 
@@ -1563,8 +1571,10 @@ int Element::compareWithElement(const ConstElement& other, bool considerFieldNam
     }
 }
 
-int Element::compareWithBSONElement(const BSONElement& other, bool considerFieldName) const {
-    verify(ok());
+int Element::compareWithBSONElement(const BSONElement& other,
+                                    const StringData::ComparatorInterface* comparator,
+                                    bool considerFieldName) const {
+    invariant(ok());
 
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
@@ -1572,7 +1582,7 @@ int Element::compareWithBSONElement(const BSONElement& other, bool considerField
     // If we have a representation as a BSONElement, we can just use BSONElement::woCompare
     // to do the entire comparison.
     if (impl.hasValue(thisRep))
-        return impl.getSerializedElement(thisRep).woCompare(other, considerFieldName);
+        return impl.getSerializedElement(thisRep).woCompare(other, considerFieldName, comparator);
 
     // Leaf elements should always have a value, so we should only be dealing with Objects
     // or Arrays here.
@@ -1599,15 +1609,17 @@ int Element::compareWithBSONElement(const BSONElement& other, bool considerField
     const bool considerChildFieldNames =
         (impl.getType(thisRep) != mongo::Array) && (other.type() != mongo::Array);
 
-    return compareWithBSONObj(other.Obj(), considerChildFieldNames);
+    return compareWithBSONObj(other.Obj(), comparator, considerChildFieldNames);
 }
 
-int Element::compareWithBSONObj(const BSONObj& other, bool considerFieldName) const {
-    verify(ok());
+int Element::compareWithBSONObj(const BSONObj& other,
+                                const StringData::ComparatorInterface* comparator,
+                                bool considerFieldName) const {
+    invariant(ok());
 
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
-    verify(!impl.isLeaf(thisRep));
+    invariant(!impl.isLeaf(thisRep));
 
     // We are dealing with either two objects, or two arrays. We need to consider the child
     // elements individually. We walk two iterators forward over the children and compare
@@ -1624,7 +1636,7 @@ int Element::compareWithBSONObj(const BSONObj& other, bool considerFieldName) co
         if (otherVal.eoo())
             return 1;
 
-        const int result = thisIter.compareWithBSONElement(otherVal, considerFieldName);
+        const int result = thisIter.compareWithBSONElement(otherVal, comparator, considerFieldName);
         if (result != 0)
             return result;
 
@@ -1633,10 +1645,10 @@ int Element::compareWithBSONObj(const BSONObj& other, bool considerFieldName) co
 }
 
 void Element::writeTo(BSONObjBuilder* const builder) const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
-    verify(impl.getType(thisRep) == mongo::Object);
+    invariant(impl.getType(thisRep) == mongo::Object);
     if (thisRep.parent == kInvalidRepIdx && _repIdx == kRootRepIdx) {
         // If this is the root element, then we need to handle it differently, since it
         // doesn't have a field name and should embed directly, rather than as an object.
@@ -1647,15 +1659,15 @@ void Element::writeTo(BSONObjBuilder* const builder) const {
 }
 
 void Element::writeArrayTo(BSONArrayBuilder* const builder) const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
-    verify(impl.getType(thisRep) == mongo::Array);
+    invariant(impl.getType(thisRep) == mongo::Array);
     return impl.writeChildren(_repIdx, builder);
 }
 
 Status Element::setValueDouble(const double value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     ElementRep thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1664,7 +1676,7 @@ Status Element::setValueDouble(const double value) {
 }
 
 Status Element::setValueString(StringData value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     dassert(impl.doesNotAlias(value));
@@ -1676,7 +1688,7 @@ Status Element::setValueString(StringData value) {
 }
 
 Status Element::setValueObject(const BSONObj& value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     dassert(impl.doesNotAlias(value));
@@ -1688,7 +1700,7 @@ Status Element::setValueObject(const BSONObj& value) {
 }
 
 Status Element::setValueArray(const BSONObj& value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     dassert(impl.doesNotAlias(value));
@@ -1702,7 +1714,7 @@ Status Element::setValueArray(const BSONObj& value) {
 Status Element::setValueBinary(const uint32_t len,
                                mongo::BinDataType binType,
                                const void* const data) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     // TODO: Alias check for binary data?
@@ -1714,7 +1726,7 @@ Status Element::setValueBinary(const uint32_t len,
 }
 
 Status Element::setValueUndefined() {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1723,7 +1735,7 @@ Status Element::setValueUndefined() {
 }
 
 Status Element::setValueOID(const OID value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1732,7 +1744,7 @@ Status Element::setValueOID(const OID value) {
 }
 
 Status Element::setValueBool(const bool value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     ElementRep thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1741,7 +1753,7 @@ Status Element::setValueBool(const bool value) {
 }
 
 Status Element::setValueDate(const Date_t value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1750,7 +1762,7 @@ Status Element::setValueDate(const Date_t value) {
 }
 
 Status Element::setValueNull() {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1759,7 +1771,7 @@ Status Element::setValueNull() {
 }
 
 Status Element::setValueRegex(StringData re, StringData flags) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     dassert(impl.doesNotAlias(re));
@@ -1772,7 +1784,7 @@ Status Element::setValueRegex(StringData re, StringData flags) {
 }
 
 Status Element::setValueDBRef(StringData ns, const OID oid) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     dassert(impl.doesNotAlias(ns));
@@ -1784,7 +1796,7 @@ Status Element::setValueDBRef(StringData ns, const OID oid) {
 }
 
 Status Element::setValueCode(StringData value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     dassert(impl.doesNotAlias(value));
@@ -1796,7 +1808,7 @@ Status Element::setValueCode(StringData value) {
 }
 
 Status Element::setValueSymbol(StringData value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     dassert(impl.doesNotAlias(value));
@@ -1808,7 +1820,7 @@ Status Element::setValueSymbol(StringData value) {
 }
 
 Status Element::setValueCodeWithScope(StringData code, const BSONObj& scope) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
 
     dassert(impl.doesNotAlias(code));
@@ -1821,7 +1833,7 @@ Status Element::setValueCodeWithScope(StringData code, const BSONObj& scope) {
 }
 
 Status Element::setValueInt(const int32_t value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     ElementRep thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1830,7 +1842,7 @@ Status Element::setValueInt(const int32_t value) {
 }
 
 Status Element::setValueTimestamp(const Timestamp value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1839,7 +1851,7 @@ Status Element::setValueTimestamp(const Timestamp value) {
 }
 
 Status Element::setValueLong(const int64_t value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     ElementRep thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1848,7 +1860,7 @@ Status Element::setValueLong(const int64_t value) {
 }
 
 Status Element::setValueDecimal(const Decimal128 value) {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     ElementRep thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1857,7 +1869,7 @@ Status Element::setValueDecimal(const Decimal128 value) {
 }
 
 Status Element::setValueMinKey() {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1866,7 +1878,7 @@ Status Element::setValueMinKey() {
 }
 
 Status Element::setValueMaxKey() {
-    verify(ok());
+    invariant(ok());
     Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     const StringData fieldName = impl.getFieldNameForNewElement(thisRep);
@@ -1875,7 +1887,7 @@ Status Element::setValueMaxKey() {
 }
 
 Status Element::setValueBSONElement(const BSONElement& value) {
-    verify(ok());
+    invariant(ok());
 
     if (value.type() == mongo::EOO)
         return Status(ErrorCodes::IllegalOperation, "Can't set Element value to EOO");
@@ -1891,7 +1903,7 @@ Status Element::setValueBSONElement(const BSONElement& value) {
 }
 
 Status Element::setValueSafeNum(const SafeNum value) {
-    verify(ok());
+    invariant(ok());
     switch (value.type()) {
         case mongo::NumberInt:
             return setValueInt(value._value.int32Val);
@@ -1900,7 +1912,7 @@ Status Element::setValueSafeNum(const SafeNum value) {
         case mongo::NumberDouble:
             return setValueDouble(value._value.doubleVal);
         case mongo::NumberDecimal:
-            return setValueDecimal(value._value.decimalVal);
+            return setValueDecimal(Decimal128(value._value.decimalVal));
         default:
             return Status(ErrorCodes::UnsupportedFormat,
                           "Don't know how to handle unexpected SafeNum type");
@@ -1908,7 +1920,7 @@ Status Element::setValueSafeNum(const SafeNum value) {
 }
 
 Status Element::setValueElement(ConstElement setFrom) {
-    verify(ok());
+    invariant(ok());
 
     // Can't set to your own root element, since this would create a circular document.
     if (_doc->root() == setFrom) {
@@ -1932,25 +1944,25 @@ Status Element::setValueElement(ConstElement setFrom) {
 }
 
 BSONType Element::getType() const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     return impl.getType(thisRep);
 }
 
 StringData Element::getFieldName() const {
-    verify(ok());
+    invariant(ok());
     const Document::Impl& impl = getDocument().getImpl();
     const ElementRep& thisRep = impl.getElementRep(_repIdx);
     return impl.getFieldName(thisRep);
 }
 
 Status Element::addChild(Element e, bool front) {
-    // No need to verify(ok()) since we are only called from methods that have done so.
+    // No need to invariant(ok()) since we are only called from methods that have done so.
     dassert(ok());
 
-    verify(e.ok());
-    verify(_doc == e._doc);
+    invariant(e.ok());
+    invariant(_doc == e._doc);
 
     Document::Impl& impl = getDocument().getImpl();
     ElementRep& newRep = impl.getElementRep(e._repIdx);
@@ -1998,7 +2010,7 @@ Status Element::addChild(Element e, bool front) {
 }
 
 Status Element::setValue(const Element::RepIdx newValueIdx) {
-    // No need to verify(ok()) since we are only called from methods that have done so.
+    // No need to invariant(ok()) since we are only called from methods that have done so.
     dassert(ok());
 
     if (_repIdx == kRootRepIdx)
@@ -2564,7 +2576,7 @@ Element Document::makeElementSafeNum(StringData fieldName, SafeNum value) {
         case mongo::NumberDouble:
             return makeElementDouble(fieldName, value._value.doubleVal);
         case mongo::NumberDecimal:
-            return makeElementDecimal(fieldName, value._value.decimalVal);
+            return makeElementDecimal(fieldName, Decimal128(value._value.decimalVal));
         default:
             // Return an invalid element to indicate that we failed.
             return end();
@@ -2580,7 +2592,7 @@ Element Document::makeElementWithNewFieldName(StringData fieldName, ConstElement
 }
 
 Element Document::makeRootElement() {
-    return makeElementObject(StringData(kRootFieldName, StringData::LiteralTag()));
+    return makeElementObject(kRootFieldName);
 }
 
 Element Document::makeRootElement(const BSONObj& value) {

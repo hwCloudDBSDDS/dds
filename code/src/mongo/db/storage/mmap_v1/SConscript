@@ -1,3 +1,5 @@
+# -*- mode: python -*-
+
 Import("env")
 Import("mmapv1")
 
@@ -11,6 +13,7 @@ env.Library(
                "catalog/namespace_details_collection_entry.cpp",
                "catalog/namespace_details_rsv1_metadata.cpp",
                "catalog/namespace_index.cpp",
+               "commit_notifier.cpp",
                "data_file.cpp",
                "data_file_sync.cpp",
                "durable_mapped_file.cpp",
@@ -37,8 +40,13 @@ env.Library(
         'logfile',
         'compress',
         '$BUILD_DIR/mongo/db/catalog/collection_options',
+        '$BUILD_DIR/mongo/db/commands',
+        '$BUILD_DIR/mongo/db/concurrency/lock_manager',
+        '$BUILD_DIR/mongo/db/index_names',
+        '$BUILD_DIR/mongo/db/index/index_descriptor',
         '$BUILD_DIR/mongo/db/storage/journal_listener',
         '$BUILD_DIR/mongo/db/storage/paths',
+        '$BUILD_DIR/mongo/db/storage/storage_engine_lock_file',
     ],
     LIBDEPS_TAGS=[
         # Many undefined symbols
@@ -68,7 +76,6 @@ env.Library(
         ],
     LIBDEPS= [
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/util/foundation',
         ]
     )
 
@@ -80,7 +87,6 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/storage/paths',
         '$BUILD_DIR/mongo/util/fail_point',
-        '$BUILD_DIR/mongo/util/foundation',
         '$BUILD_DIR/mongo/util/processinfo',
     ],
 )
@@ -104,8 +110,8 @@ env.Library(
     ],
     LIBDEPS=[
         'file_allocator',
-        '$BUILD_DIR/mongo/util/foundation',
         '$BUILD_DIR/mongo/util/progress_meter',
+        '$BUILD_DIR/mongo/db/storage/storage_options'
     ],
 )
 
@@ -118,13 +124,15 @@ env.Library(
         'record_store_v1_repair_iterator.cpp',
         'record_store_v1_simple.cpp',
         'record_store_v1_simple_iterator.cpp',
+        'touch_pages.cpp',
         ],
     LIBDEPS= [
-        'extent',
         '$BUILD_DIR/mongo/db/commands/server_status_core',
         '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/db/storage/storage_options',
         '$BUILD_DIR/mongo/util/concurrency/spin_lock',
         '$BUILD_DIR/mongo/util/progress_meter',
+        'extent',
         ]
     )
 
@@ -171,20 +179,19 @@ if mmapv1:
                 ],
         LIBDEPS=[
             '$BUILD_DIR/mongo/db/serveronly',
-            '$BUILD_DIR/mongo/util/ntservice_mock',
             ],
-        NO_CRUTCH=True,
         )
 
     env.CppUnitTest(target = 'record_access_tracker_test',
                     source = ['record_access_tracker_test.cpp'],
                     LIBDEPS = ['record_access_tracker',
+                               '$BUILD_DIR/mongo/util/clock_source_mock',
                                '$BUILD_DIR/mongo/util/processinfo',
                                '$BUILD_DIR/mongo/util/net/network'])
 
     env.CppUnitTest(target = 'namespace_test',
                     source = ['catalog/namespace_test.cpp'],
-                    LIBDEPS = ['$BUILD_DIR/mongo/util/foundation'])
+                    LIBDEPS = ['$BUILD_DIR/mongo/base'])
 
     env.CppUnitTest(
         target='record_store_v1_simple_test',

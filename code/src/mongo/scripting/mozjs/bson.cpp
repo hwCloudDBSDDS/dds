@@ -46,8 +46,8 @@ namespace mozjs {
 
 const char* const BSONInfo::className = "BSON";
 
-const JSFunctionSpec BSONInfo::freeFunctions[2] = {
-    MONGO_ATTACH_JS_FUNCTION(bsonWoCompare), JS_FS_END,
+const JSFunctionSpec BSONInfo::freeFunctions[3] = {
+    MONGO_ATTACH_JS_FUNCTION(bsonWoCompare), MONGO_ATTACH_JS_FUNCTION(bsonBinaryEqual), JS_FS_END,
 };
 
 namespace {
@@ -119,7 +119,10 @@ void BSONInfo::finalize(JSFreeOp* fop, JSObject* obj) {
     delete holder;
 }
 
-void BSONInfo::enumerate(JSContext* cx, JS::HandleObject obj, JS::AutoIdVector& properties) {
+void BSONInfo::enumerate(JSContext* cx,
+                         JS::HandleObject obj,
+                         JS::AutoIdVector& properties,
+                         bool enumerableOnly) {
     auto holder = getValidHolder(cx, obj);
 
     if (!holder)
@@ -148,13 +151,17 @@ void BSONInfo::enumerate(JSContext* cx, JS::HandleObject obj, JS::AutoIdVector& 
     }
 }
 
-void BSONInfo::setProperty(
-    JSContext* cx, JS::HandleObject obj, JS::HandleId id, bool strict, JS::MutableHandleValue vp) {
+void BSONInfo::setProperty(JSContext* cx,
+                           JS::HandleObject obj,
+                           JS::HandleId id,
+                           JS::MutableHandleValue vp,
+                           JS::ObjectOpResult& result) {
     auto holder = getValidHolder(cx, obj);
 
     if (holder) {
         if (holder->_readOnly) {
             uasserted(ErrorCodes::BadValue, "Read only object");
+            return;
         }
 
         auto iter = holder->_removed.find(IdWrapper(cx, id).toString());
@@ -167,14 +174,19 @@ void BSONInfo::setProperty(
     }
 
     ObjectWrapper(cx, obj).defineProperty(id, vp, JSPROP_ENUMERATE);
+    result.succeed();
 }
 
-void BSONInfo::delProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id, bool* succeeded) {
+void BSONInfo::delProperty(JSContext* cx,
+                           JS::HandleObject obj,
+                           JS::HandleId id,
+                           JS::ObjectOpResult& result) {
     auto holder = getValidHolder(cx, obj);
 
     if (holder) {
         if (holder->_readOnly) {
             uasserted(ErrorCodes::BadValue, "Read only object");
+            return;
         }
 
         holder->_altered = true;
@@ -183,7 +195,7 @@ void BSONInfo::delProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id,
         holder->_removed[IdWrapper(cx, id).toStringData(&jsstr)] = true;
     }
 
-    *succeeded = true;
+    result.succeed();
 }
 
 void BSONInfo::resolve(JSContext* cx, JS::HandleObject obj, JS::HandleId id, bool* resolvedp) {
@@ -237,7 +249,7 @@ std::tuple<BSONObj*, bool> BSONInfo::originalBSON(JSContext* cx, JS::HandleObjec
 
 void BSONInfo::Functions::bsonWoCompare::call(JSContext* cx, JS::CallArgs args) {
     if (args.length() != 2)
-        uasserted(ErrorCodes::BadValue, "bsonWoCompare needs 2 argument");
+        uasserted(ErrorCodes::BadValue, "bsonWoCompare needs 2 arguments");
 
     if (!args.get(0).isObject())
         uasserted(ErrorCodes::BadValue, "first argument to bsonWoCompare must be an object");
@@ -249,6 +261,22 @@ void BSONInfo::Functions::bsonWoCompare::call(JSContext* cx, JS::CallArgs args) 
     BSONObj secondObject = ValueWriter(cx, args.get(1)).toBSON();
 
     args.rval().setInt32(firstObject.woCompare(secondObject));
+}
+
+void BSONInfo::Functions::bsonBinaryEqual::call(JSContext* cx, JS::CallArgs args) {
+    if (args.length() != 2)
+        uasserted(ErrorCodes::BadValue, "bsonBinaryEqual needs 2 arguments");
+
+    if (!args.get(0).isObject())
+        uasserted(ErrorCodes::BadValue, "first argument to bsonBinaryEqual must be an object");
+
+    if (!args.get(1).isObject())
+        uasserted(ErrorCodes::BadValue, "second argument to bsonBinaryEqual must be an object");
+
+    BSONObj firstObject = ValueWriter(cx, args.get(0)).toBSON();
+    BSONObj secondObject = ValueWriter(cx, args.get(1)).toBSON();
+
+    args.rval().setBoolean(firstObject.binaryEqual(secondObject));
 }
 
 void BSONInfo::postInstall(JSContext* cx, JS::HandleObject global, JS::HandleObject proto) {

@@ -27,8 +27,11 @@
  */
 
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
@@ -40,7 +43,8 @@
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/json.h"
 #include "mongo/db/matcher/expression_parser.h"
-#include "mongo/db/operation_context_impl.h"
+#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
+#include "mongo/db/pipeline/document_source_cursor.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/query/plan_executor.h"
@@ -99,7 +103,10 @@ public:
         unique_ptr<WorkingSet> ws(new WorkingSet());
 
         // Canonicalize the query.
-        auto statusWithCQ = CanonicalQuery::canonicalize(nss, filterObj);
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        qr->setFilter(filterObj);
+        auto statusWithCQ = CanonicalQuery::canonicalize(
+            &_txn, std::move(qr), ExtensionsCallbackDisallowExtensions());
         verify(statusWithCQ.isOK());
         unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         verify(NULL != cq.get());
@@ -134,7 +141,7 @@ public:
         ixparams.bounds.isSimpleRange = true;
         ixparams.bounds.startKey = BSON("" << start);
         ixparams.bounds.endKey = BSON("" << end);
-        ixparams.bounds.endKeyInclusive = true;
+        ixparams.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         ixparams.direction = 1;
 
         const Collection* coll = db->getCollection(nss.ns());
@@ -143,7 +150,9 @@ public:
         IndexScan* ix = new IndexScan(&_txn, ixparams, ws.get(), NULL);
         unique_ptr<PlanStage> root(new FetchStage(&_txn, ws.get(), ix, NULL, coll));
 
-        auto statusWithCQ = CanonicalQuery::canonicalize(nss, BSONObj());
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        auto statusWithCQ = CanonicalQuery::canonicalize(
+            &_txn, std::move(qr), ExtensionsCallbackDisallowExtensions());
         verify(statusWithCQ.isOK());
         unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         verify(NULL != cq.get());
@@ -182,12 +191,16 @@ public:
     }
 
 protected:
-    OperationContextImpl _txn;
+    const ServiceContext::UniqueOperationContext _txnPtr = cc().makeOperationContext();
+    OperationContext& _txn = *_txnPtr;
 
 private:
     IndexDescriptor* getIndex(Database* db, const BSONObj& obj) {
         Collection* collection = db->getCollection(nss.ns());
-        return collection->getIndexCatalog()->findIndexByKeyPattern(&_txn, obj);
+        std::vector<IndexDescriptor*> indexes;
+        collection->getIndexCatalog()->findIndexesByKeyPattern(&_txn, obj, false, &indexes);
+        ASSERT_LTE(indexes.size(), 1U);
+        return indexes.size() == 0 ? nullptr : indexes[0];
     }
 
     DBDirectClient _client;
@@ -266,37 +279,47 @@ public:
         BSONObj indexSpec = BSON("a" << 1);
         addIndex(indexSpec);
 
-        // Create the PlanExecutor which feeds the aggregation pipeline.
-        std::shared_ptr<PlanExecutor> innerExec(makeIndexScanExec(ctx.db(), indexSpec, 7, 10));
+        Collection* collection = ctx.getCollection();
 
         // Create the aggregation pipeline.
+        std::vector<BSONObj> rawPipeline = {fromjson("{$match: {a: {$gte: 7, $lte: 10}}}")};
         boost::intrusive_ptr<ExpressionContext> expCtx =
-            new ExpressionContext(&_txn, NamespaceString(nss.ns()));
+            new ExpressionContext(&_txn, AggregationRequest(nss, rawPipeline));
 
-        string errmsg;
-        BSONObj inputBson = fromjson("{$match: {a: {$gte: 7, $lte: 10}}}");
-        boost::intrusive_ptr<Pipeline> pipeline = Pipeline::parseCommand(errmsg, inputBson, expCtx);
-        ASSERT_EQUALS(errmsg, "");
+        // Create an "inner" plan executor and register it with the cursor manager so that it can
+        // get notified when the collection is dropped.
+        unique_ptr<PlanExecutor> innerExec(makeIndexScanExec(ctx.db(), indexSpec, 7, 10));
+        registerExec(innerExec.get());
+
+        // Wrap the "inner" plan executor in a DocumentSourceCursor and add it as the first source
+        // in the pipeline.
+        innerExec->saveState();
+        auto cursorSource = DocumentSourceCursor::create(nss.ns(), std::move(innerExec), expCtx);
+        auto pipeline = assertGet(Pipeline::create({cursorSource}, expCtx));
 
         // Create the output PlanExecutor that pulls results from the pipeline.
         auto ws = make_unique<WorkingSet>();
-        auto proxy = make_unique<PipelineProxyStage>(&_txn, pipeline, innerExec, ws.get());
-        Collection* collection = ctx.getCollection();
+        auto proxy = make_unique<PipelineProxyStage>(&_txn, pipeline, ws.get());
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_txn, std::move(ws), std::move(proxy), collection, PlanExecutor::YIELD_MANUAL);
         ASSERT_OK(statusWithPlanExecutor.getStatus());
         unique_ptr<PlanExecutor> outerExec = std::move(statusWithPlanExecutor.getValue());
 
-        // Only the outer executor gets registered.
+        // Register the "outer" plan executor with the cursor manager so it can get notified when
+        // the collection is dropped.
         registerExec(outerExec.get());
 
-        // Verify that both the "inner" and "outer" plan executors have been killed after
-        // dropping the collection.
-        BSONObj objOut;
         dropCollection();
-        ASSERT_EQUALS(PlanExecutor::DEAD, innerExec->getNext(&objOut, NULL));
-        ASSERT_EQUALS(PlanExecutor::DEAD, outerExec->getNext(&objOut, NULL));
+
+        // Verify that the aggregation pipeline returns an error because its "inner" plan executor
+        // has been killed due to the collection being dropped.
+        ASSERT_THROWS_CODE(pipeline->getNext(), UserException, 16028);
+
+        // Verify that the "outer" plan executor has been killed due to the collection being
+        // dropped.
+        BSONObj objOut;
+        ASSERT_EQUALS(PlanExecutor::DEAD, outerExec->getNext(&objOut, nullptr));
 
         deregisterExec(outerExec.get());
     }
@@ -336,10 +359,13 @@ protected:
     void checkIds(int* expectedIds, PlanExecutor* exec) {
         BSONObj objOut;
         int idcount = 0;
-        while (PlanExecutor::ADVANCED == exec->getNext(&objOut, NULL)) {
+        PlanExecutor::ExecState state;
+        while (PlanExecutor::ADVANCED == (state = exec->getNext(&objOut, NULL))) {
             ASSERT_EQUALS(expectedIds[idcount], objOut["_id"].numberInt());
             ++idcount;
         }
+
+        ASSERT_EQUALS(PlanExecutor::IS_EOF, state);
     }
 };
 

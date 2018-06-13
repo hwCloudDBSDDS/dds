@@ -39,7 +39,7 @@
 #include "mongo/db/repl/replica_set_config.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/topology_coordinator.h"
-#include "mongo/s/catalog/catalog_manager.h"
+#include "mongo/db/server_options.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -127,9 +127,8 @@ public:
         // A sync source is re-evaluated after it lags behind further than this amount.
         Seconds maxSyncSourceLagSecs{0};
 
-        // Whether or not this node is running as a config server, and if so whether it was started
-        // with --configsvrMode=SCCC.
-        CatalogManager::ConfigServerMode configServerMode{CatalogManager::ConfigServerMode::NONE};
+        // Whether or not this node is running as a config server.
+        ClusterRole clusterRole{ClusterRole::None};
     };
 
     /**
@@ -151,21 +150,21 @@ public:
     virtual long long getTerm();
     virtual UpdateTermResult updateTerm(long long term, Date_t now);
     virtual void setForceSyncSourceIndex(int index);
-    virtual HostAndPort chooseNewSyncSource(Date_t now, const Timestamp& lastTimestampApplied);
+    virtual HostAndPort chooseNewSyncSource(Date_t now,
+                                            const OpTime& lastOpTimeFetched,
+                                            ChainingPreference chainingPreference) override;
     virtual void blacklistSyncSource(const HostAndPort& host, Date_t until);
     virtual void unblacklistSyncSource(const HostAndPort& host, Date_t now);
     virtual void clearSyncSourceBlacklist();
     virtual bool shouldChangeSyncSource(const HostAndPort& currentSource,
                                         const OpTime& myLastOpTime,
-                                        const OpTime& syncSourceLastOpTime,
-                                        bool syncSourceHasSyncSource,
+                                        const rpc::ReplSetMetadata& metadata,
                                         Date_t now) const;
     virtual bool becomeCandidateIfStepdownPeriodOverAndSingleNodeSet(Date_t now);
     virtual void setElectionSleepUntil(Date_t newTime);
     virtual void setFollowerMode(MemberState::MS newMode);
     virtual void adjustMaintenanceCountBy(int inc);
-    virtual void prepareSyncFromResponse(const ReplicationExecutor::CallbackArgs& data,
-                                         const HostAndPort& target,
+    virtual void prepareSyncFromResponse(const HostAndPort& target,
                                          const OpTime& lastOpApplied,
                                          BSONObjBuilder* response,
                                          Status* result);
@@ -191,14 +190,13 @@ public:
                                               const OpTime& lastOpApplied,
                                               const OpTime& lastOpDurable,
                                               ReplSetHeartbeatResponse* response);
-    virtual void prepareStatusResponse(const ReplicationExecutor::CallbackArgs& data,
-                                       Date_t now,
-                                       unsigned uptime,
-                                       const OpTime& lastOpApplied,
+    virtual void prepareStatusResponse(const ReplSetStatusArgs& rsStatusArgs,
                                        BSONObjBuilder* response,
                                        Status* result);
     virtual void fillIsMasterForReplSet(IsMasterResponse* response);
-    virtual void prepareFreezeResponse(Date_t now, int secs, BSONObjBuilder* response);
+    virtual StatusWith<PrepareFreezeResponseResult> prepareFreezeResponse(Date_t now,
+                                                                          int secs,
+                                                                          BSONObjBuilder* response);
     virtual void updateConfig(const ReplicaSetConfig& newConfig,
                               int selfIndex,
                               Date_t now,
@@ -217,16 +215,17 @@ public:
     virtual void setElectionInfo(OID electionId, Timestamp electionOpTime);
     virtual void processWinElection(OID electionId, Timestamp electionOpTime);
     virtual void processLoseElection();
-    virtual bool checkShouldStandForElection(Date_t now, const OpTime& lastOpApplied) const;
+    virtual Status checkShouldStandForElection(Date_t now, const OpTime& lastOpApplied) const;
     virtual void setMyHeartbeatMessage(const Date_t now, const std::string& message);
-    virtual bool stepDown(Date_t until, bool force, const OpTime& lastOpApplied);
+    virtual bool stepDown(Date_t until,
+                          bool force,
+                          const OpTime& lastOpApplied,
+                          const OpTime& lastOpCommitted);
     virtual bool stepDownIfPending();
     virtual Date_t getStepDownTime() const;
-    virtual void prepareReplResponseMetadata(rpc::ReplSetMetadata* metadata,
-                                             const OpTime& lastVisibleOpTime,
-                                             const OpTime& lastCommitttedOpTime) const;
-    Status processReplSetDeclareElectionWinner(const ReplSetDeclareElectionWinnerArgs& args,
-                                               long long* responseTerm);
+    virtual void prepareReplMetadata(rpc::ReplSetMetadata* metadata,
+                                     const OpTime& lastVisibleOpTime,
+                                     const OpTime& lastCommitttedOpTime) const;
     virtual void processReplSetRequestVotes(const ReplSetRequestVotesArgs& args,
                                             ReplSetRequestVotesResponse* response,
                                             const OpTime& lastAppliedOpTime);
@@ -238,7 +237,7 @@ public:
     virtual HeartbeatResponseAction setMemberAsDown(Date_t now,
                                                     const int memberIndex,
                                                     const OpTime& myLastOpApplied);
-    virtual bool becomeCandidateIfElectable(const Date_t now, const OpTime& lastOpApplied);
+    virtual Status becomeCandidateIfElectable(const Date_t now, const OpTime& lastOpApplied);
     virtual void setStorageEngineSupportsReadCommitted(bool supported);
 
     ////////////////////////////////////////////////////////////
@@ -280,7 +279,8 @@ private:
         NoData = 1 << 6,
         NotInitialized = 1 << 7,
         VotedTooRecently = 1 << 8,
-        RefusesToStand = 1 << 9
+        RefusesToStand = 1 << 9,
+        NotCloseEnoughToLatestForPriorityTakeover = 1 << 10,
     };
     typedef int UnelectableReasonMask;
 
@@ -308,6 +308,9 @@ private:
     // for an election
     bool _isOpTimeCloseEnoughToLatestToElect(const OpTime& otherOpTime,
                                              const OpTime& ourLastOpApplied) const;
+
+    // Is our optime close enough to the latest known optime to call for a priority takeover.
+    bool _amIFreshEnoughForPriorityTakeover(const OpTime& ourLastOpApplied) const;
 
     // Returns reason why "self" member is unelectable
     UnelectableReasonMask _getMyUnelectableReason(const Date_t now,

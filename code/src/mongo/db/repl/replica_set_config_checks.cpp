@@ -34,6 +34,7 @@
 
 #include "mongo/db/repl/replica_set_config.h"
 #include "mongo/db/repl/replication_coordinator_external_state.h"
+#include "mongo/db/service_context.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -48,20 +49,23 @@ namespace {
  * "newConfig".
  */
 StatusWith<int> findSelfInConfig(ReplicationCoordinatorExternalState* externalState,
-                                 const ReplicaSetConfig& newConfig) {
+                                 const ReplicaSetConfig& newConfig,
+                                 ServiceContext* ctx) {
     std::vector<ReplicaSetConfig::MemberIterator> meConfigs;
     for (ReplicaSetConfig::MemberIterator iter = newConfig.membersBegin();
          iter != newConfig.membersEnd();
          ++iter) {
-        if (externalState->isSelf(iter->getHostAndPort())) {
+        if (externalState->isSelf(iter->getHostAndPort(), ctx)) {
             meConfigs.push_back(iter);
         }
     }
     if (meConfigs.empty()) {
         return StatusWith<int>(ErrorCodes::NodeNotFound,
                                str::stream() << "No host described in new configuration "
-                                             << newConfig.getConfigVersion() << " for replica set "
-                                             << newConfig.getReplSetName() << " maps to this node");
+                                             << newConfig.getConfigVersion()
+                                             << " for replica set "
+                                             << newConfig.getReplSetName()
+                                             << " maps to this node");
     }
     if (meConfigs.size() > 1) {
         str::stream message;
@@ -90,9 +94,11 @@ Status checkElectable(const ReplicaSetConfig& newConfig, int configIndex) {
     if (!myConfig.isElectable()) {
         return Status(ErrorCodes::NodeNotElectable,
                       str::stream() << "This node, " << myConfig.getHostAndPort().toString()
-                                    << ", with _id " << myConfig.getId()
+                                    << ", with _id "
+                                    << myConfig.getId()
                                     << " is not electable under the new configuration version "
-                                    << newConfig.getConfigVersion() << " for replica set "
+                                    << newConfig.getConfigVersion()
+                                    << " for replica set "
                                     << newConfig.getReplSetName());
     }
     return Status::OK();
@@ -104,8 +110,9 @@ Status checkElectable(const ReplicaSetConfig& newConfig, int configIndex) {
  * reconfig or initiate commands.
  */
 StatusWith<int> findSelfInConfigIfElectable(ReplicationCoordinatorExternalState* externalState,
-                                            const ReplicaSetConfig& newConfig) {
-    StatusWith<int> result = findSelfInConfig(externalState, newConfig);
+                                            const ReplicaSetConfig& newConfig,
+                                            ServiceContext* ctx) {
+    StatusWith<int> result = findSelfInConfig(externalState, newConfig, ctx);
     if (result.isOK()) {
         Status status = checkElectable(newConfig, result.getValue());
         if (!status.isOK()) {
@@ -138,22 +145,28 @@ Status validateOldAndNewConfigsCompatible(const ReplicaSetConfig& oldConfig,
         return Status(ErrorCodes::NewReplicaSetConfigurationIncompatible,
                       str::stream()
                           << "New replica set configuration version must be greater than old, but "
-                          << newConfig.getConfigVersion() << " is not greater than "
-                          << oldConfig.getConfigVersion() << " for replica set "
+                          << newConfig.getConfigVersion()
+                          << " is not greater than "
+                          << oldConfig.getConfigVersion()
+                          << " for replica set "
                           << newConfig.getReplSetName());
     }
 
     if (oldConfig.getReplSetName() != newConfig.getReplSetName()) {
         return Status(ErrorCodes::NewReplicaSetConfigurationIncompatible,
                       str::stream() << "New and old configurations differ in replica set name; "
-                                       "old was " << oldConfig.getReplSetName() << ", and new is "
+                                       "old was "
+                                    << oldConfig.getReplSetName()
+                                    << ", and new is "
                                     << newConfig.getReplSetName());
     }
 
     if (oldConfig.getReplicaSetId() != newConfig.getReplicaSetId()) {
         return Status(ErrorCodes::NewReplicaSetConfigurationIncompatible,
                       str::stream() << "New and old configurations differ in replica set ID; "
-                                       "old was " << oldConfig.getReplicaSetId() << ", and new is "
+                                       "old was "
+                                    << oldConfig.getReplicaSetId()
+                                    << ", and new is "
                                     << newConfig.getReplicaSetId());
     }
 
@@ -185,14 +198,18 @@ Status validateOldAndNewConfigsCompatible(const ReplicaSetConfig& oldConfig,
             }
             if (hostsEqual && !idsEqual) {
                 return Status(ErrorCodes::NewReplicaSetConfigurationIncompatible,
-                              str::stream()
-                                  << "New and old configurations both have members with "
-                                  << MemberConfig::kHostFieldName << " of "
-                                  << mOld->getHostAndPort().toString()
-                                  << " but in the new configuration the "
-                                  << MemberConfig::kIdFieldName << " field is " << mNew->getId()
-                                  << " and in the old configuration it is " << mOld->getId()
-                                  << " for replica set " << newConfig.getReplSetName());
+                              str::stream() << "New and old configurations both have members with "
+                                            << MemberConfig::kHostFieldName
+                                            << " of "
+                                            << mOld->getHostAndPort().toString()
+                                            << " but in the new configuration the "
+                                            << MemberConfig::kIdFieldName
+                                            << " field is "
+                                            << mNew->getId()
+                                            << " and in the old configuration it is "
+                                            << mOld->getId()
+                                            << " for replica set "
+                                            << newConfig.getReplSetName());
             }
             // At this point, the _id and host fields are equal, so we're looking at the old and
             // new configurations for the same member node.
@@ -223,7 +240,8 @@ Status validateOldAndNewConfigsCompatible(const ReplicaSetConfig& oldConfig,
 
 StatusWith<int> validateConfigForStartUp(ReplicationCoordinatorExternalState* externalState,
                                          const ReplicaSetConfig& oldConfig,
-                                         const ReplicaSetConfig& newConfig) {
+                                         const ReplicaSetConfig& newConfig,
+                                         ServiceContext* ctx) {
     Status status = newConfig.validate();
     if (!status.isOK()) {
         return StatusWith<int>(status);
@@ -234,11 +252,12 @@ StatusWith<int> validateConfigForStartUp(ReplicationCoordinatorExternalState* ex
             return StatusWith<int>(status);
         }
     }
-    return findSelfInConfig(externalState, newConfig);
+    return findSelfInConfig(externalState, newConfig, ctx);
 }
 
 StatusWith<int> validateConfigForInitiate(ReplicationCoordinatorExternalState* externalState,
-                                          const ReplicaSetConfig& newConfig) {
+                                          const ReplicaSetConfig& newConfig,
+                                          ServiceContext* ctx) {
     Status status = newConfig.validate();
     if (!status.isOK()) {
         return StatusWith<int>(status);
@@ -249,12 +268,13 @@ StatusWith<int> validateConfigForInitiate(ReplicationCoordinatorExternalState* e
                                              << " have version 1, but found "
                                              << newConfig.getConfigVersion());
     }
-    return findSelfInConfigIfElectable(externalState, newConfig);
+    return findSelfInConfigIfElectable(externalState, newConfig, ctx);
 }
 
 StatusWith<int> validateConfigForReconfig(ReplicationCoordinatorExternalState* externalState,
                                           const ReplicaSetConfig& oldConfig,
                                           const ReplicaSetConfig& newConfig,
+                                          ServiceContext* ctx,
                                           bool force) {
     Status status = newConfig.validate();
     if (!status.isOK()) {
@@ -267,20 +287,22 @@ StatusWith<int> validateConfigForReconfig(ReplicationCoordinatorExternalState* e
     }
 
     if (force) {
-        return findSelfInConfig(externalState, newConfig);
+        return findSelfInConfig(externalState, newConfig, ctx);
     }
 
-    return findSelfInConfigIfElectable(externalState, newConfig);
+    return findSelfInConfigIfElectable(externalState, newConfig, ctx);
 }
 
 StatusWith<int> validateConfigForHeartbeatReconfig(
-    ReplicationCoordinatorExternalState* externalState, const ReplicaSetConfig& newConfig) {
+    ReplicationCoordinatorExternalState* externalState,
+    const ReplicaSetConfig& newConfig,
+    ServiceContext* ctx) {
     Status status = newConfig.validate();
     if (!status.isOK()) {
         return StatusWith<int>(status);
     }
 
-    return findSelfInConfig(externalState, newConfig);
+    return findSelfInConfig(externalState, newConfig, ctx);
 }
 
 }  // namespace repl

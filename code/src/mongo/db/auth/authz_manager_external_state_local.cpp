@@ -50,10 +50,11 @@ Status AuthzManagerExternalStateLocal::initialize(OperationContext* txn) {
         if (status == ErrorCodes::GraphContainsCycle) {
             error() << "Cycle detected in admin.system.roles; role inheritance disabled. "
                        "Remove the listed cycle and any others to re-enable role inheritance. "
-                    << status.reason();
+                    << redact(status);
         } else {
             error() << "Could not generate role graph from admin.system.roles; "
-                       "only system roles available: " << status;
+                       "only system roles available: "
+                    << redact(status);
         }
     }
 
@@ -81,8 +82,11 @@ Status AuthzManagerExternalStateLocal::getStoredAuthorizationVersion(OperationCo
             return Status(ErrorCodes::TypeMismatch,
                           mongoutils::str::stream()
                               << "Could not determine schema version of authorization data.  "
-                                 "Bad (non-numeric) type " << typeName(versionElement.type())
-                              << " (" << versionElement.type() << ") for "
+                                 "Bad (non-numeric) type "
+                              << typeName(versionElement.type())
+                              << " ("
+                              << versionElement.type()
+                              << ") for "
                               << AuthorizationManager::schemaVersionFieldName
                               << " field in version document");
         }
@@ -123,7 +127,8 @@ void addPrivilegeObjectsOrWarningsToArrayElement(mutablebson::Element privileges
                         std::string(mongoutils::str::stream()
                                     << "Skipped privileges on resource "
                                     << privileges[i].getResourcePattern().toString()
-                                    << ". Reason: " << errmsg)));
+                                    << ". Reason: "
+                                    << errmsg)));
         }
     }
 }
@@ -131,19 +136,41 @@ void addPrivilegeObjectsOrWarningsToArrayElement(mutablebson::Element privileges
 
 bool AuthzManagerExternalStateLocal::hasAnyPrivilegeDocuments(OperationContext* txn) {
     BSONObj userBSONObj;
-    Status status =
+    Status statusFindUsers =
         findOne(txn, AuthorizationManager::usersCollectionNamespace, BSONObj(), &userBSONObj);
+
     // If we were unable to complete the query,
     // it's best to assume that there _are_ privilege documents.
-    return status != ErrorCodes::NoMatchingDocument;
+    if (statusFindUsers != ErrorCodes::NoMatchingDocument) {
+        return true;
+    }
+    Status statusFindRoles =
+        findOne(txn, AuthorizationManager::rolesCollectionNamespace, BSONObj(), &userBSONObj);
+    return statusFindRoles != ErrorCodes::NoMatchingDocument;
 }
 
 Status AuthzManagerExternalStateLocal::getUserDescription(OperationContext* txn,
                                                           const UserName& userName,
                                                           BSONObj* result) {
-    Status status = _getUserDocument(txn, userName, result);
-    if (!status.isOK())
-        return status;
+    Status status = Status::OK();
+
+    if (!shouldUseRolesFromConnection(txn, userName)) {
+        status = _getUserDocument(txn, userName, result);
+        if (!status.isOK())
+            return status;
+    } else {
+        // We are able to artifically construct the external user from the request
+        BSONArrayBuilder userRoles;
+        for (const RoleName& role : txn->getClient()->session()->getX509PeerInfo().roles) {
+            userRoles << BSON("role" << role.getRole() << "db" << role.getDB());
+        }
+        *result = BSON("_id" << userName.getUser() << "user" << userName.getUser() << "db"
+                             << userName.getDB()
+                             << "credentials"
+                             << BSON("external" << true)
+                             << "roles"
+                             << userRoles.arr());
+    }
 
     BSONElement directRolesElement;
     status = bsonExtractTypedField(*result, "roles", Array, &directRolesElement);
@@ -156,14 +183,14 @@ Status AuthzManagerExternalStateLocal::getUserDescription(OperationContext* txn,
         return status;
 
     mutablebson::Document resultDoc(*result, mutablebson::Document::kInPlaceDisabled);
-    _resolveUserRoles(&resultDoc, directRoles);
+    resolveUserRoles(&resultDoc, directRoles);
     *result = resultDoc.getObject();
 
     return Status::OK();
 }
 
-void AuthzManagerExternalStateLocal::_resolveUserRoles(mutablebson::Document* userDoc,
-                                                       const std::vector<RoleName>& directRoles) {
+void AuthzManagerExternalStateLocal::resolveUserRoles(mutablebson::Document* userDoc,
+                                                      const std::vector<RoleName>& directRoles) {
     unordered_set<RoleName> indirectRoles;
     PrivilegeVector allPrivileges;
     bool isRoleGraphInconsistent;
@@ -216,7 +243,8 @@ Status AuthzManagerExternalStateLocal::_getUserDocument(OperationContext* txn,
     Status status = findOne(txn,
                             AuthorizationManager::usersCollectionNamespace,
                             BSON(AuthorizationManager::USER_NAME_FIELD_NAME
-                                 << userName.getUser() << AuthorizationManager::USER_DB_FIELD_NAME
+                                 << userName.getUser()
+                                 << AuthorizationManager::USER_DB_FIELD_NAME
                                  << userName.getDB()),
                             userDoc);
     if (status == ErrorCodes::NoMatchingDocument) {
@@ -229,14 +257,55 @@ Status AuthzManagerExternalStateLocal::_getUserDocument(OperationContext* txn,
 
 Status AuthzManagerExternalStateLocal::getRoleDescription(OperationContext* txn,
                                                           const RoleName& roleName,
-                                                          bool showPrivileges,
+                                                          PrivilegeFormat showPrivileges,
                                                           BSONObj* result) {
+    if (showPrivileges == PrivilegeFormat::kShowAsUserFragment) {
+        mutablebson::Document resultDoc;
+        mutablebson::Element rolesElement = resultDoc.makeElementArray("roles");
+        fassert(40273, resultDoc.root().pushBack(rolesElement));
+        addRoleNameObjectsToArrayElement(
+            rolesElement, makeRoleNameIteratorForContainer(std::vector<RoleName>{roleName}));
+        resolveUserRoles(&resultDoc, {roleName});
+        *result = resultDoc.getObject();
+        return Status::OK();
+    }
     stdx::lock_guard<stdx::mutex> lk(_roleGraphMutex);
     return _getRoleDescription_inlock(roleName, showPrivileges, result);
 }
 
+Status AuthzManagerExternalStateLocal::getRolesDescription(OperationContext* txn,
+                                                           const std::vector<RoleName>& roles,
+                                                           PrivilegeFormat showPrivileges,
+                                                           BSONObj* result) {
+    if (showPrivileges == PrivilegeFormat::kShowAsUserFragment) {
+        mutablebson::Document resultDoc;
+        mutablebson::Element rolesElement = resultDoc.makeElementArray("roles");
+        fassert(40274, resultDoc.root().pushBack(rolesElement));
+        addRoleNameObjectsToArrayElement(rolesElement, makeRoleNameIteratorForContainer(roles));
+        resolveUserRoles(&resultDoc, roles);
+        *result = resultDoc.getObject();
+        return Status::OK();
+    }
+
+    stdx::lock_guard<stdx::mutex> lk(_roleGraphMutex);
+    BSONArrayBuilder resultBuilder;
+    for (const RoleName& role : roles) {
+        BSONObj roleDoc;
+        Status status = _getRoleDescription_inlock(role, showPrivileges, &roleDoc);
+        if (!status.isOK()) {
+            if (status.code() == ErrorCodes::RoleNotFound) {
+                continue;
+            }
+            return status;
+        }
+        resultBuilder << roleDoc;
+    }
+    *result = resultBuilder.arr();
+    return Status::OK();
+}
+
 Status AuthzManagerExternalStateLocal::_getRoleDescription_inlock(const RoleName& roleName,
-                                                                  bool showPrivileges,
+                                                                  PrivilegeFormat showPrivileges,
                                                                   BSONObj* result) {
     if (!_roleGraph.roleExists(roleName))
         return Status(ErrorCodes::RoleNotFound, "No role named " + roleName.toString());
@@ -256,7 +325,7 @@ Status AuthzManagerExternalStateLocal::_getRoleDescription_inlock(const RoleName
     mutablebson::Element privilegesElement = resultDoc.makeElementArray("privileges");
     mutablebson::Element inheritedPrivilegesElement =
         resultDoc.makeElementArray("inheritedPrivileges");
-    if (showPrivileges) {
+    if (showPrivileges == PrivilegeFormat::kShowSeparate) {
         fassert(17166, resultDoc.root().pushBack(privilegesElement));
     }
     mutablebson::Element warningsElement = resultDoc.makeElementArray("warnings");
@@ -265,7 +334,7 @@ Status AuthzManagerExternalStateLocal::_getRoleDescription_inlock(const RoleName
     if (_roleGraphState == roleGraphStateConsistent) {
         addRoleNameObjectsToArrayElement(inheritedRolesElement,
                                          _roleGraph.getIndirectSubordinates(roleName));
-        if (showPrivileges) {
+        if (showPrivileges == PrivilegeFormat::kShowSeparate) {
             addPrivilegeObjectsOrWarningsToArrayElement(
                 privilegesElement, warningsElement, _roleGraph.getDirectPrivileges(roleName));
 
@@ -274,7 +343,7 @@ Status AuthzManagerExternalStateLocal::_getRoleDescription_inlock(const RoleName
 
             fassert(17323, resultDoc.root().pushBack(inheritedPrivilegesElement));
         }
-    } else if (showPrivileges) {
+    } else if (showPrivileges == PrivilegeFormat::kShowSeparate) {
         warningsElement.appendString(
             "", "Role graph state inconsistent; only direct privileges available.");
         addPrivilegeObjectsOrWarningsToArrayElement(
@@ -289,11 +358,15 @@ Status AuthzManagerExternalStateLocal::_getRoleDescription_inlock(const RoleName
 
 Status AuthzManagerExternalStateLocal::getRoleDescriptionsForDB(OperationContext* txn,
                                                                 const std::string dbname,
-                                                                bool showPrivileges,
+                                                                PrivilegeFormat showPrivileges,
                                                                 bool showBuiltinRoles,
                                                                 vector<BSONObj>* result) {
-    stdx::lock_guard<stdx::mutex> lk(_roleGraphMutex);
+    if (showPrivileges == PrivilegeFormat::kShowAsUserFragment) {
+        return Status(ErrorCodes::IllegalOperation,
+                      "Cannot get user fragment for all roles in a database");
+    }
 
+    stdx::lock_guard<stdx::mutex> lk(_roleGraphMutex);
     for (RoleNameIterator it = _roleGraph.getRolesForDatabase(dbname); it.more(); it.next()) {
         if (!showBuiltinRoles && _roleGraph.isBuiltinRole(it.get())) {
             continue;
@@ -318,7 +391,8 @@ void addRoleFromDocumentOrWarn(RoleGraph* roleGraph, const BSONObj& doc) {
     Status status = roleGraph->addRoleFromDocument(doc);
     if (!status.isOK()) {
         warning() << "Skipping invalid admin.system.roles document while calculating privileges"
-                     " for user-defined roles:  " << status << "; document " << doc;
+                     " for user-defined roles:  "
+                  << redact(status) << "; document " << redact(doc);
     }
 }
 
@@ -346,7 +420,8 @@ Status AuthzManagerExternalStateLocal::_initializeRoleGraph(OperationContext* tx
     RoleGraphState newState;
     if (status == ErrorCodes::GraphContainsCycle) {
         error() << "Inconsistent role graph during authorization manager initialization.  Only "
-                   "direct privileges available. " << status.reason();
+                   "direct privileges available. "
+                << redact(status);
         newState = roleGraphStateHasCycle;
         status = Status::OK();
     } else if (status.isOK()) {
@@ -364,14 +439,16 @@ Status AuthzManagerExternalStateLocal::_initializeRoleGraph(OperationContext* tx
 
 class AuthzManagerExternalStateLocal::AuthzManagerLogOpHandler : public RecoveryUnit::Change {
 public:
-    // None of the parameters below (except externalState) need to live longer than
-    // the instantiations of this class
-    AuthzManagerLogOpHandler(AuthzManagerExternalStateLocal* externalState,
+    // None of the parameters below (except txn and externalState) need to live longer than the
+    // instantiations of this class
+    AuthzManagerLogOpHandler(OperationContext* txn,
+                             AuthzManagerExternalStateLocal* externalState,
                              const char* op,
                              const char* ns,
                              const BSONObj& o,
                              const BSONObj* o2)
-        : _externalState(externalState),
+        : _txn(txn),
+          _externalState(externalState),
           _op(op),
           _ns(ns),
           _o(o.getOwned()),
@@ -382,7 +459,7 @@ public:
     virtual void commit() {
         stdx::lock_guard<stdx::mutex> lk(_externalState->_roleGraphMutex);
         Status status = _externalState->_roleGraph.handleLogOp(
-            _op.c_str(), NamespaceString(_ns.c_str()), _o, _isO2Set ? &_o2 : NULL);
+            _txn, _op.c_str(), NamespaceString(_ns.c_str()), _o, _isO2Set ? &_o2 : NULL);
 
         if (status == ErrorCodes::OplogOperationUnsupported) {
             _externalState->_roleGraph = RoleGraph();
@@ -392,18 +469,18 @@ public:
             if (_isO2Set)
                 oplogEntryBuilder << "o2" << _o2;
             error() << "Unsupported modification to roles collection in oplog; "
-                       "restart this process to reenable user-defined roles; " << status.reason()
-                    << "; Oplog entry: " << oplogEntryBuilder.done();
+                       "restart this process to reenable user-defined roles; "
+                    << redact(status) << "; Oplog entry: " << redact(oplogEntryBuilder.done());
         } else if (!status.isOK()) {
-            warning() << "Skipping bad update to roles collection in oplog. " << status
-                      << " Oplog entry: " << _op;
+            warning() << "Skipping bad update to roles collection in oplog. " << redact(status)
+                      << " Oplog entry: " << redact(_op);
         }
         status = _externalState->_roleGraph.recomputePrivilegeData();
         if (status == ErrorCodes::GraphContainsCycle) {
             _externalState->_roleGraphState = _externalState->roleGraphStateHasCycle;
             error() << "Inconsistent role graph during authorization manager initialization.  "
-                       "Only direct privileges available. " << status.reason()
-                    << " after applying oplog entry " << _op;
+                       "Only direct privileges available. "
+                    << redact(status) << " after applying oplog entry " << redact(_op);
         } else {
             fassert(17183, status);
             _externalState->_roleGraphState = _externalState->roleGraphStateConsistent;
@@ -413,6 +490,7 @@ public:
     virtual void rollback() {}
 
 private:
+    OperationContext* _txn;
     AuthzManagerExternalStateLocal* _externalState;
     const std::string _op;
     const std::string _ns;
@@ -423,10 +501,10 @@ private:
 };
 
 void AuthzManagerExternalStateLocal::logOp(
-    OperationContext* txn, const char* op, const char* ns, const BSONObj& o, BSONObj* o2) {
+    OperationContext* txn, const char* op, const char* ns, const BSONObj& o, const BSONObj* o2) {
     if (ns == AuthorizationManager::rolesCollectionNamespace.ns() ||
         ns == AuthorizationManager::adminCommandNamespace.ns()) {
-        txn->recoveryUnit()->registerChange(new AuthzManagerLogOpHandler(this, op, ns, o, o2));
+        txn->recoveryUnit()->registerChange(new AuthzManagerLogOpHandler(txn, this, op, ns, o, o2));
     }
 }
 

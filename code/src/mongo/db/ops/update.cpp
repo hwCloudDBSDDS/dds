@@ -38,16 +38,17 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/update.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/ops/update_driver.h"
 #include "mongo/db/ops/update_lifecycle.h"
 #include "mongo/db/query/explain.h"
 #include "mongo/db/query/get_executor.h"
+#include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/update_index_data.h"
@@ -56,10 +57,7 @@
 
 namespace mongo {
 
-UpdateResult update(OperationContext* txn,
-                    Database* db,
-                    const UpdateRequest& request,
-                    OpDebug* opDebug) {
+UpdateResult update(OperationContext* txn, Database* db, const UpdateRequest& request) {
     invariant(db);
 
     // Explain should never use this helper.
@@ -73,6 +71,11 @@ UpdateResult update(OperationContext* txn,
 
     const NamespaceString& nsString = request.getNamespaceString();
     Collection* collection = db->getCollection(nsString.ns());
+
+    // If this is the local database, don't set last op.
+    if (db->name() == "local") {
+        lastOpSetterGuard.Dismiss();
+    }
 
     // The update stage does not create its own collection.  As such, if the update is
     // an upsert, create the collection that the update stage inserts into beforehand.
@@ -91,9 +94,10 @@ UpdateResult update(OperationContext* txn,
                 !repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(nsString);
 
             if (userInitiatedWritesAndNotPrimary) {
-                uassertStatusOK(Status(ErrorCodes::NotMaster,
+                uassertStatusOK(Status(ErrorCodes::PrimarySteppedDown,
                                        str::stream() << "Not primary while creating collection "
-                                                     << nsString.ns() << " during upsert"));
+                                                     << nsString.ns()
+                                                     << " during upsert"));
             }
             WriteUnitOfWork wuow(txn);
             collection = db->createCollection(txn, nsString.ns(), CollectionOptions());
@@ -107,8 +111,9 @@ UpdateResult update(OperationContext* txn,
     ParsedUpdate parsedUpdate(txn, &request);
     uassertStatusOK(parsedUpdate.parseRequest());
 
+    OpDebug* const nullOpDebug = nullptr;
     std::unique_ptr<PlanExecutor> exec =
-        uassertStatusOK(getExecutorUpdate(txn, collection, &parsedUpdate, opDebug));
+        uassertStatusOK(getExecutorUpdate(txn, nullOpDebug, collection, &parsedUpdate));
 
     uassertStatusOK(exec->executePlan());
     if (repl::ReplClientInfo::forClient(client).getLastOp() != lastOpAtOperationStart) {
@@ -118,10 +123,7 @@ UpdateResult update(OperationContext* txn,
         lastOpSetterGuard.Dismiss();
     }
 
-    PlanSummaryStats summaryStats;
-    Explain::getSummaryStats(*exec, &summaryStats);
     const UpdateStats* updateStats = UpdateStage::getUpdateStats(exec.get());
-    UpdateStage::fillOutOpDebug(updateStats, &summaryStats, opDebug);
 
     return UpdateStage::makeUpdateResult(updateStats);
 }

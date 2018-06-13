@@ -31,13 +31,15 @@
 
 #include "mongo/client/authenticate.h"
 
-#include "mongo/bson/json.h"
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
+#include "mongo/bson/json.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/sasl_client_authenticate.h"
 #include "mongo/config.h"
+#include "mongo/db/server_options.h"
 #include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/util/log.h"
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/password_digest.h"
@@ -61,11 +63,8 @@ namespace {
 const char* const kUserSourceFieldName = "userSource";
 const BSONObj kGetNonceCmd = BSON("getnonce" << 1);
 
-BSONObj getFallbackAuthParams(const BSONObj& params) {
-    if (params["fallbackParams"].type() != Object) {
-        return BSONObj();
-    }
-    return params["fallbackParams"].Obj();
+bool isOk(const BSONObj& o) {
+    return getStatusFromCommandResult(o).isOK();
 }
 
 StatusWith<std::string> extractDBField(const BSONObj& params) {
@@ -154,26 +153,25 @@ void authMongoCR(RunCommandHook runCommand, const BSONObj& params, AuthCompletio
     if (!nonceRequest.isOK())
         return handler(std::move(nonceRequest.getStatus()));
 
-    runCommand(nonceRequest.getValue(),
-               [runCommand, params, handler](AuthResponse response) {
-                   if (!response.isOK())
-                       return handler(std::move(response));
+    runCommand(nonceRequest.getValue(), [runCommand, params, handler](AuthResponse response) {
+        if (!response.isOK())
+            return handler(std::move(response));
 
-                   // Ensure response was valid
-                   std::string nonce;
-                   BSONObj nonceResponse = response.getValue().data;
-                   auto valid = bsonExtractStringField(nonceResponse, "nonce", &nonce);
-                   if (!valid.isOK())
-                       return handler({ErrorCodes::AuthenticationFailed,
-                                       "Invalid nonce response: " + nonceResponse.toString()});
+        // Ensure response was valid
+        std::string nonce;
+        BSONObj nonceResponse = response.data;
+        auto valid = bsonExtractStringField(nonceResponse, "nonce", &nonce);
+        if (!valid.isOK())
+            return handler({ErrorCodes::AuthenticationFailed,
+                            "Invalid nonce response: " + nonceResponse.toString()});
 
-                   // Step 2: send authenticate command, receive response
-                   auto authRequest = createMongoCRAuthenticateCmd(params, nonce);
-                   if (!authRequest.isOK())
-                       return handler(std::move(authRequest.getStatus()));
+        // Step 2: send authenticate command, receive response
+        auto authRequest = createMongoCRAuthenticateCmd(params, nonce);
+        if (!authRequest.isOK())
+            return handler(std::move(authRequest.getStatus()));
 
-                   runCommand(authRequest.getValue(), handler);
-               });
+        runCommand(authRequest.getValue(), handler);
+    });
 }
 
 //
@@ -181,6 +179,11 @@ void authMongoCR(RunCommandHook runCommand, const BSONObj& params, AuthCompletio
 //
 
 AuthRequest createX509AuthCmd(const BSONObj& params, StringData clientName) {
+    if (clientName.empty()) {
+        return {ErrorCodes::AuthenticationFailed,
+                "Please enable SSL on the client-side to use the MONGODB-X509 authentication "
+                "mechanism."};
+    }
     auto db = extractDBField(params);
     if (!db.isOK())
         return std::move(db.getStatus());
@@ -189,16 +192,11 @@ AuthRequest createX509AuthCmd(const BSONObj& params, StringData clientName) {
     request.dbname = db.getValue();
 
     std::string username;
-    auto response = bsonExtractStringField(params, saslCommandUserFieldName, &username);
-    if (!response.isOK())
+    auto response = bsonExtractStringFieldWithDefault(
+        params, saslCommandUserFieldName, clientName.toString(), &username);
+    if (!response.isOK()) {
         return response;
-
-    if (clientName.toString() == "") {
-        return {ErrorCodes::AuthenticationFailed,
-                "Please enable SSL on the client-side to use the MONGODB-X509 authentication "
-                "mechanism."};
     }
-
     if (username != clientName.toString()) {
         StringBuilder message;
         message << "Username \"";
@@ -210,7 +208,8 @@ AuthRequest createX509AuthCmd(const BSONObj& params, StringData clientName) {
 
     request.cmdObj = BSON("authenticate" << 1 << "mechanism"
                                          << "MONGODB-X509"
-                                         << "user" << username);
+                                         << "user"
+                                         << username);
     return std::move(request);
 }
 
@@ -235,12 +234,31 @@ void authX509(RunCommandHook runCommand,
 // General Auth
 //
 
+bool isFailedAuthOk(const AuthResponse& response) {
+    return (response.status == ErrorCodes::AuthenticationFailed &&
+            serverGlobalParams.transitionToAuth);
+}
+
 void auth(RunCommandHook runCommand,
           const BSONObj& params,
           StringData hostname,
           StringData clientName,
           AuthCompletionHandler handler) {
     std::string mechanism;
+    auto authCompletionHandler = [handler](AuthResponse response) {
+        if (isFailedAuthOk(response)) {
+            // If auth failed in transitionToAuth, just pretend it succeeded.
+            log() << "Failed to authenticate in transitionToAuth, falling back to no "
+                     "authentication.";
+
+            // We need to mock a successful AuthResponse.
+            return handler(
+                AuthResponse(RemoteCommandResponse(BSON("ok" << 1), BSONObj(), Milliseconds(0))));
+        }
+
+        // otherwise, call handler
+        return handler(std::move(response));
+    };
     auto response = bsonExtractStringField(params, saslCommandMechanismFieldName, &mechanism);
     if (!response.isOK())
         return handler(std::move(response));
@@ -251,47 +269,26 @@ void auth(RunCommandHook runCommand,
     }
 
     if (mechanism == kMechanismMongoCR)
-        return authMongoCR(runCommand, params, handler);
+        return authMongoCR(runCommand, params, authCompletionHandler);
 
 #ifdef MONGO_CONFIG_SSL
     else if (mechanism == kMechanismMongoX509)
-        return authX509(runCommand, params, clientName, handler);
+        return authX509(runCommand, params, clientName, authCompletionHandler);
 #endif
 
     else if (saslClientAuthenticate != nullptr)
-        return saslClientAuthenticate(runCommand, hostname, params, handler);
+        return saslClientAuthenticate(runCommand, hostname, params, authCompletionHandler);
 
     return handler({ErrorCodes::AuthenticationFailed,
                     mechanism + " mechanism support not compiled into client library."});
 };
-
-bool needsFallback(const AuthResponse& response) {
-    // TODO: BadValue is sometimes returned for auth failures with unsupported mechanisms
-    // in 2.6 servers. We should investigate removing this BadValue check eventually.
-    return (response == ErrorCodes::BadValue || response == ErrorCodes::CommandNotFound);
-}
 
 void asyncAuth(RunCommandHook runCommand,
                const BSONObj& params,
                StringData hostname,
                StringData clientName,
                AuthCompletionHandler handler) {
-    auth(runCommand,
-         params,
-         hostname,
-         clientName,
-         [runCommand, params, hostname, clientName, handler](AuthResponse response) {
-             // If auth failed, try again with fallback params when appropriate
-             if (needsFallback(response))
-                 return auth(runCommand,
-                             std::move(getFallbackAuthParams(params)),
-                             hostname,
-                             clientName,
-                             handler);
-
-             // otherwise, call handler
-             return handler(std::move(response));
-         });
+    auth(runCommand, params, hostname, clientName, std::move(handler));
 }
 
 }  // namespace
@@ -307,21 +304,15 @@ void authenticateClient(const BSONObj& params,
     } else {
         // Run synchronously through async framework
         // NOTE: this assumes that runCommand executes synchronously.
-        asyncAuth(runCommand,
-                  params,
-                  hostname,
-                  clientName,
-                  [](AuthResponse response) {
-                      // DBClient expects us to throw in case of an auth error.
-                      uassertStatusOK(response);
+        asyncAuth(runCommand, params, hostname, clientName, [](AuthResponse response) {
+            // DBClient expects us to throw in case of an auth error.
+            uassertStatusOK(response.status);
 
-                      auto serverResponse = response.getValue().data;
-                      auto status = getStatusFromCommandResult(serverResponse);
-                      auto code = status == ErrorCodes::IncompatibleCatalogManager
-                          ? ErrorCodes::IncompatibleCatalogManager
-                          : ErrorCodes::AuthenticationFailed;
-                      uassert(code, serverResponse["errmsg"].str(), status.isOK());
-                  });
+            auto serverResponse = response.data;
+            uassert(ErrorCodes::AuthenticationFailed,
+                    serverResponse["errmsg"].str(),
+                    isOk(serverResponse));
+        });
     }
 }
 
@@ -329,10 +320,14 @@ BSONObj buildAuthParams(StringData dbname,
                         StringData username,
                         StringData passwordText,
                         bool digestPassword) {
-    return BSON(saslCommandMechanismFieldName
-                << "SCRAM-SHA-1" << saslCommandUserDBFieldName << dbname << saslCommandUserFieldName
-                << username << saslCommandPasswordFieldName << passwordText
-                << saslCommandDigestPasswordFieldName << digestPassword);
+    return BSON(saslCommandMechanismFieldName << "SCRAM-SHA-1" << saslCommandUserDBFieldName
+                                              << dbname
+                                              << saslCommandUserFieldName
+                                              << username
+                                              << saslCommandPasswordFieldName
+                                              << passwordText
+                                              << saslCommandDigestPasswordFieldName
+                                              << digestPassword);
 }
 
 StringData getSaslCommandUserDBFieldName() {

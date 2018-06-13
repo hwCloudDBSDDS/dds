@@ -45,7 +45,6 @@ class CappedCallback;
 class Collection;
 struct CompactOptions;
 struct CompactStats;
-class DocWriter;
 class MAdvise;
 class NamespaceDetails;
 class OperationContext;
@@ -62,12 +61,15 @@ class ValidateAdaptor;
  */
 class DocWriter {
 public:
-    virtual ~DocWriter() {}
     virtual void writeDocument(char* buf) const = 0;
     virtual size_t documentSize() const = 0;
     virtual bool addPadding() const {
         return true;
     }
+
+protected:
+    // Can't delete through base pointer.
+    ~DocWriter() = default;
 };
 
 /**
@@ -76,10 +78,6 @@ public:
 class UpdateNotifier {
 public:
     virtual ~UpdateNotifier() {}
-    virtual Status recordStoreGoingToMove(OperationContext* txn,
-                                          const RecordId& oldLocation,
-                                          const char* oldBuffer,
-                                          size_t oldSize) = 0;
     virtual Status recordStoreGoingToUpdateInPlace(OperationContext* txn, const RecordId& loc) = 0;
 };
 
@@ -95,6 +93,13 @@ struct BsonRecord {
     RecordId id;
     const BSONObj* docPtr;
 };
+
+enum ValidateCmdLevel : int {
+    kValidateIndex = 0x01,
+    kValidateRecordStore = 0x02,
+    kValidateFull = 0x03
+};
+
 
 /**
  * Retrieves Records from a RecordStore.
@@ -127,12 +132,11 @@ struct BsonRecord {
  * IMPORTANT NOTE FOR DOCUMENT-LOCKING ENGINES: If you implement capped collections with a
  * "visibility" system such that documents that exist in your snapshot but were inserted after
  * the last uncommitted document are hidden, you must follow the following rules:
- *   - next() must never return invisible documents.
+ *   - next() on forward cursors must never return invisible documents.
  *   - If next() on a forward cursor hits an invisible document, it should behave as if it hit
  *     the end of the collection.
- *   - When next() on a reverse cursor seeks to the end of the collection it must return the
- *     newest visible document. This should only return boost::none if there are no visible
- *     documents in the collection.
+ *   - Reverse cursors must ignore the visibility filter. That means that they initially return the
+ *     newest committed record in the collection and may skip over uncommitted records.
  *   - SeekableRecordCursor::seekExact() must ignore the visibility filter and return the requested
  *     document even if it is supposed to be invisible.
  * TODO SERVER-18934 Handle this above the storage engine layer so storage engines don't have to
@@ -367,10 +371,6 @@ public:
                                               int len,
                                               bool enforceQuota) = 0;
 
-    virtual StatusWith<RecordId> insertRecord(OperationContext* txn,
-                                              const DocWriter* doc,
-                                              bool enforceQuota) = 0;
-
     virtual Status insertRecords(OperationContext* txn,
                                  std::vector<Record>* records,
                                  bool enforceQuota) {
@@ -386,22 +386,48 @@ public:
     }
 
     /**
-     * @param notifier - Only used by record stores which do not support doc-locking.
-     *                   In the case of a document move, this is called after the document
-     *                   has been written to the new location, but before it is deleted from
-     *                   the old location.
-     *                   In the case of an in-place update, this is called just before the
-     *                   in-place write occurs.
-     * @return Status or RecordId, RecordId might be different
+     * Inserts nDocs documents into this RecordStore using the DocWriter interface.
+     *
+     * This allows the storage engine to reserve space for a record and have it built in-place
+     * rather than building the record then copying it into its destination.
+     *
+     * On success, if idsOut is non-null the RecordIds of the inserted records will be written into
+     * it. It must have space for nDocs RecordIds.
+     */
+    virtual Status insertRecordsWithDocWriter(OperationContext* txn,
+                                              const DocWriter* const* docs,
+                                              size_t nDocs,
+                                              RecordId* idsOut = nullptr) = 0;
+
+    /**
+     * A thin wrapper around insertRecordsWithDocWriter() to simplify handling of single DocWriters.
+     */
+    StatusWith<RecordId> insertRecordWithDocWriter(OperationContext* txn, const DocWriter* doc) {
+        RecordId out;
+        Status status = insertRecordsWithDocWriter(txn, &doc, 1, &out);
+        if (!status.isOK())
+            return status;
+        return out;
+    }
+
+    /**
+     * @param notifier - Only used by record stores which do not support doc-locking. Called only
+     *                   in the case of an in-place update. Called just before the in-place write
+     *                   occurs.
+     * @return Status  - If a document move is required (MMAPv1 only) then a status of
+     *                   ErrorCodes::NeedsDocumentMove will be returned. On receipt of this status
+     *                   no update will be performed. It is the caller's responsibility to:
+     *                     1. Remove the existing document and associated index keys.
+     *                     2. Insert a new document and index keys.
      *
      * For capped record stores, the record size will never change.
      */
-    virtual StatusWith<RecordId> updateRecord(OperationContext* txn,
-                                              const RecordId& oldLocation,
-                                              const char* data,
-                                              int len,
-                                              bool enforceQuota,
-                                              UpdateNotifier* notifier) = 0;
+    virtual Status updateRecord(OperationContext* txn,
+                                const RecordId& oldLocation,
+                                const char* data,
+                                int len,
+                                bool enforceQuota,
+                                UpdateNotifier* notifier) = 0;
 
     /**
      * @return Returns 'false' if this record store does not implement
@@ -520,15 +546,12 @@ public:
     }
 
     /**
-     * @param full - does more checks
-     * @param scanData - scans each document
      * @return OK if the validate run successfully
      *         OK will be returned even if corruption is found
      *         deatils will be in result
      */
     virtual Status validate(OperationContext* txn,
-                            bool full,
-                            bool scanData,
+                            ValidateCmdLevel level,
                             ValidateAdaptor* adaptor,
                             ValidateResults* results,
                             BSONObjBuilder* output) = 0;
@@ -580,19 +603,21 @@ public:
     }
 
     /**
+     * Waits for all writes that completed before this call to be visible to forward scans.
+     * See the comment on RecordCursor for more details about the visibility rules.
+     *
+     * It is only legal to call this on an oplog. It is illegal to call this inside a
+     * WriteUnitOfWork.
+     */
+    virtual void waitForAllEarlierOplogWritesToBeVisible(OperationContext* txn) const = 0;
+
+    /**
      * Called after a repair operation is run with the recomputed numRecords and dataSize.
      */
     virtual void updateStatsAfterRepair(OperationContext* txn,
                                         long long numRecords,
                                         long long dataSize) = 0;
-    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    /**
-     * support modify capped collection config
-    * if storage engine cannot support this feature, simple return false
-     */
-    virtual bool setCappedSize(long long cappedSize) { return false; }
-    virtual bool setCappedMaxDocs(long long cappedMaxDocs) { return false; }
-    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
 protected:
     std::string _ns;
 };
@@ -611,6 +636,7 @@ struct ValidateResults {
     }
     bool valid;
     std::vector<std::string> errors;
+    std::vector<std::string> warnings;
 };
 
 /**
@@ -622,6 +648,8 @@ class ValidateAdaptor {
 public:
     virtual ~ValidateAdaptor() {}
 
-    virtual Status validate(const RecordData& recordData, size_t* dataSize) = 0;
+    virtual Status validate(const RecordId& recordId,
+                            const RecordData& recordData,
+                            size_t* dataSize) = 0;
 };
 }

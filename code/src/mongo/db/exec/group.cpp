@@ -31,8 +31,9 @@
 #include "mongo/db/exec/group.h"
 
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/client_basic.h"
+#include "mongo/db/client.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/stdx/memory.h"
@@ -42,6 +43,8 @@ namespace mongo {
 using std::unique_ptr;
 using std::vector;
 using stdx::make_unique;
+
+namespace dps = ::mongo::dotted_path_support;
 
 namespace {
 
@@ -64,7 +67,7 @@ Status getKey(
         *key = s->getObject("__returnValue");
         return Status::OK();
     }
-    *key = obj.extractFields(keyPattern, true).getOwned();
+    *key = dps::extractElementsBasedOnTemplate(obj, keyPattern, true).getOwned();
     return Status::OK();
 }
 
@@ -83,18 +86,19 @@ GroupStage::GroupStage(OperationContext* txn,
       _specificStats(),
       _groupState(GroupState_Initializing),
       _reduceFunction(0),
-      _keyFunction(0) {
+      _keyFunction(0),
+      _groupMap(SimpleBSONObjComparator::kInstance.makeBSONObjIndexedMap<int>()) {
     _children.emplace_back(child);
 }
 
 Status GroupStage::initGroupScripting() {
     // Initialize _scope.
     const std::string userToken =
-        AuthorizationSession::get(ClientBasic::getCurrent())->getAuthenticatedUserNamesToken();
+        AuthorizationSession::get(Client::getCurrent())->getAuthenticatedUserNamesToken();
 
     const NamespaceString nss(_request.ns);
-    _scope =
-        globalScriptEngine->getPooledScope(getOpCtx(), nss.db().toString(), "group" + userToken);
+    _scope = getGlobalScriptEngine()->getPooledScope(
+        getOpCtx(), nss.db().toString(), "group" + userToken);
     if (!_request.reduceScope.isEmpty()) {
         _scope->init(&_request.reduceScope);
     }
@@ -148,7 +152,8 @@ Status GroupStage::processObject(const BSONObj& obj) {
         }
     }
 
-    _scope->setObject("obj", obj, true);
+    BSONObj objCopy = obj.getOwned();
+    _scope->setObject("obj", objCopy, true);
     _scope->setNumber("n", n - 1);
 
     try {
@@ -198,11 +203,7 @@ StatusWith<BSONObj> GroupStage::finalizeResults() {
     return results;
 }
 
-PlanStage::StageState GroupStage::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState GroupStage::doWork(WorkingSetID* out) {
     if (isEOF()) {
         return PlanStage::IS_EOF;
     }
@@ -215,7 +216,6 @@ PlanStage::StageState GroupStage::work(WorkingSetID* out) {
             return PlanStage::FAILURE;
         }
         _groupState = GroupState_ReadingFromChild;
-        ++_commonStats.needTime;
         return PlanStage::NEED_TIME;
     }
 
@@ -225,10 +225,8 @@ PlanStage::StageState GroupStage::work(WorkingSetID* out) {
     StageState state = child()->work(&id);
 
     if (PlanStage::NEED_TIME == state) {
-        ++_commonStats.needTime;
         return state;
     } else if (PlanStage::NEED_YIELD == state) {
-        ++_commonStats.needYield;
         *out = id;
         return state;
     } else if (PlanStage::FAILURE == state) {
@@ -257,7 +255,6 @@ PlanStage::StageState GroupStage::work(WorkingSetID* out) {
 
         _ws->free(id);
 
-        ++_commonStats.needTime;
         return PlanStage::NEED_TIME;
     } else {
         // We're done reading from our child.
@@ -277,7 +274,6 @@ PlanStage::StageState GroupStage::work(WorkingSetID* out) {
         member->obj = Snapshotted<BSONObj>(SnapshotId(), results.getValue());
         member->transitionToOwnedObj();
 
-        ++_commonStats.advanced;
         return PlanStage::ADVANCED;
     }
 }

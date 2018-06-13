@@ -32,8 +32,10 @@
 
 #include <boost/filesystem.hpp>
 
-#include "mongo/config.h"
+#include "mongo/base/data_type_endian.h"
 #include "mongo/base/init.h"
+#include "mongo/base/static_assert.h"
+#include "mongo/config.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_noop.h"
 #include "mongo/stdx/memory.h"
@@ -79,7 +81,7 @@ public:
         buf.appendNum(_i);
     }
     static IntWrapper deserializeForSorter(BufReader& buf, const SorterDeserializeSettings&) {
-        return buf.read<int>();
+        return buf.read<LittleEndian<int>>().value;
     }
     int memUsageForSorter() const {
         return sizeof(IntWrapper);
@@ -191,7 +193,7 @@ void _assertIteratorsEquivalent(It1 it1, It2 it2, int line) {
 #define ASSERT_ITERATORS_EQUIVALENT(it1, it2) _assertIteratorsEquivalent(it1, it2, __LINE__)
 
 template <int N>
-std::shared_ptr<IWIterator> makeInMemIterator(const int(&array)[N]) {
+std::shared_ptr<IWIterator> makeInMemIterator(const int (&array)[N]) {
     std::vector<IWPair> vec;
     for (int i = 0; i < N; i++)
         vec.push_back(IWPair(array[i], -array[i]));
@@ -199,7 +201,7 @@ std::shared_ptr<IWIterator> makeInMemIterator(const int(&array)[N]) {
 }
 
 template <typename IteratorPtr, int N>
-std::shared_ptr<IWIterator> mergeIterators(IteratorPtr(&array)[N],
+std::shared_ptr<IWIterator> mergeIterators(IteratorPtr (&array)[N],
                                            Direction Dir = ASC,
                                            const SortOptions& opts = SortOptions()) {
     std::vector<std::shared_ptr<IWIterator>> vec;
@@ -487,10 +489,8 @@ public:
 
     SortOptions adjustSortOptions(SortOptions opts) {
         // Make sure we use a reasonable number of files when we spill
-        static_assert((NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT > 50,
-                      "(NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT > 50");
-        static_assert((NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT < 500,
-                      "(NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT < 500");
+        MONGO_STATIC_ASSERT((NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT > 50);
+        MONGO_STATIC_ASSERT((NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT < 500);
 
         return opts.MaxMemoryUsageBytes(MEM_LIMIT).ExtSortAllowed();
     }
@@ -526,17 +526,13 @@ class LotsOfDataWithLimit : public LotsOfDataLittleMemory<Random> {
     typedef LotsOfDataLittleMemory<Random> Parent;
     SortOptions adjustSortOptions(SortOptions opts) {
         // Make sure our tests will spill or not as desired
-        static_assert(MEM_LIMIT / 2 > (100 * sizeof(IWPair)),
-                      "MEM_LIMIT / 2 > (100 * sizeof(IWPair))");
-        static_assert(MEM_LIMIT < (5000 * sizeof(IWPair)), "MEM_LIMIT < (5000 * sizeof(IWPair))");
-        static_assert(MEM_LIMIT * 2 > (5000 * sizeof(IWPair)),
-                      "MEM_LIMIT * 2 > (5000 * sizeof(IWPair))");
+        MONGO_STATIC_ASSERT(MEM_LIMIT / 2 > (100 * sizeof(IWPair)));
+        MONGO_STATIC_ASSERT(MEM_LIMIT < (5000 * sizeof(IWPair)));
+        MONGO_STATIC_ASSERT(MEM_LIMIT * 2 > (5000 * sizeof(IWPair)));
 
         // Make sure we use a reasonable number of files when we spill
-        static_assert((Parent::NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT > 100,
-                      "(Parent::NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT > 100");
-        static_assert((Parent::NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT < 500,
-                      "(Parent::NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT < 500");
+        MONGO_STATIC_ASSERT((Parent::NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT > 100);
+        MONGO_STATIC_ASSERT((Parent::NUM_ITEMS * sizeof(IWPair)) / MEM_LIMIT < 500);
 
         return opts.MaxMemoryUsageBytes(MEM_LIMIT).ExtSortAllowed().Limit(Limit);
     }

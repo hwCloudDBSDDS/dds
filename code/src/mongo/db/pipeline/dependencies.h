@@ -41,7 +41,13 @@ class ParsedDeps;
  * This struct allows components in an agg pipeline to report what they need from their input.
  */
 struct DepsTracker {
-    DepsTracker() : needWholeDocument(false), needTextScore(false) {}
+    /**
+     * Represents what metadata is available on documents that are input to the pipeline.
+     */
+    enum MetadataAvailable { kNoMetadata = 0, kTextScore = 1 };
+
+    DepsTracker(MetadataAvailable metadataAvailable = kNoMetadata)
+        : needWholeDocument(false), _metadataAvailable(metadataAvailable), _needTextScore(false) {}
 
     /**
      * Returns a projection object covering the dependencies tracked by this class.
@@ -52,7 +58,36 @@ struct DepsTracker {
 
     std::set<std::string> fields;  // names of needed fields in dotted notation
     bool needWholeDocument;        // if true, ignore fields and assume the whole document is needed
-    bool needTextScore;
+
+
+    bool hasNoRequirements() const {
+        return fields.empty() && !needWholeDocument && !_needTextScore;
+    }
+
+    MetadataAvailable getMetadataAvailable() const {
+        return _metadataAvailable;
+    }
+
+    bool isTextScoreAvailable() const {
+        return _metadataAvailable & MetadataAvailable::kTextScore;
+    }
+
+    bool getNeedTextScore() const {
+        return _needTextScore;
+    }
+
+    void setNeedTextScore(bool needTextScore) {
+        if (needTextScore && !isTextScoreAvailable()) {
+            uasserted(
+                40218,
+                "pipeline requires text score metadata, but there is no text score available");
+        }
+        _needTextScore = needTextScore;
+    }
+
+private:
+    MetadataAvailable _metadataAvailable;
+    bool _needTextScore;
 };
 
 /**
@@ -65,8 +100,9 @@ public:
 
 private:
     friend struct DepsTracker;  // so it can call constructor
-    explicit ParsedDeps(const Document& fields) : _fields(fields) {}
+    explicit ParsedDeps(Document&& fields) : _fields(std::move(fields)), _nFields(_fields.size()) {}
 
     Document _fields;
+    int _nFields;  // Cache the number of top-level fields needed.
 };
 }

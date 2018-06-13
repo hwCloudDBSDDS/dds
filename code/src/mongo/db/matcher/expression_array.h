@@ -33,8 +33,8 @@
 #include <vector>
 
 #include "mongo/base/status.h"
-#include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonmisc.h"
+#include "mongo/bson/bsonobj.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_leaf.h"
 
@@ -45,7 +45,7 @@ public:
     ArrayMatchingMatchExpression(MatchType matchType) : MatchExpression(matchType) {}
     virtual ~ArrayMatchingMatchExpression() {}
 
-    Status initPath(StringData path);
+    Status setPath(StringData path);
 
     virtual bool matches(const MatchableDocument* doc, MatchDetails* details) const;
 
@@ -86,7 +86,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int level) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    virtual void serialize(BSONObjBuilder* out) const;
 
     virtual size_t numChildren() const {
         return 1;
@@ -126,7 +126,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int level) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    virtual void serialize(BSONObjBuilder* out) const;
 
     virtual std::vector<MatchExpression*>* getChildVector() {
         return &_subs;
@@ -164,7 +164,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int level) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    virtual void serialize(BSONObjBuilder* out) const;
 
     virtual bool equivalent(const MatchExpression* other) const;
 

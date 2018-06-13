@@ -30,12 +30,11 @@
 
 #pragma once
 
-#include <vector>
 #include <string>
+#include <vector>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/client/dbclientinterface.h"
-#include "mongo/s/catalog/catalog_manager.h"
 
 namespace mongo {
 
@@ -82,18 +81,30 @@ public:
     StatusWith<std::vector<BSONObj>> filterCollectionsForClone(
         const CloneOptions& opts, const std::list<BSONObj>& initialCollections);
 
-    // Executes 'createCollection' for each collection specified in 'collections', in 'dbName'.
+    struct CreateCollectionParams {
+        std::string collectionName;
+        BSONObj collectionInfo;
+        BSONObj idIndexSpec;
+    };
+
+    // Executes 'createCollection' for each collection described in 'createCollectionParams', in
+    // 'dbName'.
     Status createCollectionsForDb(OperationContext* txn,
-                                  const std::vector<BSONObj>& collections,
+                                  const std::vector<CreateCollectionParams>& createCollectionParams,
                                   const std::string& dbName);
+
+    /*
+     * Returns the _id index spec from 'indexSpecs', or an empty BSONObj if none is found.
+     */
+    static BSONObj getIdIndexSpec(const std::list<BSONObj>& indexSpecs);
 
 private:
     void copy(OperationContext* txn,
               const std::string& toDBName,
               const NamespaceString& from_ns,
               const BSONObj& from_opts,
+              const BSONObj& from_id_index,
               const NamespaceString& to_ns,
-              bool masterSameProcess,
               const CloneOptions& opts,
               Query q);
 
@@ -101,9 +112,8 @@ private:
                      const std::string& toDBName,
                      const NamespaceString& from_ns,
                      const BSONObj& from_opts,
-                     const NamespaceString& to_ns,
-                     bool masterSameProcess,
-                     bool slaveOk);
+                     const std::list<BSONObj>& from_indexes,
+                     const NamespaceString& to_ns);
 
     struct Fun;
     std::unique_ptr<DBClientBase> _conn;
@@ -115,10 +125,6 @@ private:
  *  snapshot    - use snapshot mode for copying collections.  note this should not be used
  *                when it isn't required, as it will be slower.  for example,
  *                repairDatabase need not use it.
- *  checkForCatalogChange - Internal option set for clone commands initiated by a mongos that are
- *                holding a distributed lock (such as movePrimary).  Indicates that we need to
- *                be periodically checking to see if the catalog manager has swapped and fail
- *                if it has so that we don't block the mongos that initiated the command.
  *  createCollections - When 'true', will fetch a list of collections from the remote and create
  *                them.  When 'false', assumes collections have already been created ahead of time.
  */
@@ -132,9 +138,7 @@ struct CloneOptions {
 
     bool syncData = true;
     bool syncIndexes = true;
-    bool checkForCatalogChange = false;
     bool createCollections = true;
-    CatalogManager::ConfigServerMode initialCatalogMode = CatalogManager::ConfigServerMode::NONE;
 };
 
 }  // namespace mongo

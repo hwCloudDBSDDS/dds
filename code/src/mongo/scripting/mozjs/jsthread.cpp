@@ -32,8 +32,8 @@
 
 #include "mongo/scripting/mozjs/jsthread.h"
 
-#include <cstdio>
 #include "vm/PosixNSPR.h"
+#include <cstdio>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/scripting/mozjs/implscope.h"
@@ -191,14 +191,14 @@ private:
             auto thisv = static_cast<JSThread*>(priv);
 
             try {
-                MozJSImplScope scope(static_cast<MozJSScriptEngine*>(globalScriptEngine));
+                MozJSImplScope scope(static_cast<MozJSScriptEngine*>(getGlobalScriptEngine()));
 
                 scope.setParentStack(thisv->_sharedData->_stack);
                 thisv->_sharedData->_returnData = scope.callThreadArgs(thisv->_sharedData->_args);
             } catch (...) {
                 auto status = exceptionToStatus();
 
-                log() << "js thread raised js exception: " << status.reason()
+                log() << "js thread raised js exception: " << redact(status)
                       << thisv->_sharedData->_stack;
                 thisv->_sharedData->setErrored(true);
                 thisv->_sharedData->_returnData = BSON("ret" << BSONUndefined);

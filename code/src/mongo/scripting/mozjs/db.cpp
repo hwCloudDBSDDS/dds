@@ -32,13 +32,13 @@
 
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/s/local_sharding_info.h"
 #include "mongo/scripting/mozjs/idwrapper.h"
 #include "mongo/scripting/mozjs/implscope.h"
 #include "mongo/scripting/mozjs/internedstring.h"
 #include "mongo/scripting/mozjs/objectwrapper.h"
 #include "mongo/scripting/mozjs/valuereader.h"
 #include "mongo/scripting/mozjs/valuewriter.h"
-#include "mongo/s/d_state.h"
 
 namespace mongo {
 namespace mozjs {
@@ -59,8 +59,7 @@ void DBInfo::getProperty(JSContext* cx,
 
             if (o.hasOwnField(InternedString::_fullName)) {
                 // need to check every time that the collection did not get sharded
-                if (haveLocalShardingInfo(opContext->getClient(),
-                                          o.getString(InternedString::_fullName)))
+                if (haveLocalShardingInfo(opContext, o.getString(InternedString::_fullName)))
                     uasserted(ErrorCodes::BadValue, "can't use sharded collection from db.eval");
             }
         }
@@ -136,7 +135,7 @@ void DBInfo::construct(JSContext* cx, JS::CallArgs args) {
 
     std::string dbName = ValueWriter(cx, args.get(1)).toString();
 
-    if (!NamespaceString::validDBName(dbName))
+    if (!NamespaceString::validDBName(dbName, NamespaceString::DollarInDbNameBehavior::Allow))
         uasserted(ErrorCodes::BadValue,
                   str::stream() << "[" << dbName << "] is not a valid database name");
 

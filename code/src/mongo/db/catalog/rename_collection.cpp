@@ -46,6 +46,7 @@
 #include "mongo/db/index_builder.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/util/scopeguard.h"
 
@@ -78,13 +79,22 @@ Status renameCollection(OperationContext* txn,
     if (userInitiatedWritesAndNotPrimary) {
         return Status(ErrorCodes::NotMaster,
                       str::stream() << "Not primary while renaming collection " << source.ns()
-                                    << " to " << target.ns());
+                                    << " to "
+                                    << target.ns());
     }
 
     Database* const sourceDB = dbHolder().get(txn, source.db());
     Collection* const sourceColl = sourceDB ? sourceDB->getCollection(source.ns()) : nullptr;
     if (!sourceColl) {
+        if (sourceDB && sourceDB->getViewCatalog()->lookup(txn, source.ns()))
+            return Status(ErrorCodes::CommandNotSupportedOnView,
+                          str::stream() << "cannot rename view: " << source.ns());
         return Status(ErrorCodes::NamespaceNotFound, "source namespace does not exist");
+    }
+
+    // Make sure the source collection is not sharded.
+    if (CollectionShardingState::get(txn, source)->getMetadata()) {
+        return {ErrorCodes::IllegalOperation, "source namespace cannot be sharded"};
     }
 
     {
@@ -119,10 +129,14 @@ Status renameCollection(OperationContext* txn,
         WriteUnitOfWork wunit(txn);
 
         // Check if the target namespace exists and if dropTarget is true.
-        // If target exists and dropTarget is not true, return false.
+        // Return a non-OK status if target exists and dropTarget is not true or if the collection
+        // is sharded.
         if (targetDB->getCollection(target)) {
+            if (CollectionShardingState::get(txn, target)->getMetadata()) {
+                return {ErrorCodes::IllegalOperation, "cannot rename to a sharded collection"};
+            }
+
             if (!dropTarget) {
-                printStackTrace();
                 return Status(ErrorCodes::NamespaceExists, "target namespace exists");
             }
 
@@ -130,6 +144,9 @@ Status renameCollection(OperationContext* txn,
             if (!s.isOK()) {
                 return s;
             }
+        } else if (targetDB->getViewCatalog()->lookup(txn, target.ns())) {
+            return Status(ErrorCodes::NamespaceExists,
+                          str::stream() << "a view already exists with that name: " << target.ns());
         }
 
         // If we are renaming in the same database, just
@@ -181,6 +198,7 @@ Status renameCollection(OperationContext* txn,
 
     MultiIndexBlock indexer(txn, targetColl);
     indexer.allowInterruption();
+    std::vector<MultiIndexBlock*> indexers{&indexer};
 
     // Copy the index descriptions from the source collection, adjusting the ns field.
     {
@@ -190,10 +208,15 @@ Status renameCollection(OperationContext* txn,
         while (sourceIndIt.more()) {
             const BSONObj currIndex = sourceIndIt.next()->infoObj();
 
-            // Process the source index.
+            // Process the source index, adding fields in the same order as they were originally.
             BSONObjBuilder newIndex;
-            newIndex.append("ns", target.ns());
-            newIndex.appendElementsUnique(currIndex);
+            for (auto&& elem : currIndex) {
+                if (elem.fieldNameStringData() == "ns") {
+                    newIndex.append("ns", target.ns());
+                } else {
+                    newIndex.append(elem);
+                }
+            }
             indexesToCopy.push_back(newIndex.obj());
         }
         indexer.init(indexesToCopy);
@@ -211,7 +234,7 @@ Status renameCollection(OperationContext* txn,
             // No logOp necessary because the entire renameCollection command is one logOp.
             bool shouldReplicateWrites = txn->writesAreReplicated();
             txn->setReplicatedWrites(false);
-            Status status = targetColl->insertDocument(txn, obj, &indexer, true);
+            Status status = targetColl->insertDocument(txn, obj, indexers, true);
             txn->setReplicatedWrites(shouldReplicateWrites);
             if (!status.isOK())
                 return status;

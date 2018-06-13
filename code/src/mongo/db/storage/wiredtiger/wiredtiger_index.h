@@ -32,6 +32,7 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/db/storage/index_entry_comparison.h"
+#include "mongo/db/storage/key_string.h"
 #include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_recovery_unit.h"
 
@@ -90,9 +91,8 @@ public:
                          bool dupsAllowed);
 
     virtual void fullValidate(OperationContext* txn,
-                              bool full,
                               long long* numKeysOut,
-                              BSONObjBuilder* output) const;
+                              ValidateResults* fullResults) const;
     virtual bool appendCustomStats(OperationContext* txn,
                                    BSONObjBuilder* output,
                                    double scale) const;
@@ -108,6 +108,8 @@ public:
 
     virtual Status initAsEmpty(OperationContext* txn);
 
+    virtual Status compact(OperationContext* txn);
+
     const std::string& uri() const {
         return _uri;
     }
@@ -117,6 +119,10 @@ public:
     }
     Ordering ordering() const {
         return _ordering;
+    }
+
+    KeyString::Version keyStringVersion() const {
+        return _keyStringVersion;
     }
 
     virtual bool unique() const = 0;
@@ -139,6 +145,8 @@ protected:
     class UniqueBulkBuilder;
 
     const Ordering _ordering;
+    // The keystring version is effectively const after the WiredTigerIndex instance is constructed.
+    KeyString::Version _keyStringVersion;
     std::string _uri;
     uint64_t _tableId;
     std::string _collectionNamespace;

@@ -30,10 +30,11 @@
 
 #include <vector>
 
-#include "mongo/db/jsobj.h"
 #include "mongo/db/exec/plan_stage.h"
+#include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/record_id.h"
+#include "mongo/platform/unordered_map.h"
 #include "mongo/platform/unordered_set.h"
 
 namespace mongo {
@@ -69,7 +70,7 @@ public:
      */
     size_t getMemUsage() const;
 
-    StageState work(WorkingSetID* out) final;
+    StageState doWork(WorkingSetID* out) final;
     bool isEOF() final;
 
     void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) final;

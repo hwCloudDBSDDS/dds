@@ -26,9 +26,13 @@
  *    then also delete it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/client/dbclientcursor.h"
+#include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/exec/fetch.h"
@@ -36,7 +40,6 @@
 #include "mongo/db/exec/queued_data_stage.h"
 #include "mongo/db/exec/sort.h"
 #include "mongo/db/json.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/stdx/memory.h"
@@ -50,6 +53,8 @@ namespace QueryStageSortTests {
 using std::set;
 using std::unique_ptr;
 using stdx::make_unique;
+
+namespace dps = ::mongo::dotted_path_support;
 
 class QueryStageSortTestBase {
 public:
@@ -69,7 +74,7 @@ public:
         _client.insert(ns(), obj);
     }
 
-    void getLocs(set<RecordId>* out, Collection* coll) {
+    void getRecordIds(set<RecordId>* out, Collection* coll) {
         auto cursor = coll->getCursor(&_txn);
         while (auto record = cursor->next()) {
             out->insert(record->id);
@@ -80,20 +85,20 @@ public:
      * We feed a mix of (key, unowned, owned) data to the sort stage.
      */
     void insertVarietyOfObjects(WorkingSet* ws, QueuedDataStage* ms, Collection* coll) {
-        set<RecordId> locs;
-        getLocs(&locs, coll);
+        set<RecordId> recordIds;
+        getRecordIds(&recordIds, coll);
 
-        set<RecordId>::iterator it = locs.begin();
+        set<RecordId>::iterator it = recordIds.begin();
 
         for (int i = 0; i < numObj(); ++i, ++it) {
-            ASSERT_FALSE(it == locs.end());
+            ASSERT_FALSE(it == recordIds.end());
 
             // Insert some owned obj data.
             WorkingSetID id = ws->allocate();
             WorkingSetMember* member = ws->get(id);
-            member->loc = *it;
+            member->recordId = *it;
             member->obj = coll->docFor(&_txn, *it);
-            ws->transitionToLocAndObj(id);
+            ws->transitionToRecordIdAndObj(id);
             ms->pushBack(id);
         }
     }
@@ -114,7 +119,7 @@ public:
         params.limit = limit();
 
         auto keyGenStage = make_unique<SortKeyGeneratorStage>(
-            &_txn, queuedDataStage.release(), ws.get(), params.pattern, BSONObj());
+            &_txn, queuedDataStage.release(), ws.get(), params.pattern, BSONObj(), nullptr);
 
         auto ss = make_unique<SortStage>(&_txn, params, ws.get(), keyGenStage.release());
 
@@ -153,7 +158,7 @@ public:
         params.limit = limit();
 
         auto keyGenStage = make_unique<SortKeyGeneratorStage>(
-            &_txn, queuedDataStage.release(), ws.get(), params.pattern, BSONObj());
+            &_txn, queuedDataStage.release(), ws.get(), params.pattern, BSONObj(), nullptr);
 
         auto sortStage = make_unique<SortStage>(&_txn, params, ws.get(), keyGenStage.release());
 
@@ -176,15 +181,16 @@ public:
         int count = 1;
 
         BSONObj current;
-        while (PlanExecutor::ADVANCED == exec->getNext(&current, NULL)) {
-            int cmp = sgn(current.woSortOrder(last, params.pattern));
+        PlanExecutor::ExecState state;
+        while (PlanExecutor::ADVANCED == (state = exec->getNext(&current, NULL))) {
+            int cmp = sgn(dps::compareObjectsAccordingToSort(current, last, params.pattern));
             // The next object should be equal to the previous or oriented according to the sort
             // pattern.
             ASSERT(cmp == 0 || cmp == 1);
             ++count;
             last = current.getOwned();
         }
-
+        ASSERT_EQUALS(PlanExecutor::IS_EOF, state);
         checkCount(count);
     }
 
@@ -215,7 +221,8 @@ public:
     }
 
 protected:
-    OperationContextImpl _txn;
+    const ServiceContext::UniqueOperationContext _txnPtr = cc().makeOperationContext();
+    OperationContext& _txn = *_txnPtr;
     DBDirectClient _client;
 };
 
@@ -315,15 +322,11 @@ public:
             wuow.commit();
         }
 
-        {
-            WriteUnitOfWork wuow(&_txn);
-            fillData();
-            wuow.commit();
-        }
+        fillData();
 
         // The data we're going to later invalidate.
-        set<RecordId> locs;
-        getLocs(&locs, coll);
+        set<RecordId> recordIds;
+        getRecordIds(&recordIds, coll);
 
         unique_ptr<PlanExecutor> exec(makePlanExecutorWithSortStage(coll));
         SortStage* ss = static_cast<SortStage*>(exec->getRootStage());
@@ -340,10 +343,10 @@ public:
             ASSERT_NOT_EQUALS(PlanStage::ADVANCED, status);
         }
 
-        // We should have read in the first 'firstRead' locs.  Invalidate the first one.
+        // We should have read in the first 'firstRead' recordIds.  Invalidate the first one.
         // Since it's in the WorkingSet, the updates should not be reflected in the output.
         exec->saveState();
-        set<RecordId>::iterator it = locs.begin();
+        set<RecordId>::iterator it = recordIds.begin();
         Snapshotted<BSONObj> oldDoc = coll->docFor(&_txn, *it);
 
         OID updatedId = oldDoc.value().getField("_id").OID();
@@ -352,10 +355,11 @@ public:
         // This allows us to check that we don't return the new copy of a doc by asserting
         // foo < limit().
         BSONObj newDoc = BSON("_id" << updatedId << "foo" << limit() + 10);
-        oplogUpdateEntryArgs args;
+        OplogUpdateEntryArgs args;
+        args.ns = coll->ns().ns();
         {
             WriteUnitOfWork wuow(&_txn);
-            coll->updateDocument(&_txn, *it, oldDoc, newDoc, false, false, NULL, args);
+            coll->updateDocument(&_txn, *it, oldDoc, newDoc, false, false, NULL, &args);
             wuow.commit();
         }
         exec->restoreState();
@@ -369,11 +373,11 @@ public:
         // Let's just invalidate everything now. Already read into ss, so original values
         // should be fetched.
         exec->saveState();
-        while (it != locs.end()) {
+        while (it != recordIds.end()) {
             oldDoc = coll->docFor(&_txn, *it);
             {
                 WriteUnitOfWork wuow(&_txn);
-                coll->updateDocument(&_txn, *it++, oldDoc, newDoc, false, false, NULL, args);
+                coll->updateDocument(&_txn, *it++, oldDoc, newDoc, false, false, NULL, &args);
                 wuow.commit();
             }
         }
@@ -427,15 +431,11 @@ public:
             wuow.commit();
         }
 
-        {
-            WriteUnitOfWork wuow(&_txn);
-            fillData();
-            wuow.commit();
-        }
+        fillData();
 
         // The data we're going to later invalidate.
-        set<RecordId> locs;
-        getLocs(&locs, coll);
+        set<RecordId> recordIds;
+        getRecordIds(&recordIds, coll);
 
         unique_ptr<PlanExecutor> exec(makePlanExecutorWithSortStage(coll));
         SortStage* ss = static_cast<SortStage*>(exec->getRootStage());
@@ -452,12 +452,13 @@ public:
             ASSERT_NOT_EQUALS(PlanStage::ADVANCED, status);
         }
 
-        // We should have read in the first 'firstRead' locs.  Invalidate the first.
+        // We should have read in the first 'firstRead' recordIds.  Invalidate the first.
         exec->saveState();
-        set<RecordId>::iterator it = locs.begin();
+        OpDebug* const nullOpDebug = nullptr;
+        set<RecordId>::iterator it = recordIds.begin();
         {
             WriteUnitOfWork wuow(&_txn);
-            coll->deleteDocument(&_txn, *it++);
+            coll->deleteDocument(&_txn, *it++, nullOpDebug);
             wuow.commit();
         }
         exec->restoreState();
@@ -470,10 +471,10 @@ public:
 
         // Let's just invalidate everything now.
         exec->saveState();
-        while (it != locs.end()) {
+        while (it != recordIds.end()) {
             {
                 WriteUnitOfWork wuow(&_txn);
-                coll->deleteDocument(&_txn, *it++);
+                coll->deleteDocument(&_txn, *it++, nullOpDebug);
                 wuow.commit();
             }
         }
@@ -501,7 +502,7 @@ public:
 
 // Deletion invalidation of everything fed to sort with limit enabled.
 // Limit size of working set within sort stage to a small number
-// Sort stage implementation should not try to invalidate DiskLocc that
+// Sort stage implementation should not try to invalidate RecordIds that
 // are no longer in the working set.
 
 template <int LIMIT>
@@ -556,7 +557,7 @@ public:
         params.limit = 0;
 
         auto keyGenStage = make_unique<SortKeyGeneratorStage>(
-            &_txn, queuedDataStage.release(), ws.get(), params.pattern, BSONObj());
+            &_txn, queuedDataStage.release(), ws.get(), params.pattern, BSONObj(), nullptr);
 
         auto sortStage = make_unique<SortStage>(&_txn, params, ws.get(), keyGenStage.release());
 

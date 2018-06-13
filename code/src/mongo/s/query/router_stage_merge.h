@@ -29,9 +29,9 @@
 #pragma once
 
 #include "mongo/executor/task_executor.h"
-#include "mongo/s/query/router_exec_stage.h"
-#include "mongo/s/query/cluster_client_cursor_params.h"
 #include "mongo/s/query/async_results_merger.h"
+#include "mongo/s/query/cluster_client_cursor_params.h"
+#include "mongo/s/query/router_exec_stage.h"
 #include "mongo/util/net/hostandport.h"
 
 namespace mongo {
@@ -45,13 +45,15 @@ class RouterStageMerge final : public RouterExecStage {
 public:
     RouterStageMerge(executor::TaskExecutor* executor, ClusterClientCursorParams&& params);
 
-    StatusWith<boost::optional<BSONObj>> next() final;
+    StatusWith<ClusterQueryResult> next() final;
 
     void kill() final;
 
     bool remotesExhausted() final;
 
     Status setAwaitDataTimeout(Milliseconds awaitDataTimeout) final;
+
+    void setOperationContext(OperationContext* txn) final;
 
 private:
     // Not owned here.

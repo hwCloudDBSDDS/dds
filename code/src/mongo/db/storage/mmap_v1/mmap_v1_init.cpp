@@ -44,8 +44,8 @@ class MMAPV1Factory : public StorageEngine::Factory {
 public:
     virtual ~MMAPV1Factory() {}
     virtual StorageEngine* create(const StorageGlobalParams& params,
-                                  const StorageEngineLockFile& lockFile) const {
-        return new MMAPV1Engine(lockFile);
+                                  const StorageEngineLockFile* lockFile) const {
+        return new MMAPV1Engine(lockFile, getGlobalServiceContext()->getFastClockSource());
     }
 
     virtual StringData getCanonicalName() const {
@@ -67,6 +67,10 @@ public:
         BSONObjBuilder builder;
         builder.appendBool("directoryPerDB", params.directoryperdb);
         return builder.obj();
+    }
+
+    bool supportsReadOnly() const override {
+        return true;
     }
 };
 

@@ -37,7 +37,6 @@
 #include <csignal>
 #include <exception>
 #include <iostream>
-#include <fstream>
 #include <memory>
 #include <streambuf>
 #include <typeinfo>
@@ -75,8 +74,7 @@ const char* strsignal(int signalNum) {
 }
 
 void endProcessWithSignal(int signalNum) {
-    doMinidump();
-    quickExit(EXIT_ABRUPT);
+    RaiseException(EXIT_ABRUPT, EXCEPTION_NONCONTINUABLE, 0, NULL);
 }
 
 #else
@@ -275,18 +273,6 @@ void abruptQuitWithAddrSignal(int signalNum, siginfo_t* siginfo, void*) {
 
     printSignalAndBacktrace(signalNum);
     breakpoint();
-
-#if defined(__linux__)
-    // Dump /proc/self/maps if possible to see where the bad address relates to our layout.
-    // We do this last just in case it goes wrong.
-    mallocFreeOStream << "/proc/self/maps:\n";
-    std::ifstream is("/proc/self/maps");
-    std::string str;
-    while (getline(is, str)) {
-        mallocFreeOStream << str;
-        writeMallocFreeStreamToLog();
-    }
-#endif
     endProcessWithSignal(signalNum);
 }
 
@@ -345,5 +331,14 @@ void reportOutOfMemoryErrorAndExit() {
     printStackTrace(mallocFreeOStream << "out of memory.\n");
     writeMallocFreeStreamToLog();
     quickExit(EXIT_ABRUPT);
+}
+
+void clearSignalMask() {
+#ifndef _WIN32
+    // We need to make sure that all signals are unmasked so signals are handled correctly
+    sigset_t unblockSignalMask;
+    invariant(sigemptyset(&unblockSignalMask) == 0);
+    invariant(sigprocmask(SIG_SETMASK, &unblockSignalMask, nullptr) == 0);
+#endif
 }
 }  // namespace mongo

@@ -32,6 +32,7 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
+#include "mongo/base/status_with.h"
 #include "mongo/db/repl/member_state.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/sync_source_selector.h"
@@ -71,11 +72,8 @@ class OldUpdatePositionArgs;
 class OplogReader;
 class OpTime;
 class ReadConcernArgs;
-class ReadConcernResponse;
 class ReplicaSetConfig;
 class ReplicationExecutor;
-class ReplSetDeclareElectionWinnerArgs;
-class ReplSetDeclareElectionWinnerResponse;
 class ReplSetHeartbeatArgs;
 class ReplSetHeartbeatArgsV1;
 class ReplSetHeartbeatResponse;
@@ -110,7 +108,6 @@ public:
     static void set(ServiceContext* service,
                     std::unique_ptr<ReplicationCoordinator> replCoordinator);
 
-
     struct StatusAndDuration {
     public:
         Status status;
@@ -126,14 +123,14 @@ public:
      * components of the replication system to start up whatever threads and do whatever
      * initialization they need.
      */
-    virtual void startReplication(OperationContext* txn) = 0;
+    virtual void startup(OperationContext* txn) = 0;
 
     /**
      * Does whatever cleanup is required to stop replication, including instructing the other
      * components of the replication system to shut down and stop any threads they are using,
      * blocking until all replication-related shutdown tasks are complete.
      */
-    virtual void shutdown() = 0;
+    virtual void shutdown(OperationContext* txn) = 0;
 
     /**
      * Returns a pointer to the ReplicationExecutor.
@@ -278,10 +275,12 @@ public:
                                          bool slaveOk) = 0;
 
     /**
-     * Returns true if this node should ignore unique index constraints on new documents.
-     * Currently this is needed for nodes in STARTUP2, RECOVERING, and ROLLBACK states.
+     * Returns true if this node should ignore index constraints for idempotency reasons.
+     *
+     * The namespace "ns" is passed in because the "local" database is usually writable
+     * and we need to enforce the constraints for it.
      */
-    virtual bool shouldIgnoreUniqueIndex(const IndexDescriptor* idx) = 0;
+    virtual bool shouldRelaxIndexConstraints(const NamespaceString& ns) = 0;
 
     /**
      * Updates our internal tracking of the last OpTime applied for the given slave
@@ -352,16 +351,12 @@ public:
     virtual OpTime getMyLastDurableOpTime() const = 0;
 
     /**
-     * Waits until the optime of the current node is at least the opTime specified in
-     * 'settings'.
+     * Waits until the optime of the current node is at least the opTime specified in 'settings'.
      *
-     * The returned ReadConcernResponse object's didWait() method returns true if
-     * an attempt was made to wait for the specified opTime. This will return false when
-     * attempting to do read after opTime when node is not a replica set member.
-     *
+     * Returns whether the wait was successful.
      */
-    virtual ReadConcernResponse waitUntilOpTime(OperationContext* txn,
-                                                const ReadConcernArgs& settings) = 0;
+    virtual Status waitUntilOpTimeForRead(OperationContext* txn,
+                                          const ReadConcernArgs& settings) = 0;
 
     /**
      * Retrieves and returns the current election id, which is a unique id that is local to
@@ -406,6 +401,12 @@ public:
     virtual bool isWaitingForApplierToDrain() = 0;
 
     /**
+     * A new primary tries to have its oplog catch up after winning an election.
+     * Return true if the coordinator is waiting for catch-up to finish.
+     */
+    virtual bool isCatchingUp() = 0;
+
+    /**
      * Signals that a previously requested pause and drain of the applier buffer
      * has completed.
      *
@@ -429,19 +430,31 @@ public:
      */
     virtual void signalUpstreamUpdater() = 0;
 
+    enum class ReplSetUpdatePositionCommandStyle {
+        kNewStyle,
+        kOldStyle  // Pre-3.2.4 servers.
+    };
+
     /**
      * Prepares a BSONObj describing an invocation of the replSetUpdatePosition command that can
      * be sent to this node's sync source to update it about our progress in replication.
-     *
-     * The returned bool indicates whether or not the command was created.
      */
-    virtual bool prepareOldReplSetUpdatePositionCommand(BSONObjBuilder* cmdBuilder) = 0;
-    virtual bool prepareReplSetUpdatePositionCommand(BSONObjBuilder* cmdBuilder) = 0;
+    virtual StatusWith<BSONObj> prepareReplSetUpdatePositionCommand(
+        ReplSetUpdatePositionCommandStyle commandStyle) const = 0;
+
+    enum class ReplSetGetStatusResponseStyle { kBasic, kInitialSync };
 
     /**
-     * Handles an incoming replSetGetStatus command. Adds BSON to 'result'.
+     * Handles an incoming replSetGetStatus command. Adds BSON to 'result'. If kInitialSync is
+     * requested but initial sync is not running, kBasic will be used.
      */
-    virtual Status processReplSetGetStatus(BSONObjBuilder* result) = 0;
+    virtual Status processReplSetGetStatus(BSONObjBuilder* result,
+                                           ReplSetGetStatusResponseStyle responseStyle) = 0;
+
+    /**
+     * Does an initial sync of data, after dropping existing data.
+     */
+    virtual Status resyncData(OperationContext* txn, bool waitUntilCompleted) = 0;
 
     /**
      * Handles an incoming isMaster command for a replica set node.  Should not be
@@ -502,7 +515,9 @@ public:
      * returns Status::OK if the sync target could be set and an ErrorCode indicating why it
      * couldn't otherwise.
      */
-    virtual Status processReplSetSyncFrom(const HostAndPort& target, BSONObjBuilder* resultObj) = 0;
+    virtual Status processReplSetSyncFrom(OperationContext* txn,
+                                          const HostAndPort& target,
+                                          BSONObjBuilder* resultObj) = 0;
 
     /**
      * Handles an incoming replSetFreeze command. Adds BSON to 'resultObj'
@@ -602,7 +617,7 @@ public:
      * "configVersion" will be populated with our config version if and only if we return
      * InvalidReplicaSetConfig.
      *
-     * The OldUpdatePositionArgs version provides support for the pre-3.2.2 format of
+     * The OldUpdatePositionArgs version provides support for the pre-3.2.4 format of
      * UpdatePositionArgs.
      */
     virtual Status processReplSetUpdatePosition(const OldUpdatePositionArgs& updates,
@@ -674,25 +689,16 @@ public:
                                               const ReplSetRequestVotesArgs& args,
                                               ReplSetRequestVotesResponse* response) = 0;
 
-    /*
-    * Handles an incoming replSetDeclareElectionWinner command.
-    * Returns a Status with either OK or an error message.
-    * Populates responseTerm with the current term from our perspective.
-    */
-    virtual Status processReplSetDeclareElectionWinner(const ReplSetDeclareElectionWinnerArgs& args,
-                                                       long long* responseTerm) = 0;
-
     /**
      * Prepares a metadata object describing the current term, primary, and lastOp information.
      */
-    virtual void prepareReplResponseMetadata(const rpc::RequestInterface& request,
-                                             const OpTime& lastOpTimeFromClient,
-                                             BSONObjBuilder* builder) = 0;
+    virtual void prepareReplMetadata(const OpTime& lastOpTimeFromClient,
+                                     BSONObjBuilder* builder) const = 0;
 
     /**
      * Returns true if the V1 election protocol is being used and false otherwise.
      */
-    virtual bool isV1ElectionProtocol() = 0;
+    virtual bool isV1ElectionProtocol() const = 0;
 
     /**
      * Returns whether or not majority write concerns should implicitly journal, if j has not been
@@ -765,7 +771,7 @@ public:
     /**
      * Gets the latest OpTime of the currentCommittedSnapshot.
      */
-    virtual OpTime getCurrentCommittedSnapshotOpTime() = 0;
+    virtual OpTime getCurrentCommittedSnapshotOpTime() const = 0;
 
     /**
      * Appends connection information to the provided BSONObjBuilder.
@@ -785,6 +791,10 @@ public:
      */
     virtual WriteConcernOptions populateUnsetWriteConcernOptionsSyncMode(
         WriteConcernOptions wc) = 0;
+    virtual ReplSettings::IndexPrefetchConfig getIndexPrefetchConfig() const = 0;
+    virtual void setIndexPrefetchConfig(const ReplSettings::IndexPrefetchConfig cfg) = 0;
+
+    virtual Status stepUpIfEligible() = 0;
 
 protected:
     ReplicationCoordinator();

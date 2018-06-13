@@ -23,7 +23,7 @@ Date.timeFunc = function(theFunc, numTimes) {
     var start = new Date();
     numTimes = numTimes || 1;
     for (var i = 0; i < numTimes; i++) {
-        theFunc.apply(null, argumentsToArray(arguments).slice(2));
+        theFunc.apply(null, Array.from(arguments).slice(2));
     }
 
     return (new Date()).getTime() - start.getTime();
@@ -251,7 +251,7 @@ Array.stdDev = function(arr) {
 Object.extend = function(dst, src, deep) {
     for (var k in src) {
         var v = src[k];
-        if (deep && typeof(v) == "object") {
+        if (deep && typeof(v) == "object" && v !== null) {
             if (v.constructor === ObjectId) {  // convert ObjectId properly
                 eval("v = " + tojson(v));
             } else if ("floatApprox" in v) {  // convert NumberLong properly
@@ -565,10 +565,7 @@ Map.prototype._get = function(key) {
             return a[i];
         }
     }
-    var o = {
-        key: key,
-        value: null
-    };
+    var o = {key: key, value: null};
     a.push(o);
     return o;
 };

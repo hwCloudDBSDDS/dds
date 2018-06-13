@@ -99,9 +99,9 @@ var syncingTo = member3.adminCommand({replSetGetStatus: 1}).syncingTo;
 assert(syncingTo !== getHostName() + ":" + replSet.ports[1], "node 3 is syncing from node 2 :(");
 
 jsTest.log("Pause 3's bgsync thread");
-var rsBgSyncProduceResult3 =
-    member3.runCommand({configureFailPoint: 'rsBgSyncProduce', mode: 'alwaysOn'});
-assert.eq(1, rsBgSyncProduceResult3.ok, "member 3 rsBgSyncProduce admin command failed");
+var pauseRsBgSyncProducerResult3 =
+    member3.runCommand({configureFailPoint: 'pauseRsBgSyncProducer', mode: 'alwaysOn'});
+assert.eq(1, pauseRsBgSyncProducerResult3.ok, "member 3 pauseRsBgSyncProducer command failed");
 
 // count documents in member 3
 assert.eq(26,
@@ -109,9 +109,8 @@ assert.eq(26,
           "collection size incorrect on node 3 before applying ops 25-75");
 
 jsTest.log("Allow 3 to apply ops 25-75");
-var rsSyncApplyStopResult3 =
-    member3.runCommand({configureFailPoint: 'rsSyncApplyStop', mode: 'off'});
-assert.eq(1, rsSyncApplyStopResult3.ok, "member 3 rsSyncApplyStop admin command failed");
+assert.commandWorked(member3.runCommand({configureFailPoint: 'rsSyncApplyStop', mode: 'off'}),
+                     "member 3 rsSyncApplyStop admin command failed");
 
 assert.soon(function() {
     var last3 = member3.getSisterDB("local").oplog.rs.find().sort({$natural: -1}).limit(1).next();
@@ -123,7 +122,7 @@ assert.soon(function() {
 }, "Replication member 3 did not apply ops 25-75");
 
 jsTest.log("Start 3's bgsync thread");
-member3.runCommand({configureFailPoint: 'rsBgSyncProduce', mode: 'off'});
+member3.runCommand({configureFailPoint: 'pauseRsBgSyncProducer', mode: 'off'});
 
 jsTest.log("Node 3 shouldn't hit rollback");
 var end = (new Date()).getTime() + 10000;
@@ -131,5 +130,8 @@ while ((new Date()).getTime() < end) {
     assert('ROLLBACK' !== member3.runCommand({replSetGetStatus: 1}).members[2].stateStr);
     sleep(30);
 }
+
+// Need to re-enable writes before clean shutdown.
+assert.commandWorked(member2.runCommand({configureFailPoint: 'rsSyncApplyStop', mode: 'off'}));
 
 replSet.stopSet();

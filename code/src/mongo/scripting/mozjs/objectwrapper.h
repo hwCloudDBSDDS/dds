@@ -115,6 +115,7 @@ public:
     void setBoolean(Key key, bool val);
     void setBSONElement(Key key, const BSONElement& elem, const BSONObj& obj, bool readOnly);
     void setBSON(Key key, const BSONObj& obj, bool readOnly);
+    void setBSONArray(Key key, const BSONObj& obj, bool readOnly);
     void setValue(Key key, JS::HandleValue value);
     void setObject(Key key, JS::HandleObject value);
 
@@ -147,9 +148,9 @@ public:
      */
     template <typename T>
     void enumerate(T&& callback) {
-        JS::AutoIdArray ids(_context, JS_Enumerate(_context, _object));
+        JS::Rooted<JS::IdVector> ids(_context, JS::IdVector(_context));
 
-        if (!ids)
+        if (!JS_Enumerate(_context, _object, &ids))
             throwCurrentJSException(
                 _context, ErrorCodes::JSInterpreterFailure, "Failure to enumerate object");
 
@@ -198,7 +199,7 @@ private:
         JS::RootedObject thisv;
 
         // ids for the keys of thisv
-        JS::AutoIdArray ids;
+        JS::Rooted<JS::IdVector> ids;
 
         // Current index of the current key we're working on
         std::size_t idx = 0;

@@ -62,24 +62,19 @@ struct ShellGlobalParams {
     bool nodb;
     bool norc;
     bool nojit = false;
-    bool javascriptProtection = false;
+    bool javascriptProtection = true;
 
     std::string script;
 
-    bool autoKillOp;
-    bool useWriteCommandsDefault;
-    std::string writeMode;
+    bool autoKillOp = false;
+    bool useWriteCommandsDefault = true;
 
-    std::string readMode;
+    std::string writeMode = "commands";
+    std::string readMode = "compatibility";
 
-    boost::optional<rpc::ProtocolSet> rpcProtocols;
+    boost::optional<rpc::ProtocolSet> rpcProtocols = boost::none;
 
-    ShellGlobalParams()
-        : autoKillOp(false),
-          useWriteCommandsDefault(true),
-          writeMode("commands"),
-          readMode("compatibility"),
-          rpcProtocols() {}
+    int jsHeapLimitMB = 0;
 };
 
 extern ShellGlobalParams shellGlobalParams;

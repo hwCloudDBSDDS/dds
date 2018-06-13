@@ -47,6 +47,7 @@ ConnectionString::ConnectionString(StringData setName, std::vector<HostAndPort> 
     _finishInit();
 }
 
+// TODO: unify c-tors
 ConnectionString::ConnectionString(ConnectionType type,
                                    const std::string& s,
                                    const std::string& setName) {
@@ -63,19 +64,14 @@ ConnectionString::ConnectionString(ConnectionType type,
     _finishInit();
 }
 
-ConnectionString::ConnectionString(const std::string& s, ConnectionType favoredMultipleType) {
+ConnectionString::ConnectionString(const std::string& s, ConnectionType connType)
+    : _type(connType) {
     _fillServers(s);
-
-    if (_type != INVALID) {
-        // set already
-    } else if (_servers.size() == 1) {
-        _type = MASTER;
-    } else {
-        _type = favoredMultipleType;
-        verify(_type == SET || _type == SYNC);
-    }
-
     _finishInit();
+}
+
+ConnectionString::ConnectionString(ConnectionType connType) : _type(connType), _string("<local>") {
+    invariant(_type == LOCAL);
 }
 
 ConnectionString ConnectionString::forReplicaSet(StringData setName,
@@ -83,6 +79,11 @@ ConnectionString ConnectionString::forReplicaSet(StringData setName,
     return ConnectionString(setName, std::move(servers));
 }
 
+ConnectionString ConnectionString::forLocal() {
+    return ConnectionString(LOCAL);
+}
+
+// TODO: rewrite parsing  make it more reliable
 void ConnectionString::_fillServers(std::string s) {
     //
     // Custom-handled servers/replica sets start with '$'
@@ -90,38 +91,52 @@ void ConnectionString::_fillServers(std::string s) {
     // (also disallows $replicaSetName hosts)
     //
 
-    if (s.find('$') == 0)
+    if (s.find('$') == 0) {
         _type = CUSTOM;
-
-    {
-        std::string::size_type idx = s.find('/');
-        if (idx != std::string::npos) {
-            _setName = s.substr(0, idx);
-            s = s.substr(idx + 1);
-            if (_type != CUSTOM)
-                _type = SET;
-        }
     }
 
-    std::string::size_type idx;
+    std::string::size_type idx = s.find('/');
+    if (idx != std::string::npos) {
+        _setName = s.substr(0, idx);
+        s = s.substr(idx + 1);
+        if (_type != CUSTOM)
+            _type = SET;
+    }
+
     while ((idx = s.find(',')) != std::string::npos) {
         _servers.push_back(HostAndPort(s.substr(0, idx)));
         s = s.substr(idx + 1);
     }
+
     _servers.push_back(HostAndPort(s));
+
+    if (_servers.size() == 1 && _type == INVALID) {
+        _type = MASTER;
+    }
 }
 
 void ConnectionString::_finishInit() {
     switch (_type) {
         case MASTER:
-            verify(_servers.size() == 1);
+            uassert(ErrorCodes::FailedToParse,
+                    "Cannot specify a replica set name for a ConnectionString of type MASTER",
+                    _setName.empty());
+            uassert(ErrorCodes::FailedToParse,
+                    "ConnectionStrings of type MASTER must contain exactly one server",
+                    _servers.size() == 1);
             break;
         case SET:
-            verify(_setName.size());
-            verify(_servers.size() >= 1);  // 1 is ok since we can derive
+            uassert(ErrorCodes::FailedToParse,
+                    "Must specify set name for replica set ConnectionStrings",
+                    !_setName.empty());
+            uassert(ErrorCodes::FailedToParse,
+                    "Replica set ConnectionStrings must have at least one server specified",
+                    _servers.size() >= 1);
             break;
         default:
-            verify(_servers.size() > 0);
+            uassert(ErrorCodes::FailedToParse,
+                    "ConnectionStrings must specify at least one server",
+                    _servers.size() > 0);
     }
 
     // Needed here as well b/c the parsing logic isn't used in all constructors
@@ -149,7 +164,7 @@ void ConnectionString::_finishInit() {
     _string = ss.str();
 }
 
-bool ConnectionString::sameLogicalEndpoint(const ConnectionString& other) const {
+bool ConnectionString::operator==(const ConnectionString& other) const {
     if (_type != other._type) {
         return false;
     }
@@ -160,32 +175,18 @@ bool ConnectionString::sameLogicalEndpoint(const ConnectionString& other) const 
         case MASTER:
             return _servers[0] == other._servers[0];
         case SET:
-            return _setName == other._setName;
-        case SYNC:
-            // The servers all have to be the same in each, but not in the same order.
-            if (_servers.size() != other._servers.size()) {
-                return false;
-            }
-
-            for (unsigned i = 0; i < _servers.size(); i++) {
-                bool found = false;
-                for (unsigned j = 0; j < other._servers.size(); j++) {
-                    if (_servers[i] == other._servers[j]) {
-                        found = true;
-                        break;
-                    }
-                }
-
-                if (!found)
-                    return false;
-            }
-
-            return true;
+            return _setName == other._setName && _servers == other._servers;
         case CUSTOM:
             return _string == other._string;
+        case LOCAL:
+            return true;
     }
 
     MONGO_UNREACHABLE;
+}
+
+bool ConnectionString::operator!=(const ConnectionString& other) const {
+    return !(*this == other);
 }
 
 StatusWith<ConnectionString> ConnectionString::parse(const std::string& url) {
@@ -209,9 +210,11 @@ StatusWith<ConnectionString> ConnectionString::parse(const std::string& url) {
         return ConnectionString(singleHost);
     }
 
-    // Sharding config server
     if (numCommas == 2) {
-        return ConnectionString(SYNC, url, "");
+        return Status(ErrorCodes::FailedToParse,
+                      str::stream() << "mirrored config server connections are not supported; for "
+                                       "config server replica sets be sure to use the replica set "
+                                       "connection string");
     }
 
     return Status(ErrorCodes::FailedToParse, str::stream() << "invalid url [" << url << "]");
@@ -225,10 +228,10 @@ std::string ConnectionString::typeToString(ConnectionType type) {
             return "master";
         case SET:
             return "set";
-        case SYNC:
-            return "sync";
         case CUSTOM:
             return "custom";
+        case LOCAL:
+            return "local";
     }
 
     MONGO_UNREACHABLE;

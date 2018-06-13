@@ -30,6 +30,7 @@
 
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/global_timestamp.h"
+#include "mongo/db/views/durable_view_catalog.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -42,15 +43,17 @@ StatusWith<BSONObj> fixDocumentForInsert(const BSONObj& doc) {
     if (doc.objsize() > BSONObjMaxUserSize)
         return StatusWith<BSONObj>(ErrorCodes::BadValue,
                                    str::stream() << "object to insert too large"
-                                                 << ". size in bytes: " << doc.objsize()
-                                                 << ", max size: " << BSONObjMaxUserSize);
+                                                 << ". size in bytes: "
+                                                 << doc.objsize()
+                                                 << ", max size: "
+                                                 << BSONObjMaxUserSize);
 
-    bool firstElementIsId = doc.firstElement().fieldNameStringData() == "_id";
+    bool firstElementIsId = false;
     bool hasTimestampToFix = false;
     bool hadId = false;
     {
         BSONObjIterator i(doc);
-        while (i.more()) {
+        for (bool isFirstElement = true; i.more(); isFirstElement = false) {
             BSONElement e = i.next();
 
             if (e.type() == bsonTimestamp && e.timestampValue() == 0) {
@@ -59,19 +62,18 @@ StatusWith<BSONObj> fixDocumentForInsert(const BSONObj& doc) {
                 hasTimestampToFix = true;
             }
 
-            const char* fieldName = e.fieldName();
+            auto fieldName = e.fieldNameStringData();
 
             if (fieldName[0] == '$') {
-                return StatusWith<BSONObj>(ErrorCodes::BadValue,
-                                           str::stream()
-                                               << "Document can't have $ prefixed field names: "
-                                               << e.fieldName());
+                return StatusWith<BSONObj>(
+                    ErrorCodes::BadValue,
+                    str::stream() << "Document can't have $ prefixed field names: " << fieldName);
             }
 
             // check no regexp for _id (SERVER-9502)
             // also, disallow undefined and arrays
             // Make sure _id isn't duplicated (SERVER-19361).
-            if (str::equals(fieldName, "_id")) {
+            if (fieldName == "_id") {
                 if (e.type() == RegEx) {
                     return StatusWith<BSONObj>(ErrorCodes::BadValue, "can't use a regex for _id");
                 }
@@ -93,6 +95,7 @@ StatusWith<BSONObj> fixDocumentForInsert(const BSONObj& doc) {
                                                "can't have multiple _id fields in one document");
                 } else {
                     hadId = true;
+                    firstElementIsId = isFirstElement;
                 }
             }
         }
@@ -151,7 +154,7 @@ Status userAllowedCreateNS(StringData db, StringData coll) {
     if (db.size() == 0)
         return Status(ErrorCodes::BadValue, "db cannot be blank");
 
-    if (!NamespaceString::validDBName(db))
+    if (!NamespaceString::validDBName(db, NamespaceString::DollarInDbNameBehavior::Allow))
         return Status(ErrorCodes::BadValue, "invalid db name");
 
     if (coll.size() == 0)
@@ -162,9 +165,11 @@ Status userAllowedCreateNS(StringData db, StringData coll) {
 
     if (db.size() + 1 /* dot */ + coll.size() > NamespaceString::MaxNsCollectionLen)
         return Status(ErrorCodes::BadValue,
-                      str::stream()
-                          << "fully qualified namespace " << db << '.' << coll << " is too long "
-                          << "(max is " << NamespaceString::MaxNsCollectionLen << " bytes)");
+                      str::stream() << "fully qualified namespace " << db << '.' << coll
+                                    << " is too long "
+                                    << "(max is "
+                                    << NamespaceString::MaxNsCollectionLen
+                                    << " bytes)");
 
     // check spceial areas
 
@@ -180,6 +185,8 @@ Status userAllowedCreateNS(StringData db, StringData coll) {
         if (coll == "system.profile")
             return Status::OK();
         if (coll == "system.users")
+            return Status::OK();
+        if (coll == DurableViewCatalog::viewsCollectionName())
             return Status::OK();
         if (db == "admin") {
             if (coll == "system.version")

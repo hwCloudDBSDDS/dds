@@ -56,10 +56,8 @@ doTest = function(signal) {
 
     var a = replTest.getPrimary().getDB("two");
     for (var i = 0; i < 20000; i++)
-        a.coll.insert({
-            i: i,
-            s: "a                                                                       b"
-        });
+        a.coll.insert(
+            {i: i, s: "a                                                                       b"});
 
     // Start a second node
     var second = replTest.add();
@@ -88,7 +86,7 @@ doTest = function(signal) {
     printjson(b.isMaster());
 
     wait(function() {
-        var c = b.getSisterDB("two").coll.count();
+        var c = b.getSisterDB("two").coll.find().itcount();
         print(c);
         return c == 20000;
     });

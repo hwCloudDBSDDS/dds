@@ -34,10 +34,19 @@
  * The following macros are provided in all compiler environments:
  *
  *
+ * MONGO_COMPILER_COLD_FUNCTION
+ *
+ *   Informs the compiler that the function is cold. This can have the following effects:
+ *   - The function is optimized for size over speed.
+ *   - The function may be placed in a special cold section of the binary, away from other code.
+ *   - Code paths that call this function are considered implicitly unlikely.
+ *
+ *
  * MONGO_COMPILER_NORETURN
  *
  *   Instructs the compiler that the decorated function will not return through the normal return
- *   path.
+ *   path. All noreturn functions are also implicitly cold since they are either run-once code
+ *   executed at startup or shutdown or code that handles errors by throwing an exception.
  *
  *   Correct: MONGO_COMPILER_NORETURN void myAbortFunction();
  *
@@ -124,6 +133,16 @@
  *
  *    Overrides compiler heuristics to force that a particular function should always
  *    be inlined.
+ *
+ *
+ * MONGO_COMPILER_UNREACHABLE
+ *
+ *    Tells the compiler that it can assume that this line will never execute. Unlike with
+ *    MONGO_UNREACHABLE, there is no runtime check and reaching this macro is completely undefined
+ *    behavior. It should only be used where it is provably impossible to reach, even in the face of
+ *    adversarial inputs, but for some reason the compiler cannot figure this out on its own, for
+ *    example after a call to a function that never returns but cannot be labeled with
+ *    MONGO_COMPILER_NORETURN. In almost all cases MONGO_UNREACHABLE is preferred.
  */
 
 #if defined(_MSC_VER)

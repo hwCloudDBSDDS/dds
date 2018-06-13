@@ -1,4 +1,5 @@
 load('jstests/aggregation/extras/utils.js');
+load('jstests/libs/analyze_plan.js');  // For planHasStage.
 
 // Use this for aggregations that only have arrays or results of specified order.
 // It will check that cursors return the same results as non-cursors.
@@ -16,8 +17,17 @@ function aggregateNoOrder(coll, pipeline) {
 }
 
 jsTestLog("Creating sharded cluster");
-var shardedAggTest =
-    new ShardingTest({shards: 2, mongos: 1, other: {chunkSize: 1, enableBalancer: true}});
+var shardedAggTest = new ShardingTest({
+    shards: 2,
+    mongos: 1,
+    other: {
+        chunkSize: 1,
+        enableBalancer: true,
+        mongosOptions: {verbose: ''},
+        shardOptions: {verbose: ''},
+        configOptions: {verbose: ''},
+    }
+});
 
 jsTestLog("Setting up sharded cluster");
 shardedAggTest.adminCommand({enablesharding: "aggShard"});
@@ -45,26 +55,9 @@ being added as arrays within arrays.
 
 var count = 0;
 var strings = [
-    "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
-    "eight",
-    "nine",
-    "ten",
-    "eleven",
-    "twelve",
-    "thirteen",
-    "fourteen",
-    "fifteen",
-    "sixteen",
-    "seventeen",
-    "eighteen",
-    "nineteen",
-    "twenty"
+    "one",     "two",     "three",     "four",     "five",     "six",      "seven",
+    "eight",   "nine",    "ten",       "eleven",   "twelve",   "thirteen", "fourteen",
+    "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"
 ];
 
 jsTestLog("Bulk inserting data");
@@ -93,13 +86,11 @@ for (var i = 0; i < shards.length; i++) {
 }
 
 jsTestLog('a project and group in shards, result combined in mongos');
-var a1 = aggregateNoOrder(
-    db.ts1,
-    [
-      {$project: {cMod10: {$mod: ["$counter", 10]}, number: 1, counter: 1}},
-      {$group: {_id: "$cMod10", numberSet: {$addToSet: "$number"}, avgCounter: {$avg: "$cMod10"}}},
-      {$sort: {_id: 1}}
-    ]);
+var a1 = aggregateNoOrder(db.ts1, [
+    {$project: {cMod10: {$mod: ["$counter", 10]}, number: 1, counter: 1}},
+    {$group: {_id: "$cMod10", numberSet: {$addToSet: "$number"}, avgCounter: {$avg: "$cMod10"}}},
+    {$sort: {_id: 1}}
+]);
 
 for (i = 0; i < 10; ++i) {
     assert.eq(a1[i].avgCounter, a1[i]._id, 'agg sharded test avgCounter failed');
@@ -114,7 +105,7 @@ assert.eq(a2[0].total, (nItems / 2) * (1 + nItems), 'agg sharded test counter su
 
 jsTestLog('A group combining all documents into one, averaging a null field.');
 assert.eq(aggregateOrdered(db.ts1, [{$group: {_id: null, avg: {$avg: "$missing"}}}]),
-              [{_id: null, avg: null}]);
+          [{_id: null, avg: null}]);
 
 jsTestLog('an initial group starts the group in the shards, and combines them in mongos');
 var a3 =
@@ -125,19 +116,18 @@ for (i = 0; i < strings.length; ++i) {
 }
 
 jsTestLog('a match takes place in the shards; just returning the results from mongos');
-var a4 = aggregateNoOrder(db.ts1,
-                              [{
-                                 $match: {
-                                     $or: [
-                                         {counter: 55},
-                                         {counter: 1111},
-                                         {counter: 2222},
-                                         {counter: 33333},
-                                         {counter: 99999},
-                                         {counter: 55555}
-                                     ]
-                                 }
-                              }]);
+var a4 = aggregateNoOrder(db.ts1, [{
+                              $match: {
+                                  $or: [
+                                      {counter: 55},
+                                      {counter: 1111},
+                                      {counter: 2222},
+                                      {counter: 33333},
+                                      {counter: 99999},
+                                      {counter: 55555}
+                                  ]
+                              }
+                          }]);
 
 assert.eq(a4.length, 6, tojson(a4));
 for (i = 0; i < 6; ++i) {
@@ -191,13 +181,15 @@ function testAvgStdDev() {
     jsTestLog('testing $avg and $stdDevPop in sharded $group');
     // Note: not using aggregateOrdered since it requires exact results. $stdDevPop can vary
     // slightly between runs if a migration occurs. This is why we use assert.close below.
-    var res = db.ts1.aggregate([{
-        $group: {
-            _id: null,
-            avg: {$avg: '$counter'},
-            stdDevPop: {$stdDevPop: '$counter'},
-        }
-    }]).toArray();
+    var res = db.ts1
+                  .aggregate([{
+                      $group: {
+                          _id: null,
+                          avg: {$avg: '$counter'},
+                          stdDevPop: {$stdDevPop: '$counter'},
+                      }
+                  }])
+                  .toArray();
     // http://en.wikipedia.org/wiki/Arithmetic_progression#Sum
     var avg = (1 + nItems) / 2;
     assert.close(res[0].avg, avg, '', 10 /*decimal places*/);
@@ -210,11 +202,19 @@ testAvgStdDev();
 
 function testSample() {
     jsTestLog('testing $sample');
+    shardedAggTest.printCollectionInfo(db.ts1.getFullName());
     [0, 1, 10, nItems, nItems + 1].forEach(function(size) {
         var res = db.ts1.aggregate([{$sample: {size: size}}]).toArray();
         assert.eq(res.length, Math.min(nItems, size));
     });
 }
+testSample();
+
+// SERVER-26742 Attempt to reproduce an incorrect number of results being returned.
+testSample();
+testSample();
+testSample();
+testSample();
 testSample();
 
 jsTestLog('test $out by copying source collection verbatim to output');
@@ -226,16 +226,14 @@ assert.eq(db.ts1.find().sort({_id: 1}).toArray(), outCollection.find().sort({_id
 shardedAggTest.startBalancer();  // TODO: remove after fixing SERVER-9622
 
 // Make sure we error out if $out collection is sharded
-assertErrorCode(outCollection, [{$out: db.ts1.getName()}], 17017);
+assert.commandFailed(
+    db.runCommand({aggregate: outCollection.getName(), pipeline: [{$out: db.ts1.getName()}]}));
 
-db.literal.save({dollar: false});
+assert.writeOK(db.literal.save({dollar: false}));
 
 result = aggregateOrdered(
     db.literal,
-        [{
-           $project:
-               {_id: 0, cost: {$cond: ['$dollar', {$literal: '$1.00'}, {$literal: '$.99'}]}}
-        }]);
+    [{$project: {_id: 0, cost: {$cond: ['$dollar', {$literal: '$1.00'}, {$literal: '$.99'}]}}}]);
 
 assert.eq([{cost: '$.99'}], result);
 
@@ -252,6 +250,16 @@ for (var shardName in res.shards) {
     assert("host" in res.shards[shardName]);
     assert("stages" in res.shards[shardName]);
 }
+
+(function() {
+    jsTestLog("Do a sharded explain from a mongod, not mongos, to ensure that it does not have " +
+              "a SHARDING_FILTER stage.");
+    var shardDb = shardedAggTest.shard0.getDB('aggShard');
+    var res = shardDb.ts1.aggregate([{$match: {}}], {explain: true});
+    printjson(res);
+    assert.commandWorked(res);
+    assert(!planHasStage(res.stages[0].$cursor.queryPlanner.winningPlan, "SHARDING_FILTER"));
+}());
 
 (function() {
     jsTestLog('Testing a $match stage on the shard key.');

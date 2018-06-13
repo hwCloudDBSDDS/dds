@@ -31,6 +31,8 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
 #include "mongo/db/ops/update_driver.h"
+#include "mongo/db/query/collation/collator_interface.h"
+#include "mongo/db/query/plan_executor.h"
 
 namespace mongo {
 
@@ -89,9 +91,9 @@ public:
     UpdateDriver* getDriver();
 
     /**
-     * Is this update allowed to yield?
+     * Get the YieldPolicy, adjusted for $isolated and GodMode.
      */
-    bool canYield() const;
+    PlanExecutor::YieldPolicy yieldPolicy() const;
 
     /**
      * Is this update supposed to be isolated?
@@ -109,6 +111,21 @@ public:
      */
     std::unique_ptr<CanonicalQuery> releaseParsedQuery();
 
+    /**
+     * Get the collator of the parsed update.
+     */
+    const CollatorInterface* getCollator() const {
+        return _collator.get();
+    }
+
+    /**
+     * Sets this ParsedUpdate's collator.
+     *
+     * This setter can be used to override the collator that was created from the update request
+     * during ParsedUpdate construction.
+     */
+    void setCollator(std::unique_ptr<CollatorInterface> collator);
+
 private:
     /**
      * Parses the query portion of the update request.
@@ -125,6 +142,9 @@ private:
 
     // Unowned pointer to the request object to process.
     const UpdateRequest* const _request;
+
+    // The collator for the parsed update.  Owned here.
+    std::unique_ptr<CollatorInterface> _collator;
 
     // Driver for processing updates on matched documents.
     UpdateDriver _driver;

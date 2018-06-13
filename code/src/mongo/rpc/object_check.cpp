@@ -31,14 +31,10 @@
 #include "mongo/rpc/object_check.h"
 
 #include "mongo/base/status.h"
-#include "mongo/db/jsobj.h"
-#include "mongo/db/server_options.h"
-
 
 namespace mongo {
 
 Status Validator<BSONObj>::validateStore(const BSONObj& toStore) {
     return Status::OK();
 }
-
 }  // namespace mongo

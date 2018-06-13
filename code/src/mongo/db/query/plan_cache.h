@@ -28,8 +28,8 @@
 
 #pragma once
 
-#include <set>
 #include <boost/optional/optional.hpp>
+#include <set>
 
 #include "mongo/db/exec/plan_stats.h"
 #include "mongo/db/query/canonical_query.h"
@@ -86,7 +86,7 @@ typedef std::string PlanID;
  *   This is done by QueryPlanner::tagAccordingToCache.
  */
 struct PlanCacheIndexTree {
-    PlanCacheIndexTree() : entry(nullptr), index_pos(0) {}
+    PlanCacheIndexTree() : entry(nullptr), index_pos(0), canCombineBounds(true) {}
 
     ~PlanCacheIndexTree() {
         for (std::vector<PlanCacheIndexTree*>::const_iterator it = children.begin();
@@ -118,6 +118,11 @@ struct PlanCacheIndexTree {
     std::unique_ptr<IndexEntry> entry;
 
     size_t index_pos;
+
+    // The value for this member is taken from the IndexTag of the corresponding match expression
+    // and is used to ensure that bounds are correctly intersected and/or compounded when a query is
+    // planned from the plan cache.
+    bool canCombineBounds;
 };
 
 /**
@@ -196,6 +201,7 @@ public:
     BSONObj query;
     BSONObj sort;
     BSONObj projection;
+    BSONObj collation;
 
     // The number of work cycles taken to decide on a winning plan when the plan was first
     // cached.
@@ -245,6 +251,7 @@ public:
     BSONObj query;
     BSONObj sort;
     BSONObj projection;
+    BSONObj collation;
 
     //
     // Performance stats

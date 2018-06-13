@@ -45,7 +45,7 @@
 #include "mongo/db/auth/mongo_authentication_session.h"
 #include "mongo/db/auth/sasl_authentication_session.h"
 #include "mongo/db/auth/sasl_options.h"
-#include "mongo/db/client_basic.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/authentication_commands.h"
 #include "mongo/db/server_options.h"
@@ -55,114 +55,12 @@
 #include "mongo/util/sequence_util.h"
 #include "mongo/util/stringutils.h"
 
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-#include <mutex>
-#include "mongo/util/time_support.h"
-#include <time.h>
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-
 namespace mongo {
 namespace {
 
 using std::stringstream;
 
 const bool autoAuthorizeDefault = true;
-
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-using ::std::mutex;
-using ::std::lock_guard;
-using ::std::make_pair;
-using ::std::pair;
-
-class LimitVerifyTimes {
-public:
-   
-    LimitVerifyTimes(){};
-    ~LimitVerifyTimes(){};
-
-    struct VerifiedInfo {
-        time_t  recoredTime;
-        int failedTimes;
-
-        VerifiedInfo(){failedTimes = 1;recoredTime = time(NULL);}	    
-
-    };    
-    bool upsertVerifiedInfo(const std::string key){
-		stdx::lock_guard<stdx::mutex> lk(m);
-		VerifyFailedMap::iterator it = _verifyMap.find(key);
-        if (it == _verifyMap.end()){
-			VerifiedInfo initInfo;
-			_verifyMap.insert(make_pair(key,initInfo));
-			return true;
-		}
-		it->second.failedTimes++;
-		it->second.recoredTime = time(NULL);
-		return true;
-		
-    }
-    bool canPassVerify(const std::string& key) {
-        stdx::lock_guard<stdx::mutex> lk(m);
-
-		VerifyFailedMap::iterator it = _verifyMap.find(key);
-        if (it == _verifyMap.end())
-            return true;
-
-		if(it->second.failedTimes<FAILEDtIMES){
-            return true;
-		}
-		
-		time_t  now = time(NULL);
-		int diff = now - it->second.recoredTime;
-        if(diff<DURATION){
-			log()<<"canPassVerify fail"<<"key:"<<it->first<<",recoredTime:"<<it->second.recoredTime<<",failedTimes:"<<it->second.failedTimes<<std::endl;                   
-            return false;
-		}
-		
-		_verifyMap.erase(it);	
-		return true;
-	}
-
-	void cleanVerifiedInfo(const std::string key){
-		stdx::lock_guard<stdx::mutex> lk(m);
-		VerifyFailedMap::iterator it = _verifyMap.find(key);
-        if (it == _verifyMap.end()){
-			return ;
-		}
-		_verifyMap.erase(it);	
-    }
-
-    std::string generateVerifiedKey(const ClientBasic* client,SaslAuthenticationSession* session){
-		verify(client != NULL);
-		verify(session != NULL);
-		
-		std::string userName = session->getPrincipalId();
-		const SockAddr clientAddr = client->port()->remoteAddr();
-		std::string key = clientAddr.getAddr() + "_" + userName;
-		return key;
-	}
-
-	inline std::string getSaslAdminAuthUserName(){
-		return "root";
-	}
-	
-    
-
-
-private:
-    typedef std::map<std::string, VerifiedInfo> VerifyFailedMap;
-	const int FAILEDtIMES = 5;
-    const int DURATION = 10;
-    stdx::mutex m;
-    VerifyFailedMap _verifyMap;
-
-};
-
-
-
-LimitVerifyTimes limitVerifyInfo;
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-
-
 
 class CmdSaslStart : public Command {
 public:
@@ -183,7 +81,7 @@ public:
                      BSONObjBuilder& result);
 
     virtual void help(stringstream& help) const;
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual bool slaveOk() const {
@@ -211,7 +109,7 @@ public:
                      BSONObjBuilder& result);
 
     virtual void help(stringstream& help) const;
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual bool slaveOk() const {
@@ -266,33 +164,12 @@ Status extractMechanism(const BSONObj& cmdObj, std::string* mechanism) {
     return bsonExtractStringField(cmdObj, saslCommandMechanismFieldName, mechanism);
 }
 
-void addStatus(const Status& status, BSONObjBuilder* builder) {
-    builder->append("ok", status.isOK() ? 1.0 : 0.0);
-    if (!status.isOK())
-        builder->append(saslCommandCodeFieldName, status.code());
-    if (!status.reason().empty())
-        builder->append(saslCommandErrmsgFieldName, status.reason());
-}
-
-Status doSaslStep(const ClientBasic* client,
+Status doSaslStep(const Client* client,
                   SaslAuthenticationSession* session,
                   const BSONObj& cmdObj,
                   BSONObjBuilder* result) {
     std::string payload;
     BSONType type = EOO;
-	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    if(serverGlobalParams.limitVerifyTimes){
-		if(session->getPrincipalId() == limitVerifyInfo.getSaslAdminAuthUserName()){
-			std::string key = limitVerifyInfo.generateVerifiedKey(client,session);
-            bool pass = limitVerifyInfo.canPassVerify(key);
-		    if(!pass){
-				log()<<"doSaslStep:"<<"canPassVerify fail "<<std::endl;
-			    return Status(ErrorCodes::Unauthorized, "Password error 5 times ,account locked, please try after 10 second");
-		    }
-		}	
-	}
-    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-	
     Status status = saslExtractPayload(cmdObj, &payload, &type);
     if (!status.isOK())
         return status;
@@ -302,28 +179,13 @@ Status doSaslStep(const ClientBasic* client,
     status = session->step(payload, &responsePayload);
 
     if (!status.isOK()) {
-        const SockAddr clientAddr = client->port()->remoteAddr();
-		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-        /*****modify mongodb code start*****/
-        status = Status(ErrorCodes::AuthenticationFailed, "Authentication failed.");
         log() << session->getMechanism() << " authentication failed for "
               << session->getPrincipalId() << " on " << session->getAuthenticationDatabase()
-              << " from client " << clientAddr.getAddr() << " ; " << status.toString() << std::endl;
+              << " from client " << client->getRemote().toString() << " ; " << redact(status);
 
         sleepmillis(saslGlobalParams.authFailedDelay);
-
-        if(serverGlobalParams.limitVerifyTimes){
-		    if(session->getPrincipalId() == limitVerifyInfo.getSaslAdminAuthUserName()){            
-		        std::string key = limitVerifyInfo.generateVerifiedKey(client,session);
-                limitVerifyInfo.upsertVerifiedInfo(key);	            
-		    }	
-	    }
-
-		
         // All the client needs to know is that authentication has failed.
-        return status;
-        /*****modify mongodb code end*****/
-		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+        return Status(ErrorCodes::AuthenticationFailed, "Authentication failed.");
     }
 
     status = buildResponse(session, responsePayload, type, result);
@@ -337,23 +199,16 @@ Status doSaslStep(const ClientBasic* client,
         if (!status.isOK()) {
             return status;
         }
-		//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-		if(serverGlobalParams.limitVerifyTimes){            
-		    if(session->getPrincipalId() == limitVerifyInfo.getSaslAdminAuthUserName()){            
-		        std::string key = limitVerifyInfo.generateVerifiedKey(client,session);
-                limitVerifyInfo.cleanVerifiedInfo(key);	            
-		    }	
-		}
-        //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
+
         if (!serverGlobalParams.quiet) {
-            log() << "Successfully authenticated as principal" << session->getPrincipalId()
+            log() << "Successfully authenticated as principal " << session->getPrincipalId()
                   << " on " << session->getAuthenticationDatabase();
         }
     }
     return Status::OK();
 }
 
-Status doSaslStart(const ClientBasic* client,
+Status doSaslStart(const Client* client,
                    SaslAuthenticationSession* session,
                    const std::string& db,
                    const BSONObj& cmdObj,
@@ -387,7 +242,7 @@ Status doSaslStart(const ClientBasic* client,
     return doSaslStep(client, session, cmdObj, result);
 }
 
-Status doSaslContinue(const ClientBasic* client,
+Status doSaslContinue(const Client* client,
                       SaslAuthenticationSession* session,
                       const BSONObj& cmdObj,
                       BSONObjBuilder* result) {
@@ -421,7 +276,7 @@ bool CmdSaslStart::run(OperationContext* txn,
                        int options,
                        std::string& ignored,
                        BSONObjBuilder& result) {
-    ClientBasic* client = ClientBasic::getCurrent();
+    Client* client = Client::getCurrent();
     AuthenticationSession::set(client, std::unique_ptr<AuthenticationSession>());
 
     std::string mechanism;
@@ -430,14 +285,14 @@ bool CmdSaslStart::run(OperationContext* txn,
     }
 
     SaslAuthenticationSession* session =
-        SaslAuthenticationSession::create(AuthorizationSession::get(client), mechanism);
+        SaslAuthenticationSession::create(AuthorizationSession::get(client), db, mechanism);
 
     std::unique_ptr<AuthenticationSession> sessionGuard(session);
 
     session->setOpCtxt(txn);
 
     Status status = doSaslStart(client, session, db, cmdObj, &result);
-    addStatus(status, &result);
+    appendCommandStatus(result, status);
 
     if (session->isDone()) {
         audit::logAuthentication(client,
@@ -463,13 +318,13 @@ bool CmdSaslContinue::run(OperationContext* txn,
                           int options,
                           std::string& ignored,
                           BSONObjBuilder& result) {
-    ClientBasic* client = ClientBasic::getCurrent();
+    Client* client = Client::getCurrent();
     std::unique_ptr<AuthenticationSession> sessionGuard;
     AuthenticationSession::swap(client, sessionGuard);
 
     if (!sessionGuard || sessionGuard->getType() != AuthenticationSession::SESSION_TYPE_SASL) {
-        addStatus(Status(ErrorCodes::ProtocolError, "No SASL session state found"), &result);
-        return false;
+        return appendCommandStatus(
+            result, Status(ErrorCodes::ProtocolError, "No SASL session state found"));
     }
 
     SaslAuthenticationSession* session =
@@ -478,16 +333,16 @@ bool CmdSaslContinue::run(OperationContext* txn,
     // Authenticating the __system@local user to the admin database on mongos is required
     // by the auth passthrough test suite.
     if (session->getAuthenticationDatabase() != db && !Command::testCommandsEnabled) {
-        addStatus(Status(ErrorCodes::ProtocolError,
-                         "Attempt to switch database target during SASL authentication."),
-                  &result);
-        return false;
+        return appendCommandStatus(
+            result,
+            Status(ErrorCodes::ProtocolError,
+                   "Attempt to switch database target during SASL authentication."));
     }
 
     session->setOpCtxt(txn);
 
     Status status = doSaslContinue(client, session, cmdObj, &result);
-    addStatus(status, &result);
+    appendCommandStatus(result, status);
 
     if (session->isDone()) {
         audit::logAuthentication(client,

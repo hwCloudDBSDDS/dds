@@ -39,8 +39,7 @@ createCollectionWithData = function(db, collectionName, dataGenerator) {
         print("collection.ensureIndex(" + JSON.stringify(nextIndex.spec) + ", " +
               JSON.stringify(nextIndex.options) + ");");
         var ensureIndexResult = collection.ensureIndex(nextIndex.spec, nextIndex.options);
-        // XXX: Is this the real way to check for errors?
-        assert(ensureIndexResult === undefined, tojson(ensureIndexResult));
+        assert.commandWorked(ensureIndexResult);
         numIndexes++;
     }
 
@@ -64,6 +63,29 @@ createCollectionWithData = function(db, collectionName, dataGenerator) {
     return db.getCollection(collectionName);
 };
 
+// MongoDB 3.4 introduces new fields into the listCollections result document. This function
+// injects expected 3.4 values into a 3.2 document to allow for object comparison.
+// TODO SERVER-26676: Remove this check post-3.4 release.
+var injectExpected34FieldsIf32 = function(collectionInfo, dbVersion) {
+    if (dbVersion.startsWith("3.2")) {
+        return Object.extend({type: "collection", info: {readOnly: false}}, collectionInfo);
+    }
+
+    return collectionInfo;
+};
+
+// MongoDB 3.4 introduces a new field 'idIndex' into the listCollections result document. This
+// cannot be injected into the 3.2 listCollections result document because the full index spec is
+// not known. This function removes the 'idIndex' field to allow for object comparison.
+// TODO SERVER-26676: Remove this check post-3.4 release.
+var removeIdIndexField = function(collectionInfo) {
+    if (collectionInfo.hasOwnProperty("idIndex")) {
+        delete collectionInfo.idIndex;
+    }
+
+    return collectionInfo;
+};
+
 // Class to save the state of a collection and later compare the current state of a collection to
 // the saved state
 function CollectionDataValidator() {
@@ -71,6 +93,7 @@ function CollectionDataValidator() {
     var _collectionInfo = {};
     var _indexData = [];
     var _collectionData = [];
+    var _dbVersion = "";
 
     // Returns the options of the specified collection.
     this.getCollectionInfo = function(collection) {
@@ -95,21 +118,31 @@ function CollectionDataValidator() {
         // Save the data for this collection for later comparison
         _collectionData = collection.find().sort({"_id": 1}).toArray();
 
+        _dbVersion = collection.getDB().version();
+
         _initialized = true;
 
         return collection;
     };
 
-    this.validateCollectionData = function(collection) {
+    this.validateCollectionData = function(
+        collection, dbVersionForCollection, options = {indexSpecFieldsToSkip: []}) {
 
         if (!_initialized) {
             throw Error("validateCollectionWithAllData called, but data is not initialized");
         }
 
+        if (!Array.isArray(options.indexSpecFieldsToSkip)) {
+            throw new Error("Option 'indexSpecFieldsToSkip' must be an array");
+        }
+
         // Get the metadata for this collection
         var newCollectionInfo = this.getCollectionInfo(collection);
 
-        assert.docEq(_collectionInfo, newCollectionInfo, "collection metadata not equal");
+        let colInfo1 = removeIdIndexField(injectExpected34FieldsIf32(_collectionInfo, _dbVersion));
+        let colInfo2 = removeIdIndexField(
+            injectExpected34FieldsIf32(newCollectionInfo, dbVersionForCollection));
+        assert.docEq(colInfo1, colInfo2, "collection metadata not equal");
 
         // Get the indexes for this collection
         var newIndexData = collection.getIndexes().sort(function(a, b) {
@@ -119,7 +152,15 @@ function CollectionDataValidator() {
                 return -1;
         });
         for (var i = 0; i < newIndexData.length; i++) {
-            assert.docEq(_indexData[i], newIndexData[i], "indexes not equal");
+            let recordedIndex = Object.extend({}, _indexData[i]);
+            let newIndex = Object.extend({}, newIndexData[i]);
+
+            options.indexSpecFieldsToSkip.forEach(fieldName => {
+                delete recordedIndex[fieldName];
+                delete newIndex[fieldName];
+            });
+
+            assert.docEq(recordedIndex, newIndex, "indexes not equal");
         }
 
         // Save the data for this collection for later comparison

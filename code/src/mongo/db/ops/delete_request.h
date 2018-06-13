@@ -33,6 +33,7 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/query/plan_executor.h"
 
 namespace mongo {
 
@@ -57,6 +58,9 @@ public:
     }
     void setSort(const BSONObj& sort) {
         _sort = sort;
+    }
+    void setCollation(const BSONObj& collation) {
+        _collation = collation;
     }
     void setMulti(bool multi = true) {
         _multi = multi;
@@ -89,6 +93,9 @@ public:
     const BSONObj& getSort() const {
         return _sort;
     }
+    const BSONObj& getCollation() const {
+        return _collation;
+    }
     bool isMulti() const {
         return _multi;
     }
@@ -108,13 +115,12 @@ public:
         return _yieldPolicy;
     }
 
-    std::string toString() const;
-
 private:
     const NamespaceString& _nsString;
     BSONObj _query;
     BSONObj _proj;
     BSONObj _sort;
+    BSONObj _collation;
     bool _multi;
     bool _god;
     bool _fromMigrate;

@@ -34,11 +34,10 @@
 
 #include <vector>
 
-#include "mongo/db/service_context.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/service_context.h"
 #include "mongo/platform/compiler.h"
 #include "mongo/util/background.h"
-#include "mongo/util/concurrency/synchronization.h"
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/util/debug_util.h"
 #include "mongo/util/log.h"
@@ -134,12 +133,19 @@ PartitionedInstanceWideLockStats globalStats;
 bool shouldDelayUnlock(ResourceId resId, LockMode mode) {
     // Global and flush lock are not used to protect transactional resources and as such, they
     // need to be acquired and released when requested.
-    if (resId.getType() == RESOURCE_GLOBAL) {
-        return false;
-    }
+    switch (resId.getType()) {
+        case RESOURCE_GLOBAL:
+        case RESOURCE_MMAPV1_FLUSH:
+        case RESOURCE_MUTEX:
+            return false;
 
-    if (resId == resourceIdMMAPV1Flush) {
-        return false;
+        case RESOURCE_COLLECTION:
+        case RESOURCE_DATABASE:
+        case RESOURCE_METADATA:
+            break;
+
+        default:
+            MONGO_UNREACHABLE;
     }
 
     switch (mode) {
@@ -152,7 +158,7 @@ bool shouldDelayUnlock(ResourceId resId, LockMode mode) {
             return false;
 
         default:
-            invariant(false);
+            MONGO_UNREACHABLE;
     }
 }
 
@@ -209,7 +215,7 @@ void LockerImpl<IsForMMAPV1>::dump() const {
     }
     _lock.unlock();
 
-    log() << ss.str() << std::endl;
+    log() << ss.str();
 }
 
 
@@ -228,7 +234,9 @@ void CondVarLockGrantNotification::clear() {
 LockResult CondVarLockGrantNotification::wait(unsigned timeoutMs) {
     stdx::unique_lock<stdx::mutex> lock(_mutex);
     while (_result == LOCK_INVALID) {
-        if (stdx::cv_status::timeout == _cond.wait_for(lock, Milliseconds(timeoutMs))) {
+        if (stdx::cv_status::timeout ==
+            _cond.wait_for(lock,
+                           Milliseconds(static_cast<int64_t>(timeoutMs)).toSystemDuration())) {
             // Timeout
             return LOCK_TIMEOUT;
         }
@@ -262,8 +270,7 @@ void Locker::setGlobalThrottling(class TicketHolder* reading, class TicketHolder
 }
 
 template <bool IsForMMAPV1>
-LockerImpl<IsForMMAPV1>::LockerImpl()
-    : _id(idCounter.addAndFetch(1)), _wuowNestingLevel(0), _batchWriter(false) {}
+LockerImpl<IsForMMAPV1>::LockerImpl() : _id(idCounter.addAndFetch(1)), _wuowNestingLevel(0) {}
 
 template <bool IsForMMAPV1>
 LockerImpl<IsForMMAPV1>::~LockerImpl() {
@@ -367,7 +374,7 @@ void LockerImpl<IsForMMAPV1>::downgradeGlobalXtoSForMMAPV1() {
 }
 
 template <bool IsForMMAPV1>
-bool LockerImpl<IsForMMAPV1>::unlockAll() {
+bool LockerImpl<IsForMMAPV1>::unlockGlobal() {
     if (!unlock(resourceIdGlobal)) {
         return false;
     }
@@ -377,9 +384,9 @@ bool LockerImpl<IsForMMAPV1>::unlockAll() {
     LockRequestsMap::Iterator it = _requests.begin();
     while (!it.finished()) {
         // If we're here we should only have one reference to any lock. It is a programming
-        // error for any lock to have more references than the global lock, because every
-        // scope starts by calling lockGlobal.
-        if (it.key().getType() == RESOURCE_GLOBAL) {
+        // error for any lock used with multi-granularity locking to have more references than
+        // the global lock, because every scope starts by calling lockGlobal.
+        if (it.key().getType() == RESOURCE_GLOBAL || it.key().getType() == RESOURCE_MUTEX) {
             it.next();
         } else {
             invariant(_unlockImpl(&it));
@@ -523,7 +530,8 @@ ResourceId LockerImpl<IsForMMAPV1>::getWaitingResource() const {
 
     LockRequestsMap::ConstIterator it = _requests.begin();
     while (!it.finished()) {
-        if (it->status != LockRequest::STATUS_GRANTED) {
+        if (it->status == LockRequest::STATUS_WAITING ||
+            it->status == LockRequest::STATUS_CONVERTING) {
             return it.key();
         }
 
@@ -573,8 +581,10 @@ bool LockerImpl<IsForMMAPV1>::saveLockStateAndUnlock(Locker::LockSnapshot* state
     // lock goes along with it) so we store it separately from the more pedestrian locks.
     LockRequestsMap::Iterator globalRequest = _requests.find(resourceIdGlobal);
     if (!globalRequest) {
-        // If there's no global lock there isn't really anything to do.
-        invariant(_requests.empty());
+        // If there's no global lock there isn't really anything to do. Check that.
+        for (auto it = _requests.begin(); !it.finished(); it.next()) {
+            invariant(it.key().getType() == RESOURCE_MUTEX);
+        }
         return false;
     }
 
@@ -592,6 +602,9 @@ bool LockerImpl<IsForMMAPV1>::saveLockStateAndUnlock(Locker::LockSnapshot* state
     // Next, the non-global locks.
     for (LockRequestsMap::Iterator it = _requests.begin(); !it.finished(); it.next()) {
         const ResourceId resId = it.key();
+        const ResourceType resType = resId.getType();
+        if (resType == RESOURCE_MUTEX)
+            continue;
 
         // We should never have to save and restore metadata locks.
         invariant((IsForMMAPV1 && (resourceIdMMAPV1Flush == resId)) ||
@@ -672,7 +685,7 @@ LockResult LockerImpl<IsForMMAPV1>::lockBegin(ResourceId resId, LockMode mode) {
             request->enqueueAtFront = true;
             request->compatibleFirst = true;
         }
-    } else {
+    } else if (resType != RESOURCE_MUTEX) {
         // This is all sanity checks that the global and flush locks are always be acquired
         // before any other lock has been acquired and they must be in sync with the nesting.
         DEV {
@@ -710,7 +723,8 @@ LockResult LockerImpl<IsForMMAPV1>::lockComplete(ResourceId resId,
     // DB lock, while holding the flush lock, so it has to be released. This is only
     // correct to do if not in a write unit of work.
     const bool yieldFlushLock = IsForMMAPV1 && !inAWriteUnitOfWork() &&
-        resId.getType() != RESOURCE_GLOBAL && resId != resourceIdMMAPV1Flush;
+        resId.getType() != RESOURCE_GLOBAL && resId.getType() != RESOURCE_MUTEX &&
+        resId != resourceIdMMAPV1Flush;
     if (yieldFlushLock) {
         invariant(unlock(resourceIdMMAPV1Flush));
     }
@@ -820,24 +834,6 @@ LockMode LockerImpl<IsForMMAPV1>::_getModeForMMAPV1FlushLock() const {
             invariant(false);
             return MODE_NONE;
     }
-}
-
-template <bool IsForMMAPV1>
-bool LockerImpl<IsForMMAPV1>::hasStrongLocks() const {
-    if (!isLocked())
-        return false;
-
-    stdx::lock_guard<SpinLock> lk(_lock);
-    LockRequestsMap::ConstIterator it = _requests.begin();
-    while (!it.finished()) {
-        if (it->mode == MODE_X || it->mode == MODE_S) {
-            return true;
-        }
-
-        it.next();
-    }
-
-    return false;
 }
 
 

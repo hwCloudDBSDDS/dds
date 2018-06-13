@@ -29,8 +29,8 @@
 #pragma once
 
 
-#include "mongo/db/jsobj.h"
 #include "mongo/db/exec/plan_stage.h"
+#include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/record_id.h"
 
@@ -53,7 +53,7 @@ public:
     ~KeepMutationsStage();
 
     bool isEOF() final;
-    StageState work(WorkingSetID* out) final;
+    StageState doWork(WorkingSetID* out) final;
 
     StageType stageType() const final {
         return STAGE_KEEP_MUTATIONS;

@@ -37,11 +37,14 @@
 #include <unistd.h>
 #endif
 
+#include "mongo/logger/console_appender.h"
+#include "mongo/logger/message_event_utf8_encoder.h"
 #include "mongo/logger/ramlog.h"
 #include "mongo/logger/rotatable_file_manager.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/concurrency/threadlocal.h"
 #include "mongo/util/concurrency/thread_name.h"
+#include "mongo/util/concurrency/threadlocal.h"
+#include "mongo/util/scopeguard.h"
 #include "mongo/util/stacktrace.h"
 #include "mongo/util/text.h"
 #include "mongo/util/time_support.h"
@@ -53,6 +56,11 @@ using namespace std;
 // TODO: Eliminate cout/cerr.
 
 namespace mongo {
+
+namespace {
+const char kUnknownMsg[] = "Unknown error";
+const int kBuflen = 256;  // strerror strings in non-English locales can be large.
+}
 
 static logger::ExtraLogContextFn _appendExtraLogContext;
 
@@ -70,61 +78,81 @@ Status logger::registerExtraLogContextFn(logger::ExtraLogContextFn contextFn) {
 bool rotateLogs(bool renameFiles) {
     using logger::RotatableFileManager;
     RotatableFileManager* manager = logger::globalRotatableFileManager();
+    log() << "Log rotation initiated";
     RotatableFileManager::FileNameStatusPairVector result(
         manager->rotateAll(renameFiles, "." + terseCurrentTime(false)));
     for (RotatableFileManager::FileNameStatusPairVector::iterator it = result.begin();
          it != result.end();
          it++) {
-        warning() << "Rotating log file " << it->first << " failed: " << it->second.toString()
-                  << endl;
+        warning() << "Rotating log file " << it->first << " failed: " << it->second.toString();
     }
     return result.empty();
 }
 
-string errnoWithDescription(int x) {
+string errnoWithDescription(int errNumber) {
 #if defined(_WIN32)
-    if (x < 0)
-        x = GetLastError();
+    if (errNumber < 0)
+        errNumber = GetLastError();
 #else
-    if (x < 0)
-        x = errno;
+    if (errNumber < 0)
+        errNumber = errno;
 #endif
-    stringstream s;
-    s << "errno:" << x << ' ';
 
-#if defined(_WIN32)
-    LPWSTR errorText = NULL;
+    char buf[kBuflen];
+    char* msg{nullptr};
+
+#if defined(__GNUC__) && defined(_GNU_SOURCE)
+    msg = strerror_r(errNumber, buf, kBuflen);
+#elif defined(_WIN32)
+
+    LPWSTR errorText = nullptr;
     FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ALLOCATE_BUFFER |
                        FORMAT_MESSAGE_IGNORE_INSERTS,
-                   NULL,
-                   x,
+                   nullptr,
+                   errNumber,
                    0,
                    reinterpret_cast<LPWSTR>(&errorText),  // output
                    0,                                     // minimum size for output buffer
-                   NULL);
+                   nullptr);
+
     if (errorText) {
-        string x = toUtf8String(errorText);
-        for (string::iterator i = x.begin(); i != x.end(); i++) {
-            if (*i == '\n' || *i == '\r')
-                break;
-            s << *i;
+        ON_BLOCK_EXIT([&errorText] { LocalFree(errorText); });
+        string utf8ErrorText = toUtf8String(errorText);
+        auto size = utf8ErrorText.find_first_of("\r\n");
+        if (size == string::npos) {  // not found
+            size = utf8ErrorText.length();
         }
-        LocalFree(errorText);
-    } else
-        s << strerror(x);
-/*
-DWORD n = FormatMessage(
-    FORMAT_MESSAGE_ALLOCATE_BUFFER |
-    FORMAT_MESSAGE_FROM_SYSTEM |
-    FORMAT_MESSAGE_IGNORE_INSERTS,
-    NULL, x,
-    MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-    (LPTSTR) &lpMsgBuf, 0, NULL);
-*/
-#else
-    s << strerror(x);
+
+        if (size >= kBuflen) {
+            size = kBuflen - 1;
+        }
+
+        memcpy(buf, utf8ErrorText.c_str(), size);
+        buf[size] = '\0';
+        msg = buf;
+    } else if (strerror_s(buf, kBuflen, errNumber) != 0) {
+        msg = buf;
+    }
+#else /* XSI strerror_r */
+    if (strerror_r(errNumber, buf, kBuflen) == 0) {
+        msg = buf;
+    }
 #endif
-    return s.str();
+
+    if (!msg) {
+        return {kUnknownMsg};
+    }
+
+    return {msg};
+}
+
+std::pair<int, std::string> errnoAndDescription() {
+#if defined(_WIN32)
+    int errNumber = GetLastError();
+#else
+    int errNumber = errno;
+#endif
+    return {errNumber, errnoWithDescription(errNumber)};
 }
 
 void logContext(const char* errmsg) {
@@ -134,6 +162,14 @@ void logContext(const char* errmsg) {
     // NOTE: We disable long-line truncation for the stack trace, because the JSON representation of
     // the stack trace can sometimes exceed the long line limit.
     printStackTrace(log().setIsTruncatable(false).stream());
+}
+
+void setPlainConsoleLogger() {
+    logger::globalLogManager()->getGlobalDomain()->clearAppenders();
+    logger::globalLogManager()->getGlobalDomain()->attachAppender(
+        logger::MessageLogDomain::AppenderAutoPtr(
+            new logger::ConsoleAppender<logger::MessageEventEphemeral>(
+                new logger::MessageEventUnadornedEncoder)));
 }
 
 Tee* const warnings = RamLog::get("warnings");  // Things put here go in serverStatus

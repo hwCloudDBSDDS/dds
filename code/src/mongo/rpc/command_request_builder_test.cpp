@@ -47,7 +47,7 @@ TEST(RequestBuilder, RoundTrip) {
     auto metadata = metadataBob.done();
 
     BSONObjBuilder commandArgsBob{};
-    commandArgsBob.append("bar", "baz");
+    commandArgsBob.append(commandName, "baz");
     auto commandArgs = commandArgsBob.done();
 
     BSONObjBuilder inputDoc1Bob{};
@@ -82,8 +82,8 @@ TEST(RequestBuilder, RoundTrip) {
 
     ASSERT_EQUALS(parsed.getDatabase(), databaseName);
     ASSERT_EQUALS(parsed.getCommandName(), commandName);
-    ASSERT_EQUALS(parsed.getMetadata(), metadata);
-    ASSERT_EQUALS(parsed.getCommandArgs(), commandArgs);
+    ASSERT_BSONOBJ_EQ(parsed.getMetadata(), metadata);
+    ASSERT_BSONOBJ_EQ(parsed.getCommandArgs(), commandArgs);
     // need ostream overloads for ASSERT_EQUALS
     ASSERT_TRUE(parsed.getInputDocs() == inputDocRange);
 }

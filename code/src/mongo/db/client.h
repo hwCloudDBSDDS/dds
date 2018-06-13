@@ -36,39 +36,81 @@
 
 #pragma once
 
-#include "mongo/db/client_basic.h"
+#include "mongo/base/disallow_copying.h"
+#include "mongo/db/client.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/platform/random.h"
 #include "mongo/platform/unordered_set.h"
 #include "mongo/stdx/thread.h"
+#include "mongo/transport/session.h"
 #include "mongo/util/concurrency/spin_lock.h"
 #include "mongo/util/concurrency/threadlocal.h"
+#include "mongo/util/decorable.h"
+#include "mongo/util/net/abstract_message_port.h"
+#include "mongo/util/net/hostandport.h"
 
 namespace mongo {
 
-class Collection;
 class AbstractMessagingPort;
+class Collection;
+class OperationContext;
 
 typedef long long ConnectionId;
 
-/** the database's concept of an outside "client" */
-class Client : public ClientBasic {
+/**
+ * The database's concept of an outside "client".
+ * */
+class Client final : public Decorable<Client> {
 public:
     /**
      * Creates a Client object and stores it in TLS for the current thread.
      *
-     * An unowned pointer to a AbstractMessagingPort may optionally be provided. If 'mp' is
-     * non-null, then it will be used to augment the thread name, and for reporting purposes.
+     * An unowned pointer to a transport::Session may optionally be provided. If 'session'
+     * is non-null, then it will be used to augment the thread name, and for reporting purposes.
      *
-     * If provided, 'mp' must outlive the newly-created Client object. Client::destroy() may be used
-     * to help enforce that the Client does not outlive 'mp'.
+     * If provided, session's ref count will be bumped by this Client.
      */
-    static void initThread(const char* desc, AbstractMessagingPort* mp = 0);
+    static void initThread(const char* desc, transport::SessionHandle session = nullptr);
     static void initThread(const char* desc,
                            ServiceContext* serviceContext,
-                           AbstractMessagingPort* mp);
+                           transport::SessionHandle session);
+
+    static Client* getCurrent();
+
+    bool getIsLocalHostConnection() {
+        if (!hasRemote()) {
+            return false;
+        }
+        return getRemote().isLocalHost();
+    }
+
+    bool hasRemote() const {
+        return (_session != nullptr);
+    }
+
+    HostAndPort getRemote() const {
+        verify(_session);
+        return _session->remote();
+    }
+
+    /**
+     * Returns the ServiceContext that owns this client session context.
+     */
+    ServiceContext* getServiceContext() const {
+        return _serviceContext;
+    }
+
+    /**
+     * Returns the Session to which this client is bound, if any.
+     */
+    const transport::SessionHandle& session() const& {
+        return _session;
+    }
+
+    transport::SessionHandle session() && {
+        return std::move(_session);
+    }
 
     /**
      * Inits a thread if that thread has not already been init'd, setting the thread name to
@@ -159,8 +201,12 @@ public:
 
 private:
     friend class ServiceContext;
-    Client(std::string desc, ServiceContext* serviceContext, AbstractMessagingPort* p = 0);
+    explicit Client(std::string desc,
+                    ServiceContext* serviceContext,
+                    transport::SessionHandle session);
 
+    ServiceContext* const _serviceContext;
+    const transport::SessionHandle _session;
 
     // Description for the client (e.g. conn8)
     const std::string _desc;
@@ -172,7 +218,7 @@ private:
     const ConnectionId _connectionId;
 
     // Protects the contents of the Client (such as changing the OperationContext, etc)
-    mutable SpinLock _lock;
+    SpinLock _lock;
 
     // Whether this client is running as DBDirectClient
     bool _inDirectClient = false;

@@ -59,15 +59,17 @@ bool isNumeric(StringData str, size_t* num) {
 Status maybePadTo(mutablebson::Element* elemArray, size_t sizeRequired) {
     dassert(elemArray->getType() == Array);
 
-    if (sizeRequired > kMaxPaddingAllowed) {
-        return Status(ErrorCodes::CannotBackfillArray,
-                      mongoutils::str::stream() << "can't backfill array to larger than "
-                                                << kMaxPaddingAllowed << " elements");
-    }
-
     size_t currSize = mutablebson::countChildren(*elemArray);
     if (sizeRequired > currSize) {
         size_t toPad = sizeRequired - currSize;
+
+        if (toPad > kMaxPaddingAllowed) {
+            return Status(ErrorCodes::CannotBackfillArray,
+                          mongoutils::str::stream() << "can't backfill more than "
+                                                    << kMaxPaddingAllowed
+                                                    << " elements");
+        }
+
         for (size_t i = 0; i < toPad; i++) {
             Status status = elemArray->appendNull("");
             if (!status.isOK()) {
@@ -138,8 +140,10 @@ Status findLongestPrefix(const FieldRef& prefix,
         *elemFound = prev;
         return Status(ErrorCodes::PathNotViable,
                       mongoutils::str::stream() << "cannot use the part (" << prefix.getPart(i - 1)
-                                                << " of " << prefix.dottedField()
-                                                << ") to traverse the element ({" << curr.toString()
+                                                << " of "
+                                                << prefix.dottedField()
+                                                << ") to traverse the element ({"
+                                                << curr.toString()
                                                 << "})");
     } else if (curr.ok()) {
         *idxFound = i - 1;

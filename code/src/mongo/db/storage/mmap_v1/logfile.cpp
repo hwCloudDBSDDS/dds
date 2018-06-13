@@ -123,7 +123,9 @@ void LogFile::synchronousAppend(const void* _buf, size_t _len) {
             else
                 uasserted(13517,
                           str::stream() << "error appending to file " << _name << ' ' << _len << ' '
-                                        << toWrite << ' ' << errnoWithDescription(e));
+                                        << toWrite
+                                        << ' '
+                                        << errnoWithDescription(e));
         } else {
             dassert(written == toWrite);
         }
@@ -137,10 +139,10 @@ void LogFile::synchronousAppend(const void* _buf, size_t _len) {
 
 /// posix
 
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #ifdef __linux__
 #include <linux/fs.h>
@@ -197,8 +199,8 @@ LogFile::~LogFile() {
 void LogFile::truncate() {
     verify(_fd >= 0);
 
-    static_assert(sizeof(off_t) == 8, "sizeof(off_t) == 8");  // we don't want overflow here
-    const off_t pos = lseek(_fd, 0, SEEK_CUR);                // doesn't actually seek
+    MONGO_STATIC_ASSERT(sizeof(off_t) == 8);    // we don't want overflow here
+    const off_t pos = lseek(_fd, 0, SEEK_CUR);  // doesn't actually seek
     if (ftruncate(_fd, pos) != 0) {
         msgasserted(15873, "Couldn't truncate file: " + errnoWithDescription());
     }
@@ -261,7 +263,7 @@ void LogFile::synchronousAppend(const void* b, size_t len) {
     }
 
 #ifdef POSIX_FADV_DONTNEED
-    if (!_direct)
+    if (!_direct && pos >= 0)  // current position cannot be negative
         posix_fadvise(_fd, pos, len, POSIX_FADV_DONTNEED);
 #endif
 }

@@ -27,11 +27,14 @@
  *    then also delete it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/util/text.h"
 
 #include <boost/integer_traits.hpp>
 #include <errno.h>
 #include <iostream>
+#include <memory>
 #include <sstream>
 
 #ifdef _WIN32
@@ -272,7 +275,8 @@ bool writeUtf8ToWindowsConsole(const char* utf8String, unsigned int utf8StringSi
                 if (!errorMessageShown) {
                     std::cout << "\n---\nUnicode text could not be correctly displayed.\n"
                                  "Please change your console font to a Unicode font "
-                                 "(e.g. Lucida Console).\n---\n" << std::endl;
+                                 "(e.g. Lucida Console).\n---\n"
+                              << std::endl;
                     errorMessageShown = true;
                 }
                 // we can't display the text properly using a raster font,

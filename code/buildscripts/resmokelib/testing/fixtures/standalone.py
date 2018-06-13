@@ -7,6 +7,7 @@ from __future__ import absolute_import
 import os
 import os.path
 import shutil
+import socket
 import time
 
 import pymongo
@@ -93,9 +94,10 @@ class MongoDFixture(interface.Fixture):
         # be established.
         while True:
             # Check whether the mongod exited for some reason.
-            if self.mongod.poll() is not None:
+            exit_code = self.mongod.poll()
+            if exit_code is not None:
                 raise errors.ServerFailure("Could not connect to mongod on port %d, process ended"
-                                           " unexpectedly." % (self.port))
+                                           " unexpectedly with code %d." % (self.port, exit_code))
 
             try:
                 # Use a shorter connection timeout to more closely satisfy the requested deadline.
@@ -147,4 +149,4 @@ class MongoDFixture(interface.Fixture):
         if self.mongod is None:
             raise ValueError("Must call setup() before calling get_connection_string()")
 
-        return "localhost:%d" % self.port
+        return "%s:%d" % (socket.gethostname(), self.port)

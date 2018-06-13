@@ -58,6 +58,11 @@ const std::string kSlaveDelayFieldName = "slaveDelay";
 const std::string kTagsFieldName = "tags";
 const std::string kMeFieldName = "me";
 const std::string kElectionIdFieldName = "electionId";
+const std::string kLastWriteOpTimeFieldName = "opTime";
+const std::string kLastWriteDateFieldName = "lastWriteDate";
+const std::string kLastMajorityWriteOpTimeFieldName = "majorityOpTime";
+const std::string kLastMajorityWriteDateFieldName = "majorityWriteDate";
+const std::string kLastWriteFieldName = "lastWrite";
 
 // field name constants that don't directly correspond to member variables
 const std::string kInfoFieldName = "info";
@@ -167,6 +172,18 @@ void IsMasterResponse::addToBSON(BSONObjBuilder* builder) const {
     builder->append(kMeFieldName, _me.toString());
     if (_electionId.isSet())
         builder->append(kElectionIdFieldName, _electionId);
+    if (_lastWrite || _lastMajorityWrite) {
+        BSONObjBuilder lastWrite(builder->subobjStart(kLastWriteFieldName));
+        if (_lastWrite) {
+            lastWrite.append(kLastWriteOpTimeFieldName, _lastWrite->opTime.toBSON());
+            lastWrite.appendTimeT(kLastWriteDateFieldName, _lastWrite->value);
+        }
+        if (_lastMajorityWrite) {
+            lastWrite.append(kLastMajorityWriteOpTimeFieldName,
+                             _lastMajorityWrite->opTime.toBSON());
+            lastWrite.appendTimeT(kLastMajorityWriteDateFieldName, _lastMajorityWrite->value);
+        }
+    }
 }
 
 BSONObj IsMasterResponse::toBSON() const {
@@ -202,7 +219,8 @@ Status IsMasterResponse::initialize(const BSONObj& doc) {
                           str::stream() << "Found \"" << kIsReplicaSetFieldName
                                         << "\" field which should indicate that no valid config "
                                            "is loaded, but we didn't also have an \""
-                                        << kInfoFieldName << "\" field as we expected");
+                                        << kInfoFieldName
+                                        << "\" field as we expected");
         }
     }
 
@@ -229,7 +247,8 @@ Status IsMasterResponse::initialize(const BSONObj& doc) {
                 return Status(ErrorCodes::TypeMismatch,
                               str::stream() << "Elements in \"" << kHostsFieldName
                                             << "\" array of isMaster response must be of type "
-                                            << typeName(String) << " but found type "
+                                            << typeName(String)
+                                            << " but found type "
                                             << typeName(hostElement.type()));
             }
             _hosts.push_back(HostAndPort(hostElement.String()));
@@ -249,7 +268,8 @@ Status IsMasterResponse::initialize(const BSONObj& doc) {
                 return Status(ErrorCodes::TypeMismatch,
                               str::stream() << "Elements in \"" << kPassivesFieldName
                                             << "\" array of isMaster response must be of type "
-                                            << typeName(String) << " but found type "
+                                            << typeName(String)
+                                            << " but found type "
                                             << typeName(passiveElement.type()));
             }
             _passives.push_back(HostAndPort(passiveElement.String()));
@@ -269,7 +289,8 @@ Status IsMasterResponse::initialize(const BSONObj& doc) {
                 return Status(ErrorCodes::TypeMismatch,
                               str::stream() << "Elements in \"" << kArbitersFieldName
                                             << "\" array of isMaster response must be of type "
-                                            << typeName(String) << " but found type "
+                                            << typeName(String)
+                                            << " but found type "
                                             << typeName(arbiterElement.type()));
             }
             _arbiters.push_back(HostAndPort(arbiterElement.String()));
@@ -342,7 +363,8 @@ Status IsMasterResponse::initialize(const BSONObj& doc) {
                               str::stream() << "Elements in \"" << kTagsFieldName
                                             << "\" obj "
                                                "of isMaster response must be of type "
-                                            << typeName(String) << " but found type "
+                                            << typeName(String)
+                                            << " but found type "
                                             << typeName(tagsElement.type()));
             }
             _tags[tagElement.fieldNameStringData().toString()] = tagElement.String();
@@ -357,6 +379,100 @@ Status IsMasterResponse::initialize(const BSONObj& doc) {
             return status;
         }
         _electionId = electionIdElem.OID();
+    }
+
+    if (doc.hasField(kLastWriteFieldName)) {
+        BSONElement lastWriteElement;
+        status = bsonExtractTypedField(doc, kLastWriteFieldName, Object, &lastWriteElement);
+        if (!status.isOK()) {
+            return status;
+        }
+        BSONObj lastWriteObj = lastWriteElement.Obj();
+        bool lastWriteOpTimeSet = false;
+        bool lastWriteDateSet = false;
+        if (auto lastWriteOpTimeElement = lastWriteObj[kLastWriteOpTimeFieldName]) {
+            if (lastWriteOpTimeElement.type() != Object) {
+                return Status(ErrorCodes::TypeMismatch,
+                              str::stream() << "Elements in \"" << kLastWriteOpTimeFieldName
+                                            << "\" obj "
+                                               "of isMaster response must be of type "
+                                            << typeName(Object)
+                                            << " but found type "
+                                            << typeName(lastWriteOpTimeElement.type()));
+            }
+            auto lastWriteOpTime = OpTime::parseFromOplogEntry(lastWriteOpTimeElement.Obj());
+            if (!lastWriteOpTime.isOK()) {
+                return lastWriteOpTime.getStatus();
+            }
+            if (_lastWrite) {
+                _lastWrite->opTime = lastWriteOpTime.getValue();
+            } else {
+                _lastWrite = OpTimeWith<time_t>(0, lastWriteOpTime.getValue());
+            }
+            lastWriteOpTimeSet = true;
+        }
+        if (auto lastWriteDateElement = lastWriteObj[kLastWriteDateFieldName]) {
+            if (lastWriteDateElement.type() != Date) {
+                return Status(ErrorCodes::TypeMismatch,
+                              str::stream() << "Elements in \"" << kLastWriteDateFieldName
+                                            << "\" obj "
+                                               "of isMaster response must be of type "
+                                            << typeName(Date)
+                                            << " but found type "
+                                            << typeName(lastWriteDateElement.type()));
+            }
+            if (_lastWrite) {
+                _lastWrite->value = lastWriteDateElement.Date().toTimeT();
+            } else {
+                _lastWrite = OpTimeWith<time_t>(lastWriteDateElement.Date().toTimeT(), OpTime());
+            }
+            lastWriteDateSet = true;
+        }
+        invariant(lastWriteOpTimeSet == lastWriteDateSet);
+
+        bool lastMajorityWriteOpTimeSet = false;
+        bool lastMajorityWriteDateSet = false;
+        if (auto lastMajorityWriteOpTimeElement = lastWriteObj[kLastMajorityWriteOpTimeFieldName]) {
+            if (lastMajorityWriteOpTimeElement.type() != Object) {
+                return Status(ErrorCodes::TypeMismatch,
+                              str::stream() << "Elements in \"" << kLastMajorityWriteOpTimeFieldName
+                                            << "\" obj "
+                                               "of isMaster response must be of type "
+                                            << typeName(Object)
+                                            << " but found type "
+                                            << typeName(lastMajorityWriteOpTimeElement.type()));
+            }
+            auto lastMajorityWriteOpTime =
+                OpTime::parseFromOplogEntry(lastMajorityWriteOpTimeElement.Obj());
+            if (!lastMajorityWriteOpTime.isOK()) {
+                return lastMajorityWriteOpTime.getStatus();
+            }
+            if (_lastMajorityWrite) {
+                _lastMajorityWrite->opTime = lastMajorityWriteOpTime.getValue();
+            } else {
+                _lastMajorityWrite = OpTimeWith<time_t>(0, lastMajorityWriteOpTime.getValue());
+            }
+            lastMajorityWriteOpTimeSet = true;
+        }
+        if (auto lastMajorityWriteDateElement = lastWriteObj[kLastMajorityWriteDateFieldName]) {
+            if (lastMajorityWriteDateElement.type() != Date) {
+                return Status(ErrorCodes::TypeMismatch,
+                              str::stream() << "Elements in \"" << kLastMajorityWriteDateFieldName
+                                            << "\" obj "
+                                               "of isMaster response must be of type "
+                                            << typeName(Date)
+                                            << " but found type "
+                                            << typeName(lastMajorityWriteDateElement.type()));
+            }
+            if (_lastMajorityWrite) {
+                _lastMajorityWrite->value = lastMajorityWriteDateElement.Date().toTimeT();
+            } else {
+                _lastMajorityWrite =
+                    OpTimeWith<time_t>(lastMajorityWriteDateElement.Date().toTimeT(), OpTime());
+            }
+            lastMajorityWriteDateSet = true;
+        }
+        invariant(lastMajorityWriteOpTimeSet == lastMajorityWriteDateSet);
     }
 
     std::string meString;
@@ -447,6 +563,15 @@ void IsMasterResponse::setMe(const HostAndPort& me) {
 
 void IsMasterResponse::setElectionId(const OID& electionId) {
     _electionId = electionId;
+}
+
+void IsMasterResponse::setLastWrite(const OpTime& lastWriteOpTime, const time_t lastWriteDate) {
+    _lastWrite = OpTimeWith<time_t>(lastWriteDate, lastWriteOpTime);
+}
+
+void IsMasterResponse::setLastMajorityWrite(const OpTime& lastMajorityWriteOpTime,
+                                            const time_t lastMajorityWriteDate) {
+    _lastMajorityWrite = OpTimeWith<time_t>(lastMajorityWriteDate, lastMajorityWriteOpTime);
 }
 
 void IsMasterResponse::markAsNoConfig() {

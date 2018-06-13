@@ -26,13 +26,15 @@
  *    it in the license file.
  */
 
+#pragma once
+
 #include "mongo/db/service_context.h"
 
 #include "mongo/platform/atomic_word.h"
 
 namespace mongo {
 
-class ServiceContextNoop final : public ServiceContext {
+class ServiceContextNoop : public ServiceContext {
 public:
     StorageEngine* getGlobalStorageEngine() override;
 
@@ -47,26 +49,12 @@ public:
 
     StorageFactoriesIterator* makeStorageFactoriesIterator() override;
 
-    bool killOperation(unsigned int opId) override;
-
-    void killAllUserOperations(const OperationContext* txn, ErrorCodes::Error killCode) override;
-
-    void setKillAllOperations() override;
-
-    void unsetKillAllOperations() override;
-
-    bool getKillAllOperations() override;
-
-    void registerKillOpListener(KillOpListenerInterface* listener) override;
-
-    std::unique_ptr<OperationContext> _newOpCtx(Client* client) override;
-
     void setOpObserver(std::unique_ptr<OpObserver> opObserver) override;
 
     OpObserver* getOpObserver() override;
 
 private:
-    AtomicUInt32 _nextOpId{1};
+    std::unique_ptr<OperationContext> _newOpCtx(Client* client, unsigned opId) override;
 };
 
 }  // namespace mongo

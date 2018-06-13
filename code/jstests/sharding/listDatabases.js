@@ -1,6 +1,6 @@
 // tests that listDatabases doesn't show config db on a shard, even if it is there
 
-var test = new ShardingTest({shards: 1, mongos: 1, other: {chunksize: 1}});
+var test = new ShardingTest({shards: 1, mongos: 1, other: {chunkSize: 1}});
 
 var mongos = test.s0;
 var mongod = test.shard0;
@@ -29,10 +29,6 @@ assert.writeOK(mongos.getDB("raw").foo.insert({_id: 1}));
 var res = mongos.adminCommand("listDatabases");
 var dbArray = res.databases;
 dbInConfigEntryCheck(getDBSection(dbArray, "config"));
-
-// Should not have admin entry if it doesn't exists.
-var adminSection = getDBSection(dbArray, 'admin');
-assert(!adminSection);
 
 // Local database should never be returned
 var localSection = getDBSection(dbArray, 'local');

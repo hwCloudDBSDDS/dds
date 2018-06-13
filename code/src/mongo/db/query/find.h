@@ -88,14 +88,10 @@ void beginQueryOp(OperationContext* txn,
  * 2) Reports index usage to the CollectionInfoCache.
  *
  * Uses explain functionality to extract stats from 'exec'.
- *
- * The database profiling level, 'dbProfilingLevel', is used to conditionalize whether or not we
- * do expensive stats gathering.
  */
 void endQueryOp(OperationContext* txn,
                 Collection* collection,
                 const PlanExecutor& exec,
-                int dbProfilingLevel,
                 long long numResults,
                 CursorId cursorId);
 
@@ -113,13 +109,14 @@ StatusWith<std::unique_ptr<PlanExecutor>> getOplogStartHack(OperationContext* tx
 
 /**
  * Called from the getMore entry point in ops/query.cpp.
+ * Returned buffer is the message to return to the client.
  */
-QueryResult::View getMore(OperationContext* txn,
-                          const char* ns,
-                          int ntoreturn,
-                          long long cursorid,
-                          bool* exhaust,
-                          bool* isCursorAuthorized);
+Message getMore(OperationContext* txn,
+                const char* ns,
+                int ntoreturn,
+                long long cursorid,
+                bool* exhaust,
+                bool* isCursorAuthorized);
 
 /**
  * Run the query 'q' and place the result in 'result'.

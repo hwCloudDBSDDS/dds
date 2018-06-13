@@ -30,14 +30,14 @@
 
 #include "mongo/db/storage/kv/kv_engine_test_harness.h"
 
-
-#include "mongo/db/operation_context_noop.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/operation_context_noop.h"
 #include "mongo/db/storage/kv/kv_catalog.h"
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/clock_source_mock.h"
 
 namespace mongo {
 
@@ -49,6 +49,8 @@ class MyOperationContext : public OperationContextNoop {
 public:
     MyOperationContext(KVEngine* engine) : OperationContextNoop(engine->newRecoveryUnit()) {}
 };
+
+const std::unique_ptr<ClockSource> clock = stdx::make_unique<ClockSourceMock>();
 }
 
 TEST(KVEngineTestHarness, SimpleRS1) {
@@ -61,7 +63,7 @@ TEST(KVEngineTestHarness, SimpleRS1) {
     {
         MyOperationContext opCtx(engine);
         ASSERT_OK(engine->createRecordStore(&opCtx, ns, ns, CollectionOptions()));
-        rs.reset(engine->getRecordStore(&opCtx, ns, ns, CollectionOptions()));
+        rs = engine->getRecordStore(&opCtx, ns, ns, CollectionOptions());
         ASSERT(rs);
     }
 
@@ -103,7 +105,7 @@ TEST(KVEngineTestHarness, Restart1) {
         {
             MyOperationContext opCtx(engine);
             ASSERT_OK(engine->createRecordStore(&opCtx, ns, ns, CollectionOptions()));
-            rs.reset(engine->getRecordStore(&opCtx, ns, ns, CollectionOptions()));
+            rs = engine->getRecordStore(&opCtx, ns, ns, CollectionOptions());
             ASSERT(rs);
         }
 
@@ -127,7 +129,7 @@ TEST(KVEngineTestHarness, Restart1) {
     {
         unique_ptr<RecordStore> rs;
         MyOperationContext opCtx(engine);
-        rs.reset(engine->getRecordStore(&opCtx, ns, ns, CollectionOptions()));
+        rs = engine->getRecordStore(&opCtx, ns, ns, CollectionOptions());
         ASSERT_EQUALS(string("abc"), rs->dataFor(&opCtx, loc).data());
     }
 }
@@ -171,7 +173,7 @@ TEST(KVCatalogTest, Coll1) {
         MyOperationContext opCtx(engine);
         WriteUnitOfWork uow(&opCtx);
         ASSERT_OK(engine->createRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
-        rs.reset(engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
+        rs = engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions());
         catalog.reset(new KVCatalog(rs.get(), true, false, false));
         uow.commit();
     }
@@ -215,7 +217,7 @@ TEST(KVCatalogTest, Idx1) {
         MyOperationContext opCtx(engine);
         WriteUnitOfWork uow(&opCtx);
         ASSERT_OK(engine->createRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
-        rs.reset(engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
+        rs = engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions());
         catalog.reset(new KVCatalog(rs.get(), true, false, false));
         uow.commit();
     }
@@ -288,7 +290,7 @@ TEST(KVCatalogTest, DirectoryPerDb1) {
         MyOperationContext opCtx(engine);
         WriteUnitOfWork uow(&opCtx);
         ASSERT_OK(engine->createRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
-        rs.reset(engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
+        rs = engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions());
         catalog.reset(new KVCatalog(rs.get(), true, true, false));
         uow.commit();
     }
@@ -330,7 +332,7 @@ TEST(KVCatalogTest, Split1) {
         MyOperationContext opCtx(engine);
         WriteUnitOfWork uow(&opCtx);
         ASSERT_OK(engine->createRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
-        rs.reset(engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
+        rs = engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions());
         catalog.reset(new KVCatalog(rs.get(), true, false, true));
         uow.commit();
     }
@@ -372,7 +374,7 @@ TEST(KVCatalogTest, DirectoryPerAndSplit1) {
         MyOperationContext opCtx(engine);
         WriteUnitOfWork uow(&opCtx);
         ASSERT_OK(engine->createRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
-        rs.reset(engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions()));
+        rs = engine->getRecordStore(&opCtx, "catalog", "catalog", CollectionOptions());
         catalog.reset(new KVCatalog(rs.get(), true, true, true));
         uow.commit();
     }

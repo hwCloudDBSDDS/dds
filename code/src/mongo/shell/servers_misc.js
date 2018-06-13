@@ -46,16 +46,24 @@ ToolTest.prototype.runTool = function() {
     var a = ["mongo" + arguments[0]];
 
     var hasdbpath = false;
+    var hasDialTimeout = false;
 
     for (var i = 1; i < arguments.length; i++) {
         a.push(arguments[i]);
-        if (arguments[i] == "--dbpath")
+        if (arguments[i] === "--dbpath")
             hasdbpath = true;
+        if (arguments[i] === "--dialTimeout")
+            hasDialTimeout = true;
     }
 
     if (!hasdbpath) {
         a.push("--host");
         a.push("127.0.0.1:" + this.port);
+    }
+
+    if (!hasDialTimeout) {
+        a.push("--dialTimeout");
+        a.push("30");
     }
 
     return runMongoProgram.apply(null, a);
@@ -201,52 +209,6 @@ allocatePorts = function(numPorts) {
     return ports;
 };
 
-SyncCCTest = function(testName, extraMongodOptions) {
-    this._testName = testName;
-    this._connections = [];
-
-    for (var i = 0; i < 3; i++) {
-        this._connections.push(MongoRunner.runMongod(extraMongodOptions));
-    }
-
-    this.url = this._connections.map(function(z) {
-        return z.name;
-    }).join(",");
-    this.conn = new Mongo(this.url);
-};
-
-SyncCCTest.prototype.stop = function() {
-    for (var i = 0; i < this._connections.length; i++) {
-        _stopMongoProgram(30000 + i);
-    }
-
-    print('*** ' + this._testName + " completed successfully ***");
-};
-
-SyncCCTest.prototype.checkHashes = function(dbname, msg) {
-    var hashes = this._connections.map(function(z) {
-        return z.getDB(dbname).runCommand("dbhash");
-    });
-
-    for (var i = 1; i < hashes.length; i++) {
-        assert.eq(hashes[0].md5,
-                  hashes[i].md5,
-                  "checkHash on " + dbname + " " + msg + "\n" + tojson(hashes));
-    }
-};
-
-SyncCCTest.prototype.tempKill = function(num) {
-    num = num || 0;
-    MongoRunner.stopMongod(this._connections[num]);
-};
-
-SyncCCTest.prototype.tempStart = function(num) {
-    num = num || 0;
-    var old = this._connections[num];
-    this._connections[num] = MongoRunner.runMongod(
-        {restart: true, cleanData: false, port: old.port, dbpath: old.dbpath});
-};
-
 function startParallelShell(jsCode, port, noConnect) {
     var args = ["mongo"];
 
@@ -264,8 +226,7 @@ function startParallelShell(jsCode, port, noConnect) {
 
     // Convert function into call-string
     if (typeof(jsCode) == "function") {
-        var id = Math.floor(Math.random() * 100000);
-        jsCode = "var f" + id + " = " + jsCode.toString() + ";f" + id + "();";
+        jsCode = "(" + jsCode.toString() + ")();";
     } else if (typeof(jsCode) == "string") {
     }
     // do nothing

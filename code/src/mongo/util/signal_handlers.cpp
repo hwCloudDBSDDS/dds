@@ -38,13 +38,12 @@
 #include <unistd.h>
 #endif
 
-#include "mongo/db/client.h"
 #include "mongo/db/log_process_details.h"
 #include "mongo/db/server_options.h"
 #include "mongo/platform/process_id.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/exit_code.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/scopeguard.h"
@@ -89,9 +88,8 @@ namespace {
 
 #ifdef _WIN32
 void consoleTerminate(const char* controlCodeName) {
-    Client::initThread("consoleTerminate");
-
-    log() << "got " << controlCodeName << ", will terminate after current cmd ends" << endl;
+    setThreadName("consoleTerminate");
+    log() << "got " << controlCodeName << ", will terminate after current cmd ends";
     exitCleanly(EXIT_KILL);
 }
 
@@ -150,7 +148,7 @@ void eventProcessingThread() {
         }
     }
 
-    Client::initThread("eventTerminate");
+    setThreadName("eventTerminate");
 
     log() << "shutdown event signaled, will terminate after current cmd ends";
     exitCleanly(EXIT_CLEAN);
@@ -163,7 +161,7 @@ void eventProcessingThread() {
 // not need to be safe to call in signal context.
 sigset_t asyncSignals;
 void signalProcessingThread() {
-    Client::initThread("signalProcessingThread");
+    setThreadName("signalProcessingThread");
 
     while (true) {
         int actualSignal = 0;

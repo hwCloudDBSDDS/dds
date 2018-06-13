@@ -35,6 +35,32 @@
 
 namespace mongo {
 
+namespace {
+/**
+ * This function replaces field names in *replace* with those from the object
+ * *fieldNames*, preserving field ordering.  Both objects must have the same
+ * number of fields.
+ *
+ * Example:
+ *
+ *     replaceBSONKeyNames({ 'a': 1, 'b' : 1 }, { '': 'foo', '', 'bar' }) =>
+ *
+ *         { 'a' : 'foo' }, { 'b' : 'bar' }
+ */
+BSONObj replaceBSONFieldNames(const BSONObj& replace, const BSONObj& fieldNames) {
+    invariant(replace.nFields() == fieldNames.nFields());
+
+    BSONObjBuilder bob;
+    BSONObjIterator iter = fieldNames.begin();
+
+    for (const BSONElement& el : replace) {
+        bob.appendAs(el, (*iter++).fieldNameStringData());
+    }
+
+    return bob.obj();
+}
+}
+
 using std::unique_ptr;
 using std::vector;
 using stdx::make_unique;
@@ -50,12 +76,17 @@ CountScan::CountScan(OperationContext* txn, const CountScanParams& params, Worki
       _shouldDedup(params.descriptor->isMultikey(txn)),
       _params(params) {
     _specificStats.keyPattern = _params.descriptor->keyPattern();
+    if (BSONElement collationElement = _params.descriptor->getInfoElement("collation")) {
+        invariant(collationElement.isABSONObj());
+        _specificStats.collation = collationElement.Obj().getOwned();
+    }
     _specificStats.indexName = _params.descriptor->indexName();
     _specificStats.isMultiKey = _params.descriptor->isMultikey(txn);
+    _specificStats.multiKeyPaths = _params.descriptor->getMultikeyPaths(txn);
     _specificStats.isUnique = _params.descriptor->unique();
     _specificStats.isSparse = _params.descriptor->isSparse();
     _specificStats.isPartial = _params.descriptor->isPartial();
-    _specificStats.indexVersion = _params.descriptor->version();
+    _specificStats.indexVersion = static_cast<int>(_params.descriptor->version());
 
     // endKey must be after startKey in index order since we only do forward scans.
     dassert(_params.startKey.woCompare(_params.endKey,
@@ -64,13 +95,9 @@ CountScan::CountScan(OperationContext* txn, const CountScanParams& params, Worki
 }
 
 
-PlanStage::StageState CountScan::work(WorkingSetID* out) {
-    ++_commonStats.works;
+PlanStage::StageState CountScan::doWork(WorkingSetID* out) {
     if (_commonStats.isEOF)
         return PlanStage::IS_EOF;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
 
     boost::optional<IndexKeyEntry> entry;
     const bool needInit = !_cursor;
@@ -106,12 +133,12 @@ PlanStage::StageState CountScan::work(WorkingSetID* out) {
 
     if (_shouldDedup && !_returned.insert(entry->loc).second) {
         // *loc was already in _returned.
-        ++_commonStats.needTime;
         return PlanStage::NEED_TIME;
     }
 
-    *out = WorkingSet::INVALID_ID;
-    ++_commonStats.advanced;
+    WorkingSetID id = _workingSet->allocate();
+    _workingSet->transitionToRecordIdAndObj(id);
+    *out = id;
     return PlanStage::ADVANCED;
 }
 
@@ -163,6 +190,12 @@ unique_ptr<PlanStageStats> CountScan::getStats() {
 
     unique_ptr<CountScanStats> countStats = make_unique<CountScanStats>(_specificStats);
     countStats->keyPattern = _specificStats.keyPattern.getOwned();
+
+    countStats->startKey = replaceBSONFieldNames(_params.startKey, countStats->keyPattern);
+    countStats->startKeyInclusive = _params.startKeyInclusive;
+    countStats->endKey = replaceBSONFieldNames(_params.endKey, countStats->keyPattern);
+    countStats->endKeyInclusive = _params.endKeyInclusive;
+
     ret->specific = std::move(countStats);
 
     return ret;

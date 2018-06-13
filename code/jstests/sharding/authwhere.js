@@ -10,12 +10,8 @@
     var adminUser = {
         user: "admin",
         pwd: "a",
-        roles: [
-            "readWriteAnyDatabase",
-            "dbAdminAnyDatabase",
-            "userAdminAnyDatabase",
-            "clusterAdmin"
-        ]
+        roles:
+            ["readWriteAnyDatabase", "dbAdminAnyDatabase", "userAdminAnyDatabase", "clusterAdmin"]
     };
 
     var test1Reader = {
@@ -32,12 +28,8 @@
         assert.writeOK(collection.insert(obj));
     }
 
-    var cluster = new ShardingTest({
-        name: "authwhere",
-        shards: 1,
-        mongos: 1,
-        other: {extraOptions: {keyFile: "jstests/libs/key1"}}
-    });
+    var cluster = new ShardingTest(
+        {name: "authwhere", shards: 1, mongos: 1, other: {keyFile: 'jstests/libs/key1'}});
 
     // Set up the test data.
     (function() {
@@ -70,13 +62,19 @@
 
             // Sanity check.  test1Reader can count (read) test1, but not test2.
             assert.eq(test1DB.foo.count(), 1);
-            assert.throws(test2DB.foo.count);
+            assert.throws(function() {
+                test2DB.foo.count();
+            });
 
             // Cannot examine second database from a where clause.
-            assert.throws(test1DB.foo.count, ["db.getSiblingDB('test2').foo.count() == 1"]);
+            assert.throws(function() {
+                test1DB.foo.count("db.getSiblingDB('test2').foo.count() == 1");
+            });
 
             // Cannot write test1 via tricky where clause.
-            assert.throws(test1DB.foo.count, ["db.foo.insert({b: 1})"]);
+            assert.throws(function() {
+                test1DB.foo.count("db.foo.insert({b: 1})");
+            });
             assert.eq(test1DB.foo.count(), 1);
         } finally {
             adminDB.logout();

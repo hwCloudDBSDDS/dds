@@ -29,12 +29,12 @@
 
 #pragma once
 
-#include "mongo/platform/basic.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/platform/atomic_word.h"
+#include "mongo/platform/basic.h"
+#include "mongo/util/concurrency/spin_lock.h"
 #include "mongo/util/net/message.h"
 #include "mongo/util/processinfo.h"
-#include "mongo/util/concurrency/spin_lock.h"
 
 namespace mongo {
 
@@ -45,7 +45,7 @@ namespace mongo {
 class OpCounters {
 public:
     OpCounters();
-    void incInsertInWriteLock(int n);
+    void gotInserts(int n);
     void gotInsert();
     void gotQuery();
     void gotUpdate();
@@ -95,14 +95,20 @@ extern OpCounters replOpCounters;
 
 class NetworkCounter {
 public:
-    NetworkCounter() : _bytesIn(0), _bytesOut(0), _requests(0) {}
-    void hit(long long bytesIn, long long bytesOut);
+    // Increment the counters for the number of bytes read directly off the wire
+    void hitPhysical(long long bytesIn, long long bytesOut);
+    // Increment the counters for the number of bytes passed out of the TransportLayer to the
+    // server
+    void hitLogical(long long bytesIn, long long bytesOut);
     void append(BSONObjBuilder& b);
 
 private:
-    AtomicInt64 _bytesIn;
-    AtomicInt64 _bytesOut;
-    AtomicInt64 _requests;
+    AtomicInt64 _physicalBytesIn{0};
+    AtomicInt64 _physicalBytesOut{0};
+    AtomicInt64 _logicalBytesIn{0};
+    AtomicInt64 _logicalBytesOut{0};
+
+    AtomicInt64 _requests{0};
 };
 
 extern NetworkCounter networkCounter;

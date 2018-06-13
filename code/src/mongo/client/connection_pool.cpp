@@ -31,6 +31,7 @@
 #include "mongo/client/connection_pool.h"
 
 #include "mongo/client/connpool.h"
+#include "mongo/client/mongo_uri.h"
 #include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/auth/internal_user_auth.h"
 #include "mongo/executor/network_connection_hook.h"
@@ -172,6 +173,7 @@ ConnectionPool::ConnectionList::iterator ConnectionPool::acquireConnection(
         conn.reset(new DBClientConnection(
             false,  // auto reconnect
             0,      // socket timeout
+            {},     // MongoURI
             [this, target](const executor::RemoteCommandResponse& isMasterReply) {
                 return _hook->validateHost(target, isMasterReply);
             }));
@@ -184,14 +186,11 @@ ConnectionPool::ConnectionList::iterator ConnectionPool::acquireConnection(
     // the number of seconds with a fractional part.
     conn->setSoTimeout(durationCount<Milliseconds>(timeout) / 1000.0);
 
-    uassertStatusOK(conn->connect(target));
-    conn->port().tag |= _messagingPortTags;
+    uassertStatusOK(conn->connect(target, StringData()));
+    conn->port().setTag(conn->port().getTag() | _messagingPortTags);
 
-    if (getGlobalAuthorizationManager()->isAuthEnabled()) {
-        uassert(ErrorCodes::AuthenticationFailed,
-                "Missing credentials for authenticating as internal user",
-                isInternalAuthSet());
-        conn->auth(getInternalUserAuthParamsWithFallback());
+    if (isInternalAuthSet()) {
+        conn->auth(getInternalUserAuthParams());
     }
 
     if (_hook) {
@@ -266,11 +265,6 @@ ConnectionPool::ConnectionPtr::ConnectionPtr(ConnectionPtr&& other)
 }
 
 ConnectionPool::ConnectionPtr& ConnectionPool::ConnectionPtr::operator=(ConnectionPtr&& other) {
-#if defined(_MSC_VER) && _MSC_VER < 1900  // MSVC 2013 STL can emit self-move-assign.
-    if (&other == this)
-        return *this;
-#endif
-
     _pool = std::move(other._pool);
     _connInfo = std::move(other._connInfo);
     other._pool = nullptr;

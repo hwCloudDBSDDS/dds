@@ -32,18 +32,21 @@
 
 #include "mongo/db/service_context.h"
 #include "mongo/executor/network_test_env.h"
-#include "mongo/util/net/message_port_mock.h"
+#include "mongo/transport/session.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/net/message_port_mock.h"
 
 namespace mongo {
 
 class BSONObj;
-class CatalogManager;
-class CatalogManagerReplicaSet;
+class CatalogCache;
+class ShardingCatalogClient;
+class ShardingCatalogClientImpl;
 struct ChunkVersion;
 class CollectionType;
 class DistLockManagerMock;
 class NamespaceString;
+class ShardFactoryMock;
 class RemoteCommandTargeterFactoryMock;
 class RemoteCommandTargeterMock;
 class ShardRegistry;
@@ -56,8 +59,13 @@ class NetworkInterfaceMock;
 class TaskExecutor;
 }  // namespace executor
 
+namespace transport {
+class TransportLayerMock;
+}  // namepsace transport
+
 /**
- * Sets up the mocked out objects for testing the replica-set backed catalog manager.
+ * Sets up the mocked out objects for testing the replica-set backed catalog manager and catalog
+ * client.
  */
 class ShardingTestFixture : public mongo::unittest::Test {
 public:
@@ -65,7 +73,7 @@ public:
     ~ShardingTestFixture();
 
 protected:
-    static const stdx::chrono::seconds kFutureTimeout;
+    static const Seconds kFutureTimeout;
 
     template <typename Lambda>
     executor::NetworkTestEnv::FutureHandle<typename std::result_of<Lambda()>::type> launchAsync(
@@ -73,12 +81,12 @@ protected:
         return _networkTestEnv->launchAsync(std::forward<Lambda>(func));
     }
 
-    CatalogManager* catalogManager() const;
+    ShardingCatalogClient* catalogClient() const;
 
     /**
-     * Prefer catalogManager() method over this as much as possible.
+     * Prefer catalogClient() method over this as much as possible.
      */
-    CatalogManagerReplicaSet* getCatalogManagerReplicaSet() const;
+    ShardingCatalogClientImpl* getCatalogClient() const;
 
     ShardRegistry* shardRegistry() const;
 
@@ -88,7 +96,9 @@ protected:
 
     executor::NetworkInterfaceMock* network() const;
 
-    MessagingPortMock* getMessagingPort() const;
+    executor::TaskExecutor* executor() const;
+
+    const transport::SessionHandle& getTransportSession() const;
 
     DistLockManagerMock* distLock() const;
 
@@ -100,8 +110,6 @@ protected:
      * single request + response or find tests.
      */
     void onCommand(executor::NetworkTestEnv::OnCommandFunction func);
-    // Same as onCommand but run against _addShardNetworkTestEnv
-    void onCommandForAddShard(executor::NetworkTestEnv::OnCommandFunction func);
     void onCommandWithMetadata(executor::NetworkTestEnv::OnCommandWithMetadataFunction func);
     void onFindCommand(executor::NetworkTestEnv::OnFindCommandFunction func);
     void onFindWithMetadataCommand(
@@ -187,6 +195,8 @@ protected:
 
     void shutdownExecutor();
 
+    void setRemote(const HostAndPort& remote);
+
     /**
      * Checks that the given command has the expected settings for read after opTime.
      */
@@ -198,18 +208,17 @@ private:
     std::unique_ptr<ServiceContext> _service;
     ServiceContext::UniqueClient _client;
     ServiceContext::UniqueOperationContext _opCtx;
-    std::unique_ptr<MessagingPortMock> _messagePort;
+    transport::TransportLayerMock* _transportLayer;
+    transport::SessionHandle _transportSession;
 
     RemoteCommandTargeterFactoryMock* _targeterFactory;
     RemoteCommandTargeterMock* _configTargeter;
 
     executor::NetworkInterfaceMock* _mockNetwork;
     executor::TaskExecutor* _executor;
-    executor::TaskExecutor* _executorForAddShard;
     std::unique_ptr<executor::NetworkTestEnv> _networkTestEnv;
-    std::unique_ptr<executor::NetworkTestEnv> _addShardNetworkTestEnv;
     DistLockManagerMock* _distLockManager = nullptr;
-    CatalogManagerReplicaSet* _catalogManagerRS = nullptr;
+    ShardingCatalogClientImpl* _catalogClient = nullptr;
 };
 
 }  // namespace mongo

@@ -32,11 +32,18 @@
 
 #include "mongo/s/grid.h"
 
-#include "mongo/base/status_with.h"
+#include "mongo/db/operation_context.h"
+#include "mongo/db/server_options.h"
+#include "mongo/executor/task_executor.h"
+#include "mongo/executor/task_executor_pool.h"
+#include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/catalog_cache.h"
-#include "mongo/s/catalog/forwarding_catalog_manager.h"
-#include "mongo/s/catalog/type_settings.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
+#include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/query/cluster_cursor_manager.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -44,39 +51,45 @@ namespace mongo {
 // Global grid instance
 Grid grid;
 
-Grid::Grid() : _allowLocalShard(true) {}
+Grid::Grid() = default;
 
-void Grid::init(std::unique_ptr<ForwardingCatalogManager> catalogManager,
+Grid::~Grid() = default;
+
+Grid* Grid::get(ServiceContext* serviceContext) {
+    return &grid;
+}
+
+Grid* Grid::get(OperationContext* operationContext) {
+    return get(operationContext->getServiceContext());
+}
+
+void Grid::init(std::unique_ptr<ShardingCatalogClient> catalogClient,
+                std::unique_ptr<ShardingCatalogManager> catalogManager,
+                std::unique_ptr<CatalogCache> catalogCache,
                 std::unique_ptr<ShardRegistry> shardRegistry,
-                std::unique_ptr<ClusterCursorManager> cursorManager) {
+                std::unique_ptr<ClusterCursorManager> cursorManager,
+                std::unique_ptr<BalancerConfiguration> balancerConfig,
+                std::unique_ptr<executor::TaskExecutorPool> executorPool,
+                executor::NetworkInterface* network) {
+    invariant(!_catalogClient);
     invariant(!_catalogManager);
     invariant(!_catalogCache);
     invariant(!_shardRegistry);
     invariant(!_cursorManager);
+    invariant(!_balancerConfig);
+    invariant(!_executorPool);
+    invariant(!_network);
 
+    _catalogClient = std::move(catalogClient);
     _catalogManager = std::move(catalogManager);
-    _catalogCache = stdx::make_unique<CatalogCache>();
+    _catalogCache = std::move(catalogCache);
     _shardRegistry = std::move(shardRegistry);
     _cursorManager = std::move(cursorManager);
-}
+    _balancerConfig = std::move(balancerConfig);
+    _executorPool = std::move(executorPool);
+    _network = network;
 
-StatusWith<std::shared_ptr<DBConfig>> Grid::implicitCreateDb(OperationContext* txn,
-                                                             const std::string& dbName) {
-    auto status = catalogCache()->getDatabase(txn, dbName);
-    if (status.isOK()) {
-        return status;
-    }
-
-    if (status == ErrorCodes::NamespaceNotFound) {
-        auto statusCreateDb = catalogManager(txn)->createDatabase(txn, dbName);
-        if (statusCreateDb.isOK() || statusCreateDb == ErrorCodes::NamespaceExists) {
-            return catalogCache()->getDatabase(txn, dbName);
-        }
-
-        return statusCreateDb;
-    }
-
-    return status;
+    _shardRegistry->init();
 }
 
 bool Grid::allowLocalHost() const {
@@ -87,61 +100,33 @@ void Grid::setAllowLocalHost(bool allow) {
     _allowLocalShard = allow;
 }
 
-/*
- * Returns whether balancing is enabled, with optional namespace "ns" parameter for balancing on a
- * particular collection.
- */
-bool Grid::shouldBalance(const SettingsType& balancerSettings) const {
-    if (balancerSettings.isBalancerStoppedSet() && balancerSettings.getBalancerStopped()) {
-        return false;
-    }
+repl::OpTime Grid::configOpTime() const {
+    invariant(serverGlobalParams.clusterRole != ClusterRole::ConfigServer);
 
-    if (balancerSettings.isBalancerActiveWindowSet()) {
-        boost::posix_time::ptime now = boost::posix_time::second_clock::local_time();
-        return balancerSettings.inBalancingWindow(now);
-    }
-
-    return true;
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    return _configOpTime;
 }
 
-bool Grid::getConfigShouldBalance(OperationContext* txn) const {
-    auto balSettingsResult =
-        grid.catalogManager(txn)->getGlobalSettings(txn, SettingsType::BalancerDocKey);
-    if (!balSettingsResult.isOK()) {
-        if (balSettingsResult == ErrorCodes::NoMatchingDocument) {
-            // Settings document for balancer does not exist, default to balancing allowed.
-            return true;
-        }
+void Grid::advanceConfigOpTime(repl::OpTime opTime) {
+    invariant(serverGlobalParams.clusterRole != ClusterRole::ConfigServer);
 
-        warning() << balSettingsResult.getStatus();
-        return false;
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    if (_configOpTime < opTime) {
+        _configOpTime = opTime;
     }
-    SettingsType balSettings = balSettingsResult.getValue();
-
-    if (!balSettings.isKeySet()) {
-        // Balancer settings doc does not exist. Default to yes.
-        return true;
-    }
-
-    return shouldBalance(balSettings);
 }
 
 void Grid::clearForUnitTests() {
     _catalogManager.reset();
+    _catalogClient.reset();
     _catalogCache.reset();
-
-    _shardRegistry->shutdown();
     _shardRegistry.reset();
-
     _cursorManager.reset();
-}
+    _balancerConfig.reset();
+    _executorPool.reset();
+    _network = nullptr;
 
-ForwardingCatalogManager* Grid::forwardingCatalogManager() {
-    return _catalogManager.get();
-}
-
-CatalogManager* Grid::catalogManager(OperationContext* txn) {
-    return _catalogManager->getCatalogManagerToUse(txn);
+    _configOpTime = repl::OpTime();
 }
 
 }  // namespace mongo

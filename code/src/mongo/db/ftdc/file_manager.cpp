@@ -49,11 +49,6 @@
 
 namespace mongo {
 
-// TODO: See time_support.cpp for details on this interposition
-#if defined(_MSC_VER) && _MSC_VER < 1900
-#define snprintf _snprintf
-#endif
-
 FTDCFileManager::FTDCFileManager(const FTDCConfig* config,
                                  const boost::filesystem::path& path,
                                  FTDCCollectorCollection* collection)
@@ -70,11 +65,18 @@ StatusWith<std::unique_ptr<FTDCFileManager>> FTDCFileManager::create(
     Client* client) {
     const boost::filesystem::path dir = boost::filesystem::absolute(path);
 
+    // We don't expect to ever pass "" to create_directories below, but catch
+    // this anyway as per SERVER-26412.
+    invariant(!dir.empty());
+
     if (!boost::filesystem::exists(dir)) {
         // Create the directory
-        if (!boost::filesystem::create_directories(dir)) {
+        boost::system::error_code ec;
+        boost::filesystem::create_directories(dir, ec);
+        if (ec) {
             return {ErrorCodes::NonExistentPath,
-                    str::stream() << "\'" << dir.generic_string() << "\' could not be created."};
+                    str::stream() << "\'" << dir.generic_string() << "\' could not be created: "
+                                  << ec.message()};
         }
     }
 
@@ -243,7 +245,8 @@ FTDCFileManager::recoverInterimFile() {
         log() << "Unclean full-time diagnostic data capture shutdown detected, found interim file, "
                  "but failed "
                  "to open it, some "
-                 "metrics may have been lost. " << s;
+                 "metrics may have been lost. "
+              << s;
 
         // Note: We ignore any actual errors as reading from the interim files is a best-effort
         return docs;
@@ -260,7 +263,8 @@ FTDCFileManager::recoverInterimFile() {
     if (!m.isOK() || !docs.empty()) {
         log() << "Unclean full-time diagnostic data capture shutdown detected, found interim file, "
                  "some "
-                 "metrics may have been lost. " << m.getStatus();
+                 "metrics may have been lost. "
+              << m.getStatus();
     }
 
     // Note: We ignore any actual errors as reading from the interim files is a best-effort

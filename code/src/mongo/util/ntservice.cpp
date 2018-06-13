@@ -37,8 +37,6 @@
 
 #include "mongo/util/ntservice.h"
 
-#include "mongo/db/client.h"
-#include "mongo/db/instance.h"
 #include "mongo/stdx/chrono.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/thread.h"
@@ -78,8 +76,10 @@ bool shouldStartService() {
     return _startService;
 }
 
-static DWORD WINAPI
-serviceCtrl(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext);
+static DWORD WINAPI serviceCtrl(DWORD dwControl,
+                                DWORD dwEventType,
+                                LPVOID lpEventData,
+                                LPVOID lpContext);
 
 void configureService(ServiceCallback serviceCallback,
                       const moe::Environment& params,
@@ -531,7 +531,7 @@ const int kStopWaitHintMillis = 30000;
 static void serviceStop() {
     // VS2013 Doesn't support future<void>, so fake it with a bool.
     stdx::packaged_task<bool()> exitCleanlyTask([] {
-        Client::initThread("serviceStopWorker");
+        setThreadName("serviceStopWorker");
         // Stop the process
         // TODO: SERVER-5703, separate the "cleanup for shutdown" functionality from
         // the "terminate process" functionality in exitCleanly.
@@ -544,10 +544,10 @@ static void serviceStop() {
     // so it doesn't even need a name.
     stdx::thread(std::move(exitCleanlyTask)).detach();
 
-    const auto timeout = stdx::chrono::milliseconds(kStopWaitHintMillis / 2);
+    const auto timeout = Milliseconds(kStopWaitHintMillis / 2);
 
     // We periodically check if we are done exiting by polling at half of each wait interval
-    while (exitedCleanly.wait_for(timeout) != stdx::future_status::ready) {
+    while (exitedCleanly.wait_for(timeout.toSystemDuration()) != stdx::future_status::ready) {
         reportStatus(SERVICE_STOP_PENDING, kStopWaitHintMillis);
         log() << "Service Stop is waiting for storage engine to finish shutdown";
     }
@@ -572,7 +572,7 @@ static void WINAPI initService(DWORD argc, LPTSTR* argv) {
 }
 
 static void serviceShutdown(const char* controlCodeName) {
-    Client::initThread("serviceShutdown");
+    setThreadName("serviceShutdown");
 
     log() << "got " << controlCodeName << " request from Windows Service Control Manager, "
           << (inShutdown() ? "already in shutdown" : "will terminate after current cmd ends");
@@ -581,13 +581,15 @@ static void serviceShutdown(const char* controlCodeName) {
 
     // Note: This triggers _serviceCallback, ie  ServiceMain,
     // to stop by setting inShutdown() == true
-    signalShutdown();
+    shutdownNoTerminate();
 
     // Note: we will report exit status in initService
 }
 
-static DWORD WINAPI
-serviceCtrl(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext) {
+static DWORD WINAPI serviceCtrl(DWORD dwControl,
+                                DWORD dwEventType,
+                                LPVOID lpEventData,
+                                LPVOID lpContext) {
     switch (dwControl) {
         case SERVICE_CONTROL_INTERROGATE:
             // Return NO_ERROR per MSDN even though we do nothing for this control code.

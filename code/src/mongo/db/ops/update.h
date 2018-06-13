@@ -30,8 +30,8 @@
 
 #pragma once
 
-#include "mongo/db/jsobj.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/jsobj.h"
 #include "mongo/db/ops/update_request.h"
 #include "mongo/db/ops/update_result.h"
 
@@ -47,10 +47,7 @@ class UpdateDriver;
  *
  * Caller must hold the appropriate database locks.
  */
-UpdateResult update(OperationContext* txn,
-                    Database* db,
-                    const UpdateRequest& request,
-                    OpDebug* opDebug);
+UpdateResult update(OperationContext* txn, Database* db, const UpdateRequest& request);
 
 /**
  * takes the from document and returns a new document

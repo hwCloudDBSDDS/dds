@@ -31,21 +31,24 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/base/init.h"
+#include "mongo/executor/async_timer_mock.h"
 #include "mongo/executor/network_interface_asio.h"
 #include "mongo/executor/network_interface_thread_pool.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/concurrency/thread_pool_test_common.h"
 #include "mongo/util/concurrency/thread_pool_test_fixture.h"
-#include "mongo/stdx/memory.h"
 
 namespace {
 using namespace mongo;
 
 class NetworkInterfaceThreadPoolWithASIO : public ThreadPoolInterface {
 public:
-    NetworkInterfaceThreadPoolWithASIO()
-        : _asio(stdx::make_unique<executor::NetworkInterfaceASIO>()),
-          _pool(stdx::make_unique<executor::NetworkInterfaceThreadPool>(_asio.get())) {
+    NetworkInterfaceThreadPoolWithASIO() {
+        executor::NetworkInterfaceASIO::Options options;
+        options.timerFactory = stdx::make_unique<executor::AsyncTimerFactoryMock>();
+        _asio = stdx::make_unique<executor::NetworkInterfaceASIO>(std::move(options));
+        _pool = stdx::make_unique<executor::NetworkInterfaceThreadPool>(_asio.get());
         _asio->startup();
     }
 

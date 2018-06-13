@@ -29,95 +29,62 @@
 
 #include "mongo/db/jsobj.h"
 #include "mongo/platform/process_id.h"
-#include "mongo/s/catalog/catalog_manager.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/util/net/listen.h"  // For DEFAULT_MAX_CONN
 
 namespace mongo {
 
 const int DEFAULT_UNIX_PERMS = 0700;
 
-struct ServerGlobalParams {
-    ServerGlobalParams()
-        : port(DefaultDBPort),
-          rest(false),
-          jsonp(false),
-          indexBuildRetry(true),
-          quiet(false),
-          configsvr(false),
-          configsvrMode(CatalogManager::ConfigServerMode::NONE),
-          cpu(false),
-          objcheck(true),
-          defaultProfile(0),
-          slowMS(100),
-		  //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-          profileSizeMB(1),
-          defaultLocalThresholdMillis(15),
-          moveParanoia(false),
-          noUnixSocket(false),
-          doFork(0),
-          socket("/tmp"),
-          maxConns(DEFAULT_MAX_CONN),
-          unixSocketPermissions(DEFAULT_UNIX_PERMS),
-          logAppend(false),
-          logRenameOnRotate(true),
-          logWithSyslog(false),
-          isHttpInterfaceEnabled(false),
-		  //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-          limitVerifyTimes(true){
-        started = time(0);
-    }
+enum class ClusterRole { None, ShardServer, ConfigServer };
 
+struct ServerGlobalParams {
     std::string binaryName;  // mongod or mongos
     std::string cwd;         // cwd of when process started
 
-    int port;  // --port
+    int port = DefaultDBPort;  // --port
     enum { DefaultDBPort = 27017, ConfigServerPort = 27019, ShardServerPort = 27018 };
     bool isDefaultPort() const {
         return port == DefaultDBPort;
     }
 
     std::string bind_ip;  // --bind_ip
-    bool rest;            // --rest
-    bool jsonp;           // --jsonp
+    bool rest = false;    // --rest
+    bool jsonp = false;   // --jsonp
 
-    bool indexBuildRetry;  // --noIndexBuildRetry
+    bool indexBuildRetry = true;  // --noIndexBuildRetry
 
-    std::atomic<bool> quiet;  // --quiet NOLINT
+    std::atomic<bool> quiet{false};  // --quiet NOLINT
 
-    bool configsvr;                                  // --configsvr
-    CatalogManager::ConfigServerMode configsvrMode;  // -- configsvrMode
+    ClusterRole clusterRole = ClusterRole::None;  // --configsvr/--shardsvr
 
-    bool cpu;  // --cpu show cpu time periodically
+    bool cpu = false;  // --cpu show cpu time periodically
 
-    bool objcheck;  // --objcheck
+    bool objcheck = true;  // --objcheck
 
-    int defaultProfile;               // --profile
-    int slowMS;                       // --time in ms that is "slow"
-    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    int profileSizeMB;           // --the maxsize of system.profile collection 
-    int defaultLocalThresholdMillis;  // --localThreshold in ms to consider a node local
-    bool moveParanoia;                // for move chunk paranoia
+    int defaultProfile = 0;                // --profile
+    int slowMS = 100;                      // --time in ms that is "slow"
+    int defaultLocalThresholdMillis = 15;  // --localThreshold in ms to consider a node local
+    bool moveParanoia = false;             // for move chunk paranoia
 
-    bool noUnixSocket;   // --nounixsocket
-    bool doFork;         // --fork
-    std::string socket;  // UNIX domain socket directory
+    bool noUnixSocket = false;    // --nounixsocket
+    bool doFork = false;          // --fork
+    std::string socket = "/tmp";  // UNIX domain socket directory
 
-    int maxConns;  // Maximum number of simultaneous open connections.
+    int maxConns = DEFAULT_MAX_CONN;  // Maximum number of simultaneous open connections.
 
-    int unixSocketPermissions;  // permissions for the UNIX domain socket
+    int unixSocketPermissions = DEFAULT_UNIX_PERMS;  // permissions for the UNIX domain socket
 
     std::string keyFile;  // Path to keyfile, or empty if none.
     std::string pidFile;  // Path to pid file, or empty if none.
 
-    std::string logpath;     // Path to log file, if logging to a file; otherwise, empty.
-    bool logAppend;          // True if logging to a file in append mode.
-    bool logRenameOnRotate;  // True if logging should rename log files on rotate
-    bool logWithSyslog;      // True if logging to syslog; must not be set if logpath is set.
-    int syslogFacility;      // Facility used when appending messages to the syslog.
+    std::string logpath;            // Path to log file, if logging to a file; otherwise, empty.
+    bool logAppend = false;         // True if logging to a file in append mode.
+    bool logRenameOnRotate = true;  // True if logging should rename log files on rotate
+    bool logWithSyslog = false;     // True if logging to syslog; must not be set if logpath is set.
+    int syslogFacility;             // Facility used when appending messages to the syslog.
 
-    bool isHttpInterfaceEnabled;  // True if the dbwebserver should be enabled.
-    //Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-	bool limitVerifyTimes;
+    bool isHttpInterfaceEnabled = false;  // True if the dbwebserver should be enabled.
 
 #ifndef _WIN32
     ProcessId parentProc;  // --fork pid of initial process
@@ -132,7 +99,7 @@ struct ServerGlobalParams {
         bool storageDetailsCmdEnabled;  // -- enableExperimentalStorageDetailsCmd
     } experimental;
 
-    time_t started;
+    time_t started = ::time(0);
 
     BSONArray argvArray;
     BSONObj parsedOpts;
@@ -141,7 +108,8 @@ struct ServerGlobalParams {
 
     AuthState authState = AuthState::kUndefined;
 
-    AtomicInt32 clusterAuthMode;  // --clusterAuthMode, the internal cluster auth mode
+    bool transitionToAuth = false;  // --transitionToAuth, mixed mode for rolling auth upgrade
+    AtomicInt32 clusterAuthMode;    // --clusterAuthMode, the internal cluster auth mode
 
     enum ClusterAuthModes {
         ClusterAuthMode_undefined,
@@ -165,6 +133,37 @@ struct ServerGlobalParams {
         */
         ClusterAuthMode_x509
     };
+
+    // for the YAML config, sharding._overrideShardIdentity. Can only be used when in
+    // queryableBackupMode.
+    BSONObj overrideShardIdentity;
+
+    struct FeatureCompatibility {
+        enum class Version {
+            /**
+             * In this mode, the cluster will expose a 3.2-like API. Attempts by a client to use new
+             * features in 3.4, such as read-only views, collation, or the decimal128 BSON type,
+             * will be rejected.
+             */
+            k32,
+
+            /**
+             * In this mode, new features in 3.4 are allowed. The system should guarantee that no
+             * 3.2 node can participate in a cluster whose feature compatibility version is 3.4.
+             */
+            k34,
+        };
+
+        // Read-only parameter featureCompatibilityVersion.
+        AtomicWord<Version> version{Version::k32};
+
+        // Feature validation differs depending on the role of a mongod in a replica set or
+        // master/slave configuration. Masters/primaries can accept user-initiated writes and
+        // validate based on the feature compatibility version. A secondary/slave (which is not also
+        // a master) always validates in "3.4" mode so that it can sync 3.4 features, even when in
+        // "3.2" feature compatibility mode.
+        AtomicWord<bool> validateFeaturesAsMaster{true};
+    } featureCompatibility;
 };
 
 extern ServerGlobalParams serverGlobalParams;

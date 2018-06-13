@@ -80,8 +80,16 @@ public:
      */
     void appendInfo(BSONObjBuilder* builder) const;
 
+    /**
+     * Returns whether these arguments are 'empty' in the sense that no read concern has been
+     * requested.
+     */
+    bool isEmpty() const;
+
     ReadConcernLevel getLevel() const;
     OpTime getOpTime() const;
+    BSONObj toBSON() const;
+    std::string toString() const;
 
 private:
     boost::optional<OpTime> _opTime;

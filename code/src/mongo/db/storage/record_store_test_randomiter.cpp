@@ -28,6 +28,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/storage/record_store_test_harness.h"
 
 
@@ -49,12 +51,12 @@ TEST(RecordStoreTestHarness, GetRandomIteratorEmpty) {
     unique_ptr<RecordStore> rs(harnessHelper->newNonCappedRecordStore());
 
     {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         ASSERT_EQUALS(0, rs->numRecords(opCtx.get()));
     }
 
     {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         auto cursor = rs->getRandomCursor(opCtx.get());
         // returns NULL if getRandomCursor is not supported
         if (!cursor) {
@@ -70,7 +72,7 @@ TEST(RecordStoreTestHarness, GetRandomIteratorNonEmpty) {
     unique_ptr<RecordStore> rs(harnessHelper->newNonCappedRecordStore());
 
     {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         ASSERT_EQUALS(0, rs->numRecords(opCtx.get()));
     }
 
@@ -78,7 +80,7 @@ TEST(RecordStoreTestHarness, GetRandomIteratorNonEmpty) {
         5000;  // should be non-trivial amount, so we get multiple btree levels
     RecordId locs[nToInsert];
     for (unsigned i = 0; i < nToInsert; i++) {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         {
             stringstream ss;
             ss << "record " << i;
@@ -94,13 +96,13 @@ TEST(RecordStoreTestHarness, GetRandomIteratorNonEmpty) {
     }
 
     {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         ASSERT_EQUALS(nToInsert, rs->numRecords(opCtx.get()));
     }
 
     set<RecordId> remain(locs, locs + nToInsert);
     {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         auto cursor = rs->getRandomCursor(opCtx.get());
         // returns NULL if getRandomCursor is not supported
         if (!cursor) {
@@ -131,14 +133,14 @@ TEST(RecordStoreTestHarness, GetRandomIteratorSingleton) {
     unique_ptr<RecordStore> rs(harnessHelper->newNonCappedRecordStore());
 
     {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         ASSERT_EQ(0, rs->numRecords(opCtx.get()));
     }
 
     // Insert one record.
     RecordId idToRetrieve;
     {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         WriteUnitOfWork uow(opCtx.get());
         StatusWith<RecordId> res = rs->insertRecord(opCtx.get(), "some data", 10, false);
         ASSERT_OK(res.getStatus());
@@ -148,12 +150,12 @@ TEST(RecordStoreTestHarness, GetRandomIteratorSingleton) {
 
     // Double-check that the record store has one record in it now.
     {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         ASSERT_EQ(1, rs->numRecords(opCtx.get()));
     }
 
     {
-        unique_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         auto cursor = rs->getRandomCursor(opCtx.get());
         // returns NULL if getRandomCursor is not supported
         if (!cursor) {
@@ -165,6 +167,7 @@ TEST(RecordStoreTestHarness, GetRandomIteratorSingleton) {
         // Check deattaching / reattaching
         cursor->save();
         cursor->detachFromOperationContext();
+        opCtx.reset();
         opCtx = harnessHelper->newOperationContext();
         cursor->reattachToOperationContext(opCtx.get());
         ASSERT_TRUE(cursor->restore());

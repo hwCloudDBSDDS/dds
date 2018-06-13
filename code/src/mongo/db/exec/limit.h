@@ -29,8 +29,8 @@
 #pragma once
 
 
-#include "mongo/db/jsobj.h"
 #include "mongo/db/exec/plan_stage.h"
+#include "mongo/db/jsobj.h"
 #include "mongo/db/record_id.h"
 
 namespace mongo {
@@ -48,7 +48,7 @@ public:
     ~LimitStage();
 
     bool isEOF() final;
-    StageState work(WorkingSetID* out) final;
+    StageState doWork(WorkingSetID* out) final;
 
     StageType stageType() const final {
         return STAGE_LIMIT;

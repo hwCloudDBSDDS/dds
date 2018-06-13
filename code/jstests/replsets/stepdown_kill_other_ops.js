@@ -15,7 +15,7 @@
         ]
     });
 
-    replSet.waitForState(replSet.nodes[0], ReplSetTest.State.PRIMARY, 60 * 1000);
+    replSet.waitForState(replSet.nodes[0], ReplSetTest.State.PRIMARY);
 
     var primary = replSet.getPrimary();
     assert.eq(primary.host, nodes[0], "primary assumed to be node 0");
@@ -45,8 +45,9 @@
         for (var index in res.inprog) {
             var entry = res.inprog[index];
             if (entry["query"] && entry["query"]["$eval"]) {
-                assert.eq("W", entry["locks"]["Global"]);
-                return true;
+                if ("W" === entry["locks"]["Global"]) {
+                    return true;
+                }
             }
         }
         printjson(res);

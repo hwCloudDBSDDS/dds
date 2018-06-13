@@ -100,7 +100,7 @@ LegacyReplyBuilder& LegacyReplyBuilder::setMetadata(const BSONObj& metadata) {
         // because we already have skipped some bytes for the message header.
         BSONObjBuilder resumedBuilder(
             BSONObjBuilder::ResumeBuildingTag(), _builder, sizeof(QueryResult::Value));
-        shardingMetadata.getValue().writeToMetadata(&resumedBuilder, Protocol::kOpQuery);
+        shardingMetadata.getValue().writeToMetadata(&resumedBuilder);
     }
     _state = State::kOutputDocs;
     return *this;
@@ -158,8 +158,7 @@ Message LegacyReplyBuilder::done() {
     qr.setStartingFrom(0);
     qr.setNReturned(1);
 
-    _message.setData(qr.view2ptr(), true);
-    _builder.decouple();
+    _message.setData(_builder.release());
 
     _state = State::kDone;
     return std::move(_message);

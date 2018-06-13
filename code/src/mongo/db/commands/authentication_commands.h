@@ -43,11 +43,11 @@ public:
     virtual bool slaveOk() const {
         return true;
     }
-    virtual bool isWriteCommandForConfigServer() const {
-        return false;
-    }
     virtual void help(std::stringstream& ss) const {
         ss << "internal";
+    }
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,

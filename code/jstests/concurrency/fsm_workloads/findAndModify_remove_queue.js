@@ -10,7 +10,9 @@
  *
  * This workload was designed to reproduce SERVER-18304.
  */
-load('jstests/concurrency/fsm_workload_helpers/server_types.js');  // for isMongod and isMMAPv1
+
+// For isMongod and supportsDocumentLevelConcurrency.
+load('jstests/concurrency/fsm_workload_helpers/server_types.js');
 
 var $config = (function() {
 
@@ -20,16 +22,11 @@ var $config = (function() {
         uniqueDBName: 'findAndModify_remove_queue',
 
         newDocForInsert: function newDocForInsert(i) {
-            return {
-                _id: i,
-                rand: Random.rand()
-            };
+            return {_id: i, rand: Random.rand()};
         },
 
-        getIndexSpec: function getIndexSpec() {
-            return {
-                rand: 1
-            };
+        getIndexSpecs: function getIndexSpecs() {
+            return [{rand: 1}];
         },
 
         opName: 'removed',
@@ -38,9 +35,7 @@ var $config = (function() {
             // Use a separate database to avoid conflicts with other FSM workloads.
             var ownedDB = db.getSiblingDB(db.getName() + this.uniqueDBName);
 
-            var updateDoc = {
-                $push: {}
-            };
+            var updateDoc = {$push: {}};
             updateDoc.$push[this.opName] = id;
 
             var res = ownedDB[collName].update({_id: this.tid}, updateDoc, {upsert: true});
@@ -64,19 +59,16 @@ var $config = (function() {
     var states = (function() {
 
         function remove(db, collName) {
-            var res = db.runCommand({
-                findAndModify: db[collName].getName(),
-                query: {},
-                sort: {rand: -1},
-                remove: true
-            });
+            var res = db.runCommand(
+                {findAndModify: db[collName].getName(), query: {}, sort: {rand: -1}, remove: true});
             assertAlways.commandWorked(res);
 
             var doc = res.value;
-            if (isMongod(db) && !isMMAPv1(db)) {
-                // MMAPv1 does not automatically retry if there was a conflict, so it is expected
-                // that it may return null in the case of a conflict. All other storage engines
-                // should automatically retry the operation, and thus should never return null.
+            if (isMongod(db) && supportsDocumentLevelConcurrency(db)) {
+                // Storage engines which do not support document-level concurrency will not
+                // automatically retry if there was a conflict, so it is expected that it may return
+                // null in the case of a conflict. All other storage engines should automatically
+                // retry the operation, and thus should never return null.
                 assertWhenOwnColl.neq(
                     doc, null, 'findAndModify should have found and removed a matching document');
             }
@@ -85,15 +77,11 @@ var $config = (function() {
             }
         }
 
-        return {
-            remove: remove
-        };
+        return {remove: remove};
 
     })();
 
-    var transitions = {
-        remove: {remove: 1}
-    };
+    var transitions = {remove: {remove: 1}};
 
     function setup(db, collName, cluster) {
         // Each thread should remove exactly one document per iteration.
@@ -114,18 +102,19 @@ var $config = (function() {
         assertAlways.writeOK(res);
         assertAlways.eq(this.numDocs, res.nInserted);
 
-        assertAlways.commandWorked(db[collName].ensureIndex(this.getIndexSpec()));
+        this.getIndexSpecs().forEach(function ensureIndex(indexSpec) {
+            assertAlways.commandWorked(db[collName].ensureIndex(indexSpec));
+        });
     }
 
     function teardown(db, collName, cluster) {
         var ownedDB = db.getSiblingDB(db.getName() + this.uniqueDBName);
 
         if (this.opName === 'removed') {
-            if (isMongod(db) && !isMMAPv1(db)) {
-                // On storage engines other than MMAPv1, each findAndModify should remove exactly
-                // one document. This is not true on MMAPv1 since it will not automatically retry a
-                // findAndModify when there is a conflict, indicating there were no matches instead.
-                // Since this.numDocs == this.iterations * this.threadCount, there should not be any
+            if (isMongod(db) && supportsDocumentLevelConcurrency(db)) {
+                // On storage engines which support document-level concurrency, each findAndModify
+                // should be internally retried until it removes exactly one document. Since
+                // this.numDocs == this.iterations * this.threadCount, there should not be any
                 // documents remaining.
                 assertWhenOwnColl.eq(db[collName].find().itcount(),
                                      0,
@@ -133,7 +122,7 @@ var $config = (function() {
             }
         }
 
-        assertWhenOwnColl(function() {
+        assertWhenOwnColl(() => {
             var docs = ownedDB[collName].find().toArray();
             var ids = [];
 
@@ -142,7 +131,7 @@ var $config = (function() {
             }
 
             checkForDuplicateIds(ids, this.opName);
-        }.bind(this));
+        });
 
         var res = ownedDB.dropDatabase();
         assertAlways.commandWorked(res);
@@ -191,10 +180,7 @@ var $config = (function() {
             if (!smallestValueIsSet) {
                 return null;
             }
-            return {
-                value: smallestValue,
-                indices: smallestIndices
-            };
+            return {value: smallestValue, indices: smallestIndices};
         }
     }
 

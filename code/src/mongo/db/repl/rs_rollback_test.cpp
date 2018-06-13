@@ -42,9 +42,8 @@
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/repl/minvalid.h"
-#include "mongo/db/repl/operation_context_repl_mock.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_interface.h"
 #include "mongo/db/repl/oplog_interface_mock.h"
@@ -52,17 +51,18 @@
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/rollback_source.h"
 #include "mongo/db/repl/rs_rollback.h"
-#include "mongo/db/service_context.h"
-#include "mongo/db/storage/storage_options.h"
+#include "mongo/db/repl/storage_interface.h"
+#include "mongo/db/repl/storage_interface_mock.h"
+#include "mongo/db/service_context_d_test_fixture.h"
 #include "mongo/stdx/memory.h"
-#include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/log.h"
 
 namespace {
 
 using namespace mongo;
 using namespace mongo::repl;
+
+const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
 
 const OplogInterfaceMock::Operations kEmptyMockOperations;
 
@@ -127,9 +127,9 @@ StatusWith<BSONObj> RollbackSourceMock::getCollectionInfo(const NamespaceString&
     return BSON("name" << nss.ns() << "options" << BSONObj());
 }
 
-class RSRollbackTest : public unittest::Test {
+class RSRollbackTest : public ServiceContextMongoDTest {
 protected:
-    std::unique_ptr<OperationContext> _txn;
+    ServiceContext::UniqueOperationContext _txn;
 
     // Owned by service context
     ReplicationCoordinator* _coordinator;
@@ -140,43 +140,34 @@ private:
 };
 
 void RSRollbackTest::setUp() {
-    ServiceContext* serviceContext = getGlobalServiceContext();
-    if (!serviceContext->getGlobalStorageEngine()) {
-        // When using the 'devnull' storage engine, it is fine for the temporary directory to
-        // go away after the global storage engine is initialized.
-        unittest::TempDir tempDir("rs_rollback_test");
-        mongo::storageGlobalParams.dbpath = tempDir.path();
-        mongo::storageGlobalParams.dbpath = tempDir.path();
-        mongo::storageGlobalParams.engine = "ephemeralForTest";
-        mongo::storageGlobalParams.engineSetByUser = true;
-        serviceContext->initializeGlobalStorageEngine();
-    }
-
-    Client::initThreadIfNotAlready();
-    _txn.reset(new OperationContextReplMock(&cc(), 1));
+    ServiceContextMongoDTest::setUp();
+    _txn = cc().makeOperationContext();
     _coordinator = new ReplicationCoordinatorRollbackMock();
 
-    setGlobalReplicationCoordinator(_coordinator);
+    auto serviceContext = getServiceContext();
+    ReplicationCoordinator::set(serviceContext,
+                                std::unique_ptr<ReplicationCoordinator>(_coordinator));
+    StorageInterface::set(serviceContext, stdx::make_unique<StorageInterfaceMock>());
 
     setOplogCollectionName();
-    repl::setMinValid(_txn.get(), {OpTime{}, OpTime{}});
+    repl::StorageInterface::get(_txn.get())->setAppliedThrough(_txn.get(), OpTime{});
+    repl::StorageInterface::get(_txn.get())->setMinValid(_txn.get(), OpTime{});
 }
 
 void RSRollbackTest::tearDown() {
-    {
-        Lock::GlobalWrite globalLock(_txn->lockState());
-        BSONObjBuilder unused;
-        invariant(mongo::dbHolder().closeAll(_txn.get(), unused, false));
-    }
     _txn.reset();
+    ServiceContextMongoDTest::tearDown();
     setGlobalReplicationCoordinator(nullptr);
 }
+
 
 void noSleep(Seconds seconds) {}
 
 TEST_F(RSRollbackTest, InconsistentMinValid) {
-    repl::setMinValid(_txn.get(),
-                      {OpTime(Timestamp(Seconds(0), 0), 0), OpTime(Timestamp(Seconds(1), 0), 0)});
+    repl::StorageInterface::get(_txn.get())
+        ->setAppliedThrough(_txn.get(), OpTime(Timestamp(Seconds(0), 0), 0));
+    repl::StorageInterface::get(_txn.get())
+        ->setMinValid(_txn.get(), OpTime(Timestamp(Seconds(1), 0), 0));
     auto status = syncRollback(_txn.get(),
                                OplogInterfaceMock(kEmptyMockOperations),
                                RollbackSourceMock(std::unique_ptr<OplogInterface>(
@@ -208,7 +199,8 @@ TEST_F(RSRollbackTest, SetFollowerModeFailed) {
                                RollbackSourceMock(std::unique_ptr<OplogInterface>(
                                    new OplogInterfaceMock(kEmptyMockOperations))),
                                _coordinator,
-                               noSleep).code());
+                               noSleep)
+                      .code());
 }
 
 TEST_F(RSRollbackTest, OplogStartMissing) {
@@ -223,7 +215,8 @@ TEST_F(RSRollbackTest, OplogStartMissing) {
                          operation,
                      }))),
                      _coordinator,
-                     noSleep).code());
+                     noSleep)
+            .code());
 }
 
 TEST_F(RSRollbackTest, NoRemoteOpLog) {
@@ -316,7 +309,8 @@ int _testRollbackDelete(OperationContext* txn,
                                  << "d"
                                  << "ns"
                                  << "test.t"
-                                 << "o" << BSON("_id" << 0)),
+                                 << "o"
+                                 << BSON("_id" << 0)),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:
@@ -392,7 +386,8 @@ TEST_F(RSRollbackTest, RollbackInsertDocumentWithNoId) {
                                  << "i"
                                  << "ns"
                                  << "test.t"
-                                 << "o" << BSON("a" << 1)),
+                                 << "o"
+                                 << BSON("a" << 1)),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:
@@ -428,12 +423,16 @@ TEST_F(RSRollbackTest, RollbackCreateIndexCommand) {
     auto collection = _createCollection(_txn.get(), "test.t", CollectionOptions());
     auto indexSpec = BSON("ns"
                           << "test.t"
-                          << "key" << BSON("a" << 1) << "name"
-                          << "a_1");
+                          << "key"
+                          << BSON("a" << 1)
+                          << "name"
+                          << "a_1"
+                          << "v"
+                          << static_cast<int>(kIndexVersion));
     {
         Lock::DBLock dbLock(_txn->lockState(), "test", MODE_X);
         MultiIndexBlock indexer(_txn.get(), collection);
-        ASSERT_OK(indexer.init(indexSpec));
+        ASSERT_OK(indexer.init(indexSpec).getStatus());
         WriteUnitOfWork wunit(_txn.get());
         indexer.commit();
         wunit.commit();
@@ -448,7 +447,8 @@ TEST_F(RSRollbackTest, RollbackCreateIndexCommand) {
                                  << "i"
                                  << "ns"
                                  << "test.system.indexes"
-                                 << "o" << indexSpec),
+                                 << "o"
+                                 << indexSpec),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:
@@ -492,7 +492,9 @@ TEST_F(RSRollbackTest, RollbackCreateIndexCommandIndexNotInCatalog) {
     auto collection = _createCollection(_txn.get(), "test.t", CollectionOptions());
     auto indexSpec = BSON("ns"
                           << "test.t"
-                          << "key" << BSON("a" << 1) << "name"
+                          << "key"
+                          << BSON("a" << 1)
+                          << "name"
                           << "a_1");
     // Skip index creation to trigger warning during rollback.
     {
@@ -508,7 +510,8 @@ TEST_F(RSRollbackTest, RollbackCreateIndexCommandIndexNotInCatalog) {
                                  << "i"
                                  << "ns"
                                  << "test.system.indexes"
-                                 << "o" << indexSpec),
+                                 << "o"
+                                 << indexSpec),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:
@@ -554,8 +557,9 @@ TEST_F(RSRollbackTest, RollbackCreateIndexCommandMissingNamespace) {
                                  << "i"
                                  << "ns"
                                  << "test.system.indexes"
-                                 << "o" << BSON("key" << BSON("a" << 1) << "name"
-                                                      << "a_1")),
+                                 << "o"
+                                 << BSON("key" << BSON("a" << 1) << "name"
+                                               << "a_1")),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:
@@ -596,10 +600,13 @@ TEST_F(RSRollbackTest, RollbackCreateIndexCommandInvalidNamespace) {
                                  << "i"
                                  << "ns"
                                  << "test.system.indexes"
-                                 << "o" << BSON("ns"
-                                                << "test."
-                                                << "key" << BSON("a" << 1) << "name"
-                                                << "a_1")),
+                                 << "o"
+                                 << BSON("ns"
+                                         << "test."
+                                         << "key"
+                                         << BSON("a" << 1)
+                                         << "name"
+                                         << "a_1")),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:
@@ -640,9 +647,11 @@ TEST_F(RSRollbackTest, RollbackCreateIndexCommandMissingIndexName) {
                                  << "i"
                                  << "ns"
                                  << "test.system.indexes"
-                                 << "o" << BSON("ns"
-                                                << "test.t"
-                                                << "key" << BSON("a" << 1))),
+                                 << "o"
+                                 << BSON("ns"
+                                         << "test.t"
+                                         << "key"
+                                         << BSON("a" << 1))),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:
@@ -682,8 +691,9 @@ TEST_F(RSRollbackTest, RollbackUnknownCommand) {
                                  << "c"
                                  << "ns"
                                  << "test.t"
-                                 << "o" << BSON("unknown_command"
-                                                << "t")),
+                                 << "o"
+                                 << BSON("unknown_command"
+                                         << "t")),
                        RecordId(2));
     {
         Lock::DBLock dbLock(_txn->lockState(), "test", MODE_X);
@@ -714,8 +724,9 @@ TEST_F(RSRollbackTest, RollbackDropCollectionCommand) {
                                  << "c"
                                  << "ns"
                                  << "test.t"
-                                 << "o" << BSON("drop"
-                                                << "t")),
+                                 << "o"
+                                 << BSON("drop"
+                                         << "t")),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:
@@ -780,9 +791,12 @@ TEST_F(RSRollbackTest, RollbackApplyOpsCommand) {
             coll = autoDb.getDb()->createCollection(_txn.get(), "test.t");
         }
         ASSERT(coll);
-        ASSERT_OK(coll->insertDocument(_txn.get(), BSON("_id" << 1 << "v" << 2), false));
-        ASSERT_OK(coll->insertDocument(_txn.get(), BSON("_id" << 2 << "v" << 4), false));
-        ASSERT_OK(coll->insertDocument(_txn.get(), BSON("_id" << 4), false));
+        OpDebug* const nullOpDebug = nullptr;
+        ASSERT_OK(
+            coll->insertDocument(_txn.get(), BSON("_id" << 1 << "v" << 2), nullOpDebug, false));
+        ASSERT_OK(
+            coll->insertDocument(_txn.get(), BSON("_id" << 2 << "v" << 4), nullOpDebug, false));
+        ASSERT_OK(coll->insertDocument(_txn.get(), BSON("_id" << 4), nullOpDebug, false));
         wuow.commit();
     }
     const auto commonOperation =
@@ -793,24 +807,30 @@ TEST_F(RSRollbackTest, RollbackApplyOpsCommand) {
                                                     << "u"
                                                     << "ns"
                                                     << "test.t"
-                                                    << "o2" << BSON("_id" << 1) << "o"
+                                                    << "o2"
+                                                    << BSON("_id" << 1)
+                                                    << "o"
                                                     << BSON("_id" << 1 << "v" << 2)),
                                                BSON("op"
                                                     << "u"
                                                     << "ns"
                                                     << "test.t"
-                                                    << "o2" << BSON("_id" << 2) << "o"
+                                                    << "o2"
+                                                    << BSON("_id" << 2)
+                                                    << "o"
                                                     << BSON("_id" << 2 << "v" << 4)),
                                                BSON("op"
                                                     << "d"
                                                     << "ns"
                                                     << "test.t"
-                                                    << "o" << BSON("_id" << 3)),
+                                                    << "o"
+                                                    << BSON("_id" << 3)),
                                                BSON("op"
                                                     << "i"
                                                     << "ns"
                                                     << "test.t"
-                                                    << "o" << BSON("_id" << 4))}),
+                                                    << "o"
+                                                    << BSON("_id" << 4))}),
                        RecordId(2));
 
     class RollbackSourceLocal : public RollbackSourceMock {
@@ -876,8 +896,9 @@ TEST_F(RSRollbackTest, RollbackCreateCollectionCommand) {
                                  << "c"
                                  << "ns"
                                  << "test.t"
-                                 << "o" << BSON("create"
-                                                << "t")),
+                                 << "o"
+                                 << BSON("create"
+                                         << "t")),
                        RecordId(2));
     RollbackSourceMock rollbackSource(std::unique_ptr<OplogInterface>(new OplogInterfaceMock({
         commonOperation,
@@ -905,9 +926,11 @@ TEST_F(RSRollbackTest, RollbackCollectionModificationCommand) {
                                  << "c"
                                  << "ns"
                                  << "test.t"
-                                 << "o" << BSON("collMod"
-                                                << "t"
-                                                << "noPadding" << false)),
+                                 << "o"
+                                 << BSON("collMod"
+                                         << "t"
+                                         << "noPadding"
+                                         << false)),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:
@@ -946,9 +969,11 @@ TEST_F(RSRollbackTest, RollbackCollectionModificationCommandInvalidCollectionOpt
                                  << "c"
                                  << "ns"
                                  << "test.t"
-                                 << "o" << BSON("collMod"
-                                                << "t"
-                                                << "noPadding" << false)),
+                                 << "o"
+                                 << BSON("collMod"
+                                         << "t"
+                                         << "noPadding"
+                                         << false)),
                        RecordId(2));
     class RollbackSourceLocal : public RollbackSourceMock {
     public:

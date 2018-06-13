@@ -34,40 +34,58 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
+#include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/client/fetcher.h"
+#include "mongo/client/remote_command_retry_scheduler.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/base_cloner.h"
-#include "mongo/db/repl/replication_executor.h"
-#include "mongo/stdx/functional.h"
+#include "mongo/db/repl/storage_interface.h"
+#include "mongo/db/repl/task_runner.h"
+#include "mongo/executor/task_executor.h"
 #include "mongo/stdx/condition_variable.h"
+#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/util/concurrency/old_thread_pool.h"
 #include "mongo/util/net/hostandport.h"
+#include "mongo/util/progress_meter.h"
 
 namespace mongo {
+
+class OldThreadPool;
+
 namespace repl {
+
+class StorageInterface;
 
 class CollectionCloner : public BaseCloner {
     MONGO_DISALLOW_COPYING(CollectionCloner);
 
 public:
-    /**
-     * Storage interface for collection cloner.
-     *
-     * Supports the operations on the storage layer required by the cloner.
-     */
-    class StorageInterface;
+    struct Stats {
+        static constexpr StringData kDocumentsToCopyFieldName = "documentsToCopy"_sd;
+        static constexpr StringData kDocumentsCopiedFieldName = "documentsCopied"_sd;
 
+        std::string ns;
+        Date_t start;
+        Date_t end;
+        size_t documentToCopy{0};
+        size_t documentsCopied{0};
+        size_t indexes{0};
+        size_t fetchBatches{0};
+
+        std::string toString() const;
+        BSONObj toBSON() const;
+        void append(BSONObjBuilder* builder) const;
+    };
     /**
-     * Type of function to schedule database work with the executor.
-     *
-     * Must be consistent with ReplicationExecutor::scheduleWorkWithGlobalExclusiveLock().
+     * Type of function to schedule storage interface tasks with the executor.
      *
      * Used for testing only.
      */
-    using ScheduleDbWorkFn = stdx::function<StatusWith<ReplicationExecutor::CallbackHandle>(
-        const ReplicationExecutor::CallbackFn&)>;
+    using ScheduleDbWorkFn = stdx::function<StatusWith<executor::TaskExecutor::CallbackHandle>(
+        const executor::TaskExecutor::CallbackFn&)>;
 
     /**
      * Creates CollectionCloner task in inactive state. Use start() to activate cloner.
@@ -78,7 +96,8 @@ public:
      *
      * Takes ownership of the passed StorageInterface object.
      */
-    CollectionCloner(ReplicationExecutor* executor,
+    CollectionCloner(executor::TaskExecutor* executor,
+                     OldThreadPool* dbWorkThreadPool,
                      const HostAndPort& source,
                      const NamespaceString& sourceNss,
                      const CollectionOptions& options,
@@ -93,11 +112,13 @@ public:
 
     bool isActive() const override;
 
-    Status start() override;
+    Status startup() override;
 
-    void cancel() override;
+    void shutdown() override;
 
-    void wait() override;
+    void join() override;
+
+    CollectionCloner::Stats getStats() const;
 
     //
     // Testing only functions below.
@@ -116,9 +137,14 @@ public:
      *
      * For testing only.
      */
-    void setScheduleDbWorkFn(const ScheduleDbWorkFn& scheduleDbWorkFn);
+    void setScheduleDbWorkFn_forTest(const ScheduleDbWorkFn& scheduleDbWorkFn);
 
 private:
+    /**
+     * Read number of documents in collection from count result.
+     */
+    void _countCallback(const executor::TaskExecutor::RemoteCommandCallbackArgs& args);
+
     /**
      * Read index specs from listIndexes result.
      */
@@ -142,7 +168,7 @@ private:
      * 'nextAction' is an in/out arg indicating the next action planned and to be taken
      *  by the fetcher.
      */
-    void _beginCollectionCallback(const ReplicationExecutor::CallbackArgs& callbackData);
+    void _beginCollectionCallback(const executor::TaskExecutor::CallbackArgs& callbackData);
 
     /**
      * Called multiple times if there are more than one batch of documents from the fetcher.
@@ -151,7 +177,7 @@ private:
      * Each document returned will be inserted via the storage interfaceRequest storage
      * interface.
      */
-    void _insertDocumentsCallback(const ReplicationExecutor::CallbackArgs& callbackData,
+    void _insertDocumentsCallback(const executor::TaskExecutor::CallbackArgs& callbackData,
                                   bool lastBatch);
 
     /**
@@ -159,100 +185,40 @@ private:
      * Commits/aborts collection building.
      * Sets cloner to inactive.
      */
-    void _finishCallback(OperationContext* txn, const Status& status);
+    void _finishCallback(const Status& status);
 
-    // Not owned by us.
-    ReplicationExecutor* _executor;
-
-    HostAndPort _source;
-    NamespaceString _sourceNss;
-    NamespaceString _destNss;
-    CollectionOptions _options;
-
-    // Invoked once when cloning completes or fails.
-    CallbackFn _onCompletion;
-
-    // Not owned by us.
-    StorageInterface* _storageInterface;
-
-    // Protects member data of this collection cloner.
+    //
+    // All member variables are labeled with one of the following codes indicating the
+    // synchronization rules for accessing them.
+    //
+    // (R)  Read-only in concurrent operation; no synchronization required.
+    // (M)  Reads and writes guarded by _mutex
+    // (S)  Self-synchronizing; access in any way from any context.
+    // (RT)  Read-only in concurrent operation; synchronized externally by tests
+    //
     mutable stdx::mutex _mutex;
-
-    mutable stdx::condition_variable _condition;
-
-    // _active is true when Collection Cloner is started.
-    bool _active;
-
-    // Fetcher instances for running listIndexes and find commands.
-    Fetcher _listIndexesFetcher;
-    Fetcher _findFetcher;
-
-    std::vector<BSONObj> _indexSpecs;
-
-    // Current batch of documents read from fetcher to insert into collection.
-    std::vector<BSONObj> _documents;
-
-    // Callback handle for database worker.
-    ReplicationExecutor::CallbackHandle _dbWorkCallbackHandle;
-
-    // Function for scheduling database work using the executor.
-    ScheduleDbWorkFn _scheduleDbWorkFn;
-};
-
-/**
- * Storage interface used by the collection cloner to build a collection.
- *
- * Operation context is provided by the replication executor via the cloner.
- *
- * The storage interface is expected to acquire locks on any resources it needs
- * to perform any of its functions.
- *
- * TODO: Consider having commit/abort/cancel functions.
- */
-class CollectionCloner::StorageInterface {
-public:
-    virtual ~StorageInterface() = default;
-
-    /**
-     * Creates a collection with the provided indexes.
-     *
-     * Assume that no database locks have been acquired prior to calling this
-     * function.
-     */
-    virtual Status beginCollection(OperationContext* txn,
-                                   const NamespaceString& nss,
-                                   const CollectionOptions& options,
-                                   const std::vector<BSONObj>& indexSpecs) = 0;
-
-    /**
-     * Inserts documents into a collection.
-     *
-     * Assume that no database locks have been acquired prior to calling this
-     * function.
-     */
-    virtual Status insertDocuments(OperationContext* txn,
-                                   const NamespaceString& nss,
-                                   const std::vector<BSONObj>& documents) = 0;
-
-    /**
-     * Commits changes to collection. No effect if collection building has not begun.
-     * Operation context could be null.
-     */
-    virtual Status commitCollection(OperationContext* txn, const NamespaceString& nss) = 0;
-
-    /**
-     * Inserts missing document into a collection (not related to insertDocuments above),
-     * during initial sync retry logic
-     */
-    virtual Status insertMissingDoc(OperationContext* txn,
-                                    const NamespaceString& nss,
-                                    const BSONObj& doc) = 0;
-
-    /**
-     * Inserts missing document into a collection (not related to insertDocuments above),
-     * during initial sync retry logic
-     */
-    virtual Status dropUserDatabases(OperationContext* txn) = 0;
+    mutable stdx::condition_variable _condition;        // (M)
+    executor::TaskExecutor* _executor;                  // (R) Not owned by us.
+    OldThreadPool* _dbWorkThreadPool;                   // (R) Not owned by us.
+    HostAndPort _source;                                // (R)
+    NamespaceString _sourceNss;                         // (R)
+    NamespaceString _destNss;                           // (R)
+    CollectionOptions _options;                         // (R)
+    std::unique_ptr<CollectionBulkLoader> _collLoader;  // (M)
+    CallbackFn _onCompletion;             // (R) Invoked once when cloning completes or fails.
+    StorageInterface* _storageInterface;  // (R) Not owned by us.
+    bool _active;                         // (M) true when Collection Cloner is started.
+    RemoteCommandRetryScheduler _countScheduler;  // (S)
+    Fetcher _listIndexesFetcher;                  // (S)
+    Fetcher _findFetcher;                         // (S)
+    std::vector<BSONObj> _indexSpecs;             // (M)
+    BSONObj _idIndexSpec;                         // (M)
+    std::vector<BSONObj> _documents;              // (M) Documents read from fetcher to insert.
+    TaskRunner _dbWorkTaskRunner;                 // (R)
+    ScheduleDbWorkFn
+        _scheduleDbWorkFn;         // (RT) Function for scheduling database work using the executor.
+    Stats _stats;                  // (M) stats for this instance.
+    ProgressMeter _progressMeter;  // (M) progress meter for this instance.
 };
 
 }  // namespace repl

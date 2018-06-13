@@ -57,7 +57,7 @@ Mongo.prototype.getDB = function(name) {
 };
 
 Mongo.prototype.getDBs = function() {
-    var res = this.getDB("admin").runCommand({"listDatabases": 1});
+    var res = this.adminCommand({"listDatabases": 1});
     if (!res.ok)
         throw _getErrorWithCode(res, "listDatabases failed:" + tojson(res));
     return res;
@@ -88,9 +88,7 @@ Mongo.prototype.setLogLevel = function(logLevel, component) {
     } else if (component !== undefined) {
         throw Error("setLogLevel component must be a string:" + tojson(component));
     }
-    var vDoc = {
-        verbosity: logLevel
-    };
+    var vDoc = {verbosity: logLevel};
 
     // nest vDoc
     for (var key, obj; componentNames.length > 0;) {
@@ -173,7 +171,34 @@ Mongo.prototype.getReadPref = function() {
     return obj;
 };
 
+/**
+ * Sets the read concern.
+ *
+ * @param level {string} read concern level to use. Pass null to disable read concern.
+ */
+Mongo.prototype.setReadConcern = function(level) {
+    if (!level) {
+        this._readConcernLevel = undefined;
+    } else if (level === "local" || level === "majority") {
+        this._readConcernLevel = level;
+    } else {
+        throw Error("Invalid read concern.");
+    }
+};
+
+/**
+ * Gets the read concern.
+ */
+Mongo.prototype.getReadConcern = function() {
+    return this._readConcernLevel;
+};
+
 connect = function(url, user, pass) {
+    if (url instanceof MongoURI) {
+        user = url.user;
+        pass = url.password;
+        url = url.uri;
+    }
     if (user && !pass)
         throw Error("you specified a user and not a password.  " +
                     "either you need a password, or you're using the old connect api");
@@ -181,8 +206,7 @@ connect = function(url, user, pass) {
     // Validate connection string "url" as "hostName:portNumber/databaseName"
     //                                  or "hostName/databaseName"
     //                                  or "databaseName"
-    // hostName may be an IPv6 address (with colons), in which case ":portNumber" is required
-    //
+    //                                  or full mongo uri.
     var urlType = typeof url;
     if (urlType == "undefined") {
         throw Error("Missing connection string");
@@ -195,46 +219,36 @@ connect = function(url, user, pass) {
     if (0 == url.length) {
         throw Error("Empty connection string");
     }
+
     if (!url.startsWith("mongodb://")) {
         var colon = url.lastIndexOf(":");
         var slash = url.lastIndexOf("/");
-        if (0 == colon || 0 == slash) {
-            throw Error("Missing host name in connection string \"" + url + "\"");
-        }
-        if (colon == slash - 1 || colon == url.length - 1) {
-            throw Error("Missing port number in connection string \"" + url + "\"");
-        }
-        if (colon != -1 && colon < slash) {
-            var portNumber = url.substring(colon + 1, slash);
-            if (portNumber.length > 5 || !/^\d*$/.test(portNumber) ||
-                parseInt(portNumber) > 65535) {
-                throw Error("Invalid port number \"" + portNumber + "\" in connection string \"" +
-                            url + "\"");
-            }
-        }
-        if (slash == url.length - 1) {
-            throw Error("Missing database name in connection string \"" + url + "\"");
+        if (slash == -1 && colon == -1) {
+            url = "mongodb://127.0.0.1:27017/" + url;
+        } else {
+            url = "mongodb://" + url;
         }
     }
 
     chatty("connecting to: " + url);
-    var db;
-    if (url.startsWith("mongodb://")) {
-        db = new Mongo(url);
-        if (db.defaultDB.length == 0) {
-            throw Error("Missing database name in connection string \"" + url + "\"");
-        }
-        db = db.getDB(db.defaultDB);
-    } else if (slash == -1)
-        db = new Mongo().getDB(url);
-    else
-        db = new Mongo(url.substring(0, slash)).getDB(url.substring(slash + 1));
+    var m = new Mongo(url);
+    db = m.getDB(m.defaultDB);
 
     if (user && pass) {
         if (!db.auth(user, pass)) {
             throw Error("couldn't login");
         }
     }
+
+    // Check server version
+    var serverVersion = db.version();
+    chatty("MongoDB server version: " + serverVersion);
+
+    var shellVersion = version();
+    if (serverVersion.slice(0, 3) != shellVersion.slice(0, 3)) {
+        chatty("WARNING: shell and server versions do not match");
+    }
+
     return db;
 };
 
@@ -280,7 +294,6 @@ Mongo.prototype.writeMode = function() {
     if (this.hasWriteCommands()) {
         // good with whatever is already set
     } else if (this._writeMode == "commands") {
-        print("Cannot use commands write mode, degrading to compatibility mode");
         this._writeMode = "compatibility";
     }
 
@@ -330,7 +343,6 @@ Mongo.prototype.readMode = function() {
             if (hasReadCommands) {
                 this._readMode = "commands";
             } else {
-                print("Cannot use 'commands' readMode, degrading to 'legacy' mode");
                 this._readMode = "legacy";
             }
         } catch (e) {

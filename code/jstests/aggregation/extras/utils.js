@@ -1,3 +1,27 @@
+/**
+ * Compute the result of evaluating 'expression', and compare it to 'result'. Replaces the contents
+ * of 'coll' with a single empty document.
+ */
+function testExpression(coll, expression, result) {
+    testExpressionWithCollation(coll, expression, result);
+}
+
+/**
+ * Compute the result of evaluating 'expression', and compare it to 'result', using 'collationSpec'
+ * as the collation spec. Replaces the contents of 'coll' with a single empty document.
+ */
+function testExpressionWithCollation(coll, expression, result, collationSpec) {
+    coll.remove({});
+    coll.insert({});
+
+    var options = collationSpec !== undefined ? {collation: collationSpec} : undefined;
+
+    var res = coll.aggregate([{$project: {output: expression}}], options).toArray();
+
+    assert.eq(res.length, 1, tojson(res));
+    assert.eq(res[0].output, result, tojson(res));
+}
+
 /*
   Utility functions used to test aggregation
 */
@@ -245,13 +269,9 @@ function assertErrorCode(coll, pipe, code, errmsg) {
     assert.eq(res.code, code);
 
     // Test with cursors
-    var cmd = {
-        pipeline: pipe
-    };
+    var cmd = {pipeline: pipe};
     // cmd.cursor = {};
-    cmd.cursor = {
-        batchSize: 0
-    };
+    cmd.cursor = {batchSize: 0};
 
     var cursorRes = coll.runCommand("aggregate", cmd);
     if (cursorRes.ok) {
@@ -261,9 +281,8 @@ function assertErrorCode(coll, pipe, code, errmsg) {
         var error = assert.throws(function() {
             cursor.itcount();
         }, [], "expected error: " + code);
-        if (!error.message.search(code)) {
-            assert(false, "expected error: " + code + " got: " + error);
-        }
+
+        assert.eq(error.code, code);
     } else {
         assert.eq(cursorRes.code, code);
     }

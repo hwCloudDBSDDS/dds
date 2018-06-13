@@ -63,7 +63,7 @@ Status extractGLEErrors(const BSONObj& gleResponse, GLEErrors* errors) {
 
     if (err == "norepl" || err == "noreplset") {
         // Know this is legacy gle and the repl not enforced - write concern error in 2.4
-        errors->wcError.reset(new WCErrorDetail);
+        errors->wcError.reset(new WriteConcernErrorDetail);
         errors->wcError->setErrCode(ErrorCodes::WriteConcernFailed);
         if (!errMsg.empty()) {
             errors->wcError->setErrMessage(errMsg);
@@ -74,7 +74,7 @@ Status extractGLEErrors(const BSONObj& gleResponse, GLEErrors* errors) {
         }
     } else if (timeout) {
         // Know there was no write error
-        errors->wcError.reset(new WCErrorDetail);
+        errors->wcError.reset(new WriteConcernErrorDetail);
         errors->wcError->setErrCode(ErrorCodes::WriteConcernFailed);
         if (!errMsg.empty()) {
             errors->wcError->setErrMessage(errMsg);
@@ -90,9 +90,9 @@ Status extractGLEErrors(const BSONObj& gleResponse, GLEErrors* errors) {
                // 2.6 Error codes
                ||
                code == ErrorCodes::NotMaster || code == ErrorCodes::UnknownReplWriteConcern ||
-               code == ErrorCodes::WriteConcernFailed) {
+               code == ErrorCodes::WriteConcernFailed || code == ErrorCodes::PrimarySteppedDown) {
         // Write concern errors that get returned as regular errors (result may not be ok: 1.0)
-        errors->wcError.reset(new WCErrorDetail());
+        errors->wcError.reset(new WriteConcernErrorDetail());
         errors->wcError->setErrCode(ErrorCodes::fromInt(code));
         errors->wcError->setErrMessage(errMsg);
     } else if (!isOK) {
@@ -120,7 +120,7 @@ Status extractGLEErrors(const BSONObj& gleResponse, GLEErrors* errors) {
         errors->writeError->setErrMessage(err);
     } else if (!jNote.empty()) {
         // Know this is legacy gle and the journaling not enforced - write concern error in 2.4
-        errors->wcError.reset(new WCErrorDetail);
+        errors->wcError.reset(new WriteConcernErrorDetail);
         errors->wcError->setErrCode(ErrorCodes::WriteConcernFailed);
         errors->wcError->setErrMessage(jNote);
     }

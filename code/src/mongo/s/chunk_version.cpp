@@ -30,9 +30,9 @@
 
 #include "mongo/s/chunk_version.h"
 
+#include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/base/status_with.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -40,13 +40,20 @@ namespace mongo {
 namespace {
 
 const char kVersion[] = "version";
-const char kShardVersion[] = "shardVersion";
+const char kLastmod[] = "lastmod";
 
 }  // namespace
 
+const char ChunkVersion::kShardVersionField[] = "shardVersion";
+
 StatusWith<ChunkVersion> ChunkVersion::parseFromBSONForCommands(const BSONObj& obj) {
+    return parseFromBSONWithFieldForCommands(obj, kShardVersionField);
+}
+
+StatusWith<ChunkVersion> ChunkVersion::parseFromBSONWithFieldForCommands(const BSONObj& obj,
+                                                                         StringData field) {
     BSONElement versionElem;
-    Status status = bsonExtractField(obj, kShardVersion, &versionElem);
+    Status status = bsonExtractField(obj, field, &versionElem);
     if (!status.isOK())
         return status;
 
@@ -96,12 +103,29 @@ StatusWith<ChunkVersion> ChunkVersion::parseFromBSONForSetShardVersion(const BSO
     return chunkVersion;
 }
 
+StatusWith<ChunkVersion> ChunkVersion::parseFromBSONForChunk(const BSONObj& obj) {
+    bool canParse;
+    const ChunkVersion chunkVersion = ChunkVersion::fromBSON(obj, kLastmod, &canParse);
+    if (!canParse)
+        return {ErrorCodes::BadValue, "Unable to parse shard version"};
+
+    return chunkVersion;
+}
+
 void ChunkVersion::appendForSetShardVersion(BSONObjBuilder* builder) const {
     addToBSON(*builder, kVersion);
 }
 
 void ChunkVersion::appendForCommands(BSONObjBuilder* builder) const {
-    builder->appendArray(kShardVersion, toBSON());
+    appendWithFieldForCommands(builder, kShardVersionField);
+}
+
+void ChunkVersion::appendWithFieldForCommands(BSONObjBuilder* builder, StringData field) const {
+    builder->appendArray(field, toBSON());
+}
+
+void ChunkVersion::appendForChunk(BSONObjBuilder* builder) const {
+    addToBSON(*builder, kLastmod);
 }
 
 BSONObj ChunkVersion::toBSON() const {

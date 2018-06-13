@@ -28,11 +28,18 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/operation_context.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/server_parameters.h"
 #include "mongo/db/wire_version.h"
-#include "mongo/s/catalog/forwarding_catalog_manager.h"
+#include "mongo/rpc/metadata/client_metadata.h"
+#include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/write_ops/batched_command_request.h"
+#include "mongo/transport/message_compressor_manager.h"
+#include "mongo/util/map_util.h"
 
 namespace mongo {
 namespace {
@@ -41,7 +48,8 @@ class CmdIsMaster : public Command {
 public:
     CmdIsMaster() : Command("isMaster", false, "ismaster") {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -65,6 +73,36 @@ public:
                      int options,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
+
+        auto& clientMetadataIsMasterState = ClientMetadataIsMasterState::get(txn->getClient());
+        bool seenIsMaster = clientMetadataIsMasterState.hasSeenIsMaster();
+        if (!seenIsMaster) {
+            clientMetadataIsMasterState.setSeenIsMaster();
+        }
+
+        BSONElement element = cmdObj[kMetadataDocumentName];
+        if (!element.eoo()) {
+            if (seenIsMaster) {
+                return Command::appendCommandStatus(
+                    result,
+                    Status(ErrorCodes::ClientMetadataCannotBeMutated,
+                           "The client metadata document may only be sent in the first isMaster"));
+            }
+
+            auto swParseClientMetadata = ClientMetadata::parse(element);
+
+            if (!swParseClientMetadata.getStatus().isOK()) {
+                return Command::appendCommandStatus(result, swParseClientMetadata.getStatus());
+            }
+
+            invariant(swParseClientMetadata.getValue());
+
+            swParseClientMetadata.getValue().get().logClientMetadata(txn->getClient());
+
+            clientMetadataIsMasterState.setClientMetadata(
+                txn->getClient(), std::move(swParseClientMetadata.getValue()));
+        }
+
         result.appendBool("ismaster", true);
         result.append("msg", "isdbgrid");
         result.appendNumber("maxBsonObjectSize", BSONObjMaxUserSize);
@@ -74,8 +112,16 @@ public:
 
         // Mongos tries to keep exactly the same version range of the server for which
         // it is compiled.
-        result.append("maxWireVersion", WireSpec::instance().maxWireVersionIncoming);
-        result.append("minWireVersion", WireSpec::instance().minWireVersionIncoming);
+        result.append("maxWireVersion", WireSpec::instance().incoming.maxWireVersion);
+        result.append("minWireVersion", WireSpec::instance().incoming.minWireVersion);
+
+        const auto parameter = mapFindWithDefault(ServerParameterSet::getGlobal()->getMap(),
+                                                  "automationServiceDescriptor",
+                                                  static_cast<ServerParameter*>(nullptr));
+        if (parameter)
+            parameter->append(txn, result, "automationServiceDescriptor");
+
+        txn->getClient()->session()->getCompressorManager().serverNegotiate(cmdObj, &result);
 
         return true;
     }

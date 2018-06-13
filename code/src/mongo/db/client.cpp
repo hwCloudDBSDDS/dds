@@ -50,8 +50,6 @@
 
 namespace mongo {
 
-using logger::LogComponent;
-
 TSP_DECLARE(ServiceContext::UniqueClient, currentClient)
 TSP_DEFINE(ServiceContext::UniqueClient, currentClient)
 
@@ -65,16 +63,18 @@ void Client::initThreadIfNotAlready() {
     initThreadIfNotAlready(getThreadName().c_str());
 }
 
-void Client::initThread(const char* desc, AbstractMessagingPort* mp) {
-    initThread(desc, getGlobalServiceContext(), mp);
+void Client::initThread(const char* desc, transport::SessionHandle session) {
+    initThread(desc, getGlobalServiceContext(), std::move(session));
 }
 
-void Client::initThread(const char* desc, ServiceContext* service, AbstractMessagingPort* mp) {
+void Client::initThread(const char* desc,
+                        ServiceContext* service,
+                        transport::SessionHandle session) {
     invariant(currentClient.getMake()->get() == nullptr);
 
     std::string fullDesc;
-    if (mp != NULL) {
-        fullDesc = str::stream() << desc << mp->connectionId();
+    if (session) {
+        fullDesc = str::stream() << desc << session->id();
     } else {
         fullDesc = desc;
     }
@@ -82,7 +82,7 @@ void Client::initThread(const char* desc, ServiceContext* service, AbstractMessa
     setThreadName(fullDesc.c_str());
 
     // Create the client obj, attach to thread
-    *currentClient.get() = service->makeClient(fullDesc, mp);
+    *currentClient.get() = service->makeClient(fullDesc, std::move(session));
 }
 
 void Client::destroy() {
@@ -100,11 +100,12 @@ int64_t generateSeed(const std::string& desc) {
 }
 }  // namespace
 
-Client::Client(std::string desc, ServiceContext* serviceContext, AbstractMessagingPort* p)
-    : ClientBasic(serviceContext, p),
+Client::Client(std::string desc, ServiceContext* serviceContext, transport::SessionHandle session)
+    : _serviceContext(serviceContext),
+      _session(std::move(session)),
       _desc(std::move(desc)),
       _threadId(stdx::this_thread::get_id()),
-      _connectionId(p ? p->connectionId() : 0),
+      _connectionId(_session ? _session->id() : 0),
       _prng(generateSeed(_desc)) {}
 
 void Client::reportState(BSONObjBuilder& builder) {
@@ -148,13 +149,13 @@ std::string Client::clientAddress(bool includePort) const {
     return getRemote().host();
 }
 
-ClientBasic* ClientBasic::getCurrent() {
+Client* Client::getCurrent() {
     return currentClient.getMake()->get();
 }
 
 Client& cc() {
     Client* c = currentClient.getMake()->get();
-    verify(c);
+    invariant(c);
     return *c;
 }
 

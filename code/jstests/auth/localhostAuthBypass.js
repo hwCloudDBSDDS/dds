@@ -15,6 +15,12 @@ var createUser = function(mongo) {
     mongo.getDB("admin").createUser({user: username, pwd: password, roles: jsTest.adminUserRoles});
 };
 
+var createRole = function(mongo) {
+    print("============ adding a role.");
+    mongo.getDB("admin").createRole(
+        {role: "roleAdministrator", roles: [{role: "userAdmin", db: "admin"}], privileges: []});
+};
+
 var assertCannotRunCommands = function(mongo) {
     print("============ ensuring that commands cannot be run.");
 
@@ -73,17 +79,13 @@ var assertCannotRunCommands = function(mongo) {
         {param: "userCacheInvalidationIntervalSecs", val: 300}
     ];
     params.forEach(function(p) {
-        var cmd = {
-            setParameter: 1
-        };
+        var cmd = {setParameter: 1};
         cmd[p.param] = p.val;
         assert.commandFailedWithCode(
             mongo.getDB("admin").runCommand(cmd), authorizeErrorCode, "setParameter: " + p.param);
     });
     params.forEach(function(p) {
-        var cmd = {
-            getParameter: 1
-        };
+        var cmd = {getParameter: 1};
         cmd[p.param] = 1;
         assert.commandFailedWithCode(
             mongo.getDB("admin").runCommand(cmd), authorizeErrorCode, "getParameter: " + p.param);
@@ -161,8 +163,8 @@ var runNonlocalTest = function(host) {
 
     assertCannotRunCommands(mongo);
     assert.throws(function() {
-        mongo.getDB("admin")
-            .createUser({user: username, pwd: password, roles: jsTest.adminUserRoles});
+        mongo.getDB("admin").createUser(
+            {user: username, pwd: password, roles: jsTest.adminUserRoles});
     });
     assert.throws(function() {
         mongo.getDB("$external")
@@ -171,7 +173,25 @@ var runNonlocalTest = function(host) {
     shutdown(conn);
 };
 
+// Per SERVER-23503, the existence of roles in the admin database should disable the localhost
+// exception.
+// Start the server without auth. Create a role. Restart the server with auth. The exception is
+// now enabled.
+var runRoleTest = function() {
+    var conn = MongoRunner.runMongod({dbpath: dbpath});
+    var mongo = new Mongo("localhost:" + conn.port);
+    assertCanRunCommands(mongo);
+    createRole(mongo);
+    assertCanRunCommands(mongo);
+    MongoRunner.stopMongod(conn);
+    conn = MongoRunner.runMongod({auth: '', dbpath: dbpath, restart: true, cleanData: false});
+    mongo = new Mongo("localhost:" + conn.port);
+    assertCannotRunCommands(mongo);
+};
+
 runTest(false);
 runTest(true);
 
 runNonlocalTest(get_ipaddr());
+
+runRoleTest();

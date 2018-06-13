@@ -105,7 +105,7 @@ public:
     virtual void lockMMAPV1Flush();
 
     virtual void downgradeGlobalXtoSForMMAPV1();
-    virtual bool unlockAll();
+    virtual bool unlockGlobal();
 
     virtual void beginWriteUnitOfWork();
     virtual void endWriteUnitOfWork();
@@ -181,7 +181,8 @@ private:
 
     /**
      * The main functionality of the unlock method, except accepts iterator in order to avoid
-     * additional lookups during unlockAll. Frees locks immediately, so must not call inside WUOW.
+     * additional lookups during unlockGlobal. Frees locks immediately, so must not be called from
+     * inside a WUOW.
      */
     bool _unlockImpl(LockRequestsMap::Iterator* it);
 
@@ -243,18 +244,6 @@ public:
     virtual bool hasLockPending() const {
         return getWaitingResource().isValid();
     }
-
-    virtual void setIsBatchWriter(bool newValue) {
-        _batchWriter = newValue;
-    }
-    virtual bool isBatchWriter() const {
-        return _batchWriter;
-    }
-
-    virtual bool hasStrongLocks() const;
-
-private:
-    bool _batchWriter;
 };
 
 typedef LockerImpl<false> DefaultLockerImpl;

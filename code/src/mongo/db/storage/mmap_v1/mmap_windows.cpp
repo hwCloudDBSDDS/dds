@@ -47,10 +47,6 @@ using std::endl;
 using std::string;
 using std::vector;
 
-namespace {
-mongo::AtomicUInt64 mmfNextId(0);
-}
-
 static size_t fetchMinOSPageSizeBytes() {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
@@ -152,11 +148,6 @@ static void* getNextMemoryMappedFileLocation(unsigned long long mmfSize) {
     return reinterpret_cast<void*>(static_cast<uintptr_t>(thisMemoryMappedFileLocation));
 }
 
-MemoryMappedFile::MemoryMappedFile()
-    : _uniqueId(mmfNextId.fetchAndAdd(1)), fd(0), maphandle(0), len(0) {
-    created();
-}
-
 void MemoryMappedFile::close() {
     LockMongoFilesShared::assertExclusivelyLocked();
 
@@ -183,51 +174,7 @@ void MemoryMappedFile::close() {
 
 unsigned long long mapped = 0;
 
-void* MemoryMappedFile::createReadOnlyMap() {
-    verify(maphandle);
-
-    stdx::lock_guard<stdx::mutex> lk(mapViewMutex);
-
-    void* readOnlyMapAddress = NULL;
-    int current_retry = 0;
-
-    while (true) {
-        LPVOID thisAddress = getNextMemoryMappedFileLocation(len);
-
-        readOnlyMapAddress = MapViewOfFileEx(maphandle,      // file mapping handle
-                                             FILE_MAP_READ,  // access
-                                             0,
-                                             0,             // file offset, high and low
-                                             0,             // bytes to map, 0 == all
-                                             thisAddress);  // address to place file
-
-        if (0 == readOnlyMapAddress) {
-            DWORD dosError = GetLastError();
-
-            ++current_retry;
-
-            // If we failed to allocate a memory mapped file, try again in case we picked
-            // an address that Windows is also trying to use for some other VM allocations
-            if (dosError == ERROR_INVALID_ADDRESS && current_retry < 5) {
-                continue;
-            }
-
-            log() << "MapViewOfFileEx for " << filename() << " at address " << thisAddress
-                  << " failed with error " << errnoWithDescription(dosError) << " (file size is "
-                  << len << ")"
-                  << " in MemoryMappedFile::createReadOnlyMap" << endl;
-
-            fassertFailed(16165);
-        }
-
-        break;
-    }
-
-    views.push_back(readOnlyMapAddress);
-    return readOnlyMapAddress;
-}
-
-void* MemoryMappedFile::map(const char* filenameIn, unsigned long long& length, int options) {
+void* MemoryMappedFile::map(const char* filenameIn, unsigned long long& length) {
     verify(fd == 0 && len == 0);  // can't open more than once
     setFilename(filenameIn);
     FileAllocator::get()->allocateAsap(filenameIn, length);
@@ -249,18 +196,23 @@ void* MemoryMappedFile::map(const char* filenameIn, unsigned long long& length, 
 
     updateLength(filename, length);
 
+    const bool readOnly = isOptionSet(READONLY);
+
     {
         DWORD createOptions = FILE_ATTRIBUTE_NORMAL;
-        if (options & SEQUENTIAL)
+        if (isOptionSet(SEQUENTIAL))
             createOptions |= FILE_FLAG_SEQUENTIAL_SCAN;
-        DWORD rw = GENERIC_READ | GENERIC_WRITE;
+
+        DWORD desiredAccess = readOnly ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
+        DWORD shareMode = readOnly ? FILE_SHARE_READ : (FILE_SHARE_WRITE | FILE_SHARE_READ);
+
         fd = CreateFileW(toWideString(filename).c_str(),
-                         rw,                                  // desired access
-                         FILE_SHARE_WRITE | FILE_SHARE_READ,  // share mode
-                         NULL,                                // security
-                         OPEN_ALWAYS,                         // create disposition
-                         createOptions,                       // flags
-                         NULL);                               // hTempl
+                         desiredAccess,  // desired access
+                         shareMode,      // share mode
+                         NULL,           // security
+                         OPEN_ALWAYS,    // create disposition
+                         createOptions,  // flags
+                         NULL);          // hTempl
         if (fd == INVALID_HANDLE_VALUE) {
             DWORD dosError = GetLastError();
             log() << "CreateFileW for " << filename << " failed with "
@@ -273,7 +225,7 @@ void* MemoryMappedFile::map(const char* filenameIn, unsigned long long& length, 
     mapped += length;
 
     {
-        DWORD flProtect = PAGE_READWRITE;  //(options & READONLY)?PAGE_READONLY:PAGE_READWRITE;
+        DWORD flProtect = readOnly ? PAGE_READONLY : PAGE_READWRITE;
         maphandle = CreateFileMappingW(fd,
                                        NULL,
                                        flProtect,
@@ -293,7 +245,7 @@ void* MemoryMappedFile::map(const char* filenameIn, unsigned long long& length, 
     void* view = 0;
     {
         stdx::lock_guard<stdx::mutex> lk(mapViewMutex);
-        DWORD access = (options & READONLY) ? FILE_MAP_READ : FILE_MAP_ALL_ACCESS;
+        DWORD access = readOnly ? FILE_MAP_READ : FILE_MAP_ALL_ACCESS;
 
         int current_retry = 0;
         while (true) {
@@ -505,6 +457,7 @@ public:
 };
 
 void MemoryMappedFile::flush(bool sync) {
+    invariant(!(isOptionSet(Options::READONLY)));
     uassert(13056, "Async flushing not supported on windows", sync);
     if (!views.empty()) {
         WindowsFlushable f(this, viewForFlushing(), fd, _uniqueId, filename(), _flushMutex);

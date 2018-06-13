@@ -36,10 +36,11 @@
 
 #include "mongo/client/connpool.h"
 #include "mongo/client/constants.h"
-#include "mongo/client/dbclientcursor.h"
 #include "mongo/client/dbclient_rs.h"
+#include "mongo/client/dbclientcursor.h"
 #include "mongo/client/replica_set_monitor.h"
-#include "mongo/db/query/lite_parsed_query.h"
+#include "mongo/db/bson/dotted_path_support.h"
+#include "mongo/db/query/query_request.h"
 #include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/chunk_manager.h"
 #include "mongo/s/client/shard_registry.h"
@@ -47,6 +48,7 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/log.h"
+#include "mongo/util/net/socket_exception.h"
 
 namespace mongo {
 
@@ -57,6 +59,8 @@ using std::set;
 using std::string;
 using std::stringstream;
 using std::vector;
+
+namespace dps = ::mongo::dotted_path_support;
 
 LabeledLevel pc("pcursor", 2);
 
@@ -115,7 +119,7 @@ static void throwCursorError(DBClientCursor* cursor) {
 
 ParallelSortClusteredCursor::ParallelSortClusteredCursor(const QuerySpec& qSpec,
                                                          const CommandInfo& cInfo)
-    : _qSpec(qSpec), _cInfo(cInfo), _totalTries(0), _cmChangeAttempted(false) {
+    : _qSpec(qSpec), _cInfo(cInfo), _totalTries(0) {
     _done = false;
     _didInit = false;
 
@@ -168,7 +172,7 @@ void ParallelSortClusteredCursor::_finishCons() {
     BSONObjIterator sortKeyIt(_sortKey);
     while (sortKeyIt.more()) {
         BSONElement e = sortKeyIt.next();
-        if (LiteParsedQuery::isTextScoreMeta(e)) {
+        if (QueryRequest::isTextScoreMeta(e)) {
             textMetaSortKeyFields.insert(e.fieldName());
             transformedSortKeyBuilder.append(e.fieldName(), -1);
         } else {
@@ -192,7 +196,7 @@ void ParallelSortClusteredCursor::_finishCons() {
 
                 string fieldName = e.fieldName();
 
-                if (LiteParsedQuery::isTextScoreMeta(e)) {
+                if (QueryRequest::isTextScoreMeta(e)) {
                     textMetaSortKeyFields.erase(fieldName);
                 } else {
                     // exact field
@@ -315,7 +319,12 @@ BSONObj ParallelConnectionState::toBSON() const {
 
 BSONObj ParallelConnectionMetadata::toBSON() const {
     return BSON("state" << (pcState ? pcState->toBSON() : BSONObj()) << "retryNext" << retryNext
-                        << "init" << initialized << "finish" << finished << "errored" << errored);
+                        << "init"
+                        << initialized
+                        << "finish"
+                        << finished
+                        << "errored"
+                        << errored);
 }
 
 void ParallelSortClusteredCursor::fullInit(OperationContext* txn) {
@@ -370,13 +379,14 @@ void ParallelSortClusteredCursor::_handleStaleNS(OperationContext* txn,
     }
 }
 
-void ParallelSortClusteredCursor::setupVersionAndHandleSlaveOk(OperationContext* txn,
-                                                               PCStatePtr state,
-                                                               const ShardId& shardId,
-                                                               std::shared_ptr<Shard> primary,
-                                                               const NamespaceString& ns,
-                                                               const string& vinfo,
-                                                               ChunkManagerPtr manager) {
+void ParallelSortClusteredCursor::setupVersionAndHandleSlaveOk(
+    OperationContext* txn,
+    PCStatePtr state,
+    const ShardId& shardId,
+    std::shared_ptr<Shard> primary,
+    const NamespaceString& ns,
+    const string& vinfo,
+    std::shared_ptr<ChunkManager> manager) {
     if (manager) {
         state->manager = manager;
     } else if (primary) {
@@ -387,7 +397,7 @@ void ParallelSortClusteredCursor::setupVersionAndHandleSlaveOk(OperationContext*
 
     // Setup conn
     if (!state->conn) {
-        const auto shard = grid.shardRegistry()->getShard(txn, shardId);
+        const auto shard = uassertStatusOK(grid.shardRegistry()->getShard(txn, shardId));
         state->conn.reset(new ShardConnection(shard->getConnString(), ns.ns(), manager));
     }
 
@@ -400,6 +410,9 @@ void ParallelSortClusteredCursor::setupVersionAndHandleSlaveOk(OperationContext*
         const DBClientReplicaSet* replConn = dynamic_cast<const DBClientReplicaSet*>(rawConn);
         invariant(replConn);
         ReplicaSetMonitorPtr rsMonitor = ReplicaSetMonitor::get(replConn->getSetName());
+        uassert(16388,
+                str::stream() << "cannot access unknown replica set: " << replConn->getSetName(),
+                rsMonitor != nullptr);
         if (!rsMonitor->isKnownToHaveGoodPrimary()) {
             state->conn->donotCheckVersion();
 
@@ -429,7 +442,7 @@ void ParallelSortClusteredCursor::setupVersionAndHandleSlaveOk(OperationContext*
         if (allowShardVersionFailure &&
             (ErrorCodes::isNotMasterError(ErrorCodes::fromInt(errCode)) ||
              errCode == ErrorCodes::FailedToSatisfyReadPreference ||
-             errCode == 9001)) {  // socket exception
+             errCode == ErrorCodes::SocketException)) {
             // It's okay if we don't set the version when talking to a secondary, we can
             // be stale in any case.
 
@@ -483,8 +496,10 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
                                   << manager->getVersion().toString() << "]";
         }
 
-        manager->getShardIdsForQuery(
-            txn, !_cInfo.isEmpty() ? _cInfo.cmdFilter : _qSpec.filter(), &shardIds);
+        manager->getShardIdsForQuery(txn,
+                                     !_cInfo.isEmpty() ? _cInfo.cmdFilter : _qSpec.filter(),
+                                     !_cInfo.isEmpty() ? _cInfo.cmdCollation : BSONObj(),
+                                     &shardIds);
     } else if (primary) {
         if (MONGO_unlikely(shouldLog(pc))) {
             vinfo = str::stream() << "[unsharded @ " << primary->toString() << "]";
@@ -619,18 +634,7 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
                 mdata.retryNext = false;
                 mdata.initialized = true;
             } else {
-                bool success = false;
-
-                if (nsGetCollection(ns) == "$cmd") {
-                    /* TODO: remove this when config servers don't use
-                     * SyncClusterConnection anymore. This is needed
-                     * because SyncConn doesn't allow the call() method
-                     * to be used for commands.
-                     */
-                    success = state->cursor->initCommand();
-                } else {
-                    success = state->cursor->init();
-                }
+                bool success = state->cursor->init();
 
                 // Without full initialization, throw an exception
                 uassert(15987,
@@ -643,7 +647,6 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
                 mdata.initialized = true;
                 mdata.finished = true;
             }
-
 
             LOG(pc) << "initialized " << (isCommand() ? "command " : "query ")
                     << (lazyInit ? "(lazily) " : "(full) ") << "on shard " << shardId
@@ -664,7 +667,7 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
             int logLevel = fullReload ? 0 : 1;
             LOG(pc + logLevel) << "stale config of ns " << staleNS
                                << " during initialization, will retry with forced : " << forceReload
-                               << ", full : " << fullReload << causedBy(e);
+                               << ", full : " << fullReload << causedBy(redact(e));
 
             // This is somewhat strange
             if (staleNS != nss)
@@ -678,8 +681,8 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
             return;
         } catch (SocketException& e) {
             warning() << "socket exception when initializing on " << shardId
-                      << ", current connection state is " << mdata.toBSON() << causedBy(e);
-            e._shard = shardId;
+                      << ", current connection state is " << mdata.toBSON() << causedBy(redact(e));
+            e._shard = shardId.toString();
             mdata.errored = true;
             if (returnPartial) {
                 mdata.cleanup(true);
@@ -687,18 +690,9 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
             }
             throw;
         } catch (DBException& e) {
-            if (e.getCode() == ErrorCodes::IncompatibleCatalogManager) {
-                fassert(28792, !_cmChangeAttempted);
-                _cmChangeAttempted = true;
-
-                grid.forwardingCatalogManager()->waitForCatalogManagerChange(txn);
-                startInit(txn);
-                return;
-            }
-
             warning() << "db exception when initializing on " << shardId
-                      << ", current connection state is " << mdata.toBSON() << causedBy(e);
-            e._shard = shardId;
+                      << ", current connection state is " << mdata.toBSON() << causedBy(redact(e));
+            e._shard = shardId.toString();
             mdata.errored = true;
             if (returnPartial && e.getCode() == 15925 /* From above! */) {
                 mdata.cleanup(true);
@@ -836,7 +830,7 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
             continue;
         } catch (SocketException& e) {
             warning() << "socket exception when finishing on " << shardId
-                      << ", current connection state is " << mdata.toBSON() << causedBy(e);
+                      << ", current connection state is " << mdata.toBSON() << causedBy(redact(e));
             mdata.errored = true;
             if (returnPartial) {
                 mdata.cleanup(true);
@@ -848,7 +842,8 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
             // ABOVE
             if (e.getCode() == 15988) {
                 warning() << "exception when receiving data from " << shardId
-                          << ", current connection state is " << mdata.toBSON() << causedBy(e);
+                          << ", current connection state is " << mdata.toBSON()
+                          << causedBy(redact(e));
 
                 mdata.errored = true;
                 if (returnPartial) {
@@ -861,10 +856,11 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
                 // don't print/call "mdata.toBSON()" to avoid unexpected errors e.g. a segfault
                 if (e.getCode() == 22)
                     warning() << "bson is malformed :: db exception when finishing on " << shardId
-                              << causedBy(e);
+                              << causedBy(redact(e));
                 else
                     warning() << "db exception when finishing on " << shardId
-                              << ", current connection state is " << mdata.toBSON() << causedBy(e);
+                              << ", current connection state is " << mdata.toBSON()
+                              << causedBy(redact(e));
                 mdata.errored = true;
                 throw;
             }
@@ -899,7 +895,7 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
                 LOG(pc + logLevel)
                     << "stale config of ns " << staleNS
                     << " on finishing query, will retry with forced : " << forceReload
-                    << ", full : " << fullReload << causedBy(exception);
+                    << ", full : " << fullReload << causedBy(redact(exception));
 
                 // This is somewhat strange
                 if (staleNS != ns)
@@ -953,7 +949,7 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
         _cursors[index].reset(mdata.pcState->cursor.get(), &mdata);
 
         {
-            const auto shard = grid.shardRegistry()->getShard(txn, i->first);
+            const auto shard = uassertStatusOK(grid.shardRegistry()->getShard(txn, i->first));
             _servers.insert(shard->getConnString().toString());
         }
 
@@ -1058,18 +1054,20 @@ void ParallelSortClusteredCursor::_oldInit() {
                 conns[i]->done();
 
                 // Version is zero b/c this is deprecated codepath
-                staleConfigExs.push_back(
-                    str::stream() << "stale config detected for "
-                                  << RecvStaleConfigException(_ns,
-                                                              "ParallelCursor::_init",
-                                                              ChunkVersion(0, 0, OID()),
-                                                              ChunkVersion(0, 0, OID())).what()
-                                  << errLoc);
+                staleConfigExs.push_back(str::stream()
+                                         << "stale config detected for "
+                                         << RecvStaleConfigException(_ns,
+                                                                     "ParallelCursor::_init",
+                                                                     ChunkVersion(0, 0, OID()),
+                                                                     ChunkVersion(0, 0, OID()))
+                                                .what()
+                                         << errLoc);
                 break;
             }
 
             LOG(5) << "ParallelSortClusteredCursor::init server:" << serverHost << " ns:" << _ns
-                   << " query:" << _query << " fields:" << _fields << " options: " << _options;
+                   << " query:" << redact(_query) << " fields:" << redact(_fields)
+                   << " options: " << _options;
 
             if (!_cursors[i].get())
                 _cursors[i].reset(
@@ -1125,8 +1123,8 @@ void ParallelSortClusteredCursor::_oldInit() {
                     _cursors[i].reset(NULL, NULL);
 
                     if (!retry) {
-                        socketExs.push_back(str::stream()
-                                            << "error querying server: " << servers[i]);
+                        socketExs.push_back(str::stream() << "error querying server: "
+                                                          << servers[i]);
                         conns[i]->done();
                     } else {
                         retryQueries.insert(i);
@@ -1221,7 +1219,7 @@ void ParallelSortClusteredCursor::_oldInit() {
         } else if (throwException) {
             throw DBException(errMsg.str(), 14827);
         } else {
-            warning() << errMsg.str();
+            warning() << redact(errMsg.str());
         }
     }
 
@@ -1300,7 +1298,7 @@ BSONObj ParallelSortClusteredCursor::next() {
         }
 
         // Otherwise compare the result to the current best result
-        int comp = best.woSortOrder(me, _sortKey, true);
+        int comp = dps::compareObjectsAccordingToSort(best, me, _sortKey, true);
         if (comp < 0)
             continue;
 

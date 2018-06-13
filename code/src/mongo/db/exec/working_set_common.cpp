@@ -30,33 +30,34 @@
 
 #include "mongo/db/exec/working_set_common.h"
 
+#include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/service_context.h"
 #include "mongo/db/exec/working_set.h"
-#include "mongo/db/service_context.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/query/canonical_query.h"
+#include "mongo/db/service_context.h"
+#include "mongo/db/service_context.h"
 
 namespace mongo {
 
 // static
-bool WorkingSetCommon::fetchAndInvalidateLoc(OperationContext* txn,
-                                             WorkingSetMember* member,
-                                             const Collection* collection) {
+bool WorkingSetCommon::fetchAndInvalidateRecordId(OperationContext* txn,
+                                                  WorkingSetMember* member,
+                                                  const Collection* collection) {
     // Already in our desired state.
     if (member->getState() == WorkingSetMember::OWNED_OBJ) {
         return true;
     }
 
     // We can't do anything without a RecordId.
-    if (!member->hasLoc()) {
+    if (!member->hasRecordId()) {
         return false;
     }
 
     // Do the fetch, invalidate the DL.
-    member->obj = collection->docFor(txn, member->loc);
+    member->obj = collection->docFor(txn, member->recordId);
     member->obj.setValue(member->obj.value().getOwned());
-    member->loc = RecordId();
+    member->recordId = RecordId();
     member->transitionToOwnedObj();
 
     return true;
@@ -78,7 +79,7 @@ void WorkingSetCommon::prepareForSnapshotChange(WorkingSet* workingSet) {
 
         // We may see the same member twice, so anything we do here should be idempotent.
         WorkingSetMember* member = workingSet->get(id);
-        if (member->getState() == WorkingSetMember::LOC_AND_IDX) {
+        if (member->getState() == WorkingSetMember::RID_AND_IDX) {
             member->isSuspicious = true;
         }
     }
@@ -96,10 +97,10 @@ bool WorkingSetCommon::fetch(OperationContext* txn,
 
     // We should have a RecordId but need to retrieve the obj. Get the obj now and reset all WSM
     // state appropriately.
-    invariant(member->hasLoc());
+    invariant(member->hasRecordId());
 
     member->obj.reset();
-    auto record = cursor->seekExact(member->loc);
+    auto record = cursor->seekExact(member->recordId);
     if (!record) {
         return false;
     }
@@ -113,8 +114,14 @@ bool WorkingSetCommon::fetch(OperationContext* txn,
         // unneeded due to the structure of the plan.
         invariant(!member->keyData.empty());
         for (size_t i = 0; i < member->keyData.size(); i++) {
-            BSONObjSet keys;
-            member->keyData[i].index->getKeys(member->obj.value(), &keys);
+            BSONObjSet keys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
+            // There's no need to compute the prefixes of the indexed fields that cause the index to
+            // be multikey when ensuring the keyData is still valid.
+            MultikeyPaths* multikeyPaths = nullptr;
+            member->keyData[i].index->getKeys(member->obj.value(),
+                                              IndexAccessMethod::GetKeysMode::kEnforceConstraints,
+                                              &keys,
+                                              multikeyPaths);
             if (!keys.count(member->keyData[i].keyData)) {
                 // document would no longer be at this position in the index.
                 return false;
@@ -125,7 +132,7 @@ bool WorkingSetCommon::fetch(OperationContext* txn,
     }
 
     member->keyData.clear();
-    workingSet->transitionToLocAndObj(id);
+    workingSet->transitionToRecordIdAndObj(id);
     return true;
 }
 

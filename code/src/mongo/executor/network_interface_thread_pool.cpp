@@ -33,6 +33,7 @@
 #include "mongo/executor/network_interface_thread_pool.h"
 
 #include "mongo/executor/network_interface.h"
+#include "mongo/util/destructor_guard.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
@@ -131,12 +132,11 @@ void NetworkInterfaceThreadPool::consumeTasks(stdx::unique_lock<stdx::mutex> lk)
         if (!_registeredAlarm) {
             _registeredAlarm = true;
             lk.unlock();
-            _net->setAlarm(_net->now(),
-                           [this] {
-                               stdx::unique_lock<stdx::mutex> lk(_mutex);
-                               _registeredAlarm = false;
-                               consumeTasks(std::move(lk));
-                           });
+            _net->setAlarm(_net->now(), [this] {
+                stdx::unique_lock<stdx::mutex> lk(_mutex);
+                _registeredAlarm = false;
+                consumeTasks(std::move(lk));
+            });
         }
 
         return;

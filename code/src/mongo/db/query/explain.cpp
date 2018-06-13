@@ -38,13 +38,15 @@
 #include "mongo/db/exec/index_scan.h"
 #include "mongo/db/exec/multi_plan.h"
 #include "mongo/db/exec/near.h"
+#include "mongo/db/exec/pipeline_proxy.h"
 #include "mongo/db/exec/text.h"
+#include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_executor.h"
+#include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_settings.h"
 #include "mongo/db/query/stage_builder.h"
-#include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/util/mongoutils/str.h"
@@ -194,6 +196,40 @@ void addStageSummaryStr(const PlanStage* stage, mongoutils::str::stream& ss) {
     }
 }
 
+/**
+ * Adds the path-level multikey information to the explain output in a field called "multiKeyPaths".
+ * The value associated with the "multiKeyPaths" field is an object with keys equal to those in the
+ * index key pattern and values equal to an array of strings corresponding to paths that cause the
+ * index to be multikey.
+ *
+ * For example, with the index {'a.b': 1, 'a.c': 1} where the paths "a" and "a.b" cause the
+ * index to be multikey, we'd have {'multiKeyPaths': {'a.b': ['a', 'a.b'], 'a.c': ['a']}}.
+ *
+ * This function should only be called if the associated index supports path-level multikey
+ * tracking.
+ */
+void appendMultikeyPaths(const BSONObj& keyPattern,
+                         const MultikeyPaths& multikeyPaths,
+                         BSONObjBuilder* bob) {
+    BSONObjBuilder subMultikeyPaths(bob->subobjStart("multiKeyPaths"));
+
+    size_t i = 0;
+    for (const auto keyElem : keyPattern) {
+        const FieldRef path{keyElem.fieldNameStringData()};
+
+        BSONArrayBuilder arrMultikeyComponents(
+            subMultikeyPaths.subarrayStart(keyElem.fieldNameStringData()));
+        for (const auto multikeyComponent : multikeyPaths[i]) {
+            arrMultikeyComponents.append(path.dottedSubstring(0, multikeyComponent + 1));
+        }
+        arrMultikeyComponents.doneFast();
+
+        ++i;
+    }
+
+    subMultikeyPaths.doneFast();
+}
+
 }  // namespace
 
 namespace mongo {
@@ -283,11 +319,24 @@ void Explain::statsToBSON(const PlanStageStats& stats,
 
         bob->append("keyPattern", spec->keyPattern);
         bob->append("indexName", spec->indexName);
+        if (!spec->collation.isEmpty()) {
+            bob->append("collation", spec->collation);
+        }
         bob->appendBool("isMultiKey", spec->isMultiKey);
+        if (!spec->multiKeyPaths.empty()) {
+            appendMultikeyPaths(spec->keyPattern, spec->multiKeyPaths, bob);
+        }
         bob->appendBool("isUnique", spec->isUnique);
         bob->appendBool("isSparse", spec->isSparse);
         bob->appendBool("isPartial", spec->isPartial);
         bob->append("indexVersion", spec->indexVersion);
+
+        BSONObjBuilder indexBoundsBob;
+        indexBoundsBob.append("startKey", spec->startKey);
+        indexBoundsBob.append("startKeyInclusive", spec->startKeyInclusive);
+        indexBoundsBob.append("endKey", spec->endKey);
+        indexBoundsBob.append("endKeyInclusive", spec->endKeyInclusive);
+        bob->append("indexBounds", indexBoundsBob.obj());
     } else if (STAGE_DELETE == stats.stageType) {
         DeleteStats* spec = static_cast<DeleteStats*>(stats.specific.get());
 
@@ -300,7 +349,13 @@ void Explain::statsToBSON(const PlanStageStats& stats,
 
         bob->append("keyPattern", spec->keyPattern);
         bob->append("indexName", spec->indexName);
+        if (!spec->collation.isEmpty()) {
+            bob->append("collation", spec->collation);
+        }
         bob->appendBool("isMultiKey", spec->isMultiKey);
+        if (!spec->multiKeyPaths.empty()) {
+            appendMultikeyPaths(spec->keyPattern, spec->multiKeyPaths, bob);
+        }
         bob->appendBool("isUnique", spec->isUnique);
         bob->appendBool("isSparse", spec->isSparse);
         bob->appendBool("isPartial", spec->isPartial);
@@ -333,6 +388,7 @@ void Explain::statsToBSON(const PlanStageStats& stats,
 
         bob->append("keyPattern", spec->keyPattern);
         bob->append("indexName", spec->indexName);
+        bob->append("indexVersion", spec->indexVersion);
 
         if (verbosity >= ExplainCommon::EXEC_STATS) {
             BSONArrayBuilder intervalsBob(bob->subarrayStart("searchIntervals"));
@@ -364,7 +420,13 @@ void Explain::statsToBSON(const PlanStageStats& stats,
 
         bob->append("keyPattern", spec->keyPattern);
         bob->append("indexName", spec->indexName);
+        if (!spec->collation.isEmpty()) {
+            bob->append("collation", spec->collation);
+        }
         bob->appendBool("isMultiKey", spec->isMultiKey);
+        if (!spec->multiKeyPaths.empty()) {
+            appendMultikeyPaths(spec->keyPattern, spec->multiKeyPaths, bob);
+        }
         bob->appendBool("isUnique", spec->isUnique);
         bob->appendBool("isSparse", spec->isSparse);
         bob->appendBool("isPartial", spec->isPartial);
@@ -379,6 +441,7 @@ void Explain::statsToBSON(const PlanStageStats& stats,
 
         if (verbosity >= ExplainCommon::EXEC_STATS) {
             bob->appendNumber("keysExamined", spec->keysExamined);
+            bob->appendNumber("seeks", spec->seeks);
             bob->appendNumber("dupsTested", spec->dupsTested);
             bob->appendNumber("dupsDropped", spec->dupsDropped);
             bob->appendNumber("seenInvalidated", spec->seenInvalidated);
@@ -389,7 +452,7 @@ void Explain::statsToBSON(const PlanStageStats& stats,
         if (verbosity >= ExplainCommon::EXEC_STATS) {
             bob->appendNumber("dupsTested", spec->dupsTested);
             bob->appendNumber("dupsDropped", spec->dupsDropped);
-            bob->appendNumber("locsForgotten", spec->locsForgotten);
+            bob->appendNumber("recordIdsForgotten", spec->recordIdsForgotten);
         }
     } else if (STAGE_LIMIT == stats.stageType) {
         LimitStats* spec = static_cast<LimitStats*>(stats.specific.get());
@@ -432,6 +495,7 @@ void Explain::statsToBSON(const PlanStageStats& stats,
         bob->append("indexPrefix", spec->indexPrefix);
         bob->append("indexName", spec->indexName);
         bob->append("parsedTextQuery", spec->parsedTextQuery);
+        bob->append("textIndexVersion", spec->textIndexVersion);
     } else if (STAGE_TEXT_MATCH == stats.stageType) {
         TextMatchStats* spec = static_cast<TextMatchStats*>(stats.specific.get());
 
@@ -452,7 +516,6 @@ void Explain::statsToBSON(const PlanStageStats& stats,
             bob->appendNumber("nWouldModify", spec->nModified);
             bob->appendNumber("nInvalidateSkips", spec->nInvalidateSkips);
             bob->appendBool("wouldInsert", spec->inserted);
-            bob->appendBool("fastmod", spec->fastmod);
             bob->appendBool("fastmodinsert", spec->fastmodinsert);
         }
     }
@@ -516,13 +579,13 @@ void Explain::getWinningPlanStats(const PlanExecutor* exec, BSONObjBuilder* bob)
 
 // static
 void Explain::generatePlannerInfo(PlanExecutor* exec,
+                                  const Collection* collection,
                                   PlanStageStats* winnerStats,
                                   const vector<unique_ptr<PlanStageStats>>& rejectedStats,
                                   BSONObjBuilder* out) {
     CanonicalQuery* query = exec->getCanonicalQuery();
 
     BSONObjBuilder plannerBob(out->subobjStart("queryPlanner"));
-    ;
 
     plannerBob.append("plannerVersion", QueryPlanner::kPlannerVersion);
     plannerBob.append("namespace", exec->ns());
@@ -530,15 +593,13 @@ void Explain::generatePlannerInfo(PlanExecutor* exec,
     // Find whether there is an index filter set for the query shape. The 'indexFilterSet'
     // field will always be false in the case of EOF or idhack plans.
     bool indexFilterSet = false;
-    if (exec->collection() && exec->getCanonicalQuery()) {
-        const CollectionInfoCache* infoCache = exec->collection()->infoCache();
+    if (collection && exec->getCanonicalQuery()) {
+        const CollectionInfoCache* infoCache = collection->infoCache();
         const QuerySettings* querySettings = infoCache->getQuerySettings();
         PlanCacheKey planCacheKey =
             infoCache->getPlanCache()->computeKey(*exec->getCanonicalQuery());
-        AllowedIndices* allowedIndicesRaw;
-        if (querySettings->getAllowedIndices(planCacheKey, &allowedIndicesRaw)) {
+        if (auto allowedIndicesFilter = querySettings->getAllowedIndicesFilter(planCacheKey)) {
             // Found an index filter set on the query shape.
-            std::unique_ptr<AllowedIndices> allowedIndices(allowedIndicesRaw);
             indexFilterSet = true;
         }
     }
@@ -549,8 +610,12 @@ void Explain::generatePlannerInfo(PlanExecutor* exec,
     // does not canonicalize for idhack updates). In these cases, 'query' is NULL.
     if (NULL != query) {
         BSONObjBuilder parsedQueryBob(plannerBob.subobjStart("parsedQuery"));
-        query->root()->toBSON(&parsedQueryBob);
+        query->root()->serialize(&parsedQueryBob);
         parsedQueryBob.doneFast();
+
+        if (query->getCollator()) {
+            plannerBob.append("collation", query->getCollator()->getSpec().toBSON());
+        }
     }
 
     BSONObjBuilder winningPlanBob(plannerBob.subobjStart("winningPlan"));
@@ -611,47 +676,36 @@ void Explain::generateServerInfo(BSONObjBuilder* out) {
     BSONObjBuilder serverBob(out->subobjStart("serverInfo"));
     out->append("host", getHostNameCached());
     out->appendNumber("port", serverGlobalParams.port);
-    out->append("version", versionString);
-    out->append("gitVersion", gitVersion());
+    auto&& vii = VersionInfoInterface::instance();
+    out->append("version", vii.version());
+    out->append("gitVersion", vii.gitVersion());
     serverBob.doneFast();
 }
 
 // static
 void Explain::explainStages(PlanExecutor* exec,
+                            const Collection* collection,
                             ExplainCommon::Verbosity verbosity,
                             BSONObjBuilder* out) {
     //
-    // Step 1: run the stages as required by the verbosity level.
+    // Collect plan stats, running the plan if necessary. The stats also give the structure of the
+    // plan tree.
     //
 
-    // Inspect the tree to see if there is a MultiPlanStage.
+    // Inspect the tree to see if there is a MultiPlanStage. Plan selection has already happened at
+    // this point, since we have a PlanExecutor.
     MultiPlanStage* mps = getMultiPlanStage(exec->getRootStage());
 
-    // Get stats of the winning plan from the trial period, if the verbosity level
-    // is high enough and there was a runoff between multiple plans.
+    // Get stats of the winning plan from the trial period, if the verbosity level is high enough
+    // and there was a runoff between multiple plans.
     unique_ptr<PlanStageStats> winningStatsTrial;
     if (verbosity >= ExplainCommon::EXEC_ALL_PLANS && mps) {
         winningStatsTrial = std::move(mps->getStats()->children[mps->bestPlanIdx()]);
         invariant(winningStatsTrial.get());
     }
 
-    // If we need execution stats, then run the plan in order to gather the stats.
-    Status executePlanStatus = Status::OK();
-    if (verbosity >= ExplainCommon::EXEC_STATS) {
-        executePlanStatus = exec->executePlan();
-    }
-
-    //
-    // Step 2: collect plan stats (which also give the structure of the plan tree).
-    //
-
-    // Get stats for the winning plan. If there is only a single candidate plan, it is considered
-    // the winner.
-    unique_ptr<PlanStageStats> winningStats(
-        mps ? std::move(mps->getStats()->children[mps->bestPlanIdx()])
-            : std::move(exec->getStats()));
-
-    // Get stats for the rejected plans, if more than one plan was considered.
+    // If more than one plan was considered, get the stats from the trial period for the rejected
+    // plans.
     vector<unique_ptr<PlanStageStats>> allPlansStats;
     if (mps) {
         auto mpsStats = mps->getStats();
@@ -662,12 +716,30 @@ void Explain::explainStages(PlanExecutor* exec,
         }
     }
 
+    // If we need execution stats, then run the plan in order to gather the stats.
+    Status executePlanStatus = Status::OK();
+    if (verbosity >= ExplainCommon::EXEC_STATS) {
+        executePlanStatus = exec->executePlan();
+    }
+
+    // If executing the query failed because it was killed, then the collection may no longer be
+    // valid. We indicate this by setting our collection pointer to null.
+    if (executePlanStatus == ErrorCodes::QueryPlanKilled) {
+        collection = nullptr;
+    }
+
+    // Get stats for the winning plan. If there is only a single candidate plan, it is considered
+    // the winner.
+    unique_ptr<PlanStageStats> winningStats(
+        mps ? std::move(mps->getStats()->children[mps->bestPlanIdx()])
+            : std::move(exec->getStats()));
+
     //
-    // Step 3: use the stats trees to produce explain BSON.
+    // Use the stats trees to produce explain BSON.
     //
 
     if (verbosity >= ExplainCommon::QUERY_PLANNER) {
-        generatePlannerInfo(exec, winningStats.get(), allPlansStats, out);
+        generatePlannerInfo(exec, collection, winningStats.get(), allPlansStats, out);
     }
 
     if (verbosity >= ExplainCommon::EXEC_STATS) {
@@ -683,7 +755,7 @@ void Explain::explainStages(PlanExecutor* exec,
 
         // Generate exec stats BSON for the winning plan.
         OperationContext* opCtx = exec->getOpCtx();
-        long long totalTimeMillis = CurOp::get(opCtx)->elapsedMillis();
+        long long totalTimeMillis = CurOp::get(opCtx)->elapsedMicros() / 1000;
         generateExecStats(winningStats.get(), verbosity, &execBob, totalTimeMillis);
 
         // Also generate exec stats for all plans, if the verbosity level is high enough.
@@ -720,6 +792,11 @@ std::string Explain::getPlanSummary(const PlanExecutor* exec) {
 
 // static
 std::string Explain::getPlanSummary(const PlanStage* root) {
+    if (root->stageType() == STAGE_PIPELINE_PROXY) {
+        auto pipelineProxy = static_cast<const PipelineProxyStage*>(root);
+        return pipelineProxy->getPlanSummaryStr();
+    }
+
     std::vector<const PlanStage*> stages;
     flattenExecTree(root, &stages);
 
@@ -749,6 +826,12 @@ void Explain::getSummaryStats(const PlanExecutor& exec, PlanSummaryStats* statsO
 
     PlanStage* root = exec.getRootStage();
 
+    if (root->stageType() == STAGE_PIPELINE_PROXY) {
+        auto pipelineProxy = static_cast<PipelineProxyStage*>(root);
+        pipelineProxy->getPlanSummaryStats(statsOut);
+        return;
+    }
+
     // We can get some of the fields we need from the common stats stored in the
     // root stage of the plan tree.
     const CommonStats* common = root->getCommonStats();
@@ -760,15 +843,15 @@ void Explain::getSummaryStats(const PlanExecutor& exec, PlanSummaryStats* statsO
     std::vector<const PlanStage*> stages;
     flattenExecTree(root, &stages);
 
+    statsOut->totalKeysExamined = 0;
+    statsOut->totalDocsExamined = 0;
+
     for (size_t i = 0; i < stages.size(); i++) {
         statsOut->totalKeysExamined +=
             getKeysExamined(stages[i]->stageType(), stages[i]->getSpecificStats());
         statsOut->totalDocsExamined +=
             getDocsExamined(stages[i]->stageType(), stages[i]->getSpecificStats());
 
-        if (STAGE_IDHACK == stages[i]->stageType()) {
-            statsOut->isIdhack = true;
-        }
         if (STAGE_SORT == stages[i]->stageType()) {
             statsOut->hasSortStage = true;
         }

@@ -31,10 +31,10 @@
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/range_arithmetic.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/dbtests/dbtests.h"
@@ -58,7 +58,8 @@ public:
     RemoveRange() : _min(4), _max(8) {}
 
     void run() {
-        OperationContextImpl txn;
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
         DBDirectClient client(&txn);
 
         for (int i = 0; i < 10; ++i) {
@@ -73,11 +74,12 @@ public:
 
             KeyRange range(ns, BSON("_id" << _min), BSON("_id" << _max), BSON("_id" << 1));
             mongo::WriteConcernOptions dummyWriteConcern;
-            Helpers::removeRange(&txn, range, false, dummyWriteConcern);
+            Helpers::removeRange(
+                &txn, range, BoundInclusion::kIncludeStartKeyOnly, dummyWriteConcern);
         }
 
         // Check that the expected documents remain.
-        ASSERT_EQUALS(expected(), docs(&txn));
+        ASSERT_BSONOBJ_EQ(expected(), docs(&txn));
     }
 
 private:

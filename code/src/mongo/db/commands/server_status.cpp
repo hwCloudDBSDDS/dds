@@ -32,13 +32,13 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/config.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
-#include "mongo/db/client_basic.h"
-#include "mongo/config.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/commands/server_status_internal.h"
@@ -47,12 +47,14 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/platform/process_id.h"
+#include "mongo/transport/message_compressor_registry.h"
+#include "mongo/transport/transport_layer.h"
 #include "mongo/util/log.h"
-#include "mongo/util/net/hostname_canonicalization_worker.h"
-#include "mongo/util/net/listen.h"
+#include "mongo/util/net/hostname_canonicalization.h"
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/ramlog.h"
+#include "mongo/util/time_support.h"
 #include "mongo/util/version.h"
 
 namespace mongo {
@@ -64,10 +66,9 @@ using std::stringstream;
 
 class CmdServerStatus : public Command {
 public:
-    CmdServerStatus()
-        : Command("serverStatus", true), _started(curTimeMillis64()), _runCalled(false) {}
+    CmdServerStatus() : Command("serverStatus", true), _started(Date_t::now()), _runCalled(false) {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual bool slaveOk() const {
@@ -92,27 +93,27 @@ public:
              BSONObjBuilder& result) {
         _runCalled = true;
 
-        long long start = Listener::getElapsedTimeMillis();
+        const auto service = txn->getServiceContext();
+        const auto clock = service->getFastClockSource();
+        const auto runStart = clock->now();
         BSONObjBuilder timeBuilder(256);
 
-        const auto authSession = AuthorizationSession::get(ClientBasic::getCurrent());
-        auto service = txn->getServiceContext();
-        auto canonicalizer = HostnameCanonicalizationWorker::get(service);
+        const auto authSession = AuthorizationSession::get(Client::getCurrent());
 
         // --- basic fields that are global
 
         result.append("host", prettyHostName());
-        result.append("advisoryHostFQDNs", canonicalizer->getCanonicalizedFQDNs());
-
-        result.append("version", versionString);
+        result.append("version", VersionInfoInterface::instance().version());
         result.append("process", serverGlobalParams.binaryName);
         result.append("pid", ProcessId::getCurrent().asLongLong());
         result.append("uptime", (double)(time(0) - serverGlobalParams.started));
-        result.append("uptimeMillis", (long long)(curTimeMillis64() - _started));
-        result.append("uptimeEstimate", (double)(start / 1000));
+        auto uptime = clock->now() - _started;
+        result.append("uptimeMillis", durationCount<Milliseconds>(uptime));
+        result.append("uptimeEstimate", durationCount<Seconds>(uptime));
         result.appendDate("localTime", jsTime());
 
-        timeBuilder.appendNumber("after basic", Listener::getElapsedTimeMillis() - start);
+        timeBuilder.appendNumber("after basic",
+                                 durationCount<Milliseconds>(clock->now() - runStart));
 
         // --- all sections
 
@@ -125,23 +126,19 @@ public:
                 continue;
 
             bool include = section->includeByDefault();
-
-            BSONElement e = cmdObj[section->getSectionName()];
-            if (e.type()) {
-                include = e.trueValue();
+            const auto& elem = cmdObj[section->getSectionName()];
+            if (elem.type()) {
+                include = elem.trueValue();
             }
 
-            if (!include)
+            if (!include) {
                 continue;
+            }
 
-            BSONObj data = section->generateSection(txn, e);
-            if (data.isEmpty())
-                continue;
-
-            result.append(section->getSectionName(), data);
+            section->appendSection(txn, elem, &result);
             timeBuilder.appendNumber(
                 static_cast<string>(str::stream() << "after " << section->getSectionName()),
-                Listener::getElapsedTimeMillis() - start);
+                durationCount<Milliseconds>(clock->now() - runStart));
         }
 
         // --- counters
@@ -166,10 +163,11 @@ public:
             }
         }
 
-        timeBuilder.appendNumber("at end", Listener::getElapsedTimeMillis() - start);
-        if (Listener::getElapsedTimeMillis() - start > 1000) {
+        auto runElapsed = clock->now() - runStart;
+        timeBuilder.appendNumber("at end", durationCount<Milliseconds>(runElapsed));
+        if (runElapsed > Milliseconds(1000)) {
             BSONObj t = timeBuilder.obj();
-            log() << "serverStatus was very slow: " << t << endl;
+            log() << "serverStatus was very slow: " << t;
             result.append("timing", t);
         }
 
@@ -185,7 +183,7 @@ public:
     }
 
 private:
-    const unsigned long long _started;
+    const Date_t _started;
     bool _runCalled;
 
     typedef map<string, ServerStatusSection*> SectionMap;
@@ -224,9 +222,10 @@ public:
 
     BSONObj generateSection(OperationContext* txn, const BSONElement& configElement) const {
         BSONObjBuilder bb;
-        bb.append("current", Listener::globalTicketHolder.used());
-        bb.append("available", Listener::globalTicketHolder.available());
-        bb.append("totalCreated", Listener::globalConnectionNumber.load());
+        auto stats = txn->getServiceContext()->getTransportLayer()->sessionStats();
+        bb.append("current", static_cast<int>(stats.numOpenSessions));
+        bb.append("available", static_cast<int>(stats.numAvailableSessions));
+        bb.append("totalCreated", static_cast<int>(stats.numCreatedSessions));
         return bb.obj();
     }
 
@@ -282,6 +281,7 @@ public:
     BSONObj generateSection(OperationContext* txn, const BSONElement& configElement) const {
         BSONObjBuilder b;
         networkCounter.append(b);
+        appendMessageCompressionStats(&b);
         return b.obj();
     }
 
@@ -325,6 +325,23 @@ public:
         }
     }
 } memBase;
-}
+
+class AdvisoryHostFQDNs final : public ServerStatusSection {
+public:
+    AdvisoryHostFQDNs() : ServerStatusSection("advisoryHostFQDNs") {}
+
+    bool includeByDefault() const override {
+        return false;
+    }
+
+    void appendSection(OperationContext* txn,
+                       const BSONElement& configElement,
+                       BSONObjBuilder* out) const override {
+        out->append(
+            "advisoryHostFQDNs",
+            getHostFQDNs(getHostNameCached(), HostnameCanonicalizationMode::kForwardAndReverse));
+    }
+} advisoryHostFQDNs;
+}  // namespace
 
 }  // namespace mongo

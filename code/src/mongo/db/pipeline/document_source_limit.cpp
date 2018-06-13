@@ -28,11 +28,13 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/pipeline/document_source_limit.h"
+
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/document.h"
-#include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/pipeline/value.h"
 
 namespace mongo {
@@ -41,46 +43,58 @@ using boost::intrusive_ptr;
 
 DocumentSourceLimit::DocumentSourceLimit(const intrusive_ptr<ExpressionContext>& pExpCtx,
                                          long long limit)
-    : DocumentSource(pExpCtx), limit(limit), count(0) {}
+    : DocumentSource(pExpCtx), _limit(limit) {}
 
-REGISTER_DOCUMENT_SOURCE(limit, DocumentSourceLimit::createFromBson);
+REGISTER_DOCUMENT_SOURCE(limit,
+                         LiteParsedDocumentSourceDefault::parse,
+                         DocumentSourceLimit::createFromBson);
 
 const char* DocumentSourceLimit::getSourceName() const {
     return "$limit";
 }
 
-bool DocumentSourceLimit::coalesce(const intrusive_ptr<DocumentSource>& pNextSource) {
-    DocumentSourceLimit* pLimit = dynamic_cast<DocumentSourceLimit*>(pNextSource.get());
+Pipeline::SourceContainer::iterator DocumentSourceLimit::doOptimizeAt(
+    Pipeline::SourceContainer::iterator itr, Pipeline::SourceContainer* container) {
+    invariant(*itr == this);
 
-    /* if it's not another $limit, we can't coalesce */
-    if (!pLimit)
-        return false;
+    auto nextLimit = dynamic_cast<DocumentSourceLimit*>((*std::next(itr)).get());
 
-    /* we need to limit by the minimum of the two limits */
-    if (pLimit->limit < limit)
-        limit = pLimit->limit;
-    return true;
+    if (nextLimit) {
+        _limit = std::min(_limit, nextLimit->getLimit());
+        container->erase(std::next(itr));
+        return itr;
+    }
+    return std::next(itr);
 }
 
-boost::optional<Document> DocumentSourceLimit::getNext() {
+DocumentSource::GetNextResult DocumentSourceLimit::getNext() {
     pExpCtx->checkForInterrupt();
 
-    if (++count > limit) {
-        pSource->dispose();
-        return boost::none;
+    if (_nReturned >= _limit) {
+        return GetNextResult::makeEOF();
     }
 
-    return pSource->getNext();
+    auto nextInput = pSource->getNext();
+    if (nextInput.isAdvanced()) {
+        ++_nReturned;
+        if (_nReturned >= _limit) {
+            dispose();
+        }
+    }
+
+    return nextInput;
 }
 
 Value DocumentSourceLimit::serialize(bool explain) const {
-    return Value(DOC(getSourceName() << limit));
+    return Value(Document{{getSourceName(), _limit}});
 }
 
 intrusive_ptr<DocumentSourceLimit> DocumentSourceLimit::create(
     const intrusive_ptr<ExpressionContext>& pExpCtx, long long limit) {
     uassert(15958, "the limit must be positive", limit > 0);
-    return new DocumentSourceLimit(pExpCtx, limit);
+    intrusive_ptr<DocumentSourceLimit> source(new DocumentSourceLimit(pExpCtx, limit));
+    source->injectExpressionContext(pExpCtx);
+    return source;
 }
 
 intrusive_ptr<DocumentSource> DocumentSourceLimit::createFromBson(

@@ -34,19 +34,19 @@
 
 #include <memory.h>
 
+#include "mongo/base/checked_cast.h"
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/snapshot_name.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/util/timer.h"
 
 namespace mongo {
 
 class BSONObjBuilder;
-class WiredTigerSession;
-class WiredTigerSessionCache;
 
 class WiredTigerRecoveryUnit final : public RecoveryUnit {
 public:
@@ -107,7 +107,9 @@ public:
         return _oplogReadTill;
     }
 
-    static WiredTigerRecoveryUnit* get(OperationContext* txn);
+    static WiredTigerRecoveryUnit* get(OperationContext* txn) {
+        return checked_cast<WiredTigerRecoveryUnit*>(txn->recoveryUnit());
+    }
 
     static void appendGlobalStats(BSONObjBuilder& b);
 
@@ -128,7 +130,7 @@ private:
     void _txnOpen(OperationContext* opCtx);
 
     WiredTigerSessionCache* _sessionCache;  // not owned
-    WiredTigerSession* _session;            // owned, but from pool
+    UniqueWiredTigerSession _session;
     bool _areWriteUnitOfWorksBanned = false;
     bool _inUnitOfWork;
     bool _active;

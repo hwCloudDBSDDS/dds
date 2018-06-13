@@ -43,9 +43,7 @@ var waitForLock = function(mongo, name) {
     };
 
     // Return an object we can invoke unlock on
-    return {
-        unlock: unlock
-    };
+    return {unlock: unlock};
 };
 
 /**
@@ -138,6 +136,7 @@ startParallelOps = function(mongo, proc, args, context) {
     var bootstrapper = function(stored) {
 
         var procContext = stored.procContext;
+        eval("procContext = " + procContext);
         procContext.setup(procContext, stored);
 
         var contexts = stored.contexts;
@@ -177,7 +176,7 @@ startParallelOps = function(mongo, proc, args, context) {
         bootstrapper: tojson(bootstrapper),
         operation: tojson(proc),
         args: tojson(args),
-        procContext: procContext,
+        procContext: tojson(procContext),
         contexts: tojson(contexts)
     });
 

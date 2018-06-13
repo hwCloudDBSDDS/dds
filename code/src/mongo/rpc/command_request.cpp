@@ -37,6 +37,7 @@
 #include "mongo/base/data_type_string_data.h"
 #include "mongo/base/data_type_terminated.h"
 #include "mongo/base/data_type_validated.h"
+#include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/rpc/object_check.h"
@@ -73,28 +74,42 @@ CommandRequest::CommandRequest(const Message* message) : _message(message) {
     _database = std::move(str.value);
 
     uassert(28636,
-            str::stream() << "Database parsed in OP_COMMAND message must be between"
-                          << kMinDatabaseLength << " and " << kMaxDatabaseLength
-                          << " bytes. Got: " << _database,
+            str::stream() << "Database parsed in OP_COMMAND message must be between "
+                          << kMinDatabaseLength
+                          << " and "
+                          << kMaxDatabaseLength
+                          << " bytes. Got: "
+                          << _database,
             (_database.size() >= kMinDatabaseLength) && (_database.size() <= kMaxDatabaseLength));
 
-    uassert(ErrorCodes::InvalidNamespace,
-            str::stream() << "Invalid database name: '" << _database << "'",
-            NamespaceString::validDBName(_database));
+    uassert(
+        ErrorCodes::InvalidNamespace,
+        str::stream() << "Invalid database name: '" << _database << "'",
+        NamespaceString::validDBName(_database, NamespaceString::DollarInDbNameBehavior::Allow));
 
     uassertStatusOK(cur.readAndAdvance<>(&str));
     _commandName = std::move(str.value);
 
     uassert(28637,
-            str::stream() << "Command name parsed in OP_COMMAND message must be between"
-                          << kMinCommandNameLength << " and " << kMaxCommandNameLength
-                          << " bytes. Got: " << _database,
+            str::stream() << "Command name parsed in OP_COMMAND message must be between "
+                          << kMinCommandNameLength
+                          << " and "
+                          << kMaxCommandNameLength
+                          << " bytes. Got: "
+                          << _database,
             (_commandName.size() >= kMinCommandNameLength) &&
                 (_commandName.size() <= kMaxCommandNameLength));
 
     Validated<BSONObj> obj;
     uassertStatusOK(cur.readAndAdvance<>(&obj));
     _commandArgs = std::move(obj.val);
+    uassert(39950,
+            str::stream() << "Command name parsed in OP_COMMAND message '" << _commandName
+                          << "' doesn't match command name from object '"
+                          << _commandArgs.firstElementFieldName()
+                          << '\'',
+            _commandArgs.firstElementFieldName() == _commandName);
+
     uassertStatusOK(cur.readAndAdvance<>(&obj));
     _metadata = std::move(obj.val);
 
@@ -122,9 +137,10 @@ DocumentRange CommandRequest::getInputDocs() const {
 }
 
 bool operator==(const CommandRequest& lhs, const CommandRequest& rhs) {
-    return std::tie(
-               lhs._database, lhs._commandName, lhs._metadata, lhs._commandArgs, lhs._inputDocs) ==
-        std::tie(rhs._database, rhs._commandName, rhs._metadata, rhs._commandArgs, rhs._inputDocs);
+    return (lhs._database == rhs._database) && (lhs._commandName == rhs._commandName) &&
+        SimpleBSONObjComparator::kInstance.evaluate(lhs._metadata == rhs._metadata) &&
+        SimpleBSONObjComparator::kInstance.evaluate(lhs._commandArgs == rhs._commandArgs) &&
+        (lhs._inputDocs == rhs._inputDocs);
 }
 
 bool operator!=(const CommandRequest& lhs, const CommandRequest& rhs) {

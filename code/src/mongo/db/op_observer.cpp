@@ -33,14 +33,15 @@
 #include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/commands/dbhash.h"
-#include "mongo/db/dbdirectclient.h"
-#include "mongo/db/service_context.h"
+#include "mongo/db/commands/feature_compatibility_version.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
-#include "mongo/s/d_state.h"
-#include "mongo/scripting/engine.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/repl/oplog.h"
+#include "mongo/db/s/collection_sharding_state.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/views/durable_view_catalog.h"
+#include "mongo/scripting/engine.h"
 
 namespace mongo {
 
@@ -51,9 +52,14 @@ void OpObserver::onCreateIndex(OperationContext* txn,
                                BSONObj indexDoc,
                                bool fromMigrate) {
     repl::logOp(txn, "i", ns.c_str(), indexDoc, nullptr, fromMigrate);
+    AuthorizationManager::get(txn->getServiceContext())
+        ->logOp(txn, "i", ns.c_str(), indexDoc, nullptr);
 
-    getGlobalAuthorizationManager()->logOp(txn, "i", ns.c_str(), indexDoc, nullptr);
-    logOpForSharding(txn, "i", ns.c_str(), indexDoc, nullptr, fromMigrate);
+    auto css = CollectionShardingState::get(txn, ns);
+    if (!fromMigrate) {
+        css->onInsertOp(txn, indexDoc);
+    }
+
     logOpForDbHash(txn, ns.c_str());
 }
 
@@ -64,66 +70,101 @@ void OpObserver::onInserts(OperationContext* txn,
                            bool fromMigrate) {
     repl::logOps(txn, "i", nss, begin, end, fromMigrate);
 
+    auto css = CollectionShardingState::get(txn, nss.ns());
     const char* ns = nss.ns().c_str();
+
     for (auto it = begin; it != end; it++) {
-        getGlobalAuthorizationManager()->logOp(txn, "i", ns, *it, nullptr);
-        logOpForSharding(txn, "i", ns, *it, nullptr, fromMigrate);
+        AuthorizationManager::get(txn->getServiceContext())->logOp(txn, "i", ns, *it, nullptr);
+        if (!fromMigrate) {
+            css->onInsertOp(txn, *it);
+        }
+    }
+
+    if (nss.ns() == FeatureCompatibilityVersion::kCollection) {
+        for (auto it = begin; it != end; it++) {
+            FeatureCompatibilityVersion::onInsertOrUpdate(*it);
+        }
     }
 
     logOpForDbHash(txn, ns);
     if (strstr(ns, ".system.js")) {
         Scope::storedFuncMod(txn);
     }
+    if (nss.coll() == DurableViewCatalog::viewsCollectionName()) {
+        DurableViewCatalog::onExternalChange(txn, nss);
+    }
 }
 
-void OpObserver::onUpdate(OperationContext* txn, oplogUpdateEntryArgs args) {
+void OpObserver::onUpdate(OperationContext* txn, const OplogUpdateEntryArgs& args) {
     // Do not log a no-op operation; see SERVER-21738
     if (args.update.isEmpty()) {
         return;
     }
 
     repl::logOp(txn, "u", args.ns.c_str(), args.update, &args.criteria, args.fromMigrate);
+    AuthorizationManager::get(txn->getServiceContext())
+        ->logOp(txn, "u", args.ns.c_str(), args.update, &args.criteria);
 
-    getGlobalAuthorizationManager()->logOp(txn, "u", args.ns.c_str(), args.update, &args.criteria);
-    logOpForSharding(txn, "u", args.ns.c_str(), args.update, &args.criteria, args.fromMigrate);
+    auto css = CollectionShardingState::get(txn, args.ns);
+    if (!args.fromMigrate) {
+        css->onUpdateOp(txn, args.updatedDoc);
+    }
+
     logOpForDbHash(txn, args.ns.c_str());
     if (strstr(args.ns.c_str(), ".system.js")) {
         Scope::storedFuncMod(txn);
     }
+
+    NamespaceString nss(args.ns);
+    if (nss.coll() == DurableViewCatalog::viewsCollectionName()) {
+        DurableViewCatalog::onExternalChange(txn, nss);
+    }
+
+    if (args.ns == FeatureCompatibilityVersion::kCollection) {
+        FeatureCompatibilityVersion::onInsertOrUpdate(args.updatedDoc);
+    }
 }
 
-OpObserver::DeleteState OpObserver::aboutToDelete(OperationContext* txn,
-                                                  const NamespaceString& ns,
-                                                  const BSONObj& doc) {
-    OpObserver::DeleteState deleteState;
+CollectionShardingState::DeleteState OpObserver::aboutToDelete(OperationContext* txn,
+                                                               const NamespaceString& ns,
+                                                               const BSONObj& doc) {
+    CollectionShardingState::DeleteState deleteState;
     BSONElement idElement = doc["_id"];
     if (!idElement.eoo()) {
         deleteState.idDoc = idElement.wrap();
     }
-    deleteState.isMigrating = isInMigratingChunk(txn, ns, doc);
+
+    auto css = CollectionShardingState::get(txn, ns.ns());
+    deleteState.isMigrating = css->isDocumentInMigratingChunk(txn, doc);
+
     return deleteState;
 }
 
 void OpObserver::onDelete(OperationContext* txn,
                           const NamespaceString& ns,
-                          OpObserver::DeleteState deleteState,
+                          CollectionShardingState::DeleteState deleteState,
                           bool fromMigrate) {
     if (deleteState.idDoc.isEmpty())
         return;
 
     repl::logOp(txn, "d", ns.ns().c_str(), deleteState.idDoc, nullptr, fromMigrate);
-
     AuthorizationManager::get(txn->getServiceContext())
         ->logOp(txn, "d", ns.ns().c_str(), deleteState.idDoc, nullptr);
-    logOpForSharding(txn,
-                     "d",
-                     ns.ns().c_str(),
-                     deleteState.idDoc,
-                     nullptr,
-                     fromMigrate || !deleteState.isMigrating);
+
+    auto css = CollectionShardingState::get(txn, ns.ns());
+    if (!fromMigrate) {
+        css->onDeleteOp(txn, deleteState);
+    }
+
     logOpForDbHash(txn, ns.ns().c_str());
     if (ns.coll() == "system.js") {
         Scope::storedFuncMod(txn);
+    }
+    if (ns.coll() == DurableViewCatalog::viewsCollectionName()) {
+        DurableViewCatalog::onExternalChange(txn, ns);
+    }
+    if (ns.ns() == FeatureCompatibilityVersion::kCollection) {
+        FeatureCompatibilityVersion::onDelete(deleteState.idDoc);
     }
 }
 
@@ -133,11 +174,23 @@ void OpObserver::onOpMessage(OperationContext* txn, const BSONObj& msgObj) {
 
 void OpObserver::onCreateCollection(OperationContext* txn,
                                     const NamespaceString& collectionName,
-                                    const CollectionOptions& options) {
+                                    const CollectionOptions& options,
+                                    const BSONObj& idIndex) {
     std::string dbName = collectionName.db().toString() + ".$cmd";
     BSONObjBuilder b;
     b.append("create", collectionName.coll().toString());
     b.appendElements(options.toBSON());
+
+    // Include the full _id index spec in the oplog for index versions >= 2.
+    if (!idIndex.isEmpty()) {
+        auto versionElem = idIndex[IndexDescriptor::kIndexVersionFieldName];
+        invariant(versionElem.isNumber());
+        if (IndexDescriptor::IndexVersion::kV2 <=
+            static_cast<IndexDescriptor::IndexVersion>(versionElem.numberInt())) {
+            b.append("idIndex", idIndex);
+        }
+    }
+
     BSONObj cmdObj = b.obj();
 
     if (!collectionName.isSystemDotProfile()) {
@@ -182,7 +235,15 @@ void OpObserver::onDropCollection(OperationContext* txn, const NamespaceString& 
         repl::logOp(txn, "c", dbName.c_str(), cmdObj, nullptr, false);
     }
 
+    if (collectionName.coll() == DurableViewCatalog::viewsCollectionName()) {
+        DurableViewCatalog::onExternalChange(txn, collectionName);
+    }
+
     getGlobalAuthorizationManager()->logOp(txn, "c", dbName.c_str(), cmdObj, nullptr);
+
+    auto css = CollectionShardingState::get(txn, collectionName);
+    css->onDropCollection(txn, collectionName);
+
     logOpForDbHash(txn, dbName.c_str());
 }
 
@@ -203,9 +264,16 @@ void OpObserver::onRenameCollection(OperationContext* txn,
     std::string dbName = fromCollection.db().toString() + ".$cmd";
     BSONObj cmdObj =
         BSON("renameCollection" << fromCollection.ns() << "to" << toCollection.ns() << "stayTemp"
-                                << stayTemp << "dropTarget" << dropTarget);
+                                << stayTemp
+                                << "dropTarget"
+                                << dropTarget);
 
     repl::logOp(txn, "c", dbName.c_str(), cmdObj, nullptr, false);
+    if (fromCollection.coll() == DurableViewCatalog::viewsCollectionName() ||
+        toCollection.coll() == DurableViewCatalog::viewsCollectionName()) {
+        DurableViewCatalog::onExternalChange(
+            txn, NamespaceString(DurableViewCatalog::viewsCollectionName()));
+    }
 
     getGlobalAuthorizationManager()->logOp(txn, "c", dbName.c_str(), cmdObj, nullptr);
     logOpForDbHash(txn, dbName.c_str());

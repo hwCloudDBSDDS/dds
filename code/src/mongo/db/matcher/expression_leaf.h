@@ -30,18 +30,19 @@
 
 #pragma once
 
-#include <unordered_map>
-
-#include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonmisc.h"
+#include "mongo/bson/bsonobj.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/stdx/unordered_map.h"
 
 namespace pcrecpp {
 class RE;
 }  // namespace pcrecpp;
 
 namespace mongo {
+
+class CollatorInterface;
 
 /**
  * This file contains leaves in the parse tree that are not array-based.
@@ -70,8 +71,7 @@ public:
         return _path;
     }
 
-protected:
-    Status initPath(StringData path);
+    Status setPath(StringData path);
 
 private:
     StringData _path;
@@ -97,7 +97,14 @@ public:
 
     virtual void debugString(StringBuilder& debug, int level = 0) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    /**
+     * 'collator' must outlive the ComparisonMatchExpression and any clones made of it.
+     */
+    virtual void _doSetCollator(const CollatorInterface* collator) {
+        _collator = collator;
+    }
+
+    virtual void serialize(BSONObjBuilder* out) const;
 
     virtual bool equivalent(const MatchExpression* other) const;
 
@@ -105,8 +112,31 @@ public:
         return _rhs;
     }
 
+    const CollatorInterface* getCollator() const {
+        return _collator;
+    }
+
+    /**
+     * Returns true if the MatchExpression is a ComparisonMatchExpression.
+     */
+    static bool isComparisonMatchExpression(const MatchExpression* expr) {
+        switch (expr->matchType()) {
+            case MatchExpression::LT:
+            case MatchExpression::LTE:
+            case MatchExpression::EQ:
+            case MatchExpression::GTE:
+            case MatchExpression::GT:
+                return true;
+            default:
+                return false;
+        }
+    }
+
 protected:
     BSONElement _rhs;
+
+    // Collator used to compare elements. By default, simple binary comparison will be used.
+    const CollatorInterface* _collator = nullptr;
 };
 
 //
@@ -122,6 +152,7 @@ public:
         if (getTag()) {
             e->setTag(getTag()->clone());
         }
+        e->setCollator(_collator);
         return std::move(e);
     }
 };
@@ -135,6 +166,7 @@ public:
         if (getTag()) {
             e->setTag(getTag()->clone());
         }
+        e->setCollator(_collator);
         return std::move(e);
     }
 };
@@ -148,6 +180,7 @@ public:
         if (getTag()) {
             e->setTag(getTag()->clone());
         }
+        e->setCollator(_collator);
         return std::move(e);
     }
 };
@@ -161,6 +194,7 @@ public:
         if (getTag()) {
             e->setTag(getTag()->clone());
         }
+        e->setCollator(_collator);
         return std::move(e);
     }
 };
@@ -174,6 +208,7 @@ public:
         if (getTag()) {
             e->setTag(getTag()->clone());
         }
+        e->setCollator(_collator);
         return std::move(e);
     }
 };
@@ -210,7 +245,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int level) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    virtual void serialize(BSONObjBuilder* out) const;
 
     void shortDebugString(StringBuilder& debug) const;
 
@@ -248,7 +283,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int level) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    virtual void serialize(BSONObjBuilder* out) const;
 
     virtual bool equivalent(const MatchExpression* other) const;
 
@@ -283,67 +318,9 @@ public:
 
     virtual void debugString(StringBuilder& debug, int level) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    virtual void serialize(BSONObjBuilder* out) const;
 
     virtual bool equivalent(const MatchExpression* other) const;
-};
-
-/**
- * INTERNAL
- * terrible name
- * holds the entries of an $in or $all
- * either scalars or regex
- */
-class ArrayFilterEntries {
-    MONGO_DISALLOW_COPYING(ArrayFilterEntries);
-
-public:
-    ArrayFilterEntries();
-    ~ArrayFilterEntries();
-
-    Status addEquality(const BSONElement& e);
-    Status addRegex(RegexMatchExpression* expr);
-
-    const BSONElementSet& equalities() const {
-        return _equalities;
-    }
-    bool contains(const BSONElement& elem) const {
-        return _equalities.count(elem) > 0;
-    }
-
-    size_t numRegexes() const {
-        return _regexes.size();
-    }
-    RegexMatchExpression* regex(int idx) const {
-        return _regexes[idx];
-    }
-
-    bool hasNull() const {
-        return _hasNull;
-    }
-    bool singleNull() const {
-        return size() == 1 && _hasNull;
-    }
-    bool hasEmptyArray() const {
-        return _hasEmptyArray;
-    }
-    int size() const {
-        return _equalities.size() + _regexes.size();
-    }
-
-    bool equivalent(const ArrayFilterEntries& other) const;
-
-    void copyTo(ArrayFilterEntries& toFillIn) const;
-
-    void debugString(StringBuilder& debug) const;
-
-    void toBSON(BSONArrayBuilder* out) const;
-
-private:
-    bool _hasNull;  // if _equalities has a jstNULL element in it
-    bool _hasEmptyArray;
-    BSONElementSet _equalities;
-    std::vector<RegexMatchExpression*> _regexes;
 };
 
 /**
@@ -352,31 +329,68 @@ private:
 class InMatchExpression : public LeafMatchExpression {
 public:
     InMatchExpression() : LeafMatchExpression(MATCH_IN) {}
+
     Status init(StringData path);
 
     virtual std::unique_ptr<MatchExpression> shallowClone() const;
-
-    ArrayFilterEntries* getArrayFilterEntries() {
-        return &_arrayEntries;
-    }
 
     virtual bool matchesSingleElement(const BSONElement& e) const;
 
     virtual void debugString(StringBuilder& debug, int level) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    virtual void serialize(BSONObjBuilder* out) const;
 
     virtual bool equivalent(const MatchExpression* other) const;
 
-    void copyTo(InMatchExpression* toFillIn) const;
+    /**
+     * 'collator' must outlive the InMatchExpression and any clones made of it.
+     */
+    virtual void _doSetCollator(const CollatorInterface* collator);
 
-    const ArrayFilterEntries& getData() const {
-        return _arrayEntries;
+    Status addEquality(const BSONElement& elt);
+
+    Status addRegex(std::unique_ptr<RegexMatchExpression> expr);
+
+    const BSONElementSet& getEqualities() const {
+        return _equalitySet;
+    }
+
+    const std::vector<std::unique_ptr<RegexMatchExpression>>& getRegexes() const {
+        return _regexes;
+    }
+
+    const CollatorInterface* getCollator() const {
+        return _collator;
+    }
+
+    bool hasNull() const {
+        return _hasNull;
+    }
+
+    bool hasEmptyArray() const {
+        return _hasEmptyArray;
     }
 
 private:
-    bool _matchesRealElement(const BSONElement& e) const;
-    ArrayFilterEntries _arrayEntries;
+    // Whether or not '_equalities' has a jstNULL element in it.
+    bool _hasNull = false;
+
+    // Whether or not '_equalities' has an empty array element in it.
+    bool _hasEmptyArray = false;
+
+    // Collator used to compare elements. By default, simple binary comparison will be used.
+    const CollatorInterface* _collator = nullptr;
+
+    // Set of equality elements associated with this expression. '_collator' is used as a comparator
+    // for this set.
+    BSONElementSet _equalitySet;
+
+    // Original container of equality elements, including duplicates. Needed for re-computing
+    // '_equalitySet' in case '_collator' changes after elements have been added.
+    std::vector<BSONElement> _originalEqualityVector;
+
+    // Container of regex elements this object owns.
+    std::vector<std::unique_ptr<RegexMatchExpression>> _regexes;
 };
 
 //
@@ -390,7 +404,7 @@ private:
 class TypeMatchExpression : public MatchExpression {
 public:
     static const std::string kMatchesAllNumbersAlias;
-    static const std::unordered_map<std::string, BSONType> typeAliasMap;
+    static const stdx::unordered_map<std::string, BSONType> typeAliasMap;
 
     TypeMatchExpression() : MatchExpression(TYPE_OPERATOR) {}
 
@@ -425,7 +439,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int level) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    virtual void serialize(BSONObjBuilder* out) const;
 
     virtual bool equivalent(const MatchExpression* other) const;
 
@@ -481,7 +495,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int level) const;
 
-    virtual void toBSON(BSONObjBuilder* out) const;
+    virtual void serialize(BSONObjBuilder* out) const;
 
     virtual bool equivalent(const MatchExpression* other) const;
 

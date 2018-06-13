@@ -47,14 +47,14 @@ if (Array.contains(storageEngines, "wiredTiger")) {
 
     assert.commandWorked(db.adminCommand({split: coll + '', middle: {x: 5}}));
 
-    printShardingStatus();
+    st.printShardingStatus();
 
-    var primaryShard = st.getServer("test");
+    var primaryShard = st.getPrimaryShard("test");
     anotherShard = st.getOther(primaryShard);
     assert.commandWorked(
         db.adminCommand({movechunk: coll + '', find: {x: 5}, to: anotherShard.name}));
 
-    printShardingStatus();
+    st.printShardingStatus();
 
     checkCollectionOptions(anotherShard.getDB("test"));
 } else {

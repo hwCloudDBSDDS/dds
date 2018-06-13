@@ -60,7 +60,10 @@ public:
      * The next feature added to this enumeration should use the current value of 'kNextFeatureBit',
      * and 'kNextFeatureBit' should be changed to the next largest power of two.
      */
-    enum class NonRepairableFeature : std::uint64_t { kNextFeatureBit = 1 << 0 };
+    enum class NonRepairableFeature : std::uint64_t {
+        kCollation = 1 << 0,
+        kNextFeatureBit = 1 << 1
+    };
 
     using NonRepairableFeatureMask = std::underlying_type<NonRepairableFeature>::type;
 
@@ -122,23 +125,6 @@ public:
      *     newer version is required to start up.
      */
     Status isCompatibleWithCurrentCode(OperationContext* opCtx) const;
-
-    /**
-     * Returns whether it is possible to delete the feature document:
-     *
-     *   - Status::OK() if no features are enabled on any collection or index in the data files.
-     *
-     *   - ErrorCodes::MustUpgrade if a feature is still enabled on some collection or index in the
-     *     data files and a newer version is required to start up and downgrade successfully.
-     */
-    Status hasNoFeaturesMarkedAsInUse(OperationContext* opCtx) const;
-
-    /**
-     * Deletes the feature document managed by this FeatureTracker instance from the KVCatalog.
-     *
-     * This function should only be called if hasNoFeaturesMarkedAsInUse() returns Status::OK().
-     */
-    void deleteFeatureDocument(OperationContext* opCtx);
 
     /**
      * Returns true if 'feature' is tracked in the document, and returns false otherwise.

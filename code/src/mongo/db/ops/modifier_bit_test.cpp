@@ -90,6 +90,11 @@ TEST(Init, FailToInitWithInvalidValue) {
     BSONObj modObj;
     ModifierBit mod;
 
+    // Double is an invalid $bit argument
+    modObj = fromjson("{ $bit : { a : 0 } }");
+    ASSERT_NOT_OK(mod.init(modObj["$bit"].embeddedObject().firstElement(),
+                           ModifierInterface::Options::normal()));
+
     // String is an invalid $bit argument
     modObj = fromjson("{ $bit : { a : '' } }");
     ASSERT_NOT_OK(mod.init(modObj["$bit"].embeddedObject().firstElement(),
@@ -124,12 +129,10 @@ TEST(Init, FailToInitWithInvalidValue) {
     ASSERT_NOT_OK(mod.init(modObj["$bit"].embeddedObject().firstElement(),
                            ModifierInterface::Options::normal()));
 
-    if (mongo::Decimal128::enabled) {
-        // The argument to the sub-operator must be integral
-        modObj = fromjson("{ $bit : { a : { or : NumberDecimal(\"1.0\") } } }");
-        ASSERT_NOT_OK(mod.init(modObj["$bit"].embeddedObject().firstElement(),
-                               ModifierInterface::Options::normal()));
-    }
+    // The argument to the sub-operator must be integral
+    modObj = fromjson("{ $bit : { a : { or : NumberDecimal(\"1.0\") } } }");
+    ASSERT_NOT_OK(mod.init(modObj["$bit"].embeddedObject().firstElement(),
+                           ModifierInterface::Options::normal()));
 }
 
 TEST(Init, ParsesAndInt) {
@@ -181,7 +184,7 @@ TEST(SimpleMod, PrepareOKTargetFound) {
     ASSERT_EQUALS(fromjson("{ $set : { a : 1 } }"), logDoc);
 }
 
-TEST(SimpleMod, PrepareSimpleNonNumericObject) {
+TEST(SimpleMod, PrepareWithObjectShouldFail) {
     Document doc(fromjson("{ a : {} }"));
     Mod mod(fromjson("{ $bit : { a : { or : 1 } } }"));
 
@@ -189,7 +192,7 @@ TEST(SimpleMod, PrepareSimpleNonNumericObject) {
     ASSERT_NOT_OK(mod.prepare(doc.root(), "", &execInfo));
 }
 
-TEST(SimpleMod, PrepareSimpleNonNumericArray) {
+TEST(SimpleMod, PrepareWithArrayShouldFail) {
     Document doc(fromjson("{ a : [] }"));
     Mod mod(fromjson("{ $bit : { a : { and : 1 } } }"));
 
@@ -197,8 +200,16 @@ TEST(SimpleMod, PrepareSimpleNonNumericArray) {
     ASSERT_NOT_OK(mod.prepare(doc.root(), "", &execInfo));
 }
 
-TEST(SimpleMod, PrepareSimpleNonNumericString) {
+TEST(SimpleMod, PrepareWithStringShouldFail) {
     Document doc(fromjson("{ a : '' }"));
+    Mod mod(fromjson("{ $bit : { a : { or : 1 } } }"));
+
+    ModifierInterface::ExecInfo execInfo;
+    ASSERT_NOT_OK(mod.prepare(doc.root(), "", &execInfo));
+}
+
+TEST(SimpleMod, PrepareWithDoubleShouldFail) {
+    Document doc(fromjson("{ a : 1.1 }"));
     Mod mod(fromjson("{ $bit : { a : { or : 1 } } }"));
 
     ModifierInterface::ExecInfo execInfo;

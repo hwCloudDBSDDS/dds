@@ -31,8 +31,8 @@
 #include "mongo/base/status.h"
 #include "mongo/client/sasl_client_authenticate.h"
 #include "mongo/db/auth/action_set.h"
-#include "mongo/db/auth/resource_pattern.h"
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/resource_pattern.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/cloner.h"
 #include "mongo/db/commands.h"
@@ -98,11 +98,11 @@ public:
         return false;
     }
 
-    virtual bool isWriteCommandForConfigServer() const {
-        return false;
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return true;
     }
 
-    virtual Status checkAuthForCommand(ClientBasic* client,
+    virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
                                        const BSONObj& cmdObj) {
         return copydb::checkAuthForCopydbCommand(client, dbname, cmdObj);
@@ -147,7 +147,7 @@ public:
             return false;
         }
 
-        if (!NamespaceString::validDBName(todb)) {
+        if (!NamespaceString::validDBName(todb, NamespaceString::DollarInDbNameBehavior::Allow)) {
             errmsg = "invalid todb name: " + todb;
             return false;
         }
@@ -165,10 +165,11 @@ public:
             uassert(13008, "must call copydbgetnonce first", authConn.get());
             BSONObj ret;
             {
-                if (!authConn->runCommand(cloneOptions.fromDB,
-                                          BSON("authenticate" << 1 << "user" << username << "nonce"
-                                                              << nonce << "key" << key),
-                                          ret)) {
+                if (!authConn->runCommand(
+                        cloneOptions.fromDB,
+                        BSON("authenticate" << 1 << "user" << username << "nonce" << nonce << "key"
+                                            << key),
+                        ret)) {
                     errmsg = "unable to login " + ret.toString();
                     authConn.reset();
                     return false;
@@ -179,11 +180,11 @@ public:
                    cmdObj.hasField(saslCommandPayloadFieldName)) {
             uassert(25487, "must call copydbsaslstart first", authConn.get());
             BSONObj ret;
-            if (!authConn->runCommand(cloneOptions.fromDB,
-                                      BSON("saslContinue"
-                                           << 1 << cmdObj[saslCommandConversationIdFieldName]
-                                           << cmdObj[saslCommandPayloadFieldName]),
-                                      ret)) {
+            if (!authConn->runCommand(
+                    cloneOptions.fromDB,
+                    BSON("saslContinue" << 1 << cmdObj[saslCommandConversationIdFieldName]
+                                        << cmdObj[saslCommandPayloadFieldName]),
+                    ret)) {
                 errmsg = "unable to login " + ret.toString();
                 authConn.reset();
                 return false;
@@ -200,7 +201,7 @@ public:
             // If fromSelf leave the cloner's conn empty, it will use a DBDirectClient instead.
             const ConnectionString cs(uassertStatusOK(ConnectionString::parse(fromhost)));
 
-            DBClientBase* conn = cs.connect(errmsg);
+            DBClientBase* conn = cs.connect(StringData(), errmsg);
             if (!conn) {
                 return false;
             }

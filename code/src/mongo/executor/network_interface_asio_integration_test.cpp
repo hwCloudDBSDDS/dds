@@ -55,6 +55,8 @@ namespace mongo {
 namespace executor {
 namespace {
 
+using StartCommandCB = stdx::function<void(const RemoteCommandResponse&)>;
+
 class NetworkInterfaceASIOIntegrationTest : public mongo::unittest::Test {
 public:
     void startNet(NetworkInterfaceASIO::Options options = NetworkInterfaceASIO::Options()) {
@@ -87,24 +89,28 @@ public:
         return _rng;
     }
 
-    Deferred<StatusWith<RemoteCommandResponse>> runCommand(
-        const TaskExecutor::CallbackHandle& cbHandle, const RemoteCommandRequest& request) {
-        Deferred<StatusWith<RemoteCommandResponse>> deferred;
-        net().startCommand(cbHandle,
-                           request,
-                           [deferred](StatusWith<RemoteCommandResponse> resp) mutable {
-                               deferred.emplace(std::move(resp));
-                           });
+    void startCommand(const TaskExecutor::CallbackHandle& cbHandle,
+                      RemoteCommandRequest& request,
+                      StartCommandCB onFinish) {
+        net().startCommand(cbHandle, request, onFinish);
+    }
+
+    Deferred<RemoteCommandResponse> runCommand(const TaskExecutor::CallbackHandle& cbHandle,
+                                               RemoteCommandRequest& request) {
+        Deferred<RemoteCommandResponse> deferred;
+        net().startCommand(cbHandle, request, [deferred](RemoteCommandResponse resp) mutable {
+            deferred.emplace(std::move(resp));
+        });
         return deferred;
     }
 
-    StatusWith<RemoteCommandResponse> runCommandSync(const RemoteCommandRequest& request) {
+    RemoteCommandResponse runCommandSync(RemoteCommandRequest& request) {
         auto deferred = runCommand(makeCallbackHandle(), request);
         auto& res = deferred.get();
         if (res.isOK()) {
-            log() << "got command result: " << res.getValue().toString();
+            log() << "got command result: " << res.toString();
         } else {
-            log() << "command failed: " << res.getStatus();
+            log() << "command failed: " << res.status;
         }
         return res;
     }
@@ -112,8 +118,10 @@ public:
     void assertCommandOK(StringData db,
                          const BSONObj& cmd,
                          Milliseconds timeoutMillis = Milliseconds(-1)) {
-        auto res = unittest::assertGet(runCommandSync(
-            {fixture().getServers()[0], db.toString(), cmd, BSONObj(), timeoutMillis}));
+        RemoteCommandRequest request{
+            fixture().getServers()[0], db.toString(), cmd, BSONObj(), nullptr, timeoutMillis};
+        auto res = runCommandSync(request);
+        ASSERT_OK(res.status);
         ASSERT_OK(getStatusFromCommandResult(res.data));
     }
 
@@ -121,19 +129,22 @@ public:
                                     const BSONObj& cmd,
                                     Milliseconds timeoutMillis,
                                     ErrorCodes::Error reason) {
-        auto clientStatus = runCommandSync(
-            {fixture().getServers()[0], db.toString(), cmd, BSONObj(), timeoutMillis});
-        ASSERT_TRUE(clientStatus == reason);
+        RemoteCommandRequest request{
+            fixture().getServers()[0], db.toString(), cmd, BSONObj(), nullptr, timeoutMillis};
+        auto res = runCommandSync(request);
+        ASSERT_EQ(reason, res.status.code());
     }
 
     void assertCommandFailsOnServer(StringData db,
                                     const BSONObj& cmd,
                                     Milliseconds timeoutMillis,
                                     ErrorCodes::Error reason) {
-        auto res = unittest::assertGet(runCommandSync(
-            {fixture().getServers()[0], db.toString(), cmd, BSONObj(), timeoutMillis}));
+        RemoteCommandRequest request{
+            fixture().getServers()[0], db.toString(), cmd, BSONObj(), nullptr, timeoutMillis};
+        auto res = runCommandSync(request);
+        ASSERT_OK(res.status);
         auto serverStatus = getStatusFromCommandResult(res.data);
-        ASSERT_TRUE(serverStatus == reason);
+        ASSERT_EQ(reason, serverStatus);
     }
 
 private:
@@ -153,7 +164,8 @@ TEST_F(NetworkInterfaceASIOIntegrationTest, Timeouts) {
     assertCommandFailsOnClient("admin",
                                BSON("sleep" << 1 << "lock"
                                             << "none"
-                                            << "secs" << 10),
+                                            << "secs"
+                                            << 10),
                                Milliseconds(100),
                                ErrorCodes::ExceededTimeLimit);
 
@@ -161,7 +173,8 @@ TEST_F(NetworkInterfaceASIOIntegrationTest, Timeouts) {
     assertCommandOK("admin",
                     BSON("sleep" << 1 << "lock"
                                  << "none"
-                                 << "secs" << 1),
+                                 << "secs"
+                                 << 1),
                     Milliseconds(10000000));
 }
 
@@ -170,81 +183,76 @@ public:
     using Fixture = NetworkInterfaceASIOIntegrationTest;
     using Pool = ThreadPoolInterface;
 
-    Deferred<Status> run(Fixture* fixture, Pool* pool, Milliseconds timeout = Milliseconds(5000)) {
+    void run(Fixture* fixture,
+             StartCommandCB onFinish,
+             Milliseconds timeout = RemoteCommandRequest::kNoTimeout) {
         auto cb = makeCallbackHandle();
-        auto self = *this;
-        auto out =
-            fixture->runCommand(cb,
-                                {unittest::getFixtureConnectionString().getServers()[0],
-                                 "admin",
-                                 _command,
-                                 timeout})
-                .then(pool,
-                      [self](StatusWith<RemoteCommandResponse> resp) -> Status {
-                          auto status = resp.isOK()
-                              ? getStatusFromCommandResult(resp.getValue().data)
-                              : resp.getStatus();
 
-                          return status == self._expected
-                              ? Status::OK()
-                              : Status{ErrorCodes::BadValue,
-                                       str::stream() << "Expected "
-                                                     << ErrorCodes::errorString(self._expected)
-                                                     << " but got " << status.toString()};
-                      });
+        RemoteCommandRequest request{unittest::getFixtureConnectionString().getServers()[0],
+                                     "admin",
+                                     _command,
+                                     nullptr,
+                                     timeout};
+
+        fixture->startCommand(cb, request, onFinish);
+
         if (_cancel) {
             invariant(fixture->randomNumberGenerator());
             sleepmillis(fixture->randomNumberGenerator()->nextInt32(10));
             fixture->net().cancelCommand(cb);
         }
-        return out;
     }
 
-    static Deferred<Status> runTimeoutOp(Fixture* fixture, Pool* pool) {
+    static void runTimeoutOp(Fixture* fixture, StartCommandCB onFinish) {
         return StressTestOp(BSON("sleep" << 1 << "lock"
                                          << "none"
-                                         << "secs" << 1),
-                            ErrorCodes::ExceededTimeLimit,
-                            false).run(fixture, pool, Milliseconds(100));
+                                         << "secs"
+                                         << 1),
+                            false)
+            .run(fixture, onFinish, Milliseconds(100));
     }
 
-    static Deferred<Status> runCompleteOp(Fixture* fixture, Pool* pool) {
+    static void runCompleteOp(Fixture* fixture, StartCommandCB onFinish) {
         return StressTestOp(BSON("sleep" << 1 << "lock"
                                          << "none"
-                                         << "millis" << 100),
-                            ErrorCodes::OK,
-                            false).run(fixture, pool);
+                                         << "millis"
+                                         << 100),
+                            false)
+            .run(fixture, onFinish);
     }
 
-    static Deferred<Status> runCancelOp(Fixture* fixture, Pool* pool) {
+    static void runCancelOp(Fixture* fixture, StartCommandCB onFinish) {
         return StressTestOp(BSON("sleep" << 1 << "lock"
                                          << "none"
-                                         << "secs" << 10),
-                            ErrorCodes::CallbackCanceled,
-                            true).run(fixture, pool);
+                                         << "secs"
+                                         << 10),
+                            true)
+            .run(fixture, onFinish);
     }
 
-    static Deferred<Status> runLongOp(Fixture* fixture, Pool* pool) {
+    static void runLongOp(Fixture* fixture, StartCommandCB onFinish) {
         return StressTestOp(BSON("sleep" << 1 << "lock"
                                          << "none"
-                                         << "secs" << 30),
-                            ErrorCodes::OK,
-                            false).run(fixture, pool, RemoteCommandRequest::kNoTimeout);
+                                         << "secs"
+                                         << 30),
+                            false)
+            .run(fixture, onFinish);
     }
 
 private:
-    StressTestOp(const BSONObj& command, ErrorCodes::Error expected, bool cancel)
-        : _command(command), _expected(expected), _cancel(cancel) {}
+    StressTestOp(const BSONObj& command, bool cancel) : _command(command), _cancel(cancel) {}
 
     BSONObj _command;
-    ErrorCodes::Error _expected;
     bool _cancel;
 };
 
 TEST_F(NetworkInterfaceASIOIntegrationTest, StressTest) {
+    constexpr std::size_t numOps = 1000;
+    RemoteCommandResponse testResults[numOps];
+    ErrorCodes::Error expectedResults[numOps];
+    CountdownLatch cl(numOps);
+
     startNet();
-    const std::size_t numOps = 10000;
-    std::vector<Deferred<Status>> ops;
 
     std::unique_ptr<SecureRandom> seedSource{SecureRandom::create()};
     auto seed = seedSource->nextInt64();
@@ -254,51 +262,40 @@ TEST_F(NetworkInterfaceASIOIntegrationTest, StressTest) {
     randomNumberGenerator(&rng);
     log() << "Starting stress test...";
 
-    ThreadPool::Options threadPoolOpts;
-    threadPoolOpts.poolName = "StressTestPool";
-    threadPoolOpts.maxThreads = 8;
-    ThreadPool pool(threadPoolOpts);
-    pool.startup();
+    for (std::size_t i = 0; i < numOps; ++i) {
+        // stagger operations slightly to mitigate connection pool contention
+        sleepmillis(rng.nextInt32(16));
 
-    auto poolGuard = MakeGuard([&pool] {
-        pool.schedule([&pool] { pool.shutdown(); });
-        pool.join();
-    });
+        auto r = rng.nextCanonicalDouble();
 
-    std::generate_n(std::back_inserter(ops),
-                    numOps,
-                    [&rng, &pool, this] {
+        auto cb = [&testResults, &cl, i](const RemoteCommandResponse& resp) {
+            testResults[i] = resp;
+            cl.countDown();
+        };
 
-                        // stagger operations slightly to mitigate connection pool contention
-                        sleepmillis(rng.nextInt32(10));
+        if (r < .3) {
+            expectedResults[i] = ErrorCodes::CallbackCanceled;
+            StressTestOp::runCancelOp(this, cb);
+        } else if (r < .7) {
+            expectedResults[i] = ErrorCodes::OK;
+            StressTestOp::runCompleteOp(this, cb);
+        } else if (r < .99) {
+            expectedResults[i] = ErrorCodes::ExceededTimeLimit;
+            StressTestOp::runTimeoutOp(this, cb);
+        } else {
+            // Just a sprinkling of long ops, to mitigate connection pool contention
+            expectedResults[i] = ErrorCodes::OK;
+            StressTestOp::runLongOp(this, cb);
+        }
+    };
 
-                        auto i = rng.nextCanonicalDouble();
+    cl.await();
 
-                        if (i < .3) {
-                            return StressTestOp::runCancelOp(this, &pool);
-                        } else if (i < .7) {
-                            return StressTestOp::runCompleteOp(this, &pool);
-                        } else if (i < .99) {
-                            return StressTestOp::runTimeoutOp(this, &pool);
-                        } else {
-                            // Just a sprinkling of long ops, to mitigate connection pool contention
-                            return StressTestOp::runLongOp(this, &pool);
-                        }
-                    });
-
-    log() << "running ops";
-    auto res = helpers::collect(ops, &pool)
-                   .then(&pool,
-                         [](std::vector<Status> opResults) -> Status {
-                             for (const auto& opResult : opResults) {
-                                 if (!opResult.isOK()) {
-                                     return opResult;
-                                 }
-                             }
-                             return Status::OK();
-                         })
-                   .get();
-    ASSERT_OK(res);
+    for (std::size_t i = 0; i < numOps; ++i) {
+        const auto& resp = testResults[i];
+        auto ec = resp.isOK() ? getStatusFromCommandResult(resp.data) : resp.status;
+        ASSERT_EQ(ec, expectedResults[i]);
+    }
 }
 
 // Hook that intentionally never finishes
@@ -313,8 +310,10 @@ class HangingHook : public executor::NetworkConnectionHook {
                                                           "admin",
                                                           BSON("sleep" << 1 << "lock"
                                                                        << "none"
-                                                                       << "secs" << 100000000),
-                                                          BSONObj()))};
+                                                                       << "secs"
+                                                                       << 100000000),
+                                                          BSONObj(),
+                                                          nullptr))};
     }
 
     Status handleReply(const HostAndPort& remoteHost, RemoteCommandResponse&& response) final {

@@ -40,10 +40,17 @@ class Status;
 namespace repl {
 
 /**
- * Arguments to the handshake command.
+ * Arguments to the update position command.
  */
 class UpdatePositionArgs {
 public:
+    static const char kCommandFieldName[];
+    static const char kUpdateArrayFieldName[];
+    static const char kAppliedOpTimeFieldName[];
+    static const char kDurableOpTimeFieldName[];
+    static const char kMemberIdFieldName[];
+    static const char kConfigVersionFieldName[];
+
     struct UpdateInfo {
         UpdateInfo(const OpTime& applied,
                    const OpTime& durable,

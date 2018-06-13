@@ -70,9 +70,15 @@ StatusWith<OplogInterface::Iterator::Value> OplogIteratorLocal::next() {
     BSONObj obj;
     RecordId recordId;
 
-    if (PlanExecutor::ADVANCED != _exec->getNext(&obj, &recordId)) {
-        return StatusWith<Value>(ErrorCodes::NoSuchKey, "no more operations in local oplog");
+    PlanExecutor::ExecState state;
+    if (PlanExecutor::ADVANCED != (state = _exec->getNext(&obj, &recordId))) {
+        return StatusWith<Value>(ErrorCodes::CollectionIsEmpty,
+                                 "no more operations in local oplog");
     }
+
+    // Non-yielding collection scans from InternalPlanner will never error.
+    invariant(PlanExecutor::ADVANCED == state || PlanExecutor::IS_EOF == state);
+
     return StatusWith<Value>(std::make_pair(obj, recordId));
 }
 
@@ -86,8 +92,8 @@ OplogInterfaceLocal::OplogInterfaceLocal(OperationContext* txn, const std::strin
 
 std::string OplogInterfaceLocal::toString() const {
     return str::stream() << "LocalOplogInterface: "
-                            "operation context: " << _txn->getNS() << "/" << _txn->getOpID()
-                         << "; collection: " << _collectionName;
+                            "operation context: "
+                         << _txn->getOpID() << "; collection: " << _collectionName;
 }
 
 std::unique_ptr<OplogInterface::Iterator> OplogInterfaceLocal::makeIterator() const {

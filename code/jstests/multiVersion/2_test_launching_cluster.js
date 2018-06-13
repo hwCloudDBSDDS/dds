@@ -10,77 +10,41 @@ load('./jstests/multiVersion/libs/verify_versions.js');
     var versionsToCheck = ["last-stable", "latest"];
     var versionsToCheckMongos = ["last-stable"];
 
-    jsTest.log("Testing legacy versions...");
-
-    for (var i = 0; i < versionsToCheck.length; i++) {
-        var version = versionsToCheck[i];
-
-        // Set up a cluster
-
-        var st = new ShardingTest({
-            shards: 2,
-            mongos: 2,
-            sync: true,  // Old clusters can't use replsets for config servers
-            other: {
-                mongosOptions: {binVersion: version},
-                configOptions: {binVersion: version},
-                shardOptions: {binVersion: version}
-            }
-        });
-
-        var shards = [st.shard0, st.shard1];
-        var mongoses = [st.s0, st.s1];
-        var configs = [st.config0];
-
-        // Make sure the started versions are actually the correct versions
-        for (var j = 0; j < shards.length; j++)
-            assert.binVersion(shards[j], version);
-        for (j = 0; j < mongoses.length; j++)
-            assert.binVersion(mongoses[j], version);
-        for (j = 0; j < configs.length; j++)
-            assert.binVersion(configs[j], version);
-
-        st.stop();
-    }
-
     jsTest.log("Testing mixed versions...");
 
     // Set up a multi-version cluster
-
-    st = new ShardingTest({
+    var st = new ShardingTest({
         shards: 2,
         mongos: 2,
         other: {
-
-            // Three config servers
-            sync: true,
-
             mongosOptions: {binVersion: versionsToCheckMongos},
             configOptions: {binVersion: versionsToCheck},
-            shardOptions: {binVersion: versionsToCheck}
-
+            shardOptions: {binVersion: versionsToCheck},
+            enableBalancer: true,
+            // TODO: SERVER-24163 remove after v3.4
+            waitForCSRSSecondaries: false,
         }
     });
 
-    shards = [st.shard0, st.shard1];
-    mongoses = [st.s0, st.s1];
-    configs = [st.config0, st.config1, st.config2];
+    var shards = [st.shard0, st.shard1];
+    var mongoses = [st.s0, st.s1];
+    var configs = [st.config0, st.config1, st.config2];
 
     // Make sure we have hosts of all the different versions
     var versionsFound = [];
-    for (j = 0; j < shards.length; j++)
+    for (var j = 0; j < shards.length; j++)
         versionsFound.push(shards[j].getBinVersion());
 
     assert.allBinVersions(versionsToCheck, versionsFound);
 
     versionsFound = [];
-    for (j = 0; j < mongoses.length; j++)
+    for (var j = 0; j < mongoses.length; j++)
         versionsFound.push(mongoses[j].getBinVersion());
 
     assert.allBinVersions(versionsToCheckMongos, versionsFound);
 
     versionsFound = [];
-    for (j = 0; j < configs.length; j++)
+    for (var j = 0; j < configs.length; j++)
         versionsFound.push(configs[j].getBinVersion());
 
     assert.allBinVersions(versionsToCheck, versionsFound);
@@ -95,16 +59,14 @@ load('./jstests/multiVersion/libs/verify_versions.js');
         shards: 2,
         mongos: 2,
         other: {
-
-            // Three config servers
-            sync: true,
-
             // Replica set shards
             rs: true,
-
             mongosOptions: {binVersion: versionsToCheckMongos},
             configOptions: {binVersion: versionsToCheck},
-            rsOptions: {binVersion: versionsToCheck, protocolVersion: 0}
+            rsOptions: {binVersion: versionsToCheck, protocolVersion: 0},
+            enableBalancer: true,
+            // TODO: SERVER-24163 remove after v3.4
+            waitForCSRSSecondaries: false,
         }
     });
 
@@ -120,30 +82,28 @@ load('./jstests/multiVersion/libs/verify_versions.js');
 
     // Make sure we have hosts of all the different versions
     versionsFound = [];
-    for (j = 0; j < nodesA.length; j++)
+    for (var j = 0; j < nodesA.length; j++)
         versionsFound.push(nodesA[j].getBinVersion());
 
     assert.allBinVersions(versionsToCheck, versionsFound);
 
     versionsFound = [];
-    for (j = 0; j < nodesB.length; j++)
+    for (var j = 0; j < nodesB.length; j++)
         versionsFound.push(nodesB[j].getBinVersion());
 
     assert.allBinVersions(versionsToCheck, versionsFound);
 
     versionsFound = [];
-    for (j = 0; j < mongoses.length; j++)
+    for (var j = 0; j < mongoses.length; j++)
         versionsFound.push(mongoses[j].getBinVersion());
 
     assert.allBinVersions(versionsToCheckMongos, versionsFound);
 
     versionsFound = [];
-    for (j = 0; j < configs.length; j++)
+    for (var j = 0; j < configs.length; j++)
         versionsFound.push(configs[j].getBinVersion());
 
     assert.allBinVersions(versionsToCheck, versionsFound);
-
-    jsTest.log("DONE!");
 
     st.stop();
 })();

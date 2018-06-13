@@ -86,11 +86,8 @@
 #ifdef _WIN32
 
 #include <conio.h>
-#include <windows.h>
 #include <io.h>
-#if _MSC_VER < 1900
-#define snprintf _snprintf  // Microsoft headers use underscores in some names
-#endif
+#include <windows.h>
 #define strcasecmp _stricmp
 #define strdup _strdup
 #define isatty _isatty
@@ -99,24 +96,24 @@
 
 #else /* _WIN32 */
 
+#include <cctype>
 #include <signal.h>
-#include <termios.h>
-#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include <sys/ioctl.h>
-#include <cctype>
+#include <sys/types.h>
+#include <termios.h>
+#include <unistd.h>
 #include <wctype.h>
 
 #endif /* _WIN32 */
 
-#include <stdio.h>
-#include <errno.h>
-#include <fcntl.h>
 #include "linenoise.h"
 #include "linenoise_utf8.h"
 #include "mk_wcwidth.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <string>
 #include <vector>
 
@@ -2765,7 +2762,17 @@ int linenoiseHistorySetMaxLen(int len) {
 /* Save the history in the specified file. On success 0 is returned
  * otherwise -1 is returned. */
 int linenoiseHistorySave(const char* filename) {
-    FILE* fp = fopen(filename, "wt");
+    FILE* fp;
+#if _POSIX_C_SOURCE >= 1 || _XOPEN_SOURCE || _POSIX_SOURCE || defined(__APPLE__)
+    int fd = open(filename, O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR);
+    if (fd == -1) {
+        // report errno somehow?
+        return -1;
+    }
+    fp = fdopen(fd, "wt");
+#else
+    fp = fopen(filename, "wt");
+#endif  // _POSIX_C_SOURCE >= 1 || _XOPEN_SOURCE || _POSIX_SOURCE || defined(__APPLE__)
     if (fp == NULL) {
         return -1;
     }
@@ -2775,7 +2782,7 @@ int linenoiseHistorySave(const char* filename) {
             fprintf(fp, "%s\n", history[j]);
         }
     }
-    fclose(fp);
+    fclose(fp);  // Also causes fd to be closed.
     return 0;
 }
 

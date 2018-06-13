@@ -26,19 +26,26 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
+
 #include "mongo/platform/basic.h"
 
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/group.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/get_executor.h"
+#include "mongo/db/query/plan_summary_stats.h"
+#include "mongo/db/server_options.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -47,12 +54,16 @@ using std::string;
 
 namespace {
 
+/**
+ * The group command is deprecated. Users should prefer the aggregation framework or mapReduce. See
+ * http://dochub.mongodb.org/core/group-command-deprecation for more detail.
+ */
 class GroupCommand : public Command {
 public:
     GroupCommand() : Command("group") {}
 
 private:
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -72,6 +83,10 @@ private:
         return true;
     }
 
+    ReadWriteType getReadWriteType() const {
+        return ReadWriteType::kRead;
+    }
+
     std::size_t reserveBytesForReply() const override {
         return FindCommon::kInitReplyBufferSize;
     }
@@ -80,12 +95,12 @@ private:
         help << "http://dochub.mongodb.org/core/aggregation";
     }
 
-    virtual Status checkAuthForCommand(ClientBasic* client,
+    virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
                                        const BSONObj& cmdObj) {
         std::string ns = parseNs(dbname, cmdObj);
-        if (!AuthorizationSession::get(client)
-                 ->isAuthorizedForActionsOnNamespace(NamespaceString(ns), ActionType::find)) {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnNamespace(
+                NamespaceString(ns), ActionType::find)) {
             return Status(ErrorCodes::Unauthorized, "unauthorized");
         }
         return Status::OK();
@@ -122,7 +137,7 @@ private:
 
         unique_ptr<PlanExecutor> planExecutor = std::move(statusWithPlanExecutor.getValue());
 
-        Explain::explainStages(planExecutor.get(), verbosity, out);
+        Explain::explainStages(planExecutor.get(), coll, verbosity, out);
         return Status::OK();
     }
 
@@ -132,6 +147,11 @@ private:
                      int options,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
+        RARELY {
+            warning() << "The group command is deprecated. See "
+                         "http://dochub.mongodb.org/core/group-command-deprecation.";
+        }
+
         GroupRequest groupRequest;
         Status parseRequestStatus = _parseRequest(dbname, cmdObj, &groupRequest);
         if (!parseRequestStatus.isOK()) {
@@ -148,6 +168,12 @@ private:
         }
 
         unique_ptr<PlanExecutor> planExecutor = std::move(statusWithPlanExecutor.getValue());
+
+        auto curOp = CurOp::get(txn);
+        {
+            stdx::lock_guard<Client>(*txn->getClient());
+            curOp->setPlanSummary_inlock(Explain::getPlanSummary(planExecutor.get()));
+        }
 
         // Group executors return ADVANCED exactly once, with the entire group result.
         BSONObj retval;
@@ -172,8 +198,13 @@ private:
         if (coll) {
             coll->infoCache()->notifyOfQuery(txn, summaryStats.indexesUsed);
         }
-        CurOp::get(txn)->debug().fromMultiPlanner = summaryStats.fromMultiPlanner;
-        CurOp::get(txn)->debug().replanned = summaryStats.replanned;
+        curOp->debug().setPlanSummaryMetrics(summaryStats);
+
+        if (curOp->shouldDBProfile()) {
+            BSONObjBuilder execStatsBob;
+            Explain::getWinningPlanStats(planExecutor.get(), &execStatsBob);
+            curOp->debug().execStats = execStatsBob.obj();
+        }
 
         invariant(STAGE_GROUP == planExecutor->getRootStage()->stageType());
         GroupStage* groupStage = static_cast<GroupStage*>(planExecutor->getRootStage());
@@ -225,6 +256,23 @@ private:
             request->keyFunctionCode = p["$keyf"]._asCode();
         } else {
             // No key specified.  Use the entire object as the key.
+        }
+
+        BSONElement collationElt;
+        Status collationEltStatus =
+            bsonExtractTypedField(p, "collation", BSONType::Object, &collationElt);
+        if (!collationEltStatus.isOK() && (collationEltStatus != ErrorCodes::NoSuchKey)) {
+            return collationEltStatus;
+        }
+        if (collationEltStatus.isOK()) {
+            request->collation = collationElt.embeddedObject().getOwned();
+        }
+        if (!request->collation.isEmpty() &&
+            serverGlobalParams.featureCompatibility.version.load() ==
+                ServerGlobalParams::FeatureCompatibility::Version::k32) {
+            return Status(ErrorCodes::InvalidOptions,
+                          "The featureCompatibilityVersion must be 3.4 to use collation. See "
+                          "http://dochub.mongodb.org/core/3.4-feature-compatibility.");
         }
 
         BSONElement reduce = p["$reduce"];

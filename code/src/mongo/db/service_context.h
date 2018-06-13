@@ -33,10 +33,13 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/storage/storage_engine.h"
+#include "mongo/platform/atomic_word.h"
 #include "mongo/platform/unordered_set.h"
 #include "mongo/stdx/functional.h"
-#include "mongo/util/decorable.h"
+#include "mongo/stdx/mutex.h"
+#include "mongo/transport/session.h"
 #include "mongo/util/clock_source.h"
+#include "mongo/util/decorable.h"
 #include "mongo/util/tick_source.h"
 
 namespace mongo {
@@ -45,12 +48,18 @@ class AbstractMessagingPort;
 class Client;
 class OperationContext;
 class OpObserver;
+class ServiceEntryPoint;
+
+namespace transport {
+class TransportLayer;
+class TransportLayerManager;
+}  // namespace transport
 
 /**
  * Classes that implement this interface can receive notification on killOp.
  *
- * See GlobalEnvironmentExperiment::registerKillOpListener() for more information, including
- * limitations on the lifetime of registered listeners.
+ * See registerKillOpListener() for more information,
+ * including limitations on the lifetime of registered listeners.
  */
 class KillOpListenerInterface {
 public:
@@ -205,9 +214,9 @@ public:
      *
      * The "desc" string is used to set a descriptive name for the client, used in logging.
      *
-     * If supplied, "p" is the communication channel used for communicating with the client.
+     * If supplied, "session" is the transport::Session used for communicating with the client.
      */
-    UniqueClient makeClient(std::string desc, AbstractMessagingPort* p = nullptr);
+    UniqueClient makeClient(std::string desc, transport::SessionHandle session = nullptr);
 
     /**
      * Creates a new OperationContext on "client".
@@ -261,30 +270,33 @@ public:
     /**
      * Signal all OperationContext(s) that they have been killed.
      */
-    virtual void setKillAllOperations() = 0;
+    void setKillAllOperations();
 
     /**
      * Reset the operation kill state after a killAllOperations.
      * Used for testing.
      */
-    virtual void unsetKillAllOperations() = 0;
+    void unsetKillAllOperations();
 
     /**
      * Get the state for killing all operations.
      */
-    virtual bool getKillAllOperations() = 0;
+    bool getKillAllOperations() {
+        return _globalKill.loadRelaxed();
+    }
 
     /**
-     * @param i opid of operation to kill
-     * @return if operation was found
+     * Kills the operation "txn" with the code "killCode", if txn has not already been killed.
+     * Caller must own the lock on txn->getClient, and txn->getServiceContext() must be the same as
+     * this service context.
      **/
-    virtual bool killOperation(unsigned int opId) = 0;
+    void killOperation(OperationContext* txn, ErrorCodes::Error killCode = ErrorCodes::Interrupted);
 
     /**
      * Kills all operations that have a Client that is associated with an incoming user
      * connection, except for the one associated with txn.
      */
-    virtual void killAllUserOperations(const OperationContext* txn, ErrorCodes::Error killCode) = 0;
+    void killAllUserOperations(const OperationContext* txn, ErrorCodes::Error killCode);
 
     /**
      * Registers a listener to be notified each time an op is killed.
@@ -292,7 +304,34 @@ public:
      * listener does not become owned by the environment. As there is currently no way to
      * unregister, the listener object must outlive this ServiceContext object.
      */
-    virtual void registerKillOpListener(KillOpListenerInterface* listener) = 0;
+    void registerKillOpListener(KillOpListenerInterface* listener);
+
+    //
+    // Transport.
+    //
+
+    /**
+     * Get the master TransportLayer. Routes to all other TransportLayers that
+     * may be in use within this service.
+     *
+     * See TransportLayerManager for more details.
+     */
+    transport::TransportLayer* getTransportLayer() const;
+
+    /**
+     * Get the service entry point for the service context.
+     *
+     * See ServiceEntryPoint for more details.
+     */
+    ServiceEntryPoint* getServiceEntryPoint() const;
+
+    /**
+     * Add a new TransportLayer to this service context. The new TransportLayer will
+     * be added to the TransportLayerManager accessible via getTransportLayer().
+     *
+     * It additionally calls start() on the TransportLayer after adding it.
+     */
+    Status addAndStartTransportLayer(std::unique_ptr<transport::TransportLayer> tl);
 
     //
     // Global OpObserver.
@@ -312,17 +351,43 @@ public:
      * Returns the tick/clock source set in this context.
      */
     TickSource* getTickSource() const;
-    ClockSource* getClockSource() const;
+
+    /**
+     * Get a ClockSource implementation that may be less precise than the _preciseClockSource but
+     * may be cheaper to call.
+     */
+    ClockSource* getFastClockSource() const;
+
+    /**
+     * Get a ClockSource implementation that is very precise but may be expensive to call.
+     */
+    ClockSource* getPreciseClockSource() const;
 
     /**
      * Replaces the current tick/clock source with a new one. In other words, the old source will be
      * destroyed. So make sure that no one is using the old source when calling this.
      */
     void setTickSource(std::unique_ptr<TickSource> newSource);
-    void setClockSource(std::unique_ptr<ClockSource> newSource);
+
+    /**
+     * Call this method with a ClockSource implementation that may be less precise than
+     * the _preciseClockSource but may be cheaper to call.
+     */
+    void setFastClockSource(std::unique_ptr<ClockSource> newSource);
+
+    /**
+     * Call this method with a ClockSource implementation that is very precise but
+     * may be expensive to call.
+     */
+    void setPreciseClockSource(std::unique_ptr<ClockSource> newSource);
+
+    /**
+     * Binds the service entry point implementation to the service context
+     */
+    void setServiceEntryPoint(std::unique_ptr<ServiceEntryPoint> sep);
 
 protected:
-    ServiceContext() = default;
+    ServiceContext();
 
     /**
      * Mutex used to synchronize access to mutable state of this ServiceContext instance,
@@ -334,7 +399,25 @@ private:
     /**
      * Returns a new OperationContext. Private, for use by makeOperationContext.
      */
-    virtual std::unique_ptr<OperationContext> _newOpCtx(Client* client) = 0;
+    virtual std::unique_ptr<OperationContext> _newOpCtx(Client* client, unsigned opId) = 0;
+
+    /**
+     * Kills the given operation.
+     *
+     * Caller must own the service context's _mutex.
+     */
+    void _killOperation_inlock(OperationContext* opCtx, ErrorCodes::Error killCode);
+
+
+    /**
+     * The TransportLayerManager.
+     */
+    std::unique_ptr<transport::TransportLayerManager> _transportLayerManager;
+
+    /**
+     * The service entry point
+     */
+    std::unique_ptr<ServiceEntryPoint> _serviceEntryPoint;
 
     /**
      * Vector of registered observers.
@@ -343,7 +426,26 @@ private:
     ClientSet _clients;
 
     std::unique_ptr<TickSource> _tickSource;
-    std::unique_ptr<ClockSource> _clockSource;
+
+    /**
+     * A ClockSource implementation that may be less precise than the _preciseClockSource but
+     * may be cheaper to call.
+     */
+    std::unique_ptr<ClockSource> _fastClockSource;
+
+    /**
+     * A ClockSource implementation that is very precise but may be expensive to call.
+     */
+    std::unique_ptr<ClockSource> _preciseClockSource;
+
+    // Flag set to indicate that all operations are to be interrupted ASAP.
+    AtomicWord<bool> _globalKill{false};
+
+    // protected by _mutex
+    std::vector<KillOpListenerInterface*> _killOpListeners;
+
+    // Counter for assigning operation ids.
+    AtomicUInt32 _nextOpId{1};
 };
 
 /**

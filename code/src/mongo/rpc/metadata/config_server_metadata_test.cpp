@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/jsobj.h"
 #include "mongo/rpc/metadata/config_server_metadata.h"
 #include "mongo/unittest/unittest.h"
@@ -50,7 +52,7 @@ TEST(ConfigSvrMetadataTest, Roundtrip) {
                  "opTime" << BSON("ts" << opTime.getTimestamp() << "t" << opTime.getTerm()))));
 
     BSONObj serializedObj = builder.obj();
-    ASSERT_EQ(expectedObj, serializedObj);
+    ASSERT_BSONOBJ_EQ(expectedObj, serializedObj);
 
     auto cloneStatus = ConfigServerMetadata::readFromMetadata(serializedObj);
     ASSERT_OK(cloneStatus.getStatus());
@@ -62,7 +64,7 @@ TEST(ConfigSvrMetadataTest, Roundtrip) {
     clonedMetadata.writeToMetadata(&clonedBuilder);
 
     BSONObj clonedSerializedObj = clonedBuilder.obj();
-    ASSERT_EQ(expectedObj, clonedSerializedObj);
+    ASSERT_BSONOBJ_EQ(expectedObj, clonedSerializedObj);
 }
 
 }  // unnamed namespace

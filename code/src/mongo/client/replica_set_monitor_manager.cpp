@@ -35,6 +35,12 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/client/connection_string.h"
 #include "mongo/client/replica_set_monitor.h"
+#include "mongo/executor/network_interface_factory.h"
+#include "mongo/executor/network_interface_thread_pool.h"
+#include "mongo/executor/task_executor.h"
+#include "mongo/executor/task_executor_pool.h"
+#include "mongo/executor/thread_pool_task_executor.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/log.h"
 #include "mongo/util/map_util.h"
@@ -46,14 +52,26 @@ using std::set;
 using std::string;
 using std::vector;
 
-ReplicaSetMonitorManager::ReplicaSetMonitorManager() = default;
+using executor::NetworkInterface;
+using executor::NetworkInterfaceThreadPool;
+using executor::TaskExecutorPool;
+using executor::TaskExecutor;
+using executor::ThreadPoolTaskExecutor;
 
-ReplicaSetMonitorManager::~ReplicaSetMonitorManager() = default;
+ReplicaSetMonitorManager::ReplicaSetMonitorManager() {}
+
+ReplicaSetMonitorManager::~ReplicaSetMonitorManager() {
+    shutdown();
+}
 
 shared_ptr<ReplicaSetMonitor> ReplicaSetMonitorManager::getMonitor(StringData setName) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
-    return mapFindWithDefault(_monitors, setName, shared_ptr<ReplicaSetMonitor>());
+    if (auto monitor = _monitors[setName].lock()) {
+        return monitor;
+    } else {
+        return shared_ptr<ReplicaSetMonitor>();
+    }
 }
 
 shared_ptr<ReplicaSetMonitor> ReplicaSetMonitorManager::getOrCreateMonitor(
@@ -61,18 +79,33 @@ shared_ptr<ReplicaSetMonitor> ReplicaSetMonitorManager::getOrCreateMonitor(
     invariant(connStr.type() == ConnectionString::SET);
 
     stdx::lock_guard<stdx::mutex> lk(_mutex);
-
-    shared_ptr<ReplicaSetMonitor>& monitor = _monitors[connStr.getSetName()];
-    if (!monitor) {
-        const std::set<HostAndPort> servers(connStr.getServers().begin(),
-                                            connStr.getServers().end());
-
-        log() << "Starting new replica set monitor for " << connStr.toString();
-
-        monitor = std::make_shared<ReplicaSetMonitor>(connStr.getSetName(), servers);
+    // do not restart taskExecutor if is in shutdown
+    if (!_taskExecutor && !_isShutdown) {
+        // construct task executor
+        auto net = executor::makeNetworkInterface("ReplicaSetMonitor-TaskExecutor");
+        auto netPtr = net.get();
+        _taskExecutor = stdx::make_unique<ThreadPoolTaskExecutor>(
+            stdx::make_unique<NetworkInterfaceThreadPool>(netPtr), std::move(net));
+        LOG(1) << "Starting up task executor for monitoring replica sets in response to request to "
+                  "monitor set: "
+               << connStr.toString();
+        _taskExecutor->startup();
     }
 
-    return monitor;
+    auto setName = connStr.getSetName();
+    auto monitor = _monitors[setName].lock();
+    if (monitor) {
+        return monitor;
+    }
+
+    const std::set<HostAndPort> servers(connStr.getServers().begin(), connStr.getServers().end());
+
+    log() << "Starting new replica set monitor for " << connStr.toString();
+
+    auto newMonitor = std::make_shared<ReplicaSetMonitor>(setName, servers);
+    _monitors[setName] = newMonitor;
+    newMonitor->init();
+    return newMonitor;
 }
 
 vector<string> ReplicaSetMonitorManager::getAllSetNames() {
@@ -89,18 +122,37 @@ vector<string> ReplicaSetMonitorManager::getAllSetNames() {
 
 void ReplicaSetMonitorManager::removeMonitor(StringData setName) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
-
     ReplicaSetMonitorsMap::const_iterator it = _monitors.find(setName);
     if (it != _monitors.end()) {
+        if (auto monitor = it->second.lock()) {
+            monitor->markAsRemoved();
+        }
         _monitors.erase(it);
+        log() << "Removed ReplicaSetMonitor for replica set " << setName;
+    }
+}
+
+
+void ReplicaSetMonitorManager::shutdown() {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    if (_taskExecutor && !_isShutdown) {
+        LOG(1) << "Shutting down task executor used for monitoring replica sets";
+        _taskExecutor->shutdown();
+        _taskExecutor->join();
+        _isShutdown = true;
     }
 }
 
 void ReplicaSetMonitorManager::removeAllMonitors() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
-
-    // Reset the StringMap, which will release all registered monitors
     _monitors = ReplicaSetMonitorsMap();
+
+    if (_taskExecutor) {
+        LOG(1) << "Shutting down task executor used for monitoring replica sets";
+        _taskExecutor->shutdown();
+        _taskExecutor->join();
+        _taskExecutor.reset();
+    }
 }
 
 void ReplicaSetMonitorManager::report(BSONObjBuilder* builder) {
@@ -117,6 +169,11 @@ void ReplicaSetMonitorManager::report(BSONObjBuilder* builder) {
         BSONObjBuilder monitorInfo(builder->subobjStart(setName));
         monitor->appendInfo(monitorInfo);
     }
+}
+
+TaskExecutor* ReplicaSetMonitorManager::getExecutor() {
+    invariant(_taskExecutor);
+    return _taskExecutor.get();
 }
 
 }  // namespace mongo

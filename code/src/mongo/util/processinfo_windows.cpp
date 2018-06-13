@@ -31,11 +31,14 @@
 
 #include "mongo/platform/basic.h"
 
+#include <bitset>
+#include <boost/none.hpp>
+#include <boost/optional.hpp>
 #include <iostream>
 #include <psapi.h>
 
-#include "mongo/util/processinfo.h"
 #include "mongo/util/log.h"
+#include "mongo/util/processinfo.h"
 
 using namespace std;
 using std::unique_ptr;
@@ -72,6 +75,18 @@ int _wconvertmtos(SIZE_T s) {
 ProcessInfo::ProcessInfo(ProcessId pid) {}
 
 ProcessInfo::~ProcessInfo() {}
+
+// get the number of CPUs available to the current process
+boost::optional<unsigned long> ProcessInfo::getNumAvailableCores() {
+    DWORD_PTR process_mask, system_mask;
+
+    if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask)) {
+        std::bitset<32> mask(process_mask);
+        if (mask.count() > 0)
+            return mask.count();
+    }
+    return boost::none;
+}
 
 bool ProcessInfo::supported() {
     return true;
@@ -311,12 +326,8 @@ void ProcessInfo::SystemInfo::collectSystemInfo() {
                         //
                         if ((osvi.wServicePackMajor >= 0) && (osvi.wServicePackMajor < 2)) {
                             if (isKB2731284OrLaterUpdateInstalled()) {
-                                log() << "Hotfix KB2731284 or later update is installed, no need "
-                                         "to zero-out data files";
                                 fileZeroNeeded = false;
                             } else {
-                                log() << "Hotfix KB2731284 or later update is not installed, will "
-                                         "zero-out data files";
                                 fileZeroNeeded = true;
                             }
                         }

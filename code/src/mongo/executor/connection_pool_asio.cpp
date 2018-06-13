@@ -25,6 +25,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kASIO
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/executor/connection_pool_asio.h"
@@ -37,6 +39,7 @@
 #include "mongo/rpc/legacy_request_builder.h"
 #include "mongo/rpc/reply_interface.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 namespace executor {
@@ -52,12 +55,20 @@ ASIOTimer::~ASIOTimer() {
     ++_callbackSharedState->id;
 }
 
+const auto kMaxTimerDuration = duration_cast<Milliseconds>(ASIOTimer::clock_type::duration::max());
+
 void ASIOTimer::setTimeout(Milliseconds timeout, TimeoutCallback cb) {
     _strand->dispatch([this, timeout, cb] {
         _cb = std::move(cb);
 
         cancelTimeout();
-        _impl.expires_after(timeout);
+
+        std::error_code ec;
+        _impl.expires_after(std::min(kMaxTimerDuration, timeout).toSystemDuration(), ec);
+        if (ec) {
+            severe() << "Failed to set connection pool timer: " << ec.message();
+            fassertFailed(40333);
+        }
 
         decltype(_callbackSharedState->id) id;
         decltype(_callbackSharedState) sharedState;
@@ -102,7 +113,12 @@ void ASIOTimer::cancelTimeout() {
         stdx::lock_guard<stdx::mutex> lk(sharedState->mutex);
         if (sharedState->id != id)
             return;
-        _impl.cancel();
+
+        std::error_code ec;
+        _impl.cancel(ec);
+        if (ec) {
+            log() << "Failed to cancel connection pool timer: " << ec.message();
+        }
     });
 }
 
@@ -113,8 +129,14 @@ ASIOConnection::ASIOConnection(const HostAndPort& hostAndPort, size_t generation
       _impl(makeAsyncOp(this)),
       _timer(&_impl->strand()) {}
 
+ASIOConnection::~ASIOConnection() {
+    if (_impl) {
+        stdx::lock_guard<stdx::mutex> lk(_impl->_access->mutex);
+        _impl->_access->id++;
+    }
+}
+
 void ASIOConnection::indicateSuccess() {
-    indicateUsed();
     _status = Status::OK();
 }
 
@@ -154,11 +176,14 @@ std::unique_ptr<NetworkInterfaceASIO::AsyncOp> ASIOConnection::makeAsyncOp(ASIOC
     return stdx::make_unique<NetworkInterfaceASIO::AsyncOp>(
         conn->_global->_impl,
         TaskExecutor::CallbackHandle(),
-        RemoteCommandRequest{
-            conn->getHostAndPort(), std::string("admin"), BSON("isMaster" << 1), BSONObj()},
-        [conn](const TaskExecutor::ResponseStatus& status) {
+        RemoteCommandRequest{conn->getHostAndPort(),
+                             std::string("admin"),
+                             BSON("isMaster" << 1),
+                             BSONObj(),
+                             nullptr},
+        [conn](const TaskExecutor::ResponseStatus& rs) {
             auto cb = std::move(conn->_setupCallback);
-            cb(conn, status.isOK() ? Status::OK() : status.getStatus());
+            cb(conn, rs.status);
         },
         conn->_global->now());
 }
@@ -184,12 +209,46 @@ void ASIOConnection::cancelTimeout() {
 void ASIOConnection::setup(Milliseconds timeout, SetupCallback cb) {
     _impl->strand().dispatch([this, timeout, cb] {
         _setupCallback = [this, cb](ConnectionInterface* ptr, Status status) {
+            {
+                stdx::lock_guard<stdx::mutex> lk(_impl->_access->mutex);
+                _impl->_access->id++;
+
+                // If our connection timeout callback ran but wasn't the reason we exited
+                // the state machine, clear any TIMED_OUT state.
+                if (status.isOK()) {
+                    _impl->_transitionToState_inlock(
+                        NetworkInterfaceASIO::AsyncOp::State::kUninitialized);
+                    _impl->_transitionToState_inlock(
+                        NetworkInterfaceASIO::AsyncOp::State::kInProgress);
+                    _impl->_transitionToState_inlock(
+                        NetworkInterfaceASIO::AsyncOp::State::kFinished);
+                }
+            }
+
             cancelTimeout();
             cb(ptr, status);
         };
 
+        // Capturing the shared access pad and generation before calling setTimeout gives us enough
+        // information to avoid calling the timer if we shouldn't without needing any other
+        // resources that might have been cleaned up.
+        decltype(_impl->_access) access;
+        std::size_t generation;
+        {
+            stdx::lock_guard<stdx::mutex> lk(_impl->_access->mutex);
+            access = _impl->_access;
+            generation = access->id;
+        }
+
         // Actually timeout setup
-        setTimeout(timeout, [this] { _impl->connection().stream().cancel(); });
+        setTimeout(timeout, [this, access, generation] {
+            stdx::lock_guard<stdx::mutex> lk(access->mutex);
+            if (generation != access->id) {
+                // The operation has been cleaned up, do not access.
+                return;
+            }
+            _impl->timeOut_inlock();
+        });
 
         _global->_impl->_connect(_impl.get());
     });
@@ -203,15 +262,17 @@ void ASIOConnection::refresh(Milliseconds timeout, RefreshCallback cb) {
     _impl->strand().dispatch([this, timeout, cb] {
         auto op = _impl.get();
 
+        // We clear state transitions because we're re-running a portion of the asio state machine
+        // without entering in startCommand (which would call this for us).
+        op->clearStateTransitions();
+
         _refreshCallback = std::move(cb);
 
         // Actually timeout refreshes
         setTimeout(timeout, [this] { _impl->connection().stream().cancel(); });
 
         // Our pings are isMaster's
-        auto beginStatus = op->beginCommand(makeIsMasterRequest(this),
-                                            NetworkInterfaceASIO::AsyncCommand::CommandType::kRPC,
-                                            _hostAndPort);
+        auto beginStatus = op->beginCommand(makeIsMasterRequest(this), _hostAndPort);
         if (!beginStatus.isOK()) {
             auto cb = std::move(_refreshCallback);
             cb(this, beginStatus);
@@ -223,28 +284,33 @@ void ASIOConnection::refresh(Milliseconds timeout, RefreshCallback cb) {
         // need to intercept those calls so we can capture them. This will get cleared out when we
         // fill
         // in the real onFinish in startCommand.
-        op->setOnFinish([this](StatusWith<RemoteCommandResponse> failedResponse) {
+        op->setOnFinish([this](RemoteCommandResponse failedResponse) {
             invariant(!failedResponse.isOK());
             auto cb = std::move(_refreshCallback);
-            cb(this, failedResponse.getStatus());
+            cb(this, failedResponse.status);
         });
 
-        _global->_impl->_asyncRunCommand(
-            op,
-            [this, op](std::error_code ec, size_t bytes) {
-                cancelTimeout();
+        op->_inRefresh = true;
 
-                auto cb = std::move(_refreshCallback);
+        _global->_impl->_asyncRunCommand(op, [this, op](std::error_code ec, size_t bytes) {
+            cancelTimeout();
 
-                if (ec)
-                    return cb(this, Status(ErrorCodes::HostUnreachable, ec.message()));
+            auto cb = std::move(_refreshCallback);
 
-                cb(this, Status::OK());
-            });
+            if (ec)
+                return cb(this, Status(ErrorCodes::HostUnreachable, ec.message()));
+
+            op->_inRefresh = false;
+            cb(this, Status::OK());
+        });
     });
 }
 
 std::unique_ptr<NetworkInterfaceASIO::AsyncOp> ASIOConnection::releaseAsyncOp() {
+    {
+        stdx::lock_guard<stdx::mutex> lk(_impl->_access->mutex);
+        _impl->_access->id++;
+    }
     return std::move(_impl);
 }
 

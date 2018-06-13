@@ -37,7 +37,10 @@
 #include "mongo/base/status.h"
 #include "mongo/bson/util/builder.h"
 #include "mongo/client/connection_string.h"
+#include "mongo/client/remote_command_targeter.h"
 #include "mongo/s/client/multi_command_dispatch.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/grid.h"
 #include "mongo/s/write_ops/batch_write_op.h"
 #include "mongo/s/write_ops/write_error_detail.h"
 #include "mongo/util/log.h"
@@ -48,10 +51,8 @@ using std::make_pair;
 using std::stringstream;
 using std::vector;
 
-BatchWriteExec::BatchWriteExec(NSTargeter* targeter,
-                               ShardResolver* resolver,
-                               MultiCommandDispatch* dispatcher)
-    : _targeter(targeter), _resolver(resolver), _dispatcher(dispatcher) {}
+BatchWriteExec::BatchWriteExec(NSTargeter* targeter, MultiCommandDispatch* dispatcher)
+    : _targeter(targeter), _dispatcher(dispatcher) {}
 
 namespace {
 
@@ -77,12 +78,6 @@ static void noteStaleResponses(const vector<ShardError*>& staleErrors, NSTargete
         targeter->noteStaleResponse(
             error->endpoint, error->error.isErrInfoSet() ? error->error.getErrInfo() : BSONObj());
     }
-}
-
-static bool isShardMetadataChanging(const vector<ShardError*>& staleErrors) {
-    if (!staleErrors.empty() && staleErrors.back()->error.isErrInfoSet())
-        return staleErrors.back()->error.getErrInfo()["inCriticalSection"].trueValue();
-    return false;
 }
 
 // The number of times we'll try to continue a batch op if no progress is being made
@@ -152,7 +147,6 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
 
         size_t numSent = 0;
         size_t numToSend = childBatches.size();
-        bool remoteMetadataChanging = false;
         while (numSent != numToSend) {
             // Collect batches out on the network, mapped by endpoint
             OwnedHostBatchMap ownedPendingBatches;
@@ -176,22 +170,46 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                     continue;
 
                 // Figure out what host we need to dispatch our targeted batch
+                const ReadPreferenceSetting readPref(ReadPreference::PrimaryOnly, TagSet());
+                auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(
+                    txn, nextBatch->getEndpoint().shardName);
+
+                bool resolvedHost = false;
                 ConnectionString shardHost;
-                Status resolveStatus =
-                    _resolver->chooseWriteHost(txn, nextBatch->getEndpoint().shardName, &shardHost);
-                if (!resolveStatus.isOK()) {
-                    ++stats->numResolveErrors;
+                if (!shardStatus.isOK()) {
+                    Status status(std::move(shardStatus.getStatus()));
 
                     // Record a resolve failure
                     // TODO: It may be necessary to refresh the cache if stale, or maybe just
                     // cancel and retarget the batch
                     WriteErrorDetail error;
-                    buildErrorFrom(resolveStatus, &error);
-
-                    LOG(4) << "unable to send write batch to " << shardHost.toString()
-                           << causedBy(resolveStatus.toString());
-
+                    buildErrorFrom(status, &error);
+                    LOG(4) << "unable to send write batch to " << nextBatch->getEndpoint().shardName
+                           << causedBy(status);
                     batchOp.noteBatchError(*nextBatch, error);
+                } else {
+                    auto shard = shardStatus.getValue();
+
+                    auto swHostAndPort = shard->getTargeter()->findHostNoWait(readPref);
+                    if (!swHostAndPort.isOK()) {
+
+                        // Record a resolve failure
+                        // TODO: It may be necessary to refresh the cache if stale, or maybe just
+                        // cancel and retarget the batch
+                        WriteErrorDetail error;
+                        buildErrorFrom(swHostAndPort.getStatus(), &error);
+                        LOG(4) << "unable to send write batch to "
+                               << nextBatch->getEndpoint().shardName
+                               << causedBy(swHostAndPort.getStatus());
+                        batchOp.noteBatchError(*nextBatch, error);
+                    } else {
+                        shardHost = ConnectionString(std::move(swHostAndPort.getValue()));
+                        resolvedHost = true;
+                    }
+                }
+
+                if (!resolvedHost) {
+                    ++stats->numResolveErrors;
 
                     // We're done with this batch
                     // Clean up when we can't resolve a host
@@ -219,7 +237,7 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                 request.setNS(nss);
 
                 LOG(4) << "sending write batch to " << shardHost.toString() << ": "
-                       << request.toString();
+                       << redact(request.toString());
 
                 _dispatcher->addCommand(shardHost, nss.db(), request.toBSON());
 
@@ -256,7 +274,7 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                     trackedErrors.startTracking(ErrorCodes::StaleShardVersion);
 
                     LOG(4) << "write results received from " << shardHost.toString() << ": "
-                           << response.toString();
+                           << redact(response.toString());
 
                     // Dispatch was ok, note response
                     batchOp.noteBatchResponse(*batch, response, &trackedErrors);
@@ -268,11 +286,6 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                     if (staleErrors.size() > 0) {
                         noteStaleResponses(staleErrors, _targeter);
                         ++stats->numStaleBatches;
-                    }
-
-                    // Remember if the shard is actively changing metadata right now
-                    if (isShardMetadataChanging(staleErrors)) {
-                        remoteMetadataChanging = true;
                     }
 
                     // Remember that we successfully wrote to this shard
@@ -293,7 +306,7 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                     buildErrorFrom(Status(ErrorCodes::RemoteResultsUnavailable, msg.str()), &error);
 
                     LOG(4) << "unable to receive write results from " << shardHost.toString()
-                           << causedBy(dispatchStatus.toString());
+                           << causedBy(redact(dispatchStatus.toString()));
 
                     batchOp.noteBatchError(*batch, error);
                 }
@@ -327,7 +340,7 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
         //
 
         int currCompletedOps = batchOp.numWriteOpsIn(WriteOpState_Completed);
-        if (currCompletedOps == numCompletedOps && !targeterChanged && !remoteMetadataChanging) {
+        if (currCompletedOps == numCompletedOps && !targeterChanged) {
             ++numRoundsWithoutProgress;
         } else {
             numRoundsWithoutProgress = 0;

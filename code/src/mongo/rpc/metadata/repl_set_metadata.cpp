@@ -31,6 +31,7 @@
 #include "mongo/bson/util/bson_check.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/repl/bson_extract_optime.h"
 #include "mongo/rpc/metadata.h"
 
 namespace mongo {
@@ -52,9 +53,7 @@ const char kTermFieldName[] = "term";
 
 }  // unnamed namespace
 
-#ifndef _MSC_EXTENSIONS
 const int ReplSetMetadata::kNoPrimary;
-#endif  // _MSC_EXTENSIONS
 
 ReplSetMetadata::ReplSetMetadata(long long term,
                                  OpTime committedOpTime,

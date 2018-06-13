@@ -32,14 +32,13 @@
 #include <cstring>
 #include <type_traits>
 
+#include "mongo/base/static_assert.h"
 #include "mongo/config.h"
 #include "mongo/platform/decimal128.h"
 
 #pragma push_macro("MONGO_UINT16_SWAB")
 #pragma push_macro("MONGO_UINT32_SWAB")
 #pragma push_macro("MONGO_UINT64_SWAB")
-#pragma push_macro("MONGO_LITTLE_ENDIAN")
-#pragma push_macro("MONGO_BIG_ENDIAN")
 #pragma push_macro("htobe16")
 #pragma push_macro("htobe32")
 #pragma push_macro("htobe64")
@@ -56,8 +55,6 @@
 #undef MONGO_UINT16_SWAB
 #undef MONGO_UINT32_SWAB
 #undef MONGO_UINT64_SWAB
-#undef MONGO_LITTLE_ENDIAN
-#undef MONGO_BIG_ENDIAN
 #undef htobe16
 #undef htobe32
 #undef htobe64
@@ -74,7 +71,7 @@
 #define MONGO_LITTLE_ENDIAN 1234
 #define MONGO_BIG_ENDIAN 4321
 
-#if defined(_MSC_VER) && (_MSC_VER >= 1300)
+#if defined(_MSC_VER)
 #include <cstdlib>
 #define MONGO_UINT16_SWAB(v) _byteswap_ushort(v)
 #define MONGO_UINT32_SWAB(v) _byteswap_ulong(v)
@@ -344,7 +341,7 @@ struct ByteOrderConverter<float> {
     typedef float T;
 
     inline static T nativeToBig(T t) {
-        static_assert(sizeof(T) == sizeof(uint32_t), "sizeof(T) == sizeof(uint32_t)");
+        MONGO_STATIC_ASSERT(sizeof(T) == sizeof(uint32_t));
 
         uint32_t temp;
         std::memcpy(&temp, &t, sizeof(t));
@@ -383,7 +380,7 @@ struct ByteOrderConverter<double> {
     typedef double T;
 
     inline static T nativeToBig(T t) {
-        static_assert(sizeof(T) == sizeof(uint64_t), "sizeof(T) == sizeof(uint64_t)");
+        MONGO_STATIC_ASSERT(sizeof(T) == sizeof(uint64_t));
 
         uint64_t temp;
         std::memcpy(&temp, &t, sizeof(t));
@@ -456,32 +453,31 @@ struct IntegralTypeMap {
 
 template <>
 struct IntegralTypeMap<signed char> {
-    static_assert(CHAR_BIT == 8, "CHAR_BIT == 8");
+    MONGO_STATIC_ASSERT(CHAR_BIT == 8);
     typedef int8_t type;
 };
 
 template <>
 struct IntegralTypeMap<unsigned char> {
-    static_assert(CHAR_BIT == 8, "CHAR_BIT == 8");
+    MONGO_STATIC_ASSERT(CHAR_BIT == 8);
     typedef uint8_t type;
 };
 
 template <>
 struct IntegralTypeMap<char> {
-    static_assert(CHAR_BIT == 8, "CHAR_BIT == 8");
+    MONGO_STATIC_ASSERT(CHAR_BIT == 8);
     typedef std::conditional<std::is_signed<char>::value, int8_t, uint8_t>::type type;
 };
 
 template <>
 struct IntegralTypeMap<long long> {
-    static_assert(sizeof(long long) == sizeof(int64_t), "sizeof(long long) == sizeof(int64_t)");
+    MONGO_STATIC_ASSERT(sizeof(long long) == sizeof(int64_t));
     typedef int64_t type;
 };
 
 template <>
 struct IntegralTypeMap<unsigned long long> {
-    static_assert(sizeof(unsigned long long) == sizeof(uint64_t),
-                  "sizeof(unsigned long long) == sizeof(uint64_t)");
+    MONGO_STATIC_ASSERT(sizeof(unsigned long long) == sizeof(uint64_t));
     typedef uint64_t type;
 };
 
@@ -511,8 +507,6 @@ inline T littleToNative(T t) {
 #undef MONGO_UINT16_SWAB
 #undef MONGO_UINT32_SWAB
 #undef MONGO_UINT64_SWAB
-#undef MONGO_LITTLE_ENDIAN
-#undef MONGO_BIG_ENDIAN
 #undef htobe16
 #undef htobe32
 #undef htobe64
@@ -529,8 +523,6 @@ inline T littleToNative(T t) {
 #pragma pop_macro("MONGO_UINT16_SWAB")
 #pragma pop_macro("MONGO_UINT32_SWAB")
 #pragma pop_macro("MONGO_UINT64_SWAB")
-#pragma pop_macro("MONGO_LITTLE_ENDIAN")
-#pragma pop_macro("MONGO_BIG_ENDIAN")
 #pragma pop_macro("htobe16")
 #pragma pop_macro("htobe32")
 #pragma pop_macro("htobe64")

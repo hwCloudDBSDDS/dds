@@ -33,6 +33,7 @@
 
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/pipeline/pipeline_d.h"
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
@@ -47,15 +48,13 @@ const char* PipelineProxyStage::kStageType = "PIPELINE_PROXY";
 
 PipelineProxyStage::PipelineProxyStage(OperationContext* opCtx,
                                        intrusive_ptr<Pipeline> pipeline,
-                                       const std::shared_ptr<PlanExecutor>& child,
                                        WorkingSet* ws)
     : PlanStage(kStageType, opCtx),
       _pipeline(pipeline),
       _includeMetaData(_pipeline->getContext()->inShard),  // send metadata to merger
-      _childExec(child),
       _ws(ws) {}
 
-PlanStage::StageState PipelineProxyStage::work(WorkingSetID* out) {
+PlanStage::StageState PipelineProxyStage::doWork(WorkingSetID* out) {
     if (!out) {
         return PlanStage::FAILURE;
     }
@@ -92,27 +91,12 @@ bool PipelineProxyStage::isEOF() {
     return true;
 }
 
-void PipelineProxyStage::doInvalidate(OperationContext* txn,
-                                      const RecordId& dl,
-                                      InvalidationType type) {
-    // Propagate the invalidation to the child executor of the pipeline if it is still in use.
-    if (auto child = getChildExecutor()) {
-        child->invalidate(txn, dl, type);
-    }
-}
-
 void PipelineProxyStage::doDetachFromOperationContext() {
     _pipeline->detachFromOperationContext();
-    if (auto child = getChildExecutor()) {
-        child->detachFromOperationContext();
-    }
 }
 
 void PipelineProxyStage::doReattachToOperationContext() {
     _pipeline->reattachToOperationContext(getOpCtx());
-    if (auto child = getChildExecutor()) {
-        child->reattachToOperationContext(getOpCtx());
-    }
 }
 
 unique_ptr<PlanStageStats> PipelineProxyStage::getStats() {
@@ -123,7 +107,7 @@ unique_ptr<PlanStageStats> PipelineProxyStage::getStats() {
 }
 
 boost::optional<BSONObj> PipelineProxyStage::getNextBson() {
-    if (boost::optional<Document> next = _pipeline->output()->getNext()) {
+    if (auto next = _pipeline->getNext()) {
         if (_includeMetaData) {
             return next->toBsonWithMetaData();
         } else {
@@ -134,8 +118,13 @@ boost::optional<BSONObj> PipelineProxyStage::getNextBson() {
     return boost::none;
 }
 
-shared_ptr<PlanExecutor> PipelineProxyStage::getChildExecutor() {
-    return _childExec.lock();
+std::string PipelineProxyStage::getPlanSummaryStr() const {
+    return PipelineD::getPlanSummaryStr(_pipeline);
 }
 
+void PipelineProxyStage::getPlanSummaryStats(PlanSummaryStats* statsOut) const {
+    invariant(statsOut);
+    PipelineD::getPlanSummaryStats(_pipeline, statsOut);
+    statsOut->nReturned = getCommonStats()->advanced;
+}
 }  // namespace mongo

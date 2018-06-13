@@ -36,13 +36,12 @@
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/db_raii.h"
-#include "mongo/db/service_context.h"
 #include "mongo/db/index_builder.h"
 #include "mongo/db/op_observer.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/query/find.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/service_context.h"
 
 namespace mongo {
 
@@ -56,7 +55,7 @@ public:
     virtual bool slaveOk() const {
         return false;
     }
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
     virtual void help(stringstream& help) const {
@@ -101,11 +100,12 @@ public:
 
         NamespaceString nss(dbname, to);
         if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(nss)) {
-            return appendCommandStatus(result,
-                                       Status(ErrorCodes::NotMaster,
-                                              str::stream()
-                                                  << "Not primary while cloning collection " << from
-                                                  << " to " << to << " (as capped)"));
+            return appendCommandStatus(
+                result,
+                Status(ErrorCodes::NotMaster,
+                       str::stream() << "Not primary while cloning collection " << from << " to "
+                                     << to
+                                     << " (as capped)"));
         }
 
         Database* const db = autoDb.getDb();
@@ -132,7 +132,7 @@ public:
     virtual bool slaveOk() const {
         return false;
     }
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
     virtual void help(stringstream& help) const {

@@ -38,11 +38,12 @@
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
 class BSONObj;
-class CatalogManagerReplicaSet;
+class ShardingCatalogClientImpl;
 class DistLockManagerMock;
 class ShardRegistry;
 template <typename T>
@@ -69,14 +70,7 @@ public:
                         executor::NetworkInterfaceMock* network)
             : _future(std::move(future)), _executor(executor), _network(network) {}
 
-#if defined(_MSC_VER) && _MSC_VER < 1900  // MVSC++ <= 2013 can't generate default move operations
-        FutureHandle(FutureHandle&& other)
-            : _future(std::move(other._future)),
-              _executor(other._executor),
-              _network(other._network) {}
-#else
         FutureHandle(FutureHandle&& other) = default;
-#endif
 
         FutureHandle& operator=(FutureHandle&& other) {
             // Assigning to initialized FutureHandle is banned because of the work required prior to
@@ -106,6 +100,11 @@ public:
             return _future.get();
         }
 
+        template <class Period>
+        T timed_get(const Duration<Period>& timeout_duration) {
+            return timed_get(timeout_duration.toSystemDuration());
+        }
+
     private:
         stdx::future<T> _future;
         executor::TaskExecutor* _executor;
@@ -129,7 +128,7 @@ public:
 
     using OnCommandFunction = stdx::function<StatusWith<BSONObj>(const RemoteCommandRequest&)>;
     using OnCommandWithMetadataFunction =
-        stdx::function<StatusWith<RemoteCommandResponse>(const RemoteCommandRequest&)>;
+        stdx::function<RemoteCommandResponse(const RemoteCommandRequest&)>;
 
     using OnFindCommandFunction =
         stdx::function<StatusWith<std::vector<BSONObj>>(const RemoteCommandRequest&)>;

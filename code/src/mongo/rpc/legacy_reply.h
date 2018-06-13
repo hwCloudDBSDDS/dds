@@ -31,8 +31,8 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/rpc/document_range.h"
-#include "mongo/rpc/reply_interface.h"
 #include "mongo/rpc/protocol.h"
+#include "mongo/rpc/reply_interface.h"
 
 namespace mongo {
 class Message;
@@ -41,8 +41,6 @@ namespace rpc {
 
 /**
  * Immutable view of an OP_REPLY legacy-style command reply.
- *
- * TODO: BSON validation (SERVER-18167)
  */
 class LegacyReply : public ReplyInterface {
 public:

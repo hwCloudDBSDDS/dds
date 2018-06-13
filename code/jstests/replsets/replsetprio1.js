@@ -15,8 +15,14 @@
         ]
     });
 
-    // 2 should be master (give this a while to happen, as 0 will be elected, then demoted)
-    replTest.waitForState(nodes[2], ReplSetTest.State.PRIMARY, 120000);
+    // 2 should be master (give this a while to happen, as other nodes might first be elected)
+    replTest.waitForState(nodes[2], ReplSetTest.State.PRIMARY);
+    // wait for 1 to not appear to be master (we are about to make it master and need a clean slate
+    // here)
+    replTest.waitForState(nodes[1], ReplSetTest.State.SECONDARY);
+
+    // Wait for election oplog entry to be replicated, to ensure 0 will vote for 1 after stopping 2.
+    replTest.awaitReplication();
 
     // kill 2, 1 should take over
     replTest.stop(2);
@@ -36,7 +42,7 @@
 
     // bring 2 back up, 2 should wait until caught up and then become master
     replTest.restart(2);
-    replTest.waitForState(nodes[2], ReplSetTest.State.PRIMARY, 60000);
+    replTest.waitForState(nodes[2], ReplSetTest.State.PRIMARY);
 
     // make sure nothing was rolled back
     master = replTest.getPrimary();

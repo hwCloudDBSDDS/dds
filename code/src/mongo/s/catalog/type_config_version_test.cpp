@@ -26,6 +26,8 @@
  *    then also delete it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/base/status_with.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/s/catalog/type_config_version.h"
@@ -102,7 +104,7 @@ TEST(Validity, NewVersionRoundTrip) {
     ASSERT_EQUALS(versionInfo.getCurrentVersion(), 4);
     ASSERT_EQUALS(versionInfo.getClusterId(), clusterId);
     ASSERT_EQUALS(versionInfo.getUpgradeId(), upgradeId);
-    ASSERT_EQUALS(versionInfo.getUpgradeState(), upgradeState);
+    ASSERT_BSONOBJ_EQ(versionInfo.getUpgradeState(), upgradeState);
 
     ASSERT_OK(versionInfo.validate());
 }
@@ -251,10 +253,10 @@ TEST(Excludes, BadRangeArray) {
                       << "1.2.3");  // empty bound
     BSONArray includeArr = bab.arr();
 
-    auto versionInfoResult = VersionType::fromBSON(
-        BSON(VersionType::minCompatibleVersion(3)
-             << VersionType::currentVersion(4) << VersionType::clusterId(OID::gen())
-             << VersionType::excludingMongoVersions(includeArr)));
+    auto versionInfoResult = VersionType::fromBSON(BSON(
+        VersionType::minCompatibleVersion(3) << VersionType::currentVersion(4)
+                                             << VersionType::clusterId(OID::gen())
+                                             << VersionType::excludingMongoVersions(includeArr)));
     ASSERT_EQ(ErrorCodes::FailedToParse, versionInfoResult.getStatus());
 }
 

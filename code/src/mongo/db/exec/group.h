@@ -28,7 +28,7 @@
 
 #pragma once
 
-
+#include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/scripting/engine.h"
 
@@ -53,6 +53,10 @@ struct GroupRequest {
     // A Javascript function that maps a document to a key object.  Alternative to "keyPattern".
     // Empty is "keyPattern" is being used instead.
     std::string keyFunctionCode;
+
+    // The collation used for string comparisons. If empty, simple binary comparison with memcmp()
+    // is used.
+    BSONObj collation;
 
     // A Javascript function that takes a (input document, group result) pair and
     // updates the group result document.
@@ -87,7 +91,7 @@ public:
                WorkingSet* workingSet,
                PlanStage* child);
 
-    StageState work(WorkingSetID* out) final;
+    StageState doWork(WorkingSetID* out) final;
     bool isEOF() final;
 
     StageType stageType() const final {
@@ -151,7 +155,7 @@ private:
 
     // Map from group key => group index.  The group index is used to index into "$arr", a
     // variable owned by _scope which contains the group data for this key.
-    std::map<BSONObj, int, BSONObjCmp> _groupMap;
+    BSONObjIndexedMap<int> _groupMap;
 };
 
 }  // namespace mongo

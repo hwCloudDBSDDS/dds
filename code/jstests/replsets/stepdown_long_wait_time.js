@@ -22,7 +22,7 @@
         ]
     });
 
-    replSet.waitForState(replSet.nodes[0], ReplSetTest.State.PRIMARY, 60 * 1000);
+    replSet.waitForState(replSet.nodes[0], ReplSetTest.State.PRIMARY);
     var primary = replSet.getPrimary();
 
     var secondary = replSet.getSecondary();
@@ -32,9 +32,7 @@
                          'Failed to configure rsSyncApplyStop failpoint.');
 
     jsTestLog("do a write then ask the PRIMARY to stepdown");
-    var options = {
-        writeConcern: {w: 1, wtimeout: 60000}
-    };
+    var options = {writeConcern: {w: 1, wtimeout: 60000}};
     assert.writeOK(primary.getDB(name).foo.insert({x: 1}, options));
     var stepDownSecs = 60;
     var secondaryCatchUpPeriodSecs = 60;

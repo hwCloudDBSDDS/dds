@@ -37,19 +37,19 @@
 #include "mongo/base/counter.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/client.h"
-#include "mongo/db/curop.h"
 #include "mongo/db/commands/server_status_metric.h"
+#include "mongo/db/curop.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/storage/mmap_v1/extent.h"
 #include "mongo/db/storage/mmap_v1/extent_manager.h"
 #include "mongo/db/storage/mmap_v1/record.h"
-#include "mongo/db/operation_context.h"
 #include "mongo/db/storage/mmap_v1/record_store_v1_simple_iterator.h"
+#include "mongo/db/storage/mmap_v1/touch_pages.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
-#include "mongo/util/progress_meter.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/progress_meter.h"
 #include "mongo/util/timer.h"
-#include "mongo/util/touch_pages.h"
 
 namespace mongo {
 
@@ -152,7 +152,8 @@ StatusWith<DiskLoc> SimpleRecordStoreV1::allocRecord(OperationContext* txn,
         return StatusWith<DiskLoc>(
             ErrorCodes::InvalidLength,
             str::stream() << "Attempting to allocate a record larger than maximum size: "
-                          << lengthWithHeaders << " > 16.5MB");
+                          << lengthWithHeaders
+                          << " > 16.5MB");
     }
 
     DiskLoc loc = _allocFromExistingExtents(txn, lengthWithHeaders);
@@ -255,7 +256,7 @@ vector<std::unique_ptr<RecordCursor>> SimpleRecordStoreV1::getManyCursors(
     return cursors;
 }
 
-class CompactDocWriter : public DocWriter {
+class CompactDocWriter final : public DocWriter {
 public:
     /**
      * param allocationSize - allocation size WITH header
@@ -368,7 +369,7 @@ void SimpleRecordStoreV1::_compactExtent(OperationContext* txn,
                 // start of the compact, this insert will allocate a record in a new extent.
                 // See the comment in compact() for more details.
                 CompactDocWriter writer(recOld, rawDataSize, allocationSize);
-                StatusWith<RecordId> status = insertRecord(txn, &writer, false);
+                StatusWith<RecordId> status = insertRecordWithDocWriter(txn, &writer);
                 uassertStatusOK(status.getStatus());
                 const MmapV1RecordHeader* newRec =
                     recordFor(DiskLoc::fromRecordId(status.getValue()));

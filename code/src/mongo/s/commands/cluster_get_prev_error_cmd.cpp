@@ -42,7 +42,8 @@ class GetPrevErrorCmd : public Command {
 public:
     GetPrevErrorCmd() : Command("getPrevError", false, "getpreverror") {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 

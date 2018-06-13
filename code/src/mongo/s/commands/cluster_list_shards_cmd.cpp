@@ -32,7 +32,7 @@
 
 #include "mongo/client/connpool.h"
 #include "mongo/db/commands.h"
-#include "mongo/s/catalog/catalog_manager.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/grid.h"
 
@@ -51,7 +51,8 @@ public:
         return true;
     }
 
-    virtual bool isWriteCommandForConfigServer() const {
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -73,7 +74,8 @@ public:
                      int options,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
-        auto shardsStatus = grid.catalogManager(txn)->getAllShards(txn);
+        auto shardsStatus = grid.catalogClient(txn)->getAllShards(
+            txn, repl::ReadConcernLevel::kMajorityReadConcern);
         if (!shardsStatus.isOK()) {
             return appendCommandStatus(result, shardsStatus.getStatus());
         }

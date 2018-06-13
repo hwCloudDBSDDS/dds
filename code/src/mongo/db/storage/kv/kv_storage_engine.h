@@ -47,11 +47,10 @@ class KVDatabaseCatalogEntry;
 
 struct KVStorageEngineOptions {
     KVStorageEngineOptions()
-        : directoryPerDB(false), directoryForIndexes(false), ephemeral(false), forRepair(false) {}
+        : directoryPerDB(false), directoryForIndexes(false), forRepair(false) {}
 
     bool directoryPerDB;
     bool directoryForIndexes;
-    bool ephemeral;
     bool forRepair;
 };
 
@@ -65,8 +64,6 @@ public:
     virtual ~KVStorageEngine();
 
     virtual void finishInit();
-
-    virtual Status requireDataFileCompatibilityWithPriorRelease(OperationContext* opCtx);
 
     virtual RecoveryUnit* newRecoveryUnit();
 

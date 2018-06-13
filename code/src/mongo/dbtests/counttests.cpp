@@ -28,24 +28,30 @@
  *    then also delete it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/client.h"
 #include "mongo/db/db.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/json.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/stdx/thread.h"
 
 #include "mongo/dbtests/dbtests.h"
 
 namespace CountTests {
 
+namespace {
+const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
+}  // namespace
+
 class Base {
 public:
     Base()
-        : _txn(),
-          _scopedXact(&_txn, MODE_IX),
+        : _scopedXact(&_txn, MODE_IX),
           _lk(_txn.lockState(), nsToDatabaseSubstring(ns()), MODE_X),
           _context(&_txn, ns()),
           _client(&_txn) {
@@ -82,6 +88,7 @@ protected:
         Helpers::ensureIndex(&_txn,
                              _collection,
                              key,
+                             kIndexVersion,
                              /*unique=*/false,
                              /*name=*/key.firstElementFieldName());
     }
@@ -89,6 +96,7 @@ protected:
     void insert(const char* s) {
         WriteUnitOfWork wunit(&_txn);
         const BSONObj o = fromjson(s);
+        OpDebug* const nullOpDebug = nullptr;
 
         if (o["_id"].eoo()) {
             BSONObjBuilder b;
@@ -96,15 +104,16 @@ protected:
             oid.init();
             b.appendOID("_id", &oid);
             b.appendElements(o);
-            _collection->insertDocument(&_txn, b.obj(), false);
+            _collection->insertDocument(&_txn, b.obj(), nullOpDebug, false);
         } else {
-            _collection->insertDocument(&_txn, o, false);
+            _collection->insertDocument(&_txn, o, nullOpDebug, false);
         }
         wunit.commit();
     }
 
 
-    OperationContextImpl _txn;
+    const ServiceContext::UniqueOperationContext _txnPtr = cc().makeOperationContext();
+    OperationContext& _txn = *_txnPtr;
     ScopedTransaction _scopedXact;
     Lock::DBLock _lk;
 

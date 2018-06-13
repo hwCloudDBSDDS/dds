@@ -10,6 +10,8 @@ Import([
 env.Library(
     target='scripting_common',
     source=[
+        'deadline_monitor.cpp',
+        'dbdirectclient_factory.cpp',
         'engine.cpp',
         'utils.cpp',
     ],
@@ -17,14 +19,8 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/client/clientdriver',
         '$BUILD_DIR/mongo/shell/mongojs',
-        '$BUILD_DIR/mongo/util/foundation',
         '$BUILD_DIR/mongo/util/md5',
     ],
-    LIBDEPS_TAGS=[
-        # Depends on mongo::createDirectClient, which is not uniquely defined
-        'incomplete'
-    ],
-
 )
 
 env.Library(
@@ -111,8 +107,8 @@ if usemozjs:
             'mozjs/countdownlatch.cpp',
             'mozjs/cursor.cpp',
             'mozjs/cursor_handle.cpp',
-            'mozjs/dbcollection.cpp',
             'mozjs/db.cpp',
+            'mozjs/dbcollection.cpp',
             'mozjs/dbpointer.cpp',
             'mozjs/dbquery.cpp',
             'mozjs/dbref.cpp',
@@ -132,9 +128,9 @@ if usemozjs:
             'mozjs/mongohelpers.cpp',
             'mozjs/mongohelpers_js.cpp',
             'mozjs/nativefunction.cpp',
+            'mozjs/numberdecimal.cpp',
             'mozjs/numberint.cpp',
             'mozjs/numberlong.cpp',
-            'mozjs/numberdecimal.cpp',
             'mozjs/object.cpp',
             'mozjs/objectwrapper.cpp',
             'mozjs/oid.cpp',
@@ -142,6 +138,7 @@ if usemozjs:
             'mozjs/proxyscope.cpp',
             'mozjs/regexp.cpp',
             'mozjs/timestamp.cpp',
+            'mozjs/uri.cpp',
             'mozjs/valuereader.cpp',
             'mozjs/valuewriter.cpp',
         ],
@@ -151,11 +148,7 @@ if usemozjs:
             '$BUILD_DIR/third_party/shim_mozjs',
             '$BUILD_DIR/mongo/shell/mongojs',
             '$BUILD_DIR/mongo/db/service_context',
-        ],
-        LIBDEPS_TAGS=[
-            # Depends on haveLocalShardingInfo and createDirectClient, which are not
-            # uniquely defined.
-            'incomplete',
+            '$BUILD_DIR/mongo/s/local_sharding_info',
         ],
     )
 else:
@@ -183,5 +176,6 @@ env.CppUnitTest(
         'deadline_monitor_test.cpp',
     ],
     LIBDEPS=[
+        'scripting_common',
     ],
 )

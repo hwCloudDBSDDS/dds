@@ -33,12 +33,14 @@
 #include <set>
 #include <vector>
 
-#include "mongo/db/jsobj.h"
+#include "mongo/bson/simple_bsonelement_comparator.h"
+#include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/index/expression_params.h"
 #include "mongo/db/index/s2_common.h"
+#include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression_geo.h"
-#include "mongo/db/query/query_planner_common.h"
 #include "mongo/db/query/query_planner.h"
+#include "mongo/db/query/query_planner_common.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -47,6 +49,8 @@ using std::unique_ptr;
 using std::endl;
 using std::string;
 using std::vector;
+
+namespace dps = ::mongo::dotted_path_support;
 
 //
 // Helpers for bounds explosion AKA quick-and-dirty SERVER-1205.
@@ -99,6 +103,12 @@ bool structureOKForExplode(QuerySolutionNode* solnRoot, QuerySolutionNode** toRe
     //
     // TODO: Can also try exploding if root is AND_HASH (last child dictates order.),
     // or other less obvious cases...
+
+    // Skip over a sharding filter stage.
+    if (STAGE_SHARDING_FILTER == solnRoot->getType()) {
+        solnRoot = solnRoot->children[0];
+    }
+
     if (STAGE_IXSCAN == solnRoot->getType()) {
         *toReplace = solnRoot;
         return true;
@@ -191,7 +201,7 @@ void makeCartesianProduct(const IndexBounds& bounds,
  * a:[[1,1]], b:[MinKey, MaxKey]
  * a:[[2,2]], b:[MinKey, MaxKey]
  */
-void explodeScan(IndexScanNode* isn,
+void explodeScan(const IndexScanNode* isn,
                  const BSONObj& sort,
                  size_t fieldsToExplode,
                  vector<QuerySolutionNode*>* explosionResult) {
@@ -204,12 +214,11 @@ void explodeScan(IndexScanNode* isn,
         verify(prefix.size() == fieldsToExplode);
 
         // Copy boring fields into new child.
-        IndexScanNode* child = new IndexScanNode();
-        child->indexKeyPattern = isn->indexKeyPattern;
+        IndexScanNode* child = new IndexScanNode(isn->index);
         child->direction = isn->direction;
         child->maxScan = isn->maxScan;
         child->addKeyMetadata = isn->addKeyMetadata;
-        child->indexIsMultiKey = isn->indexIsMultiKey;
+        child->queryCollator = isn->queryCollator;
 
         // Copy the filter, if there is one.
         if (isn->filter.get()) {
@@ -294,7 +303,8 @@ void QueryPlannerAnalysis::analyzeGeo(const QueryPlannerParams& params,
         }
 
         S2IndexingParams params;
-        ExpressionParams::parse2dsphereParams(indexEntry.infoObj, &params);
+        ExpressionParams::initialize2dsphereParams(
+            indexEntry.infoObj, indexEntry.collator, &params);
 
         if (params.indexVersion < S2_INDEX_VERSION_3) {
             continue;
@@ -340,7 +350,7 @@ bool QueryPlannerAnalysis::explodeForSort(const CanonicalQuery& query,
 
     getLeafNodes(*solnRoot, &leafNodes);
 
-    const BSONObj& desiredSort = query.getParsed().getSort();
+    const BSONObj& desiredSort = query.getQueryRequest().getSort();
 
     // How many scan leaves will result from our expansion?
     size_t totalNumScans = 0;
@@ -368,7 +378,7 @@ bool QueryPlannerAnalysis::explodeForSort(const CanonicalQuery& query,
 
         // Skip every field that is a union of point intervals and build the resulting sort
         // order from the remaining fields.
-        BSONObjIterator kpIt(isn->indexKeyPattern);
+        BSONObjIterator kpIt(isn->index.keyPattern);
         size_t boundsIdx = 0;
         while (kpIt.more()) {
             const OrderedIntervalList& oil = bounds.fields[boundsIdx];
@@ -400,11 +410,12 @@ bool QueryPlannerAnalysis::explodeForSort(const CanonicalQuery& query,
 
         // See if it's the order we're looking for.
         BSONObj possibleSort = resultingSortBob.obj();
-        if (!desiredSort.isPrefixOf(possibleSort)) {
+        if (!desiredSort.isPrefixOf(possibleSort, SimpleBSONElementComparator::kInstance)) {
             // We can't get the sort order from the index scan. See if we can
             // get the sort by reversing the scan.
             BSONObj reversePossibleSort = QueryPlannerCommon::reverseSortObj(possibleSort);
-            if (!desiredSort.isPrefixOf(reversePossibleSort)) {
+            if (!desiredSort.isPrefixOf(reversePossibleSort,
+                                        SimpleBSONElementComparator::kInstance)) {
                 // Can't get the sort order from the reversed index scan either. Give up.
                 return false;
             } else {
@@ -453,8 +464,8 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
                                                      bool* blockingSortOut) {
     *blockingSortOut = false;
 
-    const LiteParsedQuery& lpq = query.getParsed();
-    const BSONObj& sortObj = lpq.getSort();
+    const QueryRequest& qr = query.getQueryRequest();
+    const BSONObj& sortObj = qr.getSort();
 
     if (sortObj.isEmpty()) {
         return solnRoot;
@@ -465,7 +476,7 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
 
     // If the sort is $natural, we ignore it, assuming that the caller has detected that and
     // outputted a collscan to satisfy the desired order.
-    BSONElement natural = sortObj.getFieldDotted("$natural");
+    BSONElement natural = dps::extractElementAtPath(sortObj, "$natural");
     if (!natural.eoo()) {
         return solnRoot;
     }
@@ -483,7 +494,7 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
     BSONObj reverseSort = QueryPlannerCommon::reverseSortObj(sortObj);
     if (sorts.end() != sorts.find(reverseSort)) {
         QueryPlannerCommon::reverseScans(solnRoot);
-        LOG(5) << "Reversing ixscan to provide sort. Result: " << solnRoot->toString() << endl;
+        LOG(5) << "Reversing ixscan to provide sort. Result: " << redact(solnRoot->toString());
         return solnRoot;
     }
 
@@ -514,7 +525,7 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
     // And build the full sort stage. The sort stage has to have a sort key generating stage
     // as its child, supplying it with the appropriate sort keys.
     SortKeyGeneratorNode* keyGenNode = new SortKeyGeneratorNode();
-    keyGenNode->queryObj = lpq.getFilter();
+    keyGenNode->queryObj = qr.getFilter();
     keyGenNode->sortSpec = sortObj;
     keyGenNode->children.push_back(solnRoot);
     solnRoot = keyGenNode;
@@ -526,19 +537,19 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
     // When setting the limit on the sort, we need to consider both
     // the limit N and skip count M. The sort should return an ordered list
     // N + M items so that the skip stage can discard the first M results.
-    if (lpq.getLimit()) {
+    if (qr.getLimit()) {
         // We have a true limit. The limit can be combined with the SORT stage.
         sort->limit =
-            static_cast<size_t>(*lpq.getLimit()) + static_cast<size_t>(lpq.getSkip().value_or(0));
-    } else if (lpq.getNToReturn()) {
+            static_cast<size_t>(*qr.getLimit()) + static_cast<size_t>(qr.getSkip().value_or(0));
+    } else if (qr.getNToReturn()) {
         // We have an ntoreturn specified by an OP_QUERY style find. This is used
         // by clients to mean both batchSize and limit.
         //
         // Overflow here would be bad and could cause a nonsense limit. Cast
         // skip and limit values to unsigned ints to make sure that the
         // sum is never stored as signed. (See SERVER-13537).
-        sort->limit = static_cast<size_t>(*lpq.getNToReturn()) +
-            static_cast<size_t>(lpq.getSkip().value_or(0));
+        sort->limit =
+            static_cast<size_t>(*qr.getNToReturn()) + static_cast<size_t>(qr.getSkip().value_or(0));
 
         // This is a SORT with a limit. The wire protocol has a single quantity
         // called "numToReturn" which could mean either limit or batchSize.
@@ -563,7 +574,7 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
         //
         // We must also add an ENSURE_SORTED node above the OR to ensure that the final results are
         // in correct sorted order, which may not be true if the data is concurrently modified.
-        if (lpq.wantMore() && params.options & QueryPlannerParams::SPLIT_LIMITED_SORT &&
+        if (qr.wantMore() && params.options & QueryPlannerParams::SPLIT_LIMITED_SORT &&
             !QueryPlannerCommon::hasNode(query.root(), MatchExpression::TEXT) &&
             !QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO) &&
             !QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR)) {
@@ -650,7 +661,7 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
     bool hasAndHashStage = hasNode(solnRoot, STAGE_AND_HASH);
     soln->hasBlockingStage = hasSortStage || hasAndHashStage;
 
-    const LiteParsedQuery& lpq = query.getParsed();
+    const QueryRequest& qr = query.getQueryRequest();
 
     // If we can (and should), add the keep mutations stage.
 
@@ -675,12 +686,10 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
 
     const bool cannotKeepFlagged = hasNode(solnRoot, STAGE_TEXT) ||
         hasNode(solnRoot, STAGE_GEO_NEAR_2D) || hasNode(solnRoot, STAGE_GEO_NEAR_2DSPHERE) ||
-        (!lpq.getSort().isEmpty() && !hasSortStage) || hasNotRootSort;
+        (!qr.getSort().isEmpty() && !hasSortStage) || hasNotRootSort;
 
-    // Only these stages can produce flagged results.  A stage has to hold state past one call
-    // to work(...) in order to possibly flag a result.
-    const bool couldProduceFlagged =
-        hasAndHashStage || hasNode(solnRoot, STAGE_AND_SORTED) || hasNode(solnRoot, STAGE_FETCH);
+    // Only index intersection stages ever produce flagged results.
+    const bool couldProduceFlagged = hasAndHashStage || hasNode(solnRoot, STAGE_AND_SORTED);
 
     const bool shouldAddMutation = !cannotKeepFlagged && couldProduceFlagged;
 
@@ -703,14 +712,14 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
 
     // Project the results.
     if (NULL != query.getProj()) {
-        LOG(5) << "PROJECTION: fetched status: " << solnRoot->fetched() << endl;
-        LOG(5) << "PROJECTION: Current plan is:\n" << solnRoot->toString() << endl;
+        LOG(5) << "PROJECTION: fetched status: " << solnRoot->fetched();
+        LOG(5) << "PROJECTION: Current plan is:\n" << redact(solnRoot->toString());
 
         ProjectionNode::ProjectionType projType = ProjectionNode::DEFAULT;
         BSONObj coveredKeyObj;
 
         if (query.getProj()->requiresDocument()) {
-            LOG(5) << "PROJECTION: claims to require doc adding fetch.\n";
+            LOG(5) << "PROJECTION: claims to require doc adding fetch.";
             // If the projection requires the entire document, somebody must fetch.
             if (!solnRoot->fetched()) {
                 FetchNode* fetch = new FetchNode();
@@ -721,18 +730,18 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
             // The only way we're here is if it's a simple projection.  That is, we can pick out
             // the fields we want to include and they're not dotted.  So we want to execute the
             // projection in the fast-path simple fashion.  Just don't know which fast path yet.
-            LOG(5) << "PROJECTION: requires fields\n";
-            const vector<string>& fields = query.getProj()->getRequiredFields();
+            LOG(5) << "PROJECTION: requires fields";
+            const vector<StringData>& fields = query.getProj()->getRequiredFields();
             bool covered = true;
             for (size_t i = 0; i < fields.size(); ++i) {
-                if (!solnRoot->hasField(fields[i])) {
-                    LOG(5) << "PROJECTION: not covered due to field " << fields[i] << endl;
+                if (!solnRoot->hasField(fields[i].toString())) {
+                    LOG(5) << "PROJECTION: not covered due to field " << fields[i];
                     covered = false;
                     break;
                 }
             }
 
-            LOG(5) << "PROJECTION: is covered?: = " << covered << endl;
+            LOG(5) << "PROJECTION: is covered?: = " << covered;
 
             // If any field is missing from the list of fields the projection wants,
             // a fetch is required.
@@ -763,12 +772,12 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
                         if (STAGE_IXSCAN == leafNodes[0]->getType()) {
                             projType = ProjectionNode::COVERED_ONE_INDEX;
                             IndexScanNode* ixn = static_cast<IndexScanNode*>(leafNodes[0]);
-                            coveredKeyObj = ixn->indexKeyPattern;
+                            coveredKeyObj = ixn->index.keyPattern;
                             LOG(5) << "PROJECTION: covered via IXSCAN, using COVERED fast path";
                         } else if (STAGE_DISTINCT_SCAN == leafNodes[0]->getType()) {
                             projType = ProjectionNode::COVERED_ONE_INDEX;
                             DistinctNode* dn = static_cast<DistinctNode*>(leafNodes[0]);
-                            coveredKeyObj = dn->indexKeyPattern;
+                            coveredKeyObj = dn->index.keyPattern;
                             LOG(5) << "PROJECTION: covered via DISTINCT, using COVERED fast path";
                         }
                     }
@@ -794,17 +803,17 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
         // generate the sort key computed data.
         if (!hasSortStage && query.getProj()->wantSortKey()) {
             SortKeyGeneratorNode* keyGenNode = new SortKeyGeneratorNode();
-            keyGenNode->queryObj = lpq.getFilter();
-            keyGenNode->sortSpec = lpq.getSort();
+            keyGenNode->queryObj = qr.getFilter();
+            keyGenNode->sortSpec = qr.getSort();
             keyGenNode->children.push_back(solnRoot);
             solnRoot = keyGenNode;
         }
 
         // We now know we have whatever data is required for the projection.
-        ProjectionNode* projNode = new ProjectionNode();
+        ProjectionNode* projNode = new ProjectionNode(*query.getProj());
         projNode->children.push_back(solnRoot);
         projNode->fullExpression = query.root();
-        projNode->projection = lpq.getProj();
+        projNode->projection = qr.getProj();
         projNode->projType = projType;
         projNode->coveredKeyObj = coveredKeyObj;
         solnRoot = projNode;
@@ -817,9 +826,9 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
         }
     }
 
-    if (lpq.getSkip()) {
+    if (qr.getSkip()) {
         SkipNode* skip = new SkipNode();
-        skip->skip = *lpq.getSkip();
+        skip->skip = *qr.getSkip();
         skip->children.push_back(solnRoot);
         solnRoot = skip;
     }
@@ -831,16 +840,16 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
     if (!hasSortStage) {
         // We don't have a sort stage. This means that, if there is a limit, we will have
         // to enforce it ourselves since it's not handled inside SORT.
-        if (lpq.getLimit()) {
+        if (qr.getLimit()) {
             LimitNode* limit = new LimitNode();
-            limit->limit = *lpq.getLimit();
+            limit->limit = *qr.getLimit();
             limit->children.push_back(solnRoot);
             solnRoot = limit;
-        } else if (lpq.getNToReturn() && !lpq.wantMore()) {
+        } else if (qr.getNToReturn() && !qr.wantMore()) {
             // We have a "legacy limit", i.e. a negative ntoreturn value from an OP_QUERY style
             // find.
             LimitNode* limit = new LimitNode();
-            limit->limit = *lpq.getNToReturn();
+            limit->limit = *qr.getNToReturn();
             limit->children.push_back(solnRoot);
             solnRoot = limit;
         }

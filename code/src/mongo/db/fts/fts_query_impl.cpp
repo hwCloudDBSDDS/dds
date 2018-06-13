@@ -32,12 +32,12 @@
 
 #include "mongo/db/fts/fts_query_impl.h"
 
-#include "mongo/db/fts/fts_spec.h"
 #include "mongo/db/fts/fts_query_parser.h"
+#include "mongo/db/fts/fts_spec.h"
 #include "mongo/db/fts/fts_tokenizer.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/stringutils.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 
@@ -75,6 +75,13 @@ Status FTSQueryImpl::parse(TextIndexVersion textIndexVersion) {
             if (inPhrase && inNegation) {
                 // don't add term
             } else {
+                // A negation should only continue until the next whitespace character. For example,
+                // "-foo" should negate "foo", "- foo" should not negate "foo", and "-foo-bar"
+                // should negate both "foo" and "bar".
+                if (inNegation && t.previousWhiteSpace) {
+                    inNegation = false;
+                }
+
                 if (inNegation) {
                     negativeTermSentence.append(s);
                     negativeTermSentence.push_back(' ');
@@ -83,9 +90,6 @@ Status FTSQueryImpl::parse(TextIndexVersion textIndexVersion) {
                     positiveTermSentence.push_back(' ');
                 }
             }
-
-            if (inNegation && !inPhrase)
-                inNegation = false;
         } else if (t.type == QueryToken::DELIMITER) {
             char c = t.data[0];
             if (c == '-') {
@@ -105,11 +109,20 @@ Status FTSQueryImpl::parse(TextIndexVersion textIndexVersion) {
                     } else {
                         _positivePhrases.push_back(phrase.toString());
                     }
-                    inNegation = false;
+
+                    // Do not reset 'inNegation' here, since a negation should continue until the
+                    // next whitespace character. For example, '-"foo bar"-"baz quux"' should negate
+                    // both the phrase "foo bar" and the phrase "baz quux".
+
                     inPhrase = false;
                 } else {
                     // start of a phrase
                     inPhrase = true;
+                    // A "-" should only be treated as a negation if there is no whitespace between
+                    // the "-" and the start of the phrase.
+                    if (inNegation && t.previousWhiteSpace) {
+                        inNegation = false;
+                    }
                     quoteOffset = t.offset;
                 }
             }
@@ -184,64 +197,6 @@ void FTSQueryImpl::_addTerms(FTSTokenizer* tokenizer, const string& sentence, bo
 
         activeTerms.insert(word);
     }
-}
-
-namespace {
-void _debugHelp(stringstream& ss, const set<string>& s, const string& sep) {
-    bool first = true;
-    for (set<string>::const_iterator i = s.begin(); i != s.end(); ++i) {
-        if (first)
-            first = false;
-        else
-            ss << sep;
-        ss << *i;
-    }
-}
-
-void _debugHelp(stringstream& ss, const vector<string>& v, const string& sep) {
-    set<string> s(v.begin(), v.end());
-    _debugHelp(ss, s, sep);
-}
-}
-
-string FTSQueryImpl::toString() const {
-    stringstream ss;
-    ss << "FTSQueryImpl\n";
-
-    ss << "  terms: ";
-    _debugHelp(ss, getPositiveTerms(), ", ");
-    ss << "\n";
-
-    ss << "  negated terms: ";
-    _debugHelp(ss, getNegatedTerms(), ", ");
-    ss << "\n";
-
-    ss << "  phrases: ";
-    _debugHelp(ss, getPositivePhr(), ", ");
-    ss << "\n";
-
-    ss << "  negated phrases: ";
-    _debugHelp(ss, getNegatedPhr(), ", ");
-    ss << "\n";
-
-    return ss.str();
-}
-
-string FTSQueryImpl::debugString() const {
-    stringstream ss;
-
-    _debugHelp(ss, getPositiveTerms(), "|");
-    ss << "||";
-
-    _debugHelp(ss, getNegatedTerms(), "|");
-    ss << "||";
-
-    _debugHelp(ss, getPositivePhr(), "|");
-    ss << "||";
-
-    _debugHelp(ss, getNegatedPhr(), "|");
-
-    return ss.str();
 }
 
 BSONObj FTSQueryImpl::toBSON() const {

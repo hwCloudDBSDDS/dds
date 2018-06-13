@@ -32,8 +32,8 @@
 #include <boost/thread/tss.hpp>
 #include <cstdint>
 #include <cstdio>
-#include <string>
 #include <iostream>
+#include <string>
 
 #include "mongo/base/init.h"
 #include "mongo/base/parse_number.h"
@@ -43,17 +43,10 @@
 #include "mongo/util/mongoutils/str.h"
 
 #ifdef _WIN32
-#include <boost/date_time/filetime_functions.hpp>
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/system_tick_source.h"
 #include "mongo/util/timer.h"
-
-// NOTE(schwerin): MSVC's _snprintf is not a drop-in replacement for C99's snprintf().  In
-// particular, when the target buffer is too small, behaviors differ.  Consult the documentation
-// from MSDN and form the BSD or Linux man pages before using.
-#if _MSC_VER < 1900
-#define snprintf _snprintf
-#endif
+#include <boost/date_time/filetime_functions.hpp>
 #endif
 
 #ifdef __sun
@@ -63,61 +56,6 @@ extern "C" time_t timegm(struct tm* const tmp);
 #endif
 
 namespace mongo {
-
-namespace {
-template <typename Stream>
-Stream& streamPut(Stream& os, Microseconds us) {
-    return os << us.count() << "\xce\xbcs";
-}
-
-template <typename Stream>
-Stream& streamPut(Stream& os, Milliseconds ms) {
-    return os << ms.count() << "ms";
-}
-
-template <typename Stream>
-Stream& streamPut(Stream& os, Seconds s) {
-    return os << s.count() << 's';
-}
-}  // namespace
-
-std::ostream& operator<<(std::ostream& os, Microseconds us) {
-    return streamPut(os, us);
-}
-
-std::ostream& operator<<(std::ostream& os, Milliseconds ms) {
-    return streamPut(os, ms);
-}
-std::ostream& operator<<(std::ostream& os, Seconds s) {
-    return streamPut(os, s);
-}
-
-template <typename Allocator>
-StringBuilderImpl<Allocator>& operator<<(StringBuilderImpl<Allocator>& os, Microseconds us) {
-    return streamPut(os, us);
-}
-
-template <typename Allocator>
-StringBuilderImpl<Allocator>& operator<<(StringBuilderImpl<Allocator>& os, Milliseconds ms) {
-    return streamPut(os, ms);
-}
-
-template <typename Allocator>
-StringBuilderImpl<Allocator>& operator<<(StringBuilderImpl<Allocator>& os, Seconds s) {
-    return streamPut(os, s);
-}
-
-template StringBuilderImpl<StackAllocator>& operator<<(StringBuilderImpl<StackAllocator>&,
-                                                       Microseconds);
-template StringBuilderImpl<StackAllocator>& operator<<(StringBuilderImpl<StackAllocator>&,
-                                                       Milliseconds);
-template StringBuilderImpl<StackAllocator>& operator<<(StringBuilderImpl<StackAllocator>&, Seconds);
-template StringBuilderImpl<TrivialAllocator>& operator<<(StringBuilderImpl<TrivialAllocator>&,
-                                                         Microseconds);
-template StringBuilderImpl<TrivialAllocator>& operator<<(StringBuilderImpl<TrivialAllocator>&,
-                                                         Milliseconds);
-template StringBuilderImpl<TrivialAllocator>& operator<<(StringBuilderImpl<TrivialAllocator>&,
-                                                         Seconds);
 
 Date_t Date_t::max() {
     return fromMillisSinceEpoch(std::numeric_limits<long long>::max());
@@ -131,7 +69,7 @@ Date_t::Date_t(stdx::chrono::system_clock::time_point tp)
     : millis(durationCount<Milliseconds>(tp - stdx::chrono::system_clock::from_time_t(0))) {}
 
 stdx::chrono::system_clock::time_point Date_t::toSystemTimePoint() const {
-    return stdx::chrono::system_clock::from_time_t(0) + toDurationSinceEpoch();
+    return stdx::chrono::system_clock::from_time_t(0) + toDurationSinceEpoch().toSystemDuration();
 }
 
 bool Date_t::isFormattable() const {
@@ -441,7 +379,7 @@ Status parseMillisFromToken(StringData millisStr, int* resultMillis) {
             millisMagnitude = 100;
         }
 
-        *resultMillis = *resultMillis* millisMagnitude;
+        *resultMillis = *resultMillis * millisMagnitude;
 
         if (*resultMillis < 0 || *resultMillis > 1000) {
             StringBuilder sb;
@@ -780,14 +718,14 @@ bool toPointInTime(const string& str, boost::posix_time::ptime* timeOfDay) {
 }
 
 void sleepsecs(int s) {
-    stdx::this_thread::sleep_for(Seconds(s));
+    stdx::this_thread::sleep_for(Seconds(s).toSystemDuration());
 }
 
 void sleepmillis(long long s) {
-    stdx::this_thread::sleep_for(Milliseconds(s));
+    stdx::this_thread::sleep_for(Milliseconds(s).toSystemDuration());
 }
 void sleepmicros(long long s) {
-    stdx::this_thread::sleep_for(Microseconds(s));
+    stdx::this_thread::sleep_for(Microseconds(s).toSystemDuration());
 }
 
 void Backoff::nextSleepMillis() {
@@ -888,8 +826,8 @@ static unsigned long long resyncInterval = 0;
 static SimpleMutex _curTimeMicros64ReadMutex;
 static SimpleMutex _curTimeMicros64ResyncMutex;
 
-typedef WINBASEAPI VOID(WINAPI* pGetSystemTimePreciseAsFileTime)(_Out_ LPFILETIME
-                                                                     lpSystemTimeAsFileTime);
+typedef WINBASEAPI VOID(WINAPI* pGetSystemTimePreciseAsFileTime)(
+    _Out_ LPFILETIME lpSystemTimeAsFileTime);
 
 static pGetSystemTimePreciseAsFileTime GetSystemTimePreciseAsFileTimeFunc;
 

@@ -40,6 +40,7 @@
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/log.h"
+#include "mongo/util/timer.h"
 
 namespace mongo {
 namespace dur {
@@ -108,8 +109,8 @@ private:
 // JournalWriter
 //
 
-JournalWriter::JournalWriter(NotifyAll* commitNotify,
-                             NotifyAll* applyToDataFilesNotify,
+JournalWriter::JournalWriter(CommitNotifier* commitNotify,
+                             CommitNotifier* applyToDataFilesNotify,
                              size_t numBuffers)
     : _commitNotify(commitNotify),
       _applyToDataFilesNotify(applyToDataFilesNotify),
@@ -179,7 +180,7 @@ JournalWriter::Buffer* JournalWriter::newBuffer() {
     return buffer;
 }
 
-void JournalWriter::writeBuffer(Buffer* buffer, NotifyAll::When commitNumber) {
+void JournalWriter::writeBuffer(Buffer* buffer, CommitNotifier::When commitNumber) {
     invariant(buffer->_commitNumber == 0);
     invariant((commitNumber > _lastCommitNumber) || (buffer->_isShutdown && (commitNumber == 0)));
 
@@ -250,8 +251,7 @@ void JournalWriter::_journalWriterThread() {
             _applyToDataFilesNotify->notifyAll(buffer->_commitNumber);
         }
     } catch (const DBException& e) {
-        severe() << "dbexception in journalWriterThread causing immediate shutdown: "
-                 << e.toString();
+        severe() << "dbexception in journalWriterThread causing immediate shutdown: " << redact(e);
         invariant(false);
     } catch (const std::ios_base::failure& e) {
         severe() << "ios_base exception in journalWriterThread causing immediate shutdown: "
@@ -262,7 +262,8 @@ void JournalWriter::_journalWriterThread() {
                  << e.what();
         invariant(false);
     } catch (const std::exception& e) {
-        severe() << "exception in journalWriterThread causing immediate shutdown: " << e.what();
+        severe() << "exception in journalWriterThread causing immediate shutdown: "
+                 << redact(e.what());
         invariant(false);
     } catch (...) {
         severe() << "unhandled exception in journalWriterThread causing immediate shutdown";

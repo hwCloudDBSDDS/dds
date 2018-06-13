@@ -30,6 +30,7 @@
 
 #include <string>
 
+#include "mongo/db/client.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_executor.h"
@@ -128,6 +129,27 @@ protected:
     }
 
     /**
+     * Makes a new OperationContext on the default Client for this test.
+     */
+    ServiceContext::UniqueOperationContext makeOperationContext() {
+        return _client->makeOperationContext();
+    }
+
+    /**
+     * Returns the ServiceContext for this test.
+     */
+    ServiceContext* getServiceContext() {
+        return getGlobalServiceContext();
+    }
+
+    /**
+     * Returns the default Client for this test.
+     */
+    Client* getClient() {
+        return _client.get();
+    }
+
+    /**
      * Adds "selfHost" to the list of hosts that identify as "this" host.
      */
     void addSelf(const HostAndPort& selfHost);
@@ -196,7 +218,7 @@ protected:
 
     /**
      * Brings the repl coord from SECONDARY to PRIMARY by simulating the messages required to
-     * elect it.
+     * elect it, after progressing the mocked-out notion of time past the election timeout.
      *
      * Behavior is unspecified if node does not have a clean config, is not in SECONDARY, etc.
      */
@@ -204,9 +226,16 @@ protected:
     void simulateSuccessfulV1Election();
 
     /**
+     * Same as simulateSuccessfulV1Election, but rather than getting the election timeout and
+     * progressing time past that point, takes in what time to expect an election to occur at.
+     * Useful for simulating elections triggered via priority takeover.
+     */
+    void simulateSuccessfulV1ElectionAt(Date_t electionTime);
+
+    /**
      * Shuts down the objects under test.
      */
-    void shutdown();
+    void shutdown(OperationContext* txn);
 
     /**
      * Receive the heartbeat request from replication coordinator and reply with a response.
@@ -224,6 +253,22 @@ protected:
         return _isStorageEngineDurable;
     }
 
+    void simulateEnoughHeartbeatsForAllNodesUp();
+
+    /**
+     * Disables read concern majority support.
+     */
+    void disableReadConcernMajoritySupport();
+
+    /**
+     * Disables snapshot support.
+     */
+    void disableSnapshots();
+
+    /**
+     * Timeout all freshness scan request for primary catch-up.
+     */
+    void simulateCatchUpTimeout();
 
 private:
     std::unique_ptr<ReplicationCoordinatorImpl> _repl;
@@ -231,14 +276,13 @@ private:
     TopologyCoordinatorImpl* _topo = nullptr;
     // Owned by ReplicationExecutor
     executor::NetworkInterfaceMock* _net = nullptr;
-    // Owned by ReplicationExecutor
-    StorageInterfaceMock* _storage = nullptr;
     std::unique_ptr<ReplicationExecutor> _replExec;
     // Owned by ReplicationCoordinatorImpl
     ReplicationCoordinatorExternalStateMock* _externalState = nullptr;
     ReplSettings _settings;
     bool _callShutdown = false;
     bool _isStorageEngineDurable = true;
+    ServiceContext::UniqueClient _client = getGlobalServiceContext()->makeClient("testClient");
 };
 
 }  // namespace repl

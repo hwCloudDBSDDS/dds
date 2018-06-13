@@ -2,12 +2,7 @@
 // Tests migration behavior of large documents
 //
 
-var st = new ShardingTest({
-    shards: 2,
-    mongos: 1,
-    other: {mongosOptions: {noAutoSplit: ""}, shardOptions: {/* binVersion : "latest" */}}
-});
-st.stopBalancer();
+var st = new ShardingTest({shards: 2, mongos: 1});
 
 var mongos = st.s0;
 var coll = mongos.getCollection("foo.bar");

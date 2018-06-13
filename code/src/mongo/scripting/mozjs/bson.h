@@ -47,15 +47,21 @@ namespace mozjs {
  * ::make() from C++.
  */
 struct BSONInfo : public BaseInfo {
-    static void delProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id, bool* succeeded);
-    static void enumerate(JSContext* cx, JS::HandleObject obj, JS::AutoIdVector& properties);
+    static void delProperty(JSContext* cx,
+                            JS::HandleObject obj,
+                            JS::HandleId id,
+                            JS::ObjectOpResult& result);
+    static void enumerate(JSContext* cx,
+                          JS::HandleObject obj,
+                          JS::AutoIdVector& properties,
+                          bool enumerableOnly);
     static void finalize(JSFreeOp* fop, JSObject* obj);
     static void resolve(JSContext* cx, JS::HandleObject obj, JS::HandleId id, bool* resolvedp);
     static void setProperty(JSContext* cx,
                             JS::HandleObject obj,
                             JS::HandleId id,
-                            bool strict,
-                            JS::MutableHandleValue vp);
+                            JS::MutableHandleValue vp,
+                            JS::ObjectOpResult& result);
 
     static const char* const className;
     static const unsigned classFlags = JSCLASS_HAS_PRIVATE;
@@ -64,9 +70,10 @@ struct BSONInfo : public BaseInfo {
 
     struct Functions {
         MONGO_DECLARE_JS_FUNCTION(bsonWoCompare);
+        MONGO_DECLARE_JS_FUNCTION(bsonBinaryEqual);
     };
 
-    static const JSFunctionSpec freeFunctions[2];
+    static const JSFunctionSpec freeFunctions[3];
 
     static std::tuple<BSONObj*, bool> originalBSON(JSContext* cx, JS::HandleObject obj);
     static void make(

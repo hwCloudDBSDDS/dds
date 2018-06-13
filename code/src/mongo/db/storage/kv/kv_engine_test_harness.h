@@ -33,6 +33,9 @@
 #include "mongo/db/storage/kv/kv_engine.h"
 
 namespace mongo {
+
+class ClockSource;
+
 class KVHarnessHelper {
 public:
     virtual ~KVHarnessHelper() {}

@@ -36,7 +36,9 @@
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/snapshot_manager.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/clock_source_mock.h"
 
 namespace mongo {
 namespace {
@@ -56,12 +58,7 @@ public:
         }
 
 
-#if defined(_MSC_VER) && _MSC_VER < 1900  // MSVC 2013 Can't default move constructor.
-        Operation(Operation&& other)
-            : _client(std::move(other._client)), _txn(std::move(other._txn)) {}
-#else
         Operation(Operation&& other) = default;
-#endif
 
         Operation& operator=(Operation&& other) {
             // Need to assign to _txn first if active. Otherwise we'd destroy _client before _txn.
@@ -179,7 +176,7 @@ public:
         WriteUnitOfWork wuow(op);
         std::string ns = "a.b";
         ASSERT_OK(engine->createRecordStore(op, ns, ns, CollectionOptions()));
-        rs.reset(engine->getRecordStore(op, ns, ns, CollectionOptions()));
+        rs = engine->getRecordStore(op, ns, ns, CollectionOptions());
         ASSERT(rs);
     }
 
@@ -204,7 +201,6 @@ TEST_F(SnapshotManagerTests, ConsistentIfNotSupported) {
     auto ru = op->recoveryUnit();
     ASSERT(!ru->isReadingFromMajorityCommittedSnapshot());
     ASSERT(!ru->getMajorityCommittedSnapshot());
-    ASSERT_EQ(ru->setReadFromMajorityCommittedSnapshot(), ErrorCodes::CommandNotSupported);
 }
 
 TEST_F(SnapshotManagerTests, FailsWithNoCommittedSnapshot) {

@@ -214,9 +214,7 @@ var runner = (function() {
                 myDB[collName].drop();
 
                 if (cluster.isSharded()) {
-                    var shardKey = context[workload].config.data.shardKey || {
-                        _id: 'hashed'
-                    };
+                    var shardKey = context[workload].config.data.shardKey || {_id: 'hashed'};
                     // TODO: allow workload config data to specify split
                     cluster.shardCollection(myDB[collName], shardKey, false);
                 }
@@ -328,11 +326,13 @@ var runner = (function() {
                 numUniqueTraces + ' of which were unique:\n\n';
 
             return summary +
-                uniqueTraces.map(function(obj) {
-                    var line = pluralize('thread', obj.freq) + ' with tids ' +
-                        JSON.stringify(obj.tids) + ' threw\n';
-                    return indent(line + obj.value, 8);
-                }).join('\n\n');
+                uniqueTraces
+                    .map(function(obj) {
+                        var line = pluralize('thread', obj.freq) + ' with tids ' +
+                            JSON.stringify(obj.tids) + ' threw\n';
+                        return indent(line + obj.value, 8);
+                    })
+                    .join('\n\n');
         }
 
         if (workerErrs.length > 0) {
@@ -393,22 +393,15 @@ var runner = (function() {
         // lock is already held by the balancer or by a workload operation. The increased wait
         // is shorter than the distributed-lock-takeover period because otherwise the node
         // would be assumed to be down and the lock would be overtaken.
-        if (cluster.isUsingLegacyConfigServers()) {
-            clusterOptions.setupFunctions.mongos.push(increaseDropDistLockTimeoutSCCC);
-            clusterOptions.teardownFunctions.mongos.push(resetDropDistLockTimeoutSCCC);
-        } else {
-            clusterOptions.setupFunctions.mongos.push(increaseDropDistLockTimeout);
-            clusterOptions.teardownFunctions.mongos.push(resetDropDistLockTimeout);
-        }
+        clusterOptions.setupFunctions.mongos.push(increaseDropDistLockTimeout);
+        clusterOptions.teardownFunctions.mongos.push(resetDropDistLockTimeout);
     }
 
     function loadWorkloadContext(workloads, context, executionOptions, applyMultipliers) {
         workloads.forEach(function(workload) {
             load(workload);  // for $config
             assert.neq('undefined', typeof $config, '$config was not defined by ' + workload);
-            context[workload] = {
-                config: parseConfig($config)
-            };
+            context[workload] = {config: parseConfig($config)};
             if (applyMultipliers) {
                 context[workload].config.iterations *= executionOptions.iterationMultiplier;
                 context[workload].config.threadCount *= executionOptions.threadMultiplier;
@@ -432,19 +425,27 @@ var runner = (function() {
         jsTest.log('End of schedule');
     }
 
-    function cleanupWorkload(
-        workload, context, cluster, errors, header, dbHashBlacklist, ttlIndexExists) {
+    function cleanupWorkload(workload, context, cluster, errors, header, dbHashBlacklist) {
         // Returns true if the workload's teardown succeeds and false if the workload's
         // teardown fails.
+
+        var phase = 'before workload ' + workload + ' teardown';
 
         try {
             // Ensure that all data has replicated correctly to the secondaries before calling the
             // workload's teardown method.
-            var phase = 'before workload ' + workload + ' teardown';
-            cluster.checkReplicationConsistency(dbHashBlacklist, phase, ttlIndexExists);
+            cluster.checkReplicationConsistency(dbHashBlacklist, phase);
         } catch (e) {
             errors.push(new WorkloadFailure(
                 e.toString(), e.stack, 'main', header + ' checking consistency on secondaries'));
+            return false;
+        }
+
+        try {
+            cluster.validateAllCollections(phase);
+        } catch (e) {
+            errors.push(new WorkloadFailure(
+                e.toString(), e.stack, 'main', header + ' validating collections'));
             return false;
         }
 
@@ -497,7 +498,6 @@ var runner = (function() {
         var teardownFailed = false;
         var startTime = Date.now();  // Initialize in case setupWorkload fails below.
         var totalTime;
-        var ttlIndexExists;
 
         jsTest.log('Workload(s) started: ' + workloads.join(' '));
 
@@ -530,28 +530,16 @@ var runner = (function() {
             } finally {
                 // Threads must be joined before destruction, so do this
                 // even in the presence of exceptions.
-                errors.push(... threadMgr.joinAll().map(
+                errors.push(...threadMgr.joinAll().map(
                     e => new WorkloadFailure(
                         e.err, e.stack, e.tid, 'Foreground ' + e.workloads.join(' '))));
             }
         } finally {
-            // Checking that the data is consistent across the primary and secondaries requires
-            // additional complexity to prevent writes from occurring in the background on the
-            // primary due to the TTL monitor. If none of the workloads actually created any TTL
-            // indexes (and we dropped the data of any previous workloads), then don't expend any
-            // additional effort in trying to handle that case.
-            ttlIndexExists =
-                workloads.some(workload => context[workload].config.data.ttlIndexExists);
-
             // Call each foreground workload's teardown function. After all teardowns have completed
             // check if any of them failed.
-            var cleanupResults = cleanup.map(workload => cleanupWorkload(workload,
-                                                                         context,
-                                                                         cluster,
-                                                                         errors,
-                                                                         'Foreground',
-                                                                         dbHashBlacklist,
-                                                                         ttlIndexExists));
+            var cleanupResults =
+                cleanup.map(workload => cleanupWorkload(
+                                workload, context, cluster, errors, 'Foreground', dbHashBlacklist));
             teardownFailed = cleanupResults.some(success => (success === false));
 
             totalTime = Date.now() - startTime;
@@ -568,13 +556,9 @@ var runner = (function() {
         // Throw any existing errors so that the schedule aborts.
         throwError(errors);
 
-        // All workload data should have been dropped at this point, so there shouldn't be any TTL
-        // indexes.
-        ttlIndexExists = false;
-
         // Ensure that all operations replicated correctly to the secondaries.
-        cluster.checkReplicationConsistency(
-            dbHashBlacklist, 'after workload-group teardown and data clean-up', ttlIndexExists);
+        cluster.checkReplicationConsistency(dbHashBlacklist,
+                                            'after workload-group teardown and data clean-up');
     }
 
     function runWorkloads(
@@ -635,8 +619,8 @@ var runner = (function() {
         var dbHashBlacklist = ['local'];
 
         if (cleanupOptions.dropDatabaseBlacklist) {
-            dbBlacklist.push(... cleanupOptions.dropDatabaseBlacklist);
-            dbHashBlacklist.push(... cleanupOptions.dropDatabaseBlacklist);
+            dbBlacklist.push(...cleanupOptions.dropDatabaseBlacklist);
+            dbHashBlacklist.push(...cleanupOptions.dropDatabaseBlacklist);
         }
         if (!cleanupOptions.keepExistingDatabases) {
             dropAllDatabases(cluster.getDB('test'), dbBlacklist);
@@ -708,28 +692,16 @@ var runner = (function() {
             } finally {
                 // Set a flag so background threads know to terminate.
                 bgThreadMgr.markAllForTermination();
-                errors.push(... bgThreadMgr.joinAll().map(
+                errors.push(...bgThreadMgr.joinAll().map(
                     e => new WorkloadFailure(
                         e.err, e.stack, e.tid, 'Background ' + e.workloads.join(' '))));
             }
         } finally {
             try {
-                // Checking that the data is consistent across the primary and secondaries requires
-                // additional complexity to prevent writes from occurring in the background on the
-                // primary due to the TTL monitor. If none of the workloads actually created any TTL
-                // indexes (and we dropped the data of any previous workloads), then don't expend
-                // any additional effort in trying to handle that case.
-                var ttlIndexExists = bgWorkloads.some(
-                    bgWorkload => bgContext[bgWorkload].config.data.ttlIndexExists);
-
                 // Call each background workload's teardown function.
-                bgCleanup.forEach(bgWorkload => cleanupWorkload(bgWorkload,
-                                                                bgContext,
-                                                                cluster,
-                                                                errors,
-                                                                'Background',
-                                                                dbHashBlacklist,
-                                                                ttlIndexExists));
+                bgCleanup.forEach(
+                    bgWorkload => cleanupWorkload(
+                        bgWorkload, bgContext, cluster, errors, 'Background', dbHashBlacklist));
                 // TODO: Call cleanupWorkloadData() on background workloads here if no background
                 // workload teardown functions fail.
 

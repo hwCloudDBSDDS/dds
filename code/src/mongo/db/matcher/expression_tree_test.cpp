@@ -33,8 +33,8 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
 #include "mongo/db/matcher/expression.h"
-#include "mongo/db/matcher/expression_tree.h"
 #include "mongo/db/matcher/expression_leaf.h"
+#include "mongo/db/matcher/expression_tree.h"
 
 namespace mongo {
 
@@ -554,20 +554,4 @@ TEST(NorOp, Equivalent) {
     ASSERT(e1.equivalent(&e1));
     ASSERT(!e1.equivalent(&e2));
 }
-
-/**
-TEST( NorOp, MatchesIndexKey ) {
-    BSONObj baseOperand = BSON( "a" << 5 );
-    unique_ptr<ComparisonMatchExpression> eq( new ComparisonMatchExpression() );
-    ASSERT( eq->init( "a", baseOperand[ "a" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
-    subMatchExpressions.mutableVector().push_back( eq.release() );
-    NorOp norOp;
-    ASSERT( norOp.init( &subMatchExpressions ).isOK() );
-    IndexSpec indexSpec( BSON( "a" << 1 ) );
-    BSONObj indexKey = BSON( "" << "7" );
-    ASSERT( MatchMatchExpression::PartialMatchResult_Unknown ==
-            norOp.matchesIndexKey( indexKey, indexSpec ) );
-}
-*/
 }

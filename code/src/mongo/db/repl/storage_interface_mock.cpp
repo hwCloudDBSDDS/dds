@@ -25,25 +25,96 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+
+#include <numeric>
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/repl/storage_interface_mock.h"
 
-#include "mongo/db/repl/operation_context_repl_mock.h"
+#include "mongo/util/log.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 namespace repl {
-
-StorageInterfaceMock::StorageInterfaceMock() {}
-
-StorageInterfaceMock::~StorageInterfaceMock() {}
-
-OperationContext* StorageInterfaceMock::createOperationContext() {
-    return new OperationContextReplMock();
+void StorageInterfaceMock::startup() {}
+void StorageInterfaceMock::shutdown() {}
+bool StorageInterfaceMock::getInitialSyncFlag(OperationContext* txn) const {
+    stdx::lock_guard<stdx::mutex> lock(_initialSyncFlagMutex);
+    return _initialSyncFlag;
 }
+
+void StorageInterfaceMock::setInitialSyncFlag(OperationContext* txn) {
+    stdx::lock_guard<stdx::mutex> lock(_initialSyncFlagMutex);
+    _initialSyncFlag = true;
+}
+
+void StorageInterfaceMock::clearInitialSyncFlag(OperationContext* txn) {
+    stdx::lock_guard<stdx::mutex> lock(_initialSyncFlagMutex);
+    _initialSyncFlag = false;
+}
+
+OpTime StorageInterfaceMock::getMinValid(OperationContext* txn) const {
+    stdx::lock_guard<stdx::mutex> lock(_minValidBoundariesMutex);
+    return _minValid;
+}
+
+void StorageInterfaceMock::setMinValid(OperationContext* txn, const OpTime& minValid) {
+    stdx::lock_guard<stdx::mutex> lock(_minValidBoundariesMutex);
+    _minValid = minValid;
+}
+
+void StorageInterfaceMock::setMinValidToAtLeast(OperationContext* txn, const OpTime& minValid) {
+    stdx::lock_guard<stdx::mutex> lock(_minValidBoundariesMutex);
+    _minValid = std::max(_minValid, minValid);
+}
+
+void StorageInterfaceMock::setOplogDeleteFromPoint(OperationContext* txn,
+                                                   const Timestamp& timestamp) {
+    stdx::lock_guard<stdx::mutex> lock(_minValidBoundariesMutex);
+    _oplogDeleteFromPoint = timestamp;
+}
+
+Timestamp StorageInterfaceMock::getOplogDeleteFromPoint(OperationContext* txn) {
+    stdx::lock_guard<stdx::mutex> lock(_minValidBoundariesMutex);
+    return _oplogDeleteFromPoint;
+}
+
+void StorageInterfaceMock::setAppliedThrough(OperationContext* txn, const OpTime& optime) {
+    stdx::lock_guard<stdx::mutex> lock(_minValidBoundariesMutex);
+    _appliedThrough = optime;
+}
+
+OpTime StorageInterfaceMock::getAppliedThrough(OperationContext* txn) {
+    stdx::lock_guard<stdx::mutex> lock(_minValidBoundariesMutex);
+    return _appliedThrough;
+}
+
+Status CollectionBulkLoaderMock::init(Collection* coll,
+                                      const std::vector<BSONObj>& secondaryIndexSpecs) {
+    LOG(1) << "CollectionBulkLoaderMock::init called";
+    stats->initCalled = true;
+    return initFn(coll, secondaryIndexSpecs);
+};
+
+Status CollectionBulkLoaderMock::insertDocuments(const std::vector<BSONObj>::const_iterator begin,
+                                                 const std::vector<BSONObj>::const_iterator end) {
+    LOG(1) << "CollectionBulkLoaderMock::insertDocuments called";
+    const auto status = insertDocsFn(begin, end);
+
+    // Only count if it succeeds.
+    if (status.isOK()) {
+        stats->insertCount += std::distance(begin, end);
+    }
+    return status;
+};
+
+Status CollectionBulkLoaderMock::commit() {
+    LOG(1) << "CollectionBulkLoaderMock::commit called";
+    stats->commitCalled = true;
+    return commitFn();
+};
 
 }  // namespace repl
 }  // namespace mongo

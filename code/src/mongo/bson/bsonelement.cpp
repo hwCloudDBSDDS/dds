@@ -31,11 +31,12 @@
 
 #include "mongo/bson/bsonelement.h"
 
-#include <cmath>
 #include <boost/functional/hash.hpp>
+#include <cmath>
 
 #include "mongo/base/compare_numbers.h"
 #include "mongo/base/data_cursor.h"
+#include "mongo/base/simple_string_data_comparator.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/platform/strnlen.h"
 #include "mongo/util/base64.h"
@@ -43,6 +44,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/string_map.h"
+#include "mongo/util/stringutils.h"
 
 namespace mongo {
 namespace str = mongoutils::str;
@@ -379,7 +381,9 @@ std::vector<BSONElement> BSONElement::Array() const {
 /* wo = "well ordered"
    note: (mongodb related) : this can only change in behavior when index version # changes
 */
-int BSONElement::woCompare(const BSONElement& e, bool considerFieldName) const {
+int BSONElement::woCompare(const BSONElement& e,
+                           bool considerFieldName,
+                           const StringData::ComparatorInterface* comparator) const {
     int lt = (int)canonicalType();
     int rt = (int)e.canonicalType();
     int x = lt - rt;
@@ -390,8 +394,33 @@ int BSONElement::woCompare(const BSONElement& e, bool considerFieldName) const {
         if (x != 0)
             return x;
     }
-    x = compareElementValues(*this, e);
+    x = compareElementValues(*this, e, comparator);
     return x;
+}
+
+bool BSONElement::binaryEqual(const BSONElement& rhs) const {
+    const int elemSize = size();
+
+    if (elemSize != rhs.size()) {
+        return false;
+    }
+
+    return (elemSize == 0) || (memcmp(data, rhs.rawdata(), elemSize) == 0);
+}
+
+bool BSONElement::binaryEqualValues(const BSONElement& rhs) const {
+    // The binaryEqual method above implicitly compares the type, but we need to do so explicitly
+    // here. It doesn't make sense to consider to BSONElement objects as binaryEqual if they have
+    // the same bit pattern but different types (consider an integer and a double).
+    if (type() != rhs.type())
+        return false;
+
+    const int valueSize = valuesize();
+    if (valueSize != rhs.valuesize()) {
+        return false;
+    }
+
+    return (valueSize == 0) || (memcmp(value(), rhs.value(), valueSize) == 0);
 }
 
 BSONObj BSONElement::embeddedObjectUserCheck() const {
@@ -597,11 +626,12 @@ int BSONElement::size() const {
 
 std::string BSONElement::toString(bool includeFieldName, bool full) const {
     StringBuilder s;
-    toString(s, includeFieldName, full);
+    toString(s, includeFieldName, full, false);
     return s.str();
 }
 
-void BSONElement::toString(StringBuilder& s, bool includeFieldName, bool full, int depth) const {
+void BSONElement::toString(
+    StringBuilder& s, bool includeFieldName, bool full, bool redactValues, int depth) const {
     if (depth > BSONObj::maxToStringRecursionDepth) {
         // check if we want the full/complete string
         if (full) {
@@ -616,6 +646,21 @@ void BSONElement::toString(StringBuilder& s, bool includeFieldName, bool full, i
 
     if (includeFieldName && type() != EOO)
         s << fieldName() << ": ";
+
+    switch (type()) {
+        case Object:
+            return embeddedObject().toString(s, false, full, redactValues, depth + 1);
+        case mongo::Array:
+            return embeddedObject().toString(s, true, full, redactValues, depth + 1);
+        default:
+            break;
+    }
+
+    if (redactValues) {
+        s << "\"###\"";
+        return;
+    }
+
     switch (type()) {
         case EOO:
             s << "EOO";
@@ -644,12 +689,6 @@ void BSONElement::toString(StringBuilder& s, bool includeFieldName, bool full, i
         case mongo::Bool:
             s << (boolean() ? "true" : "false");
             break;
-        case Object:
-            embeddedObject().toString(s, false, full, depth + 1);
-            break;
-        case mongo::Array:
-            embeddedObject().toString(s, true, full, depth + 1);
-            break;
         case Undefined:
             s << "undefined";
             break;
@@ -663,8 +702,7 @@ void BSONElement::toString(StringBuilder& s, bool includeFieldName, bool full, i
             s << "MinKey";
             break;
         case CodeWScope:
-            s << "CodeWScope( " << codeWScopeCode() << ", "
-              << codeWScopeObject().toString(false, full) << ")";
+            s << "CodeWScope( " << codeWScopeCode() << ", " << codeWScopeObject().toString() << ")";
             break;
         case Code:
             if (!full && valuestrsize() > 80) {
@@ -804,52 +842,12 @@ bool BSONObj::coerceVector(std::vector<T>* out) const {
     return true;
 }
 
-// used by jsonString()
-std::string escape(const std::string& s, bool escape_slash) {
-    StringBuilder ret;
-    for (std::string::const_iterator i = s.begin(); i != s.end(); ++i) {
-        switch (*i) {
-            case '"':
-                ret << "\\\"";
-                break;
-            case '\\':
-                ret << "\\\\";
-                break;
-            case '/':
-                ret << (escape_slash ? "\\/" : "/");
-                break;
-            case '\b':
-                ret << "\\b";
-                break;
-            case '\f':
-                ret << "\\f";
-                break;
-            case '\n':
-                ret << "\\n";
-                break;
-            case '\r':
-                ret << "\\r";
-                break;
-            case '\t':
-                ret << "\\t";
-                break;
-            default:
-                if (*i >= 0 && *i <= 0x1f) {
-                    // TODO: these should be utf16 code-units not bytes
-                    char c = *i;
-                    ret << "\\u00" << toHexLower(&c, 1);
-                } else {
-                    ret << *i;
-                }
-        }
-    }
-    return ret.str();
-}
-
 /**
  * l and r must be same canonicalType when called.
  */
-int compareElementValues(const BSONElement& l, const BSONElement& r) {
+int compareElementValues(const BSONElement& l,
+                         const BSONElement& r,
+                         const StringData::ComparatorInterface* comparator) {
     int f;
 
     switch (l.type()) {
@@ -946,9 +944,10 @@ int compareElementValues(const BSONElement& l, const BSONElement& r) {
             return memcmp(l.value(), r.value(), OID::kOIDSize);
         case Code:
         case Symbol:
-        case String:
-            /* todo: a utf sort order version one day... */
-            {
+        case String: {
+            if (comparator) {
+                return comparator->compare(l.valueStringData(), r.valueStringData());
+            } else {
                 // we use memcmp as we allow zeros in UTF8 strings
                 int lsz = l.valuestrsize();
                 int rsz = r.valuestrsize();
@@ -959,9 +958,15 @@ int compareElementValues(const BSONElement& l, const BSONElement& r) {
                 // longer std::string is the greater one
                 return lsz - rsz;
             }
+        }
         case Object:
         case Array:
-            return l.embeddedObject().woCompare(r.embeddedObject());
+            // woCompare parameters: r, ordering, considerFieldName, comparator.
+            // r: the BSONObj to compare with.
+            // ordering: the sort directions for each key.
+            // considerFieldName: whether field names should be considered in comparison.
+            // comparator: used for all string comparisons, if non-null.
+            return l.embeddedObject().woCompare(r.embeddedObject(), BSONObj(), true, comparator);
         case DBRef: {
             int lsz = l.valuesize();
             int rsz = r.valuesize();
@@ -988,117 +993,21 @@ int compareElementValues(const BSONElement& l, const BSONElement& r) {
             if (cmp)
                 return cmp;
 
-            return l.codeWScopeObject().woCompare(r.codeWScopeObject());
+            return l.codeWScopeObject().woCompare(
+                // woCompare parameters: r, ordering, considerFieldName, comparator.
+                // r: the BSONObj to compare with.
+                // ordering: the sort directions for each key.
+                // considerFieldName: whether field names should be considered in comparison.
+                // comparator: used for all string comparisons, if non-null.
+                r.codeWScopeObject(),
+                BSONObj(),
+                true,
+                comparator);
         }
         default:
             verify(false);
     }
     return -1;
-}
-
-size_t BSONElement::Hasher::operator()(const BSONElement& elem) const {
-    size_t hash = 0;
-
-    boost::hash_combine(hash, elem.canonicalType());
-
-    const StringData fieldName = elem.fieldNameStringData();
-    if (!fieldName.empty()) {
-        boost::hash_combine(hash, StringData::Hasher()(fieldName));
-    }
-
-    switch (elem.type()) {
-        // Order of types is the same as in compareElementValues().
-
-        case mongo::EOO:
-        case mongo::Undefined:
-        case mongo::jstNULL:
-        case mongo::MaxKey:
-        case mongo::MinKey:
-            // These are valueless types
-            break;
-
-        case mongo::Bool:
-            boost::hash_combine(hash, elem.boolean());
-            break;
-
-        case mongo::bsonTimestamp:
-            boost::hash_combine(hash, elem.timestamp().asULL());
-            break;
-
-        case mongo::Date:
-            boost::hash_combine(hash, elem.date().asInt64());
-            break;
-
-        case mongo::NumberDecimal: {
-            const Decimal128 dcml = elem.numberDecimal();
-            if (dcml.toAbs().isGreater(Decimal128(std::numeric_limits<double>::max())) &&
-                !dcml.isInfinite() && !dcml.isNaN()) {
-                // Normalize our decimal to force equivalent decimals
-                // in the same cohort to hash to the same value
-                Decimal128 dcmlNorm(dcml.normalize());
-                boost::hash_combine(hash, dcmlNorm.getValue().low64);
-                boost::hash_combine(hash, dcmlNorm.getValue().high64);
-                break;
-            }
-            // Else, fall through and convert the decimal to a double and hash.
-            // At this point the decimal fits into the range of doubles, is infinity, or is NaN,
-            // which doubles have a cheaper representation for.
-        }
-        case mongo::NumberDouble:
-        case mongo::NumberLong:
-        case mongo::NumberInt: {
-            // This converts all numbers to doubles, which ignores the low-order bits of
-            // NumberLongs > 2**53 and precise decimal numbers without double representations,
-            // but that is ok since the hash will still be the same for equal numbers and is
-            // still likely to be different for different numbers. (Note: this issue only
-            // applies for decimals when they are outside of the valid double range. See
-            // the above case.)
-            // SERVER-16851
-            const double dbl = elem.numberDouble();
-            if (std::isnan(dbl)) {
-                boost::hash_combine(hash, std::numeric_limits<double>::quiet_NaN());
-            } else {
-                boost::hash_combine(hash, dbl);
-            }
-            break;
-        }
-
-        case mongo::jstOID:
-            elem.__oid().hash_combine(hash);
-            break;
-
-        case mongo::Code:
-        case mongo::Symbol:
-        case mongo::String:
-            boost::hash_combine(hash, StringData::Hasher()(elem.valueStringData()));
-            break;
-
-        case mongo::Object:
-        case mongo::Array:
-            boost::hash_combine(hash, BSONObj::Hasher()(elem.embeddedObject()));
-            break;
-
-        case mongo::DBRef:
-        case mongo::BinData:
-            // All bytes of the value are required to be identical.
-            boost::hash_combine(hash,
-                                StringData::Hasher()(StringData(elem.value(), elem.valuesize())));
-            break;
-
-        case mongo::RegEx:
-            boost::hash_combine(hash, StringData::Hasher()(elem.regex()));
-            boost::hash_combine(hash, StringData::Hasher()(elem.regexFlags()));
-            break;
-
-        case mongo::CodeWScope: {
-            boost::hash_combine(
-                hash,
-                StringData::Hasher()(StringData(elem.codeWScopeCode(), elem.codeWScopeCodeLen())));
-            boost::hash_combine(hash, BSONObj::Hasher()(elem.codeWScopeObject()));
-            break;
-        }
-    }
-    return hash;
 }
 
 }  // namespace mongo

@@ -28,10 +28,10 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
+#include "mongo/db/matcher/path.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/path_internal.h"
-#include "mongo/db/matcher/path.h"
+#include "mongo/platform/basic.h"
 
 namespace mongo {
 
@@ -90,7 +90,6 @@ BSONElementIterator::BSONElementIterator() {
 BSONElementIterator::BSONElementIterator(const ElementPath* path, const BSONObj& context)
     : _path(path), _context(context) {
     _state = BEGIN;
-    // log() << "path: " << path.fieldRef().dottedField() << " context: " << context << endl;
 }
 
 BSONElementIterator::~BSONElementIterator() {}

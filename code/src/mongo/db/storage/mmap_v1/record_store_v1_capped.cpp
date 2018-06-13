@@ -32,7 +32,8 @@
 
 #include "mongo/db/storage/mmap_v1/record_store_v1_capped.h"
 
-#include "mongo/db/operation_context_impl.h"
+#include "mongo/db/client.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/storage/mmap_v1/extent.h"
 #include "mongo/db/storage/mmap_v1/extent_manager.h"
 #include "mongo/db/storage/mmap_v1/mmap.h"
@@ -100,11 +101,12 @@ StatusWith<DiskLoc> CappedRecordStoreV1::allocRecord(OperationContext* txn,
         // since we have to iterate all the extents (for now) to get
         // storage size
         if (lenToAlloc > storageSize(txn)) {
-            return StatusWith<DiskLoc>(ErrorCodes::DocTooLargeForCapped,
-                                       mongoutils::str::stream()
-                                           << "document is larger than capped size " << lenToAlloc
-                                           << " > " << storageSize(txn),
-                                       16328);
+            return StatusWith<DiskLoc>(
+                ErrorCodes::DocTooLargeForCapped,
+                mongoutils::str::stream() << "document is larger than capped size " << lenToAlloc
+                                          << " > "
+                                          << storageSize(txn),
+                16328);
         }
     }
     DiskLoc loc;
@@ -160,8 +162,10 @@ StatusWith<DiskLoc> CappedRecordStoreV1::allocRecord(OperationContext* txn,
                     return StatusWith<DiskLoc>(ErrorCodes::DocTooLargeForCapped,
                                                str::stream()
                                                    << "document doesn't fit in capped collection."
-                                                   << " size: " << lenToAlloc
-                                                   << " storageSize:" << storageSize(txn),
+                                                   << " size: "
+                                                   << lenToAlloc
+                                                   << " storageSize:"
+                                                   << storageSize(txn),
                                                28575);
                 }
                 continue;

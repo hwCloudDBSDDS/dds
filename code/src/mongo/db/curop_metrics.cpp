@@ -26,10 +26,12 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/base/counter.h"
+#include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/commands/server_status_metric.h"
 
 namespace mongo {
 namespace {
@@ -48,15 +50,11 @@ ServerStatusMetricField<Counter64> displayScanned("queryExecutor.scanned", &scan
 ServerStatusMetricField<Counter64> displayScannedObjects("queryExecutor.scannedObjects",
                                                          &scannedObjectCounter);
 
-Counter64 idhackCounter;
 Counter64 scanAndOrderCounter;
-Counter64 fastmodCounter;
 Counter64 writeConflictsCounter;
 
-ServerStatusMetricField<Counter64> displayIdhack("operation.idhack", &idhackCounter);
 ServerStatusMetricField<Counter64> displayScanAndOrder("operation.scanAndOrder",
                                                        &scanAndOrderCounter);
-ServerStatusMetricField<Counter64> displayFastMod("operation.fastmod", &fastmodCounter);
 ServerStatusMetricField<Counter64> displayWriteConflicts("operation.writeConflicts",
                                                          &writeConflictsCounter);
 
@@ -77,12 +75,8 @@ void recordCurOpMetrics(OperationContext* opCtx) {
     if (debug.docsExamined > 0)
         scannedObjectCounter.increment(debug.docsExamined);
 
-    if (debug.idhack)
-        idhackCounter.increment();
     if (debug.hasSortStage)
         scanAndOrderCounter.increment();
-    if (debug.fastmod)
-        fastmodCounter.increment();
     if (debug.writeConflicts)
         writeConflictsCounter.increment(debug.writeConflicts);
 }

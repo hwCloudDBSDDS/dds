@@ -46,8 +46,8 @@
 #include "mongo/db/storage/mmap_v1/dur.h"
 #include "mongo/db/storage/mmap_v1/dur_journalformat.h"
 #include "mongo/db/storage/storage_options.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/log.h"
+#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/processinfo.h"
 
 using namespace mongoutils;
@@ -156,7 +156,7 @@ __declspec(noinline) void PointerToDurableMappedFile::makeChunkWritable(size_t c
                 p.getExtraInfo(bb);
 
                 severe() << "MongoDB has exhausted the system memory capacity.";
-                severe() << "Current Memory Status: " << bb.obj().toString();
+                severe() << "Current Memory Status: " << bb.obj();
             }
 
             severe() << "VirtualProtect for " << mmf->filename() << " chunk " << chunkno
@@ -241,23 +241,21 @@ void DurableMappedFile::setPath(const std::string& f) {
     _p = RelativePath::fromFullPath(storageGlobalParams.dbpath, prefix);
 }
 
-bool DurableMappedFile::open(const std::string& fname, bool sequentialHint) {
+bool DurableMappedFile::open(const std::string& fname) {
     LOG(3) << "mmf open " << fname;
     invariant(!_view_write);
 
     setPath(fname);
-    _view_write = mapWithOptions(fname.c_str(), sequentialHint ? SEQUENTIAL : 0);
+    _view_write = map(fname.c_str());
     return finishOpening();
 }
 
-bool DurableMappedFile::create(const std::string& fname,
-                               unsigned long long& len,
-                               bool sequentialHint) {
+bool DurableMappedFile::create(const std::string& fname, unsigned long long& len) {
     LOG(3) << "mmf create " << fname;
     invariant(!_view_write);
 
     setPath(fname);
-    _view_write = map(fname.c_str(), len, sequentialHint ? SEQUENTIAL : 0);
+    _view_write = map(fname.c_str(), len);
     return finishOpening();
 }
 
@@ -286,7 +284,8 @@ bool DurableMappedFile::finishOpening() {
     return false;
 }
 
-DurableMappedFile::DurableMappedFile() : _willNeedRemap(false) {
+DurableMappedFile::DurableMappedFile(OptionSet options)
+    : MemoryMappedFile(options), _willNeedRemap(false) {
     _view_write = _view_private = 0;
 }
 

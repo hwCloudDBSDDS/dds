@@ -34,9 +34,6 @@
 // Define if building a debug build
 @mongo_config_debug_build@
 
-// Defined if experimental decimal support is enabled
-@mongo_config_experimental_decimal_support@
-
 // Defined if thread_local storage class is available
 @mongo_config_have_thread_local@
 
@@ -78,6 +75,9 @@
 
 // Defined if SSL support is enabled
 @mongo_config_ssl@
+
+// Defined if OpenSSL has SEQUENCE_ANY
+@mongo_config_ssl_has_asn1_any_definitions@
 
 // Defined if WiredTiger storage engine is enabled
 @mongo_config_wiredtiger_enabled@

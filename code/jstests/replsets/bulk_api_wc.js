@@ -35,19 +35,33 @@ var executeTests = function() {
     });
 
     //
+    // Fail due to unrecognized write concern field.
+    coll.remove({});
+    var bulk = coll.initializeOrderedBulkOp();
+    bulk.insert({a: 1});
+    bulk.insert({a: 2});
+    var result = assert.throws(function() {
+        bulk.execute({x: 1});
+    });
+    assert.eq(ErrorCodes.FailedToParse, result.code, 'unexpected error code: ' + tojson(result));
+    assert.eq('unrecognized write concern field: x',
+              result.errmsg,
+              'unexpected error message: ' + tojson(result));
+
+    //
     // Fail with write error, no write concern error even though it would fail on apply for ordered
     coll.remove({});
     var bulk = coll.initializeOrderedBulkOp();
     bulk.insert({a: 1});
     bulk.insert({a: 2});
     bulk.insert({a: 2});
-    var result = assert.throws(function() {
+    result = assert.throws(function() {
         bulk.execute({w: 'invalid'});
     });
     assert.eq(result.nInserted, 2);
     assert.eq(result.getWriteErrors()[0].index, 2);
     assert(!result.getWriteConcernError());
-    assert.eq(coll.count(), 2);
+    assert.eq(coll.find().itcount(), 2);
 
     //
     // Unordered
@@ -66,7 +80,7 @@ var executeTests = function() {
     assert.eq(result.nInserted, 2);
     assert.eq(result.getWriteErrors()[0].index, 2);
     assert(result.getWriteConcernError());
-    assert.eq(coll.count(), 2);
+    assert.eq(coll.find().itcount(), 2);
 
     //
     // Fail with write error, write concern timeout reported when unordered
@@ -83,7 +97,7 @@ var executeTests = function() {
     assert.eq(result.nInserted, 2);
     assert.eq(result.getWriteErrors()[0].index, 2);
     assert.eq(100, result.getWriteConcernError().code);
-    assert.eq(coll.count(), 2);
+    assert.eq(coll.find().itcount(), 2);
 
     //
     // Fail with write error and upserted, write concern error reported when unordered
@@ -101,7 +115,7 @@ var executeTests = function() {
     assert.eq(result.getUpsertedIds()[0].index, 2);
     assert.eq(result.getWriteErrors()[0].index, 3);
     assert(result.getWriteConcernError());
-    assert.eq(coll.count(), 3);
+    assert.eq(coll.find().itcount(), 3);
 };
 
 // Use write commands

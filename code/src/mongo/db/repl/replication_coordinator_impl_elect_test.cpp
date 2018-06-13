@@ -33,13 +33,13 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/repl/is_master_response.h"
-#include "mongo/db/repl/operation_context_repl_mock.h"
 #include "mongo/db/repl/repl_set_heartbeat_args.h"
 #include "mongo/db/repl/repl_set_heartbeat_response.h"
 #include "mongo/db/repl/replica_set_config.h"
 #include "mongo/db/repl/replication_coordinator_external_state_mock.h"
 #include "mongo/db/repl/replication_coordinator_impl.h"
 #include "mongo/db/repl/replication_coordinator_test_fixture.h"
+#include "mongo/db/repl/topology_coordinator_impl.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/log.h"
@@ -55,41 +55,11 @@ using executor::RemoteCommandResponse;
 class ReplCoordElectTest : public ReplCoordTest {
 protected:
     void assertStartSuccess(const BSONObj& configDoc, const HostAndPort& selfHost);
-    void simulateEnoughHeartbeatsForElectability();
     void simulateFreshEnoughForElectability();
 };
 
 void ReplCoordElectTest::assertStartSuccess(const BSONObj& configDoc, const HostAndPort& selfHost) {
     ReplCoordTest::assertStartSuccess(addProtocolVersion(configDoc, 0), selfHost);
-}
-
-void ReplCoordElectTest::simulateEnoughHeartbeatsForElectability() {
-    ReplicationCoordinatorImpl* replCoord = getReplCoord();
-    ReplicaSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
-    NetworkInterfaceMock* net = getNet();
-    net->enterNetwork();
-    for (int i = 0; i < rsConfig.getNumMembers() - 1; ++i) {
-        const NetworkInterfaceMock::NetworkOperationIterator noi = net->getNextReadyRequest();
-        const RemoteCommandRequest& request = noi->getRequest();
-        log() << request.target.toString() << " processing " << request.cmdObj;
-        ReplSetHeartbeatArgs hbArgs;
-        if (hbArgs.initialize(request.cmdObj).isOK()) {
-            ReplSetHeartbeatResponse hbResp;
-            hbResp.setSetName(rsConfig.getReplSetName());
-            hbResp.setState(MemberState::RS_SECONDARY);
-            hbResp.setConfigVersion(rsConfig.getConfigVersion());
-            BSONObjBuilder respObj;
-            respObj << "ok" << 1;
-            hbResp.addToBSON(&respObj, false);
-            net->scheduleResponse(noi, net->now(), makeResponseStatus(respObj.obj()));
-        } else {
-            error() << "Black holing unexpected request to " << request.target << ": "
-                    << request.cmdObj;
-            net->blackHole(noi);
-        }
-        net->runReadyNetworkOperations();
-    }
-    net->exitNetwork();
 }
 
 void ReplCoordElectTest::simulateFreshEnoughForElectability() {
@@ -107,7 +77,8 @@ void ReplCoordElectTest::simulateFreshEnoughForElectability() {
                 net->now(),
                 makeResponseStatus(BSON("ok" << 1 << "fresher" << false << "opTime"
                                              << Date_t::fromMillisSinceEpoch(Timestamp(0, 0).asLL())
-                                             << "veto" << false)));
+                                             << "veto"
+                                             << false)));
         } else {
             error() << "Black holing unexpected request to " << request.target << ": "
                     << request.cmdObj;
@@ -125,14 +96,16 @@ TEST_F(ReplCoordElectTest, StartElectionDoesNotStartAnElectionWhenNodeHasNoOplog
     startCapturingLogMessages();
     assertStartSuccess(BSON("_id"
                             << "mySet"
-                            << "version" << 1 << "members"
+                            << "version"
+                            << 1
+                            << "members"
                             << BSON_ARRAY(BSON("_id" << 1 << "host"
                                                      << "node1:12345")
                                           << BSON("_id" << 2 << "host"
                                                         << "node2:12345"))),
                        HostAndPort("node1", 12345));
     ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
-    simulateEnoughHeartbeatsForElectability();
+    simulateEnoughHeartbeatsForAllNodesUp();
     stopCapturingLogMessages();
     ASSERT_EQUALS(1, countLogLinesContaining("node has no applied oplog entries"));
 }
@@ -142,17 +115,22 @@ TEST_F(ReplCoordElectTest, StartElectionDoesNotStartAnElectionWhenNodeHasNoOplog
  * vote(s) to win.
  */
 TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyElectableNode) {
-    OperationContextReplMock txn;
-    assertStartSuccess(
-        BSON("_id"
-             << "mySet"
-             << "version" << 1 << "members"
-             << BSON_ARRAY(BSON("_id" << 1 << "host"
-                                      << "node1:12345")
-                           << BSON("_id" << 2 << "host"
-                                         << "node2:12345"
-                                         << "votes" << 0 << "hidden" << true << "priority" << 0))),
-        HostAndPort("node1", 12345));
+    assertStartSuccess(BSON("_id"
+                            << "mySet"
+                            << "version"
+                            << 1
+                            << "members"
+                            << BSON_ARRAY(BSON("_id" << 1 << "host"
+                                                     << "node1:12345")
+                                          << BSON("_id" << 2 << "host"
+                                                        << "node2:12345"
+                                                        << "votes"
+                                                        << 0
+                                                        << "hidden"
+                                                        << true
+                                                        << "priority"
+                                                        << 0))),
+                       HostAndPort("node1", 12345));
 
     getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY);
     // Fake OpTime from initiate, or a write op.
@@ -179,6 +157,9 @@ TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyElectableNode) {
         << getReplCoord()->getMemberState().toString();
     ASSERT(getReplCoord()->isWaitingForApplierToDrain());
 
+    const auto txnPtr = makeOperationContext();
+    auto& txn = *txnPtr;
+
     // Since we're still in drain mode, expect that we report ismaster: false, issecondary:true.
     IsMasterResponse imResponse;
     getReplCoord()->fillIsMasterForReplSet(&imResponse);
@@ -191,11 +172,12 @@ TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyElectableNode) {
 }
 
 TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyNode) {
-    OperationContextReplMock txn;
     startCapturingLogMessages();
     assertStartSuccess(BSON("_id"
                             << "mySet"
-                            << "version" << 1 << "members"
+                            << "version"
+                            << 1
+                            << "members"
                             << BSON_ARRAY(BSON("_id" << 1 << "host"
                                                      << "node1:12345"))),
                        HostAndPort("node1", 12345));
@@ -208,6 +190,9 @@ TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyNode) {
     ASSERT(getReplCoord()->getMemberState().primary())
         << getReplCoord()->getMemberState().toString();
     ASSERT(getReplCoord()->isWaitingForApplierToDrain());
+
+    const auto txnPtr = makeOperationContext();
+    auto& txn = *txnPtr;
 
     // Since we're still in drain mode, expect that we report ismaster: false, issecondary:true.
     IsMasterResponse imResponse;
@@ -223,7 +208,9 @@ TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyNode) {
 TEST_F(ReplCoordElectTest, ElectionSucceedsWhenAllNodesVoteYea) {
     BSONObj configObj = BSON("_id"
                              << "mySet"
-                             << "version" << 1 << "members"
+                             << "version"
+                             << 1
+                             << "members"
                              << BSON_ARRAY(BSON("_id" << 1 << "host"
                                                       << "node1:12345")
                                            << BSON("_id" << 2 << "host"
@@ -247,7 +234,9 @@ TEST_F(ReplCoordElectTest, ElectionFailsWhenOneNodeVotesNay) {
     startCapturingLogMessages();
     BSONObj configObj = BSON("_id"
                              << "mySet"
-                             << "version" << 1 << "members"
+                             << "version"
+                             << 1
+                             << "members"
                              << BSON_ARRAY(BSON("_id" << 1 << "host"
                                                       << "node1:12345")
                                            << BSON("_id" << 2 << "host"
@@ -262,7 +251,7 @@ TEST_F(ReplCoordElectTest, ElectionFailsWhenOneNodeVotesNay) {
     getReplCoord()->setMyLastAppliedOpTime(time1);
     ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
 
-    simulateEnoughHeartbeatsForElectability();
+    simulateEnoughHeartbeatsForAllNodesUp();
     simulateFreshEnoughForElectability();
     NetworkInterfaceMock* net = getNet();
     net->enterNetwork();
@@ -292,7 +281,9 @@ TEST_F(ReplCoordElectTest, VotesWithStringValuesAreNotCountedAsYeas) {
     startCapturingLogMessages();
     BSONObj configObj = BSON("_id"
                              << "mySet"
-                             << "version" << 1 << "members"
+                             << "version"
+                             << 1
+                             << "members"
                              << BSON_ARRAY(BSON("_id" << 1 << "host"
                                                       << "node1:12345")
                                            << BSON("_id" << 2 << "host"
@@ -307,7 +298,7 @@ TEST_F(ReplCoordElectTest, VotesWithStringValuesAreNotCountedAsYeas) {
     getReplCoord()->setMyLastAppliedOpTime(time1);
     ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
 
-    simulateEnoughHeartbeatsForElectability();
+    simulateEnoughHeartbeatsForAllNodesUp();
     simulateFreshEnoughForElectability();
     NetworkInterfaceMock* net = getNet();
     net->enterNetwork();
@@ -324,7 +315,8 @@ TEST_F(ReplCoordElectTest, VotesWithStringValuesAreNotCountedAsYeas) {
                                   net->now(),
                                   makeResponseStatus(BSON("ok" << 1 << "vote"
                                                                << "yea"
-                                                               << "round" << OID())));
+                                                               << "round"
+                                                               << OID())));
         }
         net->runReadyNetworkOperations();
     }
@@ -337,7 +329,9 @@ TEST_F(ReplCoordElectTest, VotesWithStringValuesAreNotCountedAsYeas) {
 TEST_F(ReplCoordElectTest, ElectionsAbortWhenNodeTransitionsToRollbackState) {
     BSONObj configObj = BSON("_id"
                              << "mySet"
-                             << "version" << 1 << "members"
+                             << "version"
+                             << 1
+                             << "members"
                              << BSON_ARRAY(BSON("_id" << 1 << "host"
                                                       << "node1:12345")
                                            << BSON("_id" << 2 << "host"
@@ -352,7 +346,7 @@ TEST_F(ReplCoordElectTest, ElectionsAbortWhenNodeTransitionsToRollbackState) {
     getReplCoord()->setMyLastAppliedOpTime(time1);
     ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
 
-    simulateEnoughHeartbeatsForElectability();
+    simulateEnoughHeartbeatsForAllNodesUp();
     simulateFreshEnoughForElectability();
 
     bool success = false;
@@ -370,19 +364,22 @@ TEST_F(ReplCoordElectTest, NodeWillNotStandForElectionDuringHeartbeatReconfig) {
     // start up, receive reconfig via heartbeat while at the same time, become candidate.
     // candidate state should be cleared.
     OperationContextNoop txn;
-    assertStartSuccess(
-        BSON("_id"
-             << "mySet"
-             << "version" << 2 << "members"
-             << BSON_ARRAY(BSON("_id" << 1 << "host"
-                                      << "node1:12345")
-                           << BSON("_id" << 2 << "host"
-                                         << "node2:12345") << BSON("_id" << 3 << "host"
-                                                                         << "node3:12345")
-                           << BSON("_id" << 4 << "host"
-                                         << "node4:12345") << BSON("_id" << 5 << "host"
-                                                                         << "node5:12345"))),
-        HostAndPort("node1", 12345));
+    assertStartSuccess(BSON("_id"
+                            << "mySet"
+                            << "version"
+                            << 2
+                            << "members"
+                            << BSON_ARRAY(BSON("_id" << 1 << "host"
+                                                     << "node1:12345")
+                                          << BSON("_id" << 2 << "host"
+                                                        << "node2:12345")
+                                          << BSON("_id" << 3 << "host"
+                                                        << "node3:12345")
+                                          << BSON("_id" << 4 << "host"
+                                                        << "node4:12345")
+                                          << BSON("_id" << 5 << "host"
+                                                        << "node5:12345"))),
+                       HostAndPort("node1", 12345));
     ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
     getReplCoord()->setMyLastAppliedOpTime(OpTime(Timestamp(100, 0), 0));
 
@@ -396,7 +393,9 @@ TEST_F(ReplCoordElectTest, NodeWillNotStandForElectionDuringHeartbeatReconfig) {
     ReplicaSetConfig config;
     config.initialize(BSON("_id"
                            << "mySet"
-                           << "version" << 3 << "members"
+                           << "version"
+                           << 3
+                           << "members"
                            << BSON_ARRAY(BSON("_id" << 1 << "host"
                                                     << "node1:12345")
                                          << BSON("_id" << 2 << "host"
@@ -454,19 +453,21 @@ TEST_F(ReplCoordElectTest, NodeWillNotStandForElectionDuringHeartbeatReconfig) {
     stopCapturingLogMessages();
     // ensure node does not stand for election
     ASSERT_EQUALS(1,
-                  countLogLinesContaining(
-                      "Not standing for election; processing "
-                      "a configuration change"));
+                  countLogLinesContaining("Not standing for election; processing "
+                                          "a configuration change"));
     getExternalState()->setStoreLocalConfigDocumentToHang(false);
 }
 
 TEST_F(ReplCoordElectTest, StepsDownRemoteIfNodeHasHigherPriorityThanCurrentPrimary) {
     BSONObj configObj = BSON("_id"
                              << "mySet"
-                             << "version" << 1 << "members"
+                             << "version"
+                             << 1
+                             << "members"
                              << BSON_ARRAY(BSON("_id" << 1 << "host"
                                                       << "node1:12345"
-                                                      << "priority" << 2)
+                                                      << "priority"
+                                                      << 2)
                                            << BSON("_id" << 2 << "host"
                                                          << "node2:12345")
                                            << BSON("_id" << 3 << "host"
@@ -527,7 +528,113 @@ TEST_F(ReplCoordElectTest, StepsDownRemoteIfNodeHasHigherPriorityThanCurrentPrim
     net->exitNetwork();
     ASSERT_EQUALS(1,
                   countLogLinesContaining(str::stream() << "stepdown of primary("
-                                                        << target.toString() << ") succeeded"));
+                                                        << target.toString()
+                                                        << ") succeeded"));
+}
+
+TEST_F(ReplCoordElectTest, NodeCancelsElectionUponReceivingANewConfigDuringFreshnessCheckingPhase) {
+    // Start up and become electable.
+    assertStartSuccess(BSON("_id"
+                            << "mySet"
+                            << "version"
+                            << 2
+                            << "members"
+                            << BSON_ARRAY(BSON("_id" << 1 << "host"
+                                                     << "node1:12345")
+                                          << BSON("_id" << 3 << "host"
+                                                        << "node3:12345")
+                                          << BSON("_id" << 2 << "host"
+                                                        << "node2:12345"))
+                            << "settings"
+                            << BSON("heartbeatIntervalMillis" << 100)),
+                       HostAndPort("node1", 12345));
+    ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
+    getReplCoord()->setMyLastAppliedOpTime(OpTime(Timestamp(100, 0), 0));
+    getReplCoord()->setMyLastDurableOpTime(OpTime(Timestamp(100, 0), 0));
+    simulateEnoughHeartbeatsForAllNodesUp();
+    simulateFreshEnoughForElectability();
+    ASSERT(TopologyCoordinator::Role::candidate == getTopoCoord().getRole());
+
+    // Advance to freshness checker request phase.
+    NetworkInterfaceMock* net = getNet();
+    net->enterNetwork();
+    while (TopologyCoordinator::Role::candidate != getTopoCoord().getRole()) {
+        net->runUntil(net->now() + Seconds(1));
+        if (!net->hasReadyRequests()) {
+            continue;
+        }
+        net->blackHole(net->getNextReadyRequest());
+    }
+    net->exitNetwork();
+    ASSERT(TopologyCoordinator::Role::candidate == getTopoCoord().getRole());
+
+    // Submit a reconfig and confirm it cancels the election.
+    ReplicationCoordinatorImpl::ReplSetReconfigArgs config = {
+        BSON("_id"
+             << "mySet"
+             << "version"
+             << 4
+             << "members"
+             << BSON_ARRAY(BSON("_id" << 1 << "host"
+                                      << "node1:12345")
+                           << BSON("_id" << 2 << "host"
+                                         << "node2:12345"))),
+        true};
+
+    BSONObjBuilder result;
+    const auto txn = makeOperationContext();
+    ASSERT_OK(getReplCoord()->processReplSetReconfig(txn.get(), config, &result));
+    // Wait until election cancels.
+    net->enterNetwork();
+    net->runReadyNetworkOperations();
+    net->exitNetwork();
+    ASSERT(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
+}
+
+TEST_F(ReplCoordElectTest, NodeCancelsElectionUponReceivingANewConfigDuringElectionPhase) {
+    // Start up and become electable.
+    assertStartSuccess(BSON("_id"
+                            << "mySet"
+                            << "version"
+                            << 2
+                            << "members"
+                            << BSON_ARRAY(BSON("_id" << 1 << "host"
+                                                     << "node1:12345")
+                                          << BSON("_id" << 3 << "host"
+                                                        << "node3:12345")
+                                          << BSON("_id" << 2 << "host"
+                                                        << "node2:12345"))
+                            << "settings"
+                            << BSON("heartbeatIntervalMillis" << 100)),
+                       HostAndPort("node1", 12345));
+    ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
+    getReplCoord()->setMyLastAppliedOpTime(OpTime(Timestamp(100, 0), 0));
+    getReplCoord()->setMyLastDurableOpTime(OpTime(Timestamp(100, 0), 0));
+    simulateEnoughHeartbeatsForAllNodesUp();
+    simulateFreshEnoughForElectability();
+    ASSERT(TopologyCoordinator::Role::candidate == getTopoCoord().getRole());
+
+    // Submit a reconfig and confirm it cancels the election.
+    ReplicationCoordinatorImpl::ReplSetReconfigArgs config = {
+        BSON("_id"
+             << "mySet"
+             << "version"
+             << 4
+             << "members"
+             << BSON_ARRAY(BSON("_id" << 1 << "host"
+                                      << "node1:12345")
+                           << BSON("_id" << 2 << "host"
+                                         << "node2:12345"))),
+        true};
+
+    BSONObjBuilder result;
+    const auto txn = makeOperationContext();
+    ASSERT_OK(getReplCoord()->processReplSetReconfig(txn.get(), config, &result));
+    // Wait until election cancels.
+    getNet()->enterNetwork();
+    getNet()->runReadyNetworkOperations();
+    getNet()->exitNetwork();
+    ASSERT(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
 }
 
 }  // namespace

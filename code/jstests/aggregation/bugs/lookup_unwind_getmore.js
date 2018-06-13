@@ -1,33 +1,30 @@
 /**
- * Tests that the server correctly handles when the OperationContext of the DBDirectClient used by
- * the $lookup stage changes as it unwinds the results.
+ * Tests that the server correctly handles when the OperationContext used by the $lookup stage
+ * changes as it unwinds the results.
  *
  * This test was designed to reproduce SERVER-22537.
  */
 (function() {
     'use strict';
 
-    // We use a batch size of 1 to ensure that the mongo shell issues a getMore when unwinding the
+    const options = {setParameter: 'internalDocumentSourceCursorBatchSizeBytes=1'};
+    const conn = MongoRunner.runMongod(options);
+    assert.neq(null, conn, 'mongod was unable to start up with options: ' + tojson(options));
+
+    const testDB = conn.getDB('test');
+
+    // We use a batch size of 2 to ensure that the mongo shell issues a getMore when unwinding the
     // results from the 'dest' collection for the same document in the 'source' collection under a
     // different OperationContext.
-    const batchSize = 1;
+    const batchSize = 2;
+    const numMatches = 5;
 
-    db.source.drop();
-    db.dest.drop();
-
-    assert.writeOK(db.source.insert({local: 1}));
-
-    // We insert documents in the 'dest' collection such that their combined size is greater than
-    // 16MB in order to ensure that the DBDirectClient used by the $lookup stage issues a getMore
-    // under a different OperationContext.
-    const numMatches = 3;
-    const largeStr = new Array(6 * 1024 * 1024 + 1).join('x');
-
-    for (var i = 0; i < numMatches; ++i) {
-        assert.writeOK(db.dest.insert({foreign: 1, largeStr: largeStr}));
+    assert.writeOK(testDB.source.insert({local: 1}));
+    for (let i = 0; i < numMatches; ++i) {
+        assert.writeOK(testDB.dest.insert({foreign: 1}));
     }
 
-    var res = db.runCommand({
+    const res = assert.commandWorked(testDB.runCommand({
         aggregate: 'source',
         pipeline: [
             {
@@ -47,9 +44,10 @@
         cursor: {
             batchSize: batchSize,
         },
-    });
-    assert.commandWorked(res);
+    }));
 
-    var cursor = new DBCommandCursor(db.getMongo(), res, batchSize);
+    const cursor = new DBCommandCursor(conn, res, batchSize);
     assert.eq(numMatches, cursor.itcount());
+
+    MongoRunner.stopMongod(conn);
 })();

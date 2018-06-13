@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/repl/replication_coordinator_external_state_mock.h"
@@ -34,9 +36,10 @@
 #include "mongo/bson/oid.h"
 #include "mongo/db/client.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/operation_context_noop.h"
-#include "mongo/db/repl/operation_context_repl_mock.h"
+#include "mongo/db/repl/oplog_buffer_blocking_queue.h"
 #include "mongo/db/storage/snapshot_name.h"
+#include "mongo/stdx/memory.h"
+#include "mongo/util/log.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/sequence_util.h"
 
@@ -58,25 +61,56 @@ ReplicationCoordinatorExternalStateMock::ReplicationCoordinatorExternalStateMock
 
 ReplicationCoordinatorExternalStateMock::~ReplicationCoordinatorExternalStateMock() {}
 
+void ReplicationCoordinatorExternalStateMock::runOnInitialSyncThread(
+    stdx::function<void(OperationContext* txn)> run) {
+    log() << "not running initial sync during test.";
+}
+
 void ReplicationCoordinatorExternalStateMock::startThreads(const ReplSettings& settings) {
     _threadsStarted = true;
 }
 
+bool ReplicationCoordinatorExternalStateMock::isInitialSyncFlagSet(OperationContext*) {
+    return false;
+}
+
+void ReplicationCoordinatorExternalStateMock::startInitialSync(OnInitialSyncFinishedFn) {}
+
+void ReplicationCoordinatorExternalStateMock::startSteadyStateReplication(OperationContext*,
+                                                                          ReplicationCoordinator*) {
+}
+
+void ReplicationCoordinatorExternalStateMock::stopDataReplication(OperationContext*) {}
+
 void ReplicationCoordinatorExternalStateMock::startMasterSlave(OperationContext*) {}
+
+Status ReplicationCoordinatorExternalStateMock::runRepairOnLocalDB(OperationContext* txn) {
+    return Status::OK();
+}
+
 Status ReplicationCoordinatorExternalStateMock::initializeReplSetStorage(OperationContext* txn,
-                                                                         const BSONObj& config,
-                                                                         bool updateReplOpTime) {
+                                                                         const BSONObj& config) {
     return storeLocalConfigDocument(txn, config);
 }
 
-void ReplicationCoordinatorExternalStateMock::shutdown() {}
+void ReplicationCoordinatorExternalStateMock::shutdown(OperationContext*) {}
+
+executor::TaskExecutor* ReplicationCoordinatorExternalStateMock::getTaskExecutor() const {
+    return nullptr;
+}
+
+OldThreadPool* ReplicationCoordinatorExternalStateMock::getDbWorkThreadPool() const {
+    return nullptr;
+}
+
 void ReplicationCoordinatorExternalStateMock::forwardSlaveProgress() {}
 
 OID ReplicationCoordinatorExternalStateMock::ensureMe(OperationContext*) {
     return OID::gen();
 }
 
-bool ReplicationCoordinatorExternalStateMock::isSelf(const HostAndPort& host) {
+bool ReplicationCoordinatorExternalStateMock::isSelf(const HostAndPort& host,
+                                                     ServiceContext* const ctx) {
     return sequenceContains(_selfHosts, host);
 }
 
@@ -194,22 +228,13 @@ void ReplicationCoordinatorExternalStateMock::closeConnections() {
 
 void ReplicationCoordinatorExternalStateMock::killAllUserOperations(OperationContext* txn) {}
 
-void ReplicationCoordinatorExternalStateMock::clearShardingState() {}
-
-void ReplicationCoordinatorExternalStateMock::recoverShardingState(OperationContext* txn) {}
+void ReplicationCoordinatorExternalStateMock::shardingOnStepDownHook() {}
 
 void ReplicationCoordinatorExternalStateMock::signalApplierToChooseNewSyncSource() {}
 
 void ReplicationCoordinatorExternalStateMock::signalApplierToCancelFetcher() {
     _isApplierSignaledToCancelFetcher = true;
 }
-
-OperationContext* ReplicationCoordinatorExternalStateMock::createOperationContext(
-    const std::string& threadName) {
-    return new OperationContextReplMock;
-}
-
-void ReplicationCoordinatorExternalStateMock::dropAllTempCollections(OperationContext* txn) {}
 
 void ReplicationCoordinatorExternalStateMock::dropAllSnapshots() {}
 
@@ -219,7 +244,11 @@ void ReplicationCoordinatorExternalStateMock::updateCommittedSnapshot(SnapshotNa
 void ReplicationCoordinatorExternalStateMock::forceSnapshotCreation() {}
 
 bool ReplicationCoordinatorExternalStateMock::snapshotsEnabled() const {
-    return true;
+    return _areSnapshotsEnabled;
+}
+
+void ReplicationCoordinatorExternalStateMock::setAreSnapshotsEnabled(bool val) {
+    _areSnapshotsEnabled = val;
 }
 
 void ReplicationCoordinatorExternalStateMock::notifyOplogMetadataWaiters() {}
@@ -230,12 +259,60 @@ double ReplicationCoordinatorExternalStateMock::getElectionTimeoutOffsetLimitFra
 
 bool ReplicationCoordinatorExternalStateMock::isReadCommittedSupportedByStorageEngine(
     OperationContext* txn) const {
+    return _isReadCommittedSupported;
+}
+
+StatusWith<OpTime> ReplicationCoordinatorExternalStateMock::multiApply(
+    OperationContext*, MultiApplier::Operations, MultiApplier::ApplyOperationFn) {
+    return {ErrorCodes::InternalError, "Method not implemented"};
+}
+
+Status ReplicationCoordinatorExternalStateMock::multiSyncApply(MultiApplier::OperationPtrs* ops) {
+    return Status::OK();
+}
+
+Status ReplicationCoordinatorExternalStateMock::multiInitialSyncApply(
+    MultiApplier::OperationPtrs* ops, const HostAndPort& source, AtomicUInt32* fetchCount) {
+    return Status::OK();
+}
+
+std::unique_ptr<OplogBuffer> ReplicationCoordinatorExternalStateMock::makeInitialSyncOplogBuffer(
+    OperationContext* txn) const {
+    return stdx::make_unique<OplogBufferBlockingQueue>();
+}
+
+std::unique_ptr<OplogBuffer> ReplicationCoordinatorExternalStateMock::makeSteadyStateOplogBuffer(
+    OperationContext* txn) const {
+    return stdx::make_unique<OplogBufferBlockingQueue>();
+}
+
+bool ReplicationCoordinatorExternalStateMock::shouldUseDataReplicatorInitialSync() const {
     return true;
 }
 
-void ReplicationCoordinatorExternalStateMock::logTransitionToPrimaryToOplog(OperationContext* txn) {
-    _lastOpTime = OpTime(Timestamp(1, 0), 1);
+std::size_t ReplicationCoordinatorExternalStateMock::getOplogFetcherMaxFetcherRestarts() const {
+    return 0;
 }
+
+void ReplicationCoordinatorExternalStateMock::setIsReadCommittedEnabled(bool val) {
+    _isReadCommittedSupported = val;
+}
+
+void ReplicationCoordinatorExternalStateMock::onDrainComplete(OperationContext* txn) {}
+
+OpTime ReplicationCoordinatorExternalStateMock::onTransitionToPrimary(OperationContext* txn,
+                                                                      bool isV1ElectionProtocol) {
+    if (isV1ElectionProtocol) {
+        _lastOpTime = OpTime(Timestamp(1, 0), 1);
+    }
+    return fassertStatusOK(40297, _lastOpTime);
+}
+
+void ReplicationCoordinatorExternalStateMock::startNoopWriter(OpTime opTime) {}
+
+void ReplicationCoordinatorExternalStateMock::stopNoopWriter() {}
+
+void ReplicationCoordinatorExternalStateMock::setupNoopWriter(Seconds waitTime) {}
 
 }  // namespace repl
 }  // namespace mongo

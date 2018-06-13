@@ -28,13 +28,15 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_redact.h"
 
 #include <boost/optional.hpp>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/expression.h"
+#include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/pipeline/value.h"
 
 namespace mongo {
@@ -46,7 +48,9 @@ DocumentSourceRedact::DocumentSourceRedact(const intrusive_ptr<ExpressionContext
                                            const intrusive_ptr<Expression>& expression)
     : DocumentSource(expCtx), _expression(expression) {}
 
-REGISTER_DOCUMENT_SOURCE(redact, DocumentSourceRedact::createFromBson);
+REGISTER_DOCUMENT_SOURCE(redact,
+                         LiteParsedDocumentSourceDefault::parse,
+                         DocumentSourceRedact::createFromBson);
 
 const char* DocumentSourceRedact::getSourceName() const {
     return "$redact";
@@ -56,16 +60,40 @@ static const Value descendVal = Value("descend");
 static const Value pruneVal = Value("prune");
 static const Value keepVal = Value("keep");
 
-boost::optional<Document> DocumentSourceRedact::getNext() {
-    while (boost::optional<Document> in = pSource->getNext()) {
-        _variables->setRoot(*in);
-        _variables->setValue(_currentId, Value(*in));
+DocumentSource::GetNextResult DocumentSourceRedact::getNext() {
+    auto nextInput = pSource->getNext();
+    for (; nextInput.isAdvanced(); nextInput = pSource->getNext()) {
+        _variables->setRoot(nextInput.getDocument());
+        _variables->setValue(_currentId, Value(nextInput.releaseDocument()));
         if (boost::optional<Document> result = redactObject()) {
-            return result;
+            return std::move(*result);
         }
     }
 
-    return boost::none;
+    return nextInput;
+}
+
+Pipeline::SourceContainer::iterator DocumentSourceRedact::doOptimizeAt(
+    Pipeline::SourceContainer::iterator itr, Pipeline::SourceContainer* container) {
+    invariant(*itr == this);
+
+    auto nextMatch = dynamic_cast<DocumentSourceMatch*>((*std::next(itr)).get());
+
+    if (nextMatch) {
+        const BSONObj redactSafePortion = nextMatch->redactSafePortion();
+
+        if (!redactSafePortion.isEmpty()) {
+            // Because R-M turns into M-R-M without modifying the original $match, we cannot step
+            // backwards and optimize from before the $redact, otherwise this will just loop and
+            // create an infinite number of $matches.
+            Pipeline::SourceContainer::iterator returnItr = std::next(itr);
+
+            container->insert(itr, DocumentSourceMatch::create(redactSafePortion, pExpCtx));
+
+            return returnItr;
+        }
+    }
+    return std::next(itr);
 }
 
 Value DocumentSourceRedact::redactValue(const Value& in) {
@@ -101,11 +129,12 @@ Value DocumentSourceRedact::redactValue(const Value& in) {
 boost::optional<Document> DocumentSourceRedact::redactObject() {
     const Value expressionResult = _expression->evaluate(_variables.get());
 
-    if (expressionResult == keepVal) {
+    ValueComparator simpleValueCmp;
+    if (simpleValueCmp.evaluate(expressionResult == keepVal)) {
         return _variables->getDocument(_currentId);
-    } else if (expressionResult == pruneVal) {
+    } else if (simpleValueCmp.evaluate(expressionResult == pruneVal)) {
         return boost::optional<Document>();
-    } else if (expressionResult == descendVal) {
+    } else if (simpleValueCmp.evaluate(expressionResult == descendVal)) {
         const Document in = _variables->getDocument(_currentId);
         MutableDocument out;
         out.copyMetaDataFrom(in);
@@ -124,13 +153,18 @@ boost::optional<Document> DocumentSourceRedact::redactObject() {
         uasserted(17053,
                   str::stream() << "$redact's expression should not return anything "
                                 << "aside from the variables $$KEEP, $$DESCEND, and "
-                                << "$$PRUNE, but returned " << expressionResult.toString());
+                                << "$$PRUNE, but returned "
+                                << expressionResult.toString());
     }
 }
 
 intrusive_ptr<DocumentSource> DocumentSourceRedact::optimize() {
     _expression = _expression->optimize();
     return this;
+}
+
+void DocumentSourceRedact::doInjectExpressionContext() {
+    _expression->injectExpressionContext(pExpCtx);
 }
 
 Value DocumentSourceRedact::serialize(bool explain) const {

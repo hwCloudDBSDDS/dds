@@ -41,14 +41,16 @@ namespace mongo {
 RouterStageRemoveSortKey::RouterStageRemoveSortKey(std::unique_ptr<RouterExecStage> child)
     : RouterExecStage(std::move(child)) {}
 
-StatusWith<boost::optional<BSONObj>> RouterStageRemoveSortKey::next() {
+StatusWith<ClusterQueryResult> RouterStageRemoveSortKey::next() {
     auto childResult = getChildStage()->next();
-    if (!childResult.isOK() || !childResult.getValue()) {
+    if (!childResult.isOK() || !childResult.getValue().getResult()) {
         return childResult;
     }
 
+    const auto& childObj = childResult.getValue().getResult();
+
     BSONObjBuilder builder;
-    for (BSONElement elt : *childResult.getValue()) {
+    for (BSONElement elt : *childObj) {
         if (!str::equals(elt.fieldName(), ClusterClientCursorParams::kSortKeyField)) {
             builder.append(elt);
         }
@@ -67,6 +69,10 @@ bool RouterStageRemoveSortKey::remotesExhausted() {
 
 Status RouterStageRemoveSortKey::setAwaitDataTimeout(Milliseconds awaitDataTimeout) {
     return getChildStage()->setAwaitDataTimeout(awaitDataTimeout);
+}
+
+void RouterStageRemoveSortKey::setOperationContext(OperationContext* txn) {
+    return getChildStage()->setOperationContext(txn);
 }
 
 }  // namespace mongo

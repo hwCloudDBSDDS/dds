@@ -30,6 +30,10 @@
 
 #pragma once
 
+#include "mongo/base/data_range.h"
+#include "mongo/base/data_range_cursor.h"
+#include "mongo/base/data_type_terminated.h"
+#include "mongo/base/disallow_copying.h"
 #include "mongo/bson/util/builder.h"
 #include "mongo/platform/strnlen.h"
 #include "mongo/util/assert_util.h"
@@ -52,7 +56,8 @@ public:
         }
     };
 
-    BufReader(const void* p, unsigned len) : _start(p), _pos(p), _end(((char*)_pos) + len) {}
+    BufReader(const void* p, unsigned len)
+        : _start(reinterpret_cast<const char*>(p)), _pos(_start), _end(_start + len) {}
 
     bool atEof() const {
         return _pos == _end;
@@ -61,18 +66,18 @@ public:
     /** read in the object specified, and advance buffer pointer */
     template <typename T>
     void read(T& t) {
-        T* cur = (T*)_pos;
-        T* next = cur + 1;
-        if (_end < next)
+        ConstDataRangeCursor cdrc(_pos, _end);
+        if (!cdrc.readAndAdvance(&t).isOK()) {
             throw eof();
-        t = *cur;
-        _pos = next;
+        }
+
+        _pos = cdrc.data();
     }
 
     /** read in and return an object of the specified type, and advance buffer pointer */
     template <typename T>
     T read() {
-        T out;
+        T out{};
         read(out);
         return out;
     }
@@ -80,55 +85,54 @@ public:
     /** read in the object specified, but do not advance buffer pointer */
     template <typename T>
     void peek(T& t) const {
-        T* cur = (T*)_pos;
-        T* next = cur + 1;
-        if (_end < next)
+        ConstDataRange cdr(_pos, _end);
+        if (!cdr.read(&t).isOK()) {
             throw eof();
-        t = *cur;
+        }
     }
 
     /** read in and return an object of the specified type, but do not advance buffer pointer */
     template <typename T>
     T peek() const {
-        T out;
+        T out{};
         peek(out);
         return out;
     }
 
     /** return current offset into buffer */
     unsigned offset() const {
-        return (char*)_pos - (char*)_start;
+        return _pos - _start;
     }
 
     /** return remaining bytes */
     unsigned remaining() const {
-        return (char*)_end - (char*)_pos;
+        return _end - _pos;
     }
 
     /** back up by nbytes */
     void rewind(unsigned nbytes) {
-        _pos = ((char*)_pos) - nbytes;
-        verify(_pos >= _start);
+        _pos = _pos - nbytes;
+        invariant(_pos >= _start);
     }
 
     /** return current position pointer, and advance by len */
     const void* skip(unsigned len) {
-        const char* nxt = ((char*)_pos) + len;
-        if (_end < nxt)
+        ConstDataRangeCursor cdrc(_pos, _end);
+
+        if (!cdrc.advance(len).isOK()) {
             throw eof();
+        }
+
         const void* p = _pos;
-        _pos = nxt;
+        _pos = cdrc.data();
         return p;
     }
 
     /// reads a NUL terminated string
     StringData readCStr() {
-        const char* start = static_cast<const char*>(pos());
-        size_t len = strnlen(start, remaining() - 1);
-        if (start[len] != '\0')
-            throw eof();  // no NUL byte in remaining bytes
-        skip(len + 1 /*NUL byte*/);
-        return StringData(start, len);
+        auto range = read<Terminated<'\0', ConstDataRange>>().value;
+
+        return StringData(range.data(), range.length());
     }
 
     void readStr(std::string& s) {
@@ -143,8 +147,8 @@ public:
     }
 
 private:
-    const void* _start;
-    const void* _pos;
-    const void* _end;
+    const char* _start;
+    const char* _pos;
+    const char* _end;
 };
 }

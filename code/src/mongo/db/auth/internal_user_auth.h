@@ -32,7 +32,9 @@ namespace mongo {
 class BSONObj;
 
 /**
- * @return true if internal authentication parameters has been set up
+ * @return true if internal authentication parameters has been set up. Note this does not
+ * imply that auth is enabled. For instance, with the --transitionToAuth flag this will
+ * be set and auth will be disabled.
  */
 bool isInternalAuthSet();
 
@@ -51,5 +53,5 @@ void setInternalUserAuthParams(const BSONObj& authParamsIn);
  * for MONGODB-CR auth is included. For MONGODB-XC509 no fallbackParams document is
  * returned.
  **/
-BSONObj getInternalUserAuthParamsWithFallback();
+BSONObj getInternalUserAuthParams();
 }  // namespace mongo

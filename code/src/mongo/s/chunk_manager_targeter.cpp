@@ -34,17 +34,23 @@
 
 #include <boost/thread/tss.hpp>
 
-#include "mongo/s/chunk_manager.h"
+#include "mongo/db/matcher/extensions_callback_noop.h"
+#include "mongo/db/operation_context.h"
+#include "mongo/db/query/canonical_query.h"
+#include "mongo/db/query/collation/collation_index_key.h"
+#include "mongo/s/chunk.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/config.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/shard_key_pattern.h"
+#include "mongo/s/sharding_raii.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 
 using std::shared_ptr;
-using mongoutils::str::stream;
+using str::stream;
 using std::map;
 using std::set;
 using std::string;
@@ -103,18 +109,32 @@ UpdateType getUpdateExprType(const BSONObj& updateExpr) {
  * This returns "does the query have an _id field" and "is the _id field querying for a direct
  * value like _id : 3 and not _id : { $gt : 3 }"
  *
+ * If the query does not use the collection default collation, the _id field cannot contain strings,
+ * objects, or arrays.
+ *
  * Ex: { _id : 1 } => true
  *     { foo : <anything>, _id : 1 } => true
  *     { _id : { $lt : 30 } } => false
  *     { foo : <anything> } => false
  */
-bool isExactIdQuery(const BSONObj& query) {
-    StatusWith<BSONObj> status = virtualIdShardKey.extractShardKeyFromQuery(query);
-    if (!status.isOK()) {
+bool isExactIdQuery(OperationContext* txn, const CanonicalQuery& query, ChunkManager* manager) {
+    auto shardKey = virtualIdShardKey.extractShardKeyFromQuery(query);
+    BSONElement idElt = shardKey["_id"];
+
+    if (!idElt) {
         return false;
     }
 
-    return !status.getValue()["_id"].eoo();
+    if (CollationIndexKey::isCollatableType(idElt.type()) && manager &&
+        !query.getQueryRequest().getCollation().isEmpty() &&
+        !CollatorInterface::collatorsMatch(query.getCollator(), manager->getDefaultCollator())) {
+
+        // The collation applies to the _id field, but the user specified a collation which doesn't
+        // match the collection default.
+        return false;
+    }
+
+    return true;
 }
 
 void refreshBackoff() {
@@ -186,21 +206,22 @@ ChunkVersion getShardVersion(StringData shardName,
  */
 CompareResult compareAllShardVersions(const ChunkManager* cachedChunkManager,
                                       const Shard* cachedPrimary,
-                                      const map<string, ChunkVersion>& remoteShardVersions) {
+                                      const map<ShardId, ChunkVersion>& remoteShardVersions) {
     CompareResult finalResult = CompareResult_GTE;
 
-    for (map<string, ChunkVersion>::const_iterator it = remoteShardVersions.begin();
+    for (map<ShardId, ChunkVersion>::const_iterator it = remoteShardVersions.begin();
          it != remoteShardVersions.end();
          ++it) {
         // Get the remote and cached version for the next shard
-        const string& shardName = it->first;
+        const ShardId& shardName = it->first;
         const ChunkVersion& remoteShardVersion = it->second;
 
         ChunkVersion cachedShardVersion;
 
         try {
             // Throws b/c shard constructor throws
-            cachedShardVersion = getShardVersion(shardName, cachedChunkManager, cachedPrimary);
+            cachedShardVersion =
+                getShardVersion(shardName.toString(), cachedChunkManager, cachedPrimary);
         } catch (const DBException& ex) {
             warning() << "could not lookup shard " << shardName
                       << " in local cache, shard metadata may have changed"
@@ -226,10 +247,10 @@ CompareResult compareAllShardVersions(const ChunkManager* cachedChunkManager,
 /**
  * Whether or not the manager/primary pair is different from the other manager/primary pair.
  */
-bool isMetadataDifferent(const ChunkManagerPtr& managerA,
-                         const ShardPtr& primaryA,
-                         const ChunkManagerPtr& managerB,
-                         const ShardPtr& primaryB) {
+bool isMetadataDifferent(const shared_ptr<ChunkManager>& managerA,
+                         const shared_ptr<Shard>& primaryA,
+                         const shared_ptr<ChunkManager>& managerB,
+                         const shared_ptr<Shard>& primaryB) {
     if ((managerA && !managerB) || (!managerA && managerB) || (primaryA && !primaryB) ||
         (!primaryA && primaryB))
         return true;
@@ -246,10 +267,10 @@ bool isMetadataDifferent(const ChunkManagerPtr& managerA,
 * Whether or not the manager/primary pair was changed or refreshed from a previous version
 * of the metadata.
 */
-bool wasMetadataRefreshed(const ChunkManagerPtr& managerA,
-                          const ShardPtr& primaryA,
-                          const ChunkManagerPtr& managerB,
-                          const ShardPtr& primaryB) {
+bool wasMetadataRefreshed(const shared_ptr<ChunkManager>& managerA,
+                          const shared_ptr<Shard>& primaryA,
+                          const shared_ptr<ChunkManager>& managerB,
+                          const shared_ptr<Shard>& primaryB) {
     if (isMetadataDifferent(managerA, primaryA, managerB, primaryB))
         return true;
 
@@ -268,13 +289,13 @@ ChunkManagerTargeter::ChunkManagerTargeter(const NamespaceString& nss, TargeterS
 
 
 Status ChunkManagerTargeter::init(OperationContext* txn) {
-    auto status = grid.implicitCreateDb(txn, _nss.db().toString());
-    if (!status.isOK()) {
-        return status.getStatus();
+    auto dbStatus = ScopedShardDatabase::getOrCreate(txn, _nss.db());
+    if (!dbStatus.isOK()) {
+        return dbStatus.getStatus();
     }
 
-    shared_ptr<DBConfig> config = status.getValue();
-    config->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
+    auto scopedDb = std::move(dbStatus.getValue());
+    scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
 
     return Status::OK();
 }
@@ -313,7 +334,7 @@ Status ChunkManagerTargeter::targetInsert(OperationContext* txn,
 
     // Target the shard key or database primary
     if (!shardKey.isEmpty()) {
-        return targetShardKey(txn, shardKey, doc.objsize(), endpoint);
+        return targetShardKey(txn, shardKey, CollationSpec::kSimpleSpec, doc.objsize(), endpoint);
     } else {
         if (!_primary) {
             return Status(ErrorCodes::NamespaceNotFound,
@@ -370,7 +391,7 @@ Status ChunkManagerTargeter::targetUpdate(OperationContext* txn,
         if (updateType == UpdateType_OpStyle) {
             // Target using the query
             StatusWith<BSONObj> status =
-                _manager->getShardKeyPattern().extractShardKeyFromQuery(query);
+                _manager->getShardKeyPattern().extractShardKeyFromQuery(txn, query);
 
             // Bad query
             if (!status.isOK())
@@ -382,46 +403,70 @@ Status ChunkManagerTargeter::targetUpdate(OperationContext* txn,
             shardKey = _manager->getShardKeyPattern().extractShardKeyFromDoc(updateExpr);
         }
 
-        //
-        // Extra sharded update validation
-        //
-
+        // Check shard key size on upsert.
         if (updateDoc.getUpsert()) {
-            // Sharded upserts *always* need to be exactly targeted by shard key
-            if (shardKey.isEmpty()) {
-                return Status(ErrorCodes::ShardKeyNotFound,
-                              stream() << "upsert " << updateDoc.toBSON()
-                                       << " does not contain shard key for pattern "
-                                       << _manager->getShardKeyPattern().toString());
-            }
-
-            // Also check shard key size on upsert
             Status status = ShardKeyPattern::checkShardKeySize(shardKey);
             if (!status.isOK())
                 return status;
         }
-
-        // Validate that single (non-multi) sharded updates are targeted by shard key or _id
-        if (!updateDoc.getMulti() && shardKey.isEmpty() && !isExactIdQuery(updateDoc.getQuery())) {
-            return Status(ErrorCodes::ShardKeyNotFound,
-                          stream() << "update " << updateDoc.toBSON()
-                                   << " does not contain _id or shard key for pattern "
-                                   << _manager->getShardKeyPattern().toString());
-        }
     }
+
+    const BSONObj collation = updateDoc.isCollationSet() ? updateDoc.getCollation() : BSONObj();
 
     // Target the shard key, query, or replacement doc
     if (!shardKey.isEmpty()) {
         // We can't rely on our query targeting to be exact
         ShardEndpoint* endpoint = NULL;
-        Status result =
-            targetShardKey(txn, shardKey, (query.objsize() + updateExpr.objsize()), &endpoint);
-        endpoints->push_back(endpoint);
-        return result;
-    } else if (updateType == UpdateType_OpStyle) {
-        return targetQuery(txn, query, endpoints);
+        Status result = targetShardKey(
+            txn, shardKey, collation, (query.objsize() + updateExpr.objsize()), &endpoint);
+        if (result.isOK()) {
+            endpoints->push_back(endpoint);
+            return result;
+        }
+    }
+
+    // We failed to target a single shard.
+
+    // Upserts are required to target a single shard.
+    if (_manager && updateDoc.getUpsert()) {
+        return Status(ErrorCodes::ShardKeyNotFound,
+                      str::stream() << "An upsert on a sharded collection must contain the shard "
+                                       "key and have the simple collation. Update request: "
+                                    << updateDoc.toBSON()
+                                    << ", shard key pattern: "
+                                    << _manager->getShardKeyPattern().toString());
+    }
+
+    // Parse update query.
+    auto qr = stdx::make_unique<QueryRequest>(getNS());
+    qr->setFilter(updateDoc.getQuery());
+    if (!collation.isEmpty()) {
+        qr->setCollation(collation);
+    }
+    auto cq = CanonicalQuery::canonicalize(txn, std::move(qr), ExtensionsCallbackNoop());
+    if (!cq.isOK()) {
+        return Status(cq.getStatus().code(),
+                      str::stream() << "Could not parse update query " << updateDoc.getQuery()
+                                    << causedBy(cq.getStatus()));
+    }
+
+    // Single (non-multi) updates must target a single shard or be exact-ID.
+    if (_manager && !updateDoc.getMulti() && !isExactIdQuery(txn, *cq.getValue(), _manager.get())) {
+        return Status(ErrorCodes::ShardKeyNotFound,
+                      str::stream()
+                          << "A single update on a sharded collection must contain an exact "
+                             "match on _id (and have the collection default collation) or "
+                             "contain the shard key (and have the simple collation). Update "
+                             "request: "
+                          << updateDoc.toBSON()
+                          << ", shard key pattern: "
+                          << _manager->getShardKeyPattern().toString());
+    }
+
+    if (updateType == UpdateType_OpStyle) {
+        return targetQuery(txn, query, collation, endpoints);
     } else {
-        return targetDoc(txn, updateExpr, endpoints);
+        return targetDoc(txn, updateExpr, collation, endpoints);
     }
 }
 
@@ -439,46 +484,73 @@ Status ChunkManagerTargeter::targetDelete(OperationContext* txn,
 
         // Get the shard key
         StatusWith<BSONObj> status =
-            _manager->getShardKeyPattern().extractShardKeyFromQuery(deleteDoc.getQuery());
+            _manager->getShardKeyPattern().extractShardKeyFromQuery(txn, deleteDoc.getQuery());
 
         // Bad query
         if (!status.isOK())
             return status.getStatus();
 
         shardKey = status.getValue();
-
-        // Validate that single (limit-1) sharded deletes are targeted by shard key or _id
-        if (deleteDoc.getLimit() == 1 && shardKey.isEmpty() &&
-            !isExactIdQuery(deleteDoc.getQuery())) {
-            return Status(ErrorCodes::ShardKeyNotFound,
-                          stream() << "delete " << deleteDoc.toBSON()
-                                   << " does not contain _id or shard key for pattern "
-                                   << _manager->getShardKeyPattern().toString());
-        }
     }
+
+    const BSONObj collation = deleteDoc.isCollationSet() ? deleteDoc.getCollation() : BSONObj();
+
 
     // Target the shard key or delete query
     if (!shardKey.isEmpty()) {
         // We can't rely on our query targeting to be exact
         ShardEndpoint* endpoint = NULL;
-        Status result = targetShardKey(txn, shardKey, 0, &endpoint);
-        endpoints->push_back(endpoint);
-        return result;
-    } else {
-        return targetQuery(txn, deleteDoc.getQuery(), endpoints);
+        Status result = targetShardKey(txn, shardKey, collation, 0, &endpoint);
+        if (result.isOK()) {
+            endpoints->push_back(endpoint);
+            return result;
+        }
     }
+
+    // We failed to target a single shard.
+
+    // Parse delete query.
+    auto qr = stdx::make_unique<QueryRequest>(getNS());
+    qr->setFilter(deleteDoc.getQuery());
+    if (!collation.isEmpty()) {
+        qr->setCollation(collation);
+    }
+    auto cq = CanonicalQuery::canonicalize(txn, std::move(qr), ExtensionsCallbackNoop());
+    if (!cq.isOK()) {
+        return Status(cq.getStatus().code(),
+                      str::stream() << "Could not parse delete query " << deleteDoc.getQuery()
+                                    << causedBy(cq.getStatus()));
+    }
+
+    // Single deletes must target a single shard or be exact-ID.
+    if (_manager && deleteDoc.getLimit() == 1 &&
+        !isExactIdQuery(txn, *cq.getValue(), _manager.get())) {
+        return Status(ErrorCodes::ShardKeyNotFound,
+                      str::stream()
+                          << "A single delete on a sharded collection must contain an exact "
+                             "match on _id (and have the collection default collation) or "
+                             "contain the shard key (and have the simple collation). Delete "
+                             "request: "
+                          << deleteDoc.toBSON()
+                          << ", shard key pattern: "
+                          << _manager->getShardKeyPattern().toString());
+    }
+
+    return targetQuery(txn, deleteDoc.getQuery(), collation, endpoints);
 }
 
 Status ChunkManagerTargeter::targetDoc(OperationContext* txn,
                                        const BSONObj& doc,
+                                       const BSONObj& collation,
                                        vector<ShardEndpoint*>* endpoints) const {
     // NOTE: This is weird and fragile, but it's the way our language works right now -
     // documents are either A) invalid or B) valid equality queries over themselves.
-    return targetQuery(txn, doc, endpoints);
+    return targetQuery(txn, doc, collation, endpoints);
 }
 
 Status ChunkManagerTargeter::targetQuery(OperationContext* txn,
                                          const BSONObj& query,
+                                         const BSONObj& collation,
                                          vector<ShardEndpoint*>* endpoints) const {
     if (!_primary && !_manager) {
         return Status(ErrorCodes::NamespaceNotFound,
@@ -489,7 +561,7 @@ Status ChunkManagerTargeter::targetQuery(OperationContext* txn,
     set<ShardId> shardIds;
     if (_manager) {
         try {
-            _manager->getShardIdsForQuery(txn, query, &shardIds);
+            _manager->getShardIdsForQuery(txn, query, collation, &shardIds);
         } catch (const DBException& ex) {
             return ex.toStatus();
         }
@@ -507,19 +579,24 @@ Status ChunkManagerTargeter::targetQuery(OperationContext* txn,
 
 Status ChunkManagerTargeter::targetShardKey(OperationContext* txn,
                                             const BSONObj& shardKey,
+                                            const BSONObj& collation,
                                             long long estDataSize,
                                             ShardEndpoint** endpoint) const {
     invariant(NULL != _manager);
 
-    ChunkPtr chunk = _manager->findIntersectingChunk(txn, shardKey);
+    auto chunk = _manager->findIntersectingChunk(txn, shardKey, collation);
+    if (!chunk.isOK()) {
+        return chunk.getStatus();
+    }
 
     // Track autosplit stats for sharded collections
     // Note: this is only best effort accounting and is not accurate.
     if (estDataSize > 0) {
-        _stats->chunkSizeDelta[chunk->getMin()] += estDataSize;
+        _stats->chunkSizeDelta[chunk.getValue()->getMin()] += estDataSize;
     }
 
-    *endpoint = new ShardEndpoint(chunk->getShardId(), _manager->getVersion(chunk->getShardId()));
+    *endpoint = new ShardEndpoint(chunk.getValue()->getShardId(),
+                                  _manager->getVersion(chunk.getValue()->getShardId()));
 
     return Status::OK();
 }
@@ -550,7 +627,8 @@ Status ChunkManagerTargeter::targetAllShards(vector<ShardEndpoint*>* endpoints) 
     if (!_primary && !_manager) {
         return Status(ErrorCodes::NamespaceNotFound,
                       str::stream() << "could not target every shard with versions for "
-                                    << getNS().ns() << "; metadata not found");
+                                    << getNS().ns()
+                                    << "; metadata not found");
     }
 
     vector<ShardId> shardIds;
@@ -572,7 +650,8 @@ void ChunkManagerTargeter::noteStaleResponse(const ShardEndpoint& endpoint,
     if (staleInfo["vWanted"].eoo()) {
         // If we don't have a vWanted sent, assume the version is higher than our current
         // version.
-        remoteShardVersion = getShardVersion(endpoint.shardName, _manager.get(), _primary.get());
+        remoteShardVersion =
+            getShardVersion(endpoint.shardName.toString(), _manager.get(), _primary.get());
         remoteShardVersion.incMajor();
     } else {
         remoteShardVersion = ChunkVersion::fromBSON(staleInfo, "vWanted");
@@ -580,7 +659,7 @@ void ChunkManagerTargeter::noteStaleResponse(const ShardEndpoint& endpoint,
 
     ShardVersionMap::iterator it = _remoteShardVersions.find(endpoint.shardName);
     if (it == _remoteShardVersions.end()) {
-        _remoteShardVersions.insert(make_pair(endpoint.shardName, remoteShardVersion));
+        _remoteShardVersions.insert(std::make_pair(endpoint.shardName, remoteShardVersion));
     } else {
         ChunkVersion& previouslyNotedVersion = it->second;
         if (previouslyNotedVersion.hasEqualEpoch(remoteShardVersion)) {
@@ -620,16 +699,16 @@ Status ChunkManagerTargeter::refreshIfNeeded(OperationContext* txn, bool* wasCha
     // Get the latest metadata information from the cache if there were issues
     //
 
-    ChunkManagerPtr lastManager = _manager;
-    ShardPtr lastPrimary = _primary;
+    shared_ptr<ChunkManager> lastManager = _manager;
+    shared_ptr<Shard> lastPrimary = _primary;
 
-    auto status = grid.implicitCreateDb(txn, _nss.db().toString());
-    if (!status.isOK()) {
-        return status.getStatus();
+    auto dbStatus = ScopedShardDatabase::getOrCreate(txn, _nss.db());
+    if (!dbStatus.isOK()) {
+        return dbStatus.getStatus();
     }
 
-    shared_ptr<DBConfig> config = status.getValue();
-    config->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
+    auto scopedDb = std::move(dbStatus.getValue());
+    scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
 
     // We now have the latest metadata from the cache.
 
@@ -684,12 +763,12 @@ Status ChunkManagerTargeter::refreshIfNeeded(OperationContext* txn, bool* wasCha
 }
 
 Status ChunkManagerTargeter::refreshNow(OperationContext* txn, RefreshType refreshType) {
-    auto status = grid.implicitCreateDb(txn, _nss.db().toString());
-    if (!status.isOK()) {
-        return status.getStatus();
+    auto dbStatus = ScopedShardDatabase::getOrCreate(txn, _nss.db());
+    if (!dbStatus.isOK()) {
+        return dbStatus.getStatus();
     }
 
-    shared_ptr<DBConfig> config = status.getValue();
+    auto scopedDb = std::move(dbStatus.getValue());
 
     // Try not to spam the configs
     refreshBackoff();
@@ -697,23 +776,23 @@ Status ChunkManagerTargeter::refreshNow(OperationContext* txn, RefreshType refre
     // TODO: Improve synchronization and make more explicit
     if (refreshType == RefreshType_RefreshChunkManager) {
         try {
-            // Forces a remote check of the collection info, synchronization between threads
-            // happens internally.
-            config->getChunkManagerIfExists(txn, _nss.ns(), true);
-        } catch (const DBException& ex) {
-            return Status(ErrorCodes::UnknownError, ex.toString());
-        }
-        config->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
-    } else if (refreshType == RefreshType_ReloadDatabase) {
-        try {
-            // Dumps the db info, reloads it all, synchronization between threads happens
-            // internally.
-            config->reload(txn);
+            // Forces a remote check of the collection info, synchronization between threads happens
+            // internally
+            scopedDb.db()->getChunkManagerIfExists(txn, _nss.ns(), true);
         } catch (const DBException& ex) {
             return Status(ErrorCodes::UnknownError, ex.toString());
         }
 
-        config->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
+        scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
+    } else if (refreshType == RefreshType_ReloadDatabase) {
+        try {
+            // Dumps the db info, reloads it all, synchronization between threads happens internally
+            scopedDb.db()->reload(txn);
+        } catch (const DBException& ex) {
+            return Status(ErrorCodes::UnknownError, ex.toString());
+        }
+
+        scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
     }
 
     return Status::OK();

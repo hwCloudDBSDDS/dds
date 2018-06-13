@@ -31,9 +31,11 @@
 #pragma once
 
 #include <algorithm>
+#include <iosfwd>
 #include <string>
 
 #include "mongo/base/string_data.h"
+#include "mongo/platform/hash_namespace.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -44,9 +46,8 @@ const size_t MaxDatabaseNameLen = 128;  // max str len for the db name, includin
 
 /** @return true if a client can modify this namespace even though it is under ".system."
     For example <dbname>.system.users is ok for regular clients to update.
-    @param write used when .system.js
 */
-bool legalClientSystemNS(StringData ns, bool write);
+bool legalClientSystemNS(StringData ns);
 
 /* e.g.
    NamespaceString ns("acme.orders");
@@ -55,6 +56,15 @@ bool legalClientSystemNS(StringData ns, bool write);
 class NamespaceString {
 public:
     // Reserved system namespaces
+
+    // Namespace for the admin database
+    static constexpr StringData kAdminDb = "admin"_sd;
+
+    // Namespace for the local database
+    static constexpr StringData kLocalDb = "local"_sd;
+
+    // Name for the system views collection
+    static constexpr StringData kSystemDotViewsCollectionName = "system.views"_sd;
 
     // Namespace for storing configuration data, which needs to be replicated if the server is
     // running as a replica set. Documents in this collection should represent some configuration
@@ -80,6 +90,18 @@ public:
     NamespaceString(StringData dbName, StringData collectionName);
 
     /**
+     * Contructs a NamespaceString representing a listCollections namespace. The format for this
+     * namespace is "<dbName>.$cmd.listCollections".
+     */
+    static NamespaceString makeListCollectionsNSS(StringData dbName);
+
+    /**
+     * Contructs a NamespaceString representing a listIndexes namespace. The format for this
+     * namespace is "<dbName>.$cmd.listIndexes.<collectionName>".
+     */
+    static NamespaceString makeListIndexesNSS(StringData dbName, StringData collectionName);
+
+    /**
      * Note that these values are derived from the mmap_v1 implementation and that
      * is the only reason they are constrained as such.
      */
@@ -94,6 +116,16 @@ public:
         // Maximum allowed length of fully qualified namespace name of any real collection.
         // Does not include NUL so it can be directly compared to std::string lengths.
         MaxNsCollectionLen = MaxNsLen - 7 /*strlen(".$extra")*/,
+    };
+
+    /**
+     * DollarInDbNameBehavior::allow is deprecated.
+     * Please use DollarInDbNameBehavior::disallow and check explicitly for any DB names that must
+     * contain a $.
+     */
+    enum class DollarInDbNameBehavior {
+        Disallow,
+        Allow,  // Deprecated
     };
 
     StringData db() const;
@@ -124,11 +156,17 @@ public:
     bool isSystem() const {
         return coll().startsWith("system.");
     }
+    bool isLocal() const {
+        return db() == "local";
+    }
     bool isSystemDotIndexes() const {
         return coll() == "system.indexes";
     }
     bool isSystemDotProfile() const {
         return coll() == "system.profile";
+    }
+    bool isSystemDotViews() const {
+        return coll() == kSystemDotViewsCollectionName;
     }
     bool isConfigDB() const {
         return db() == "config";
@@ -151,6 +189,12 @@ public:
     bool isNormal() const {
         return normal(_ns);
     }
+
+    // Check if the NamespaceString references a special collection that cannot
+    // be used for generic data storage.
+    bool isVirtualized() const {
+        return virtualized(_ns);
+    }
     bool isListCollectionsCursorNS() const;
     bool isListIndexesCursorNS() const;
 
@@ -165,7 +209,7 @@ public:
      * valid.
      */
     bool isValid() const {
-        return validDBName(db()) && !coll().empty();
+        return validDBName(db(), DollarInDbNameBehavior::Allow) && !coll().empty();
     }
 
     bool operator==(const std::string& nsIn) const {
@@ -217,15 +261,19 @@ public:
 
     static bool special(StringData ns);
 
+    // Check if `ns` references a special collection that cannot be used for
+    // generic data storage.
+    static bool virtualized(StringData ns);
+
     /**
      * Returns true for DBs with special meaning to mongodb.
      */
-    static bool internalDb(StringData ns) {
-        if (ns == "admin")
+    static bool internalDb(StringData db) {
+        if (db == "admin")
             return true;
-        if (ns == "local")
+        if (db == "local")
             return true;
-        if (ns == "config")
+        if (db == "config")
             return true;
         return false;
     }
@@ -242,9 +290,12 @@ public:
      *      foo"bar
      *
      * @param db - a possible database name
+     * @param DollarInDbNameBehavior - please do not change the default value. DB names that must
+     *                                 contain a $ should be checked explicitly.
      * @return if db is an allowed database name
      */
-    static bool validDBName(StringData dbin);
+    static bool validDBName(StringData db,
+                            DollarInDbNameBehavior behavior = DollarInDbNameBehavior::Disallow);
 
     /**
      * Takes a fully qualified namespace (ie dbname.collectionName), and returns true if
@@ -277,6 +328,8 @@ private:
     std::string _ns;
     size_t _dotIndex;
 };
+
+std::ostream& operator<<(std::ostream& stream, const NamespaceString& nss);
 
 // "database.a.b.c" -> "database"
 inline StringData nsToDatabaseSubstring(StringData ns) {
@@ -334,31 +387,20 @@ inline bool nsIsDbOnly(StringData ns) {
 }
 
 /**
- * NamespaceDBHash and NamespaceDBEquals allow you to do something like
- * unordered_map<std::string,int,NamespaceDBHash,NamespaceDBEquals>
- * and use the full namespace for the string
- * but comparisons are done only on the db piece
- */
-
-/**
  * this can change, do not store on disk
  */
 int nsDBHash(const std::string& ns);
 
-bool nsDBEquals(const std::string& a, const std::string& b);
-
-struct NamespaceDBHash {
-    int operator()(const std::string& ns) const {
-        return nsDBHash(ns);
-    }
-};
-
-struct NamespaceDBEquals {
-    bool operator()(const std::string& a, const std::string& b) const {
-        return nsDBEquals(a, b);
-    }
-};
-
 }  // namespace mongo
 
 #include "mongo/db/namespace_string-inl.h"
+
+MONGO_HASH_NAMESPACE_START
+template <>
+struct hash<mongo::NamespaceString> {
+    size_t operator()(const mongo::NamespaceString& nss) const {
+        mongo::NamespaceString::Hasher hasher;
+        return hasher(nss);
+    }
+};
+MONGO_HASH_NAMESPACE_END

@@ -14,7 +14,8 @@ load('./jstests/multiVersion/libs/verify_collection_data.js');
 //     'dumpDir' : dumpDir,
 //     'testDbpath' : testDbpath,
 //     'dumpType' : "mongos",
-//     'restoreType' : "mongod" // "mongos" also supported
+//     'restoreType' : "mongod", // "mongos" also supported
+//     'storageEngine': [ "mmapv1" ]
 // }
 //
 // The first four fields are which versions of the various binaries to use in the test.
@@ -37,7 +38,8 @@ function multiVersionDumpRestoreTest(configObj) {
         'dumpDir',
         'testDbpath',
         'dumpType',
-        'restoreType'
+        'restoreType',
+        'storageEngine'
     ];
 
     var i;
@@ -51,22 +53,23 @@ function multiVersionDumpRestoreTest(configObj) {
     resetDbpath(configObj.testDbpath);
     if (configObj.dumpType === "mongos") {
         var shardingTestConfig = {
-            sync: true,  // Mixed version clusters can't use replsets for config servers
             name: testBaseName + "_sharded_source",
             mongos: [{binVersion: configObj.serverSourceVersion}],
             shards: [{
                 binVersion: configObj.serverSourceVersion,
-                setParameter: "textSearchEnabled=true"
+                storageEngine: configObj.storageEngine
             }],
-            config: [{binVersion: configObj.serverSourceVersion}]
+            config: [{binVersion: configObj.serverSourceVersion}],
+            // TODO: SERVER-24163 remove after v3.4
+            waitForCSRSSecondaries: false
         };
         var shardingTest = new ShardingTest(shardingTestConfig);
         var serverSource = shardingTest.s;
     } else {
         var serverSource = MongoRunner.runMongod({
             binVersion: configObj.serverSourceVersion,
-            setParameter: "textSearchEnabled=true",
-            dbpath: configObj.testDbpath
+            dbpath: configObj.testDbpath,
+            storageEngine: configObj.storageEngine
         });
     }
     var sourceDB = serverSource.getDB(testBaseName);
@@ -88,57 +91,52 @@ function multiVersionDumpRestoreTest(configObj) {
 
     // Dump using the specified version of mongodump from the running mongod or mongos instance.
     if (configObj.dumpType === "mongod") {
-        MongoRunner.runMongoTool("mongodump",
-                                 {
-                                   out: configObj.dumpDir,
-                                   binVersion: configObj.mongoDumpVersion,
-                                   host: serverSource.host,
-                                   db: testBaseName
-                                 });
+        MongoRunner.runMongoTool("mongodump", {
+            out: configObj.dumpDir,
+            binVersion: configObj.mongoDumpVersion,
+            host: serverSource.host,
+            db: testBaseName
+        });
         MongoRunner.stopMongod(serverSource.port);
     } else { /* "mongos" */
-        MongoRunner.runMongoTool("mongodump",
-                                 {
-                                   out: configObj.dumpDir,
-                                   binVersion: configObj.mongoDumpVersion,
-                                   host: serverSource.host,
-                                   db: testBaseName
-                                 });
+        MongoRunner.runMongoTool("mongodump", {
+            out: configObj.dumpDir,
+            binVersion: configObj.mongoDumpVersion,
+            host: serverSource.host,
+            db: testBaseName
+        });
         shardingTest.stop();
     }
 
     // Restore using the specified version of mongorestore
     if (configObj.restoreType === "mongod") {
         var serverDest = MongoRunner.runMongod(
-            {binVersion: configObj.serverDestVersion, setParameter: "textSearchEnabled=true"});
+            {binVersion: configObj.serverDestVersion, storageEngine: configObj.storageEngine});
 
-        MongoRunner.runMongoTool("mongorestore",
-                                 {
-                                   dir: configObj.dumpDir + "/" + testBaseName,
-                                   binVersion: configObj.mongoRestoreVersion,
-                                   host: serverDest.host,
-                                   db: testBaseName
-                                 });
+        MongoRunner.runMongoTool("mongorestore", {
+            dir: configObj.dumpDir + "/" + testBaseName,
+            binVersion: configObj.mongoRestoreVersion,
+            host: serverDest.host,
+            db: testBaseName
+        });
     } else { /* "mongos" */
         var shardingTestConfig = {
-            sync: true,  // Mixed version clusters can't use replsets for config servers
             name: testBaseName + "_sharded_dest",
             mongos: [{binVersion: configObj.serverDestVersion}],
-            shards: [{
-                binVersion: configObj.serverDestVersion,
-                setParameter: "textSearchEnabled=true"
-            }],
-            config: [{binVersion: configObj.serverDestVersion}]
+            shards:
+                [{binVersion: configObj.serverDestVersion, storageEngine: configObj.storageEngine}],
+            config: [{binVersion: configObj.serverDestVersion}],
+            // TODO: SERVER-24163 remove after v3.4
+            waitForCSRSSecondaries: false
         };
         var shardingTest = new ShardingTest(shardingTestConfig);
         serverDest = shardingTest.s;
-        MongoRunner.runMongoTool("mongorestore",
-                                 {
-                                   dir: configObj.dumpDir + "/" + testBaseName,
-                                   binVersion: configObj.mongoRestoreVersion,
-                                   host: serverDest.host,
-                                   db: testBaseName
-                                 });
+        MongoRunner.runMongoTool("mongorestore", {
+            dir: configObj.dumpDir + "/" + testBaseName,
+            binVersion: configObj.mongoRestoreVersion,
+            host: serverDest.host,
+            db: testBaseName
+        });
     }
 
     var destDB = serverDest.getDB(testBaseName);
@@ -153,9 +151,16 @@ function multiVersionDumpRestoreTest(configObj) {
     assert.soon("destColl.findOne()", "no data after sleep");
     assert.soon("destCollCapped.findOne()", "no data after sleep");
 
+    let destDbVersion = destDB.version();
+
+    // The mongorestore tool removes the "v" field when creating indexes from a dump. This allows
+    // indexes to be built with the latest supported index version. We therefore remove the "v"
+    // field when comparing whether the indexes we built are equivalent.
+    const options = {indexSpecFieldsToSkip: ["v"]};
+
     // Validate that our collections were properly restored
-    assert(collValid.validateCollectionData(destColl));
-    assert(cappedCollValid.validateCollectionData(destCollCapped));
+    assert(collValid.validateCollectionData(destColl, destDbVersion, options));
+    assert(cappedCollValid.validateCollectionData(destCollCapped, destDbVersion, options));
 
     if (configObj.restoreType === "mongos") {
         shardingTest.stop();
@@ -244,7 +249,8 @@ function getPermutationIterator(permsObj) {
 //     'dumpDir' : [ dumpDir ],
 //     'testDbpath' : [ testDbpath ],
 //     'dumpType' : [ "mongod", "mongos" ],
-//     'restoreType' : [ "mongod", "mongos" ]
+//     'restoreType' : [ "mongod", "mongos" ],
+//     'storageEngine': [ "mmapv1" ]
 // }
 //
 // This function will run a test for each possible combination of the parameters.  See comments on

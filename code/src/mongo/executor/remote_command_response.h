@@ -28,9 +28,12 @@
 
 #pragma once
 
-#include <string>
+#include <boost/optional.hpp>
+#include <iosfwd>
 #include <memory>
+#include <string>
 
+#include "mongo/base/status.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/util/net/message.h"
 #include "mongo/util/time_support.h"
@@ -50,27 +53,39 @@ namespace executor {
 struct RemoteCommandResponse {
     RemoteCommandResponse() = default;
 
-    RemoteCommandResponse(BSONObj dataObj, BSONObj metadataObj, Milliseconds millis)
-        : data(std::move(dataObj)), metadata(std::move(metadataObj)), elapsedMillis(millis) {}
+    RemoteCommandResponse(ErrorCodes::Error code, std::string reason);
 
-    RemoteCommandResponse(Message message,
+    RemoteCommandResponse(ErrorCodes::Error code, std::string reason, Milliseconds millis);
+
+    RemoteCommandResponse(Status s);
+
+    RemoteCommandResponse(Status s, Milliseconds millis);
+
+    RemoteCommandResponse(BSONObj dataObj, BSONObj metadataObj, Milliseconds millis);
+
+    RemoteCommandResponse(Message messageArg,
                           BSONObj dataObj,
                           BSONObj metadataObj,
-                          Milliseconds millis)
-        : message(std::make_shared<const Message>(std::move(message))),
-          data(std::move(dataObj)),
-          metadata(std::move(metadataObj)),
-          elapsedMillis(millis) {}
+                          Milliseconds millis);
 
     RemoteCommandResponse(const rpc::ReplyInterface& rpcReply, Milliseconds millis);
 
+    bool isOK() const;
+
     std::string toString() const;
 
+    bool operator==(const RemoteCommandResponse& rhs) const;
+    bool operator!=(const RemoteCommandResponse& rhs) const;
+
     std::shared_ptr<const Message> message;  // May be null.
-    BSONObj data;                            // Either owned or points into message.
-    BSONObj metadata;                        // Either owned or points into message.
-    Milliseconds elapsedMillis = {};
+    BSONObj data;                            // Always owned. May point into message.
+    BSONObj metadata;                        // Always owned. May point into message.
+    boost::optional<Milliseconds> elapsedMillis;
+    Status status = Status::OK();
 };
 
 }  // namespace executor
+
+std::ostream& operator<<(std::ostream& os, const executor::RemoteCommandResponse& request);
+
 }  // namespace mongo

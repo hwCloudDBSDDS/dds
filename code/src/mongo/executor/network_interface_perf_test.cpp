@@ -40,7 +40,6 @@
 #include "mongo/executor/async_timer_asio.h"
 #include "mongo/executor/network_interface_asio.h"
 #include "mongo/executor/network_interface_asio_test_utils.h"
-#include "mongo/executor/network_interface_impl.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/integration_test.h"
@@ -76,8 +75,8 @@ int timeNetworkTestMillis(std::size_t operations, NetworkInterface* net) {
 
     const auto bsonObjPing = BSON("ping" << 1);
 
-    const auto callback = [&](StatusWith<RemoteCommandResponse> resp) {
-        uassertStatusOK(resp);
+    const auto callback = [&](RemoteCommandResponse resp) {
+        uassertStatusOK(resp.status);
         if (--remainingOps) {
             return func();
         }
@@ -86,9 +85,9 @@ int timeNetworkTestMillis(std::size_t operations, NetworkInterface* net) {
     };
 
     func = [&]() {
-        net->startCommand(makeCallbackHandle(),
-                          {server, "admin", bsonObjPing, bsonObjPing, Milliseconds(-1)},
-                          callback);
+        RemoteCommandRequest request{
+            server, "admin", bsonObjPing, bsonObjPing, nullptr, Milliseconds(-1)};
+        net->startCommand(makeCallbackHandle(), request, callback);
     };
 
     func();
@@ -107,14 +106,7 @@ TEST(NetworkInterfaceASIO, SerialPerf) {
 
     int duration = timeNetworkTestMillis(numOperations, &netAsio);
     int result = numOperations * 1000 / duration;
-    log() << "THROUGHPUT asio ping ops/s: " << result << std::endl;
-}
-
-TEST(NetworkInterfaceImpl, SerialPerf) {
-    NetworkInterfaceImpl netImpl{};
-    int duration = timeNetworkTestMillis(numOperations, &netImpl);
-    int result = numOperations * 1000 / duration;
-    log() << "THROUGHPUT impl ping ops/s: " << result << std::endl;
+    log() << "THROUGHPUT asio ping ops/s: " << result;
 }
 
 }  // namespace

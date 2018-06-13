@@ -32,6 +32,8 @@
 
 #include "mongo/executor/network_interface_asio.h"
 
+#include <asio/system_timer.hpp>
+
 #include <utility>
 
 #include "mongo/executor/async_stream_factory.h"
@@ -48,6 +50,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/net/sock.h"
 #include "mongo/util/net/ssl_manager.h"
+#include "mongo/util/table_formatter.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -59,24 +62,6 @@ const std::size_t kIOServiceWorkers = 1;
 
 NetworkInterfaceASIO::Options::Options() = default;
 
-#if defined(_MSC_VER) && _MSC_VER < 1900
-NetworkInterfaceASIO::Options::Options(Options&& other)
-    : connectionPoolOptions(std::move(other.connectionPoolOptions)),
-      timerFactory(std::move(other.timerFactory)),
-      networkConnectionHook(std::move(other.networkConnectionHook)),
-      streamFactory(std::move(other.streamFactory)),
-      metadataHook(std::move(other.metadataHook)) {}
-
-NetworkInterfaceASIO::Options& NetworkInterfaceASIO::Options::operator=(Options&& other) {
-    connectionPoolOptions = std::move(other.connectionPoolOptions);
-    timerFactory = std::move(other.timerFactory);
-    networkConnectionHook = std::move(other.networkConnectionHook);
-    streamFactory = std::move(other.streamFactory);
-    metadataHook = std::move(other.metadataHook);
-    return *this;
-}
-#endif
-
 NetworkInterfaceASIO::NetworkInterfaceASIO(Options options)
     : _options(std::move(options)),
       _io_service(),
@@ -86,15 +71,72 @@ NetworkInterfaceASIO::NetworkInterfaceASIO(Options options)
       _timerFactory(std::move(_options.timerFactory)),
       _streamFactory(std::move(_options.streamFactory)),
       _connectionPool(stdx::make_unique<connection_pool_asio::ASIOImpl>(this),
+                      _options.instanceName,
                       _options.connectionPoolOptions),
       _isExecutorRunnable(false),
-      _strand(_io_service) {}
+      _strand(_io_service) {
+    invariant(_timerFactory);
+}
 
 std::string NetworkInterfaceASIO::getDiagnosticString() {
+    stdx::lock_guard<stdx::mutex> lk(_inProgressMutex);
+    return _getDiagnosticString_inlock(nullptr);
+}
+
+std::string NetworkInterfaceASIO::_getDiagnosticString_inlock(AsyncOp* currentOp) {
     str::stream output;
-    output << "NetworkInterfaceASIO";
-    output << " inShutdown: " << inShutdown();
+    std::vector<TableRow> rows;
+
+    output << "\nNetworkInterfaceASIO Operations' Diagnostic:\n";
+    rows.push_back({"Operation:", "Count:"});
+    rows.push_back({"Connecting", std::to_string(_inGetConnection.size())});
+    rows.push_back({"In Progress", std::to_string(_inProgress.size())});
+    rows.push_back({"Succeeded", std::to_string(getNumSucceededOps())});
+    rows.push_back({"Canceled", std::to_string(getNumCanceledOps())});
+    rows.push_back({"Failed", std::to_string(getNumFailedOps())});
+    rows.push_back({"Timed Out", std::to_string(getNumTimedOutOps())});
+    output << toTable(rows);
+
+    if (_inProgress.size() > 0) {
+        rows.clear();
+        rows.push_back(AsyncOp::kFieldLabels);
+
+        // Push AsyncOps
+        for (auto&& kv : _inProgress) {
+            auto row = kv.first->getStringFields();
+            if (currentOp) {
+                // If this is the AsyncOp we blew up on, mark with an asterisk
+                if (*currentOp == *(kv.first)) {
+                    row[0] = "*";
+                }
+            }
+
+            rows.push_back(row);
+        }
+
+        // Format as a table
+        output << "\n" << toTable(rows);
+    }
+
+    output << "\n";
+
     return output;
+}
+
+uint64_t NetworkInterfaceASIO::getNumCanceledOps() {
+    return _numCanceledOps.load();
+}
+
+uint64_t NetworkInterfaceASIO::getNumFailedOps() {
+    return _numFailedOps.load();
+}
+
+uint64_t NetworkInterfaceASIO::getNumSucceededOps() {
+    return _numSucceededOps.load();
+}
+
+uint64_t NetworkInterfaceASIO::getNumTimedOutOps() {
+    return _numTimedOutOps.load();
 }
 
 void NetworkInterfaceASIO::appendConnectionStats(ConnectionPoolStats* stats) const {
@@ -113,10 +155,16 @@ void NetworkInterfaceASIO::startup() {
             try {
                 LOG(2) << "The NetworkInterfaceASIO worker thread is spinning up";
                 asio::io_service::work work(_io_service);
-                _io_service.run();
+                std::error_code ec;
+                _io_service.run(ec);
+                if (ec) {
+                    severe() << "Failure in _io_service.run(): " << ec.message();
+                    fassertFailed(40335);
+                }
             } catch (...) {
                 severe() << "Uncaught exception in NetworkInterfaceASIO IO "
-                            "worker thread of type: " << exceptionToStatus();
+                            "worker thread of type: "
+                         << exceptionToStatus();
                 fassertFailed(28820);
             }
         });
@@ -150,7 +198,7 @@ void NetworkInterfaceASIO::waitForWorkUntil(Date_t when) {
         if (waitTime <= Milliseconds(0)) {
             break;
         }
-        _isExecutorRunnableCondition.wait_for(lk, waitTime);
+        _isExecutorRunnableCondition.wait_for(lk, waitTime.toSystemDuration());
     }
     _isExecutorRunnable = false;
 }
@@ -168,23 +216,60 @@ void NetworkInterfaceASIO::_signalWorkAvailable_inlock() {
 }
 
 Date_t NetworkInterfaceASIO::now() {
-    return Date_t::now();
+    return _timerFactory->now();
 }
 
-void NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHandle,
-                                        const RemoteCommandRequest& request,
-                                        const RemoteCommandCompletionFn& onFinish) {
-    invariant(onFinish);
+namespace {
+
+Status attachMetadataIfNeeded(RemoteCommandRequest& request,
+                              rpc::EgressMetadataHook* metadataHook) {
+
+    // Append the metadata of the request with metadata from the metadata hook
+    // if a hook is installed
+    if (metadataHook) {
+        BSONObjBuilder augmentedBob;
+        augmentedBob.appendElements(request.metadata);
+
+        auto writeStatus = callNoexcept(*metadataHook,
+                                        &rpc::EgressMetadataHook::writeRequestMetadata,
+                                        request.txn,
+                                        request.target,
+                                        &augmentedBob);
+        if (!writeStatus.isOK()) {
+            return writeStatus;
+        }
+
+        request.metadata = augmentedBob.obj();
+    }
+
+    return Status::OK();
+}
+
+}  // namespace
+
+Status NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHandle,
+                                          RemoteCommandRequest& request,
+                                          const RemoteCommandCompletionFn& onFinish) {
+    MONGO_ASIO_INVARIANT(onFinish, "Invalid completion function");
     {
         stdx::lock_guard<stdx::mutex> lk(_inProgressMutex);
         const auto insertResult = _inGetConnection.emplace(cbHandle);
         // We should never see the same CallbackHandle added twice
-        invariant(insertResult.second);
+        MONGO_ASIO_INVARIANT_INLOCK(insertResult.second, "Same CallbackHandle added twice");
     }
 
-    LOG(2) << "startCommand: " << request.toString();
+    if (inShutdown()) {
+        return {ErrorCodes::ShutdownInProgress, "NetworkInterfaceASIO shutdown in progress"};
+    }
+
+    LOG(2) << "startCommand: " << redact(request.toString());
 
     auto getConnectionStartTime = now();
+
+    auto statusMetadata = attachMetadataIfNeeded(request, _metadataHook.get());
+    if (!statusMetadata.isOK()) {
+        return statusMetadata;
+    }
 
     auto nextStep = [this, getConnectionStartTime, cbHandle, request, onFinish](
         StatusWith<ConnectionPool::ConnectionHandle> swConn) {
@@ -199,9 +284,17 @@ void NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHa
                 wasPreviouslyCanceled = _inGetConnection.erase(cbHandle) == 0;
             }
 
-            onFinish(wasPreviouslyCanceled
-                         ? Status(ErrorCodes::CallbackCanceled, "Callback canceled")
-                         : swConn.getStatus());
+            Status status = wasPreviouslyCanceled
+                ? Status(ErrorCodes::CallbackCanceled, "Callback canceled")
+                : swConn.getStatus();
+            if (status.code() == ErrorCodes::ExceededTimeLimit) {
+                _numTimedOutOps.fetchAndAdd(1);
+            }
+            if (status.code() != ErrorCodes::CallbackCanceled) {
+                _numFailedOps.fetchAndAdd(1);
+            }
+
+            onFinish({status, now() - getConnectionStartTime});
             signalWorkAvailable();
             return;
         }
@@ -218,7 +311,9 @@ void NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHa
         if (eraseCount == 0) {
             lk.unlock();
 
-            onFinish({ErrorCodes::CallbackCanceled, "Callback canceled"});
+            onFinish({ErrorCodes::CallbackCanceled,
+                      "Callback canceled",
+                      now() - getConnectionStartTime});
 
             // Though we were canceled, we know that the stream is fine, so indicate success.
             conn->indicateSuccess();
@@ -232,9 +327,12 @@ void NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHa
         auto ownedOp = conn->releaseAsyncOp();
         op = ownedOp.get();
 
-        // Sanity check that we are getting a clean AsyncOp.
-        invariant(!op->canceled());
-        invariant(!op->timedOut());
+        // This AsyncOp may be recycled. We expect timeout and canceled to be clean.
+        // If this op was most recently used to connect, its state transitions won't have been
+        // reset, so we do that here.
+        MONGO_ASIO_INVARIANT_INLOCK(!op->canceled(), "AsyncOp has dirty canceled flag", op);
+        MONGO_ASIO_INVARIANT_INLOCK(!op->timedOut(), "AsyncOp has dirty timeout flag", op);
+        op->clearStateTransitions();
 
         // Now that we're inProgress, an external cancel can touch our op, but
         // not until we release the inProgressMutex.
@@ -244,33 +342,44 @@ void NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHa
         op->_request = std::move(request);
         op->_onFinish = std::move(onFinish);
         op->_connectionPoolHandle = std::move(swConn.getValue());
-        op->_start = getConnectionStartTime;
+        op->startProgress(getConnectionStartTime);
 
         // This ditches the lock and gets us onto the strand (so we're
         // threadsafe)
         op->_strand.post([this, op, getConnectionStartTime] {
+            const auto timeout = op->_request.timeout;
+
             // Set timeout now that we have the correct request object
-            if (op->_request.timeout != RemoteCommandRequest::kNoTimeout) {
+            if (timeout != RemoteCommandRequest::kNoTimeout) {
                 // Subtract the time it took to get the connection from the pool from the request
                 // timeout.
                 auto getConnectionDuration = now() - getConnectionStartTime;
-                if (getConnectionDuration >= op->_request.timeout) {
+                if (getConnectionDuration >= timeout) {
                     // We only assume that the request timer is guaranteed to fire *after* the
                     // timeout duration - but make no stronger assumption. It is thus possible that
                     // we have already exceeded the timeout. In this case we timeout the operation
                     // manually.
-                    return _completeOperation(op,
-                                              {ErrorCodes::ExceededTimeLimit,
-                                               "Remote command timed out while waiting to get a "
-                                               "connection from the pool."});
+                    std::stringstream msg;
+                    msg << "Remote command timed out while waiting to get a connection from the "
+                        << "pool, took " << getConnectionDuration << ", timeout was set to "
+                        << timeout;
+                    auto rs = ResponseStatus(
+                        ErrorCodes::ExceededTimeLimit, msg.str(), getConnectionDuration);
+                    return _completeOperation(op, rs);
                 }
 
                 // The above conditional guarantees that the adjusted timeout will never underflow.
-                invariant(op->_request.timeout > getConnectionDuration);
-                const auto adjustedTimeout = op->_request.timeout - getConnectionDuration;
+                MONGO_ASIO_INVARIANT(timeout > getConnectionDuration, "timeout underflowed", op);
+                const auto adjustedTimeout = timeout - getConnectionDuration;
                 const auto requestId = op->_request.id;
 
-                op->_timeoutAlarm = op->_owner->_timerFactory->make(&op->_strand, adjustedTimeout);
+                try {
+                    op->_timeoutAlarm =
+                        op->_owner->_timerFactory->make(&op->_strand, adjustedTimeout);
+                } catch (std::system_error& e) {
+                    severe() << "Failed to construct timer for AsyncOp: " << e.what();
+                    fassertFailed(40334);
+                }
 
                 std::shared_ptr<AsyncOp::AccessControl> access;
                 std::size_t generation;
@@ -281,28 +390,25 @@ void NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHa
                 }
 
                 op->_timeoutAlarm->asyncWait(
-                    [this, op, access, generation, requestId](std::error_code ec) {
+                    [this, op, access, generation, requestId, adjustedTimeout](std::error_code ec) {
+                        // We must pass a check for safe access before using op inside the
+                        // callback or we may attempt access on an invalid pointer.
+                        stdx::lock_guard<stdx::mutex> lk(access->mutex);
+                        if (generation != access->id) {
+                            // The operation has been cleaned up, do not access.
+                            return;
+                        }
+
                         if (!ec) {
-                            // We must pass a check for safe access before using op inside the
-                            // callback or we may attempt access on an invalid pointer.
-                            stdx::lock_guard<stdx::mutex> lk(access->mutex);
-                            if (generation != access->id) {
-                                // The operation has been cleaned up, do not access.
-                                return;
-                            }
+                            LOG(2) << "Request " << requestId << " timed out"
+                                   << ", adjusted timeout after getting connection from pool was "
+                                   << adjustedTimeout << ", op was " << redact(op->toString());
 
-                            LOG(2) << "Operation " << requestId << " timed out.";
-
-                            // An operation may be in mid-flight when it times out, so we
-                            // cancel any in-progress async calls but do not complete the operation
-                            // now.
-                            op->_timedOut = 1;
-                            if (op->_connection) {
-                                op->_connection->cancel();
-                            }
+                            op->timeOut_inlock();
                         } else {
-                            LOG(2) << "Failed to time operation " << requestId
-                                   << " out: " << ec.message();
+                            LOG(2) << "Failed to time request " << requestId
+                                   << "out: " << ec.message() << ", op was "
+                                   << redact(op->toString());
                         }
                     });
             }
@@ -312,6 +418,7 @@ void NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cbHa
     };
 
     _connectionPool.get(request.target, request.timeout, nextStep);
+    return Status::OK();
 }
 
 void NetworkInterfaceASIO::cancelCommand(const TaskExecutor::CallbackHandle& cbHandle) {
@@ -320,8 +427,10 @@ void NetworkInterfaceASIO::cancelCommand(const TaskExecutor::CallbackHandle& cbH
     // If we found a matching cbHandle in _inGetConnection, then
     // simply removing it has the same effect as cancelling it, so we
     // can just return.
-    if (_inGetConnection.erase(cbHandle) != 0)
+    if (_inGetConnection.erase(cbHandle) != 0) {
+        _numCanceledOps.fetchAndAdd(1);
         return;
+    }
 
     // TODO: This linear scan is unfortunate. It is here because our
     // primary data structure is to keep the AsyncOps in an
@@ -331,6 +440,7 @@ void NetworkInterfaceASIO::cancelCommand(const TaskExecutor::CallbackHandle& cbH
     for (auto&& kv : _inProgress) {
         if (kv.first->cbHandle() == cbHandle) {
             kv.first->cancel();
+            _numCanceledOps.fetchAndAdd(1);
             break;
         }
     }
@@ -341,14 +451,28 @@ void NetworkInterfaceASIO::cancelAllCommands() {
     {
         stdx::lock_guard<stdx::mutex> lk(_inProgressMutex);
         _inGetConnection.swap(newInGetConnection);
-        for (auto&& kv : _inProgress)
+        for (auto&& kv : _inProgress) {
             kv.first->cancel();
+        }
+        _numCanceledOps.fetchAndAdd(_inProgress.size());
     }
 }
 
-void NetworkInterfaceASIO::setAlarm(Date_t when, const stdx::function<void()>& action) {
-    // "alarm" must stay alive until it expires, hence the shared_ptr.
-    auto alarm = std::make_shared<asio::steady_timer>(_io_service, when - now());
+Status NetworkInterfaceASIO::setAlarm(Date_t when, const stdx::function<void()>& action) {
+    if (inShutdown()) {
+        return {ErrorCodes::ShutdownInProgress, "NetworkInterfaceASIO shutdown in progress"};
+    }
+
+    std::shared_ptr<asio::system_timer> alarm;
+
+    try {
+        auto timeLeft = when - now();
+        // "alarm" must stay alive until it expires, hence the shared_ptr.
+        alarm = std::make_shared<asio::system_timer>(_io_service, timeLeft.toSystemDuration());
+    } catch (...) {
+        return exceptionToStatus();
+    }
+
     alarm->async_wait([alarm, this, action](std::error_code ec) {
         if (!ec) {
             return action();
@@ -358,6 +482,8 @@ void NetworkInterfaceASIO::setAlarm(Date_t when, const stdx::function<void()>& a
             warning() << "setAlarm() received an error: " << ec.message();
         }
     });
+
+    return Status::OK();
 };
 
 bool NetworkInterfaceASIO::inShutdown() const {
@@ -369,6 +495,25 @@ bool NetworkInterfaceASIO::onNetworkThread() {
     return std::any_of(_serviceRunners.begin(),
                        _serviceRunners.end(),
                        [id](const stdx::thread& thread) { return id == thread.get_id(); });
+}
+
+void NetworkInterfaceASIO::_failWithInfo(const char* file,
+                                         int line,
+                                         std::string error,
+                                         AsyncOp* op) {
+    stdx::lock_guard<stdx::mutex> lk(_inProgressMutex);
+    _failWithInfo_inlock(file, line, error, op);
+}
+
+void NetworkInterfaceASIO::_failWithInfo_inlock(const char* file,
+                                                int line,
+                                                std::string error,
+                                                AsyncOp* op) {
+    std::stringstream ss;
+    ss << "Invariant failure at " << file << ":" << line << ": " << error;
+    ss << _getDiagnosticString_inlock(op);
+    Status status{ErrorCodes::InternalError, ss.str()};
+    fassertFailedWithStatus(34429, status);
 }
 
 }  // namespace executor

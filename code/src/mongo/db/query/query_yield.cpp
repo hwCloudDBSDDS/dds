@@ -40,6 +40,7 @@
 namespace mongo {
 
 namespace {
+MONGO_FP_DECLARE(setYieldAllLocksHang);
 MONGO_FP_DECLARE(setYieldAllLocksWait);
 }  // namespace
 
@@ -71,11 +72,13 @@ void QueryYield::yieldAllLocks(OperationContext* txn,
     // locks). If we are yielding, we are at a safe place to do so.
     txn->recoveryUnit()->abandonSnapshot();
 
+    MONGO_FAIL_POINT_PAUSE_WHILE_SET(setYieldAllLocksHang);
+
     MONGO_FAIL_POINT_BLOCK(setYieldAllLocksWait, customWait) {
         const BSONObj& data = customWait.getData();
         BSONElement customWaitNS = data["namespace"];
         if (!customWaitNS || planExecNS == customWaitNS.str()) {
-            sleepFor(stdx::chrono::milliseconds(data["waitForMillis"].numberInt()));
+            sleepFor(Milliseconds(data["waitForMillis"].numberInt()));
         }
     }
 

@@ -45,6 +45,7 @@
 namespace mongo {
 
 const char* kTestFile = "metrics.test";
+const char* kTestFileCopy = "metrics.test.copy";
 
 // File Sanity check
 TEST(FTDCFileTest, TestFileBasicMetadata) {
@@ -56,10 +57,16 @@ TEST(FTDCFileTest, TestFileBasicMetadata) {
 
     BSONObj doc1 = BSON("name"
                         << "joe"
-                        << "key1" << 34 << "key2" << 45);
+                        << "key1"
+                        << 34
+                        << "key2"
+                        << 45);
     BSONObj doc2 = BSON("name"
                         << "joe"
-                        << "key3" << 34 << "key5" << 45);
+                        << "key3"
+                        << 34
+                        << "key5"
+                        << 45);
 
     FTDCConfig config;
     FTDCFileWriter writer(&config);
@@ -78,13 +85,13 @@ TEST(FTDCFileTest, TestFileBasicMetadata) {
 
     BSONObj doc1a = std::get<1>(reader.next());
 
-    ASSERT_TRUE(doc1 == doc1a);
+    ASSERT_BSONOBJ_EQ(doc1, doc1a);
 
     ASSERT_OK(reader.hasNext());
 
     BSONObj doc2a = std::get<1>(reader.next());
 
-    ASSERT_TRUE(doc2 == doc2a);
+    ASSERT_BSONOBJ_EQ(doc2, doc2a);
 
     auto sw = reader.hasNext();
     ASSERT_OK(sw);
@@ -101,10 +108,16 @@ TEST(FTDCFileTest, TestFileBasicCompress) {
 
     BSONObj doc1 = BSON("name"
                         << "joe"
-                        << "key1" << 34 << "key2" << 45);
+                        << "key1"
+                        << 34
+                        << "key2"
+                        << 45);
     BSONObj doc2 = BSON("name"
                         << "joe"
-                        << "key3" << 34 << "key5" << 45);
+                        << "key3"
+                        << 34
+                        << "key5"
+                        << 45);
 
     FTDCConfig config;
     FTDCFileWriter writer(&config);
@@ -123,13 +136,13 @@ TEST(FTDCFileTest, TestFileBasicCompress) {
 
     BSONObj doc1a = std::get<1>(reader.next());
 
-    ASSERT_TRUE(doc1 == doc1a);
+    ASSERT_BSONOBJ_EQ(doc1, doc1a);
 
     ASSERT_OK(reader.hasNext());
 
     BSONObj doc2a = std::get<1>(reader.next());
 
-    ASSERT_TRUE(doc2 == doc2a);
+    ASSERT_BSONOBJ_EQ(doc2, doc2a);
 
     auto sw = reader.hasNext();
     ASSERT_OK(sw);
@@ -160,7 +173,27 @@ public:
     }
 
 private:
-    void validate(bool forceCompress = true) {
+    void validate() {
+        // Verify we are flushing writes correctly by copying the file, and then reading it.
+        auto tempfile(boost::filesystem::path(_tempdir.path()) / kTestFileCopy);
+        boost::filesystem::copy_file(_path, tempfile);
+
+        // Read the file to make sure it is correct.
+        // We do not verify contents because the compressor may not have flushed the final records
+        // which is expected.
+        {
+            FTDCFileReader reader;
+
+            ASSERT_OK(reader.open(tempfile));
+
+            auto sw = reader.hasNext();
+            while (sw.isOK() && sw.getValue()) {
+                sw = reader.hasNext();
+            }
+
+            ASSERT_OK(sw);
+        }
+
         _writer.close();
 
         ValidateDocumentList(_path, _docs);
@@ -180,41 +213,69 @@ TEST(FTDCFileTest, TestSchemaChanges) {
 
     c.addSample(BSON("name"
                      << "joe"
-                     << "key1" << 33 << "key2" << 42));
+                     << "key1"
+                     << 33
+                     << "key2"
+                     << 42));
     c.addSample(BSON("name"
                      << "joe"
-                     << "key1" << 34 << "key2" << 45));
+                     << "key1"
+                     << 34
+                     << "key2"
+                     << 45));
     c.addSample(BSON("name"
                      << "joe"
-                     << "key1" << 34 << "key2" << 45));
+                     << "key1"
+                     << 34
+                     << "key2"
+                     << 45));
 
     // Add Value
     c.addSample(BSON("name"
                      << "joe"
-                     << "key1" << 34 << "key2" << 45 << "key3" << 47));
+                     << "key1"
+                     << 34
+                     << "key2"
+                     << 45
+                     << "key3"
+                     << 47));
 
     c.addSample(BSON("name"
                      << "joe"
-                     << "key1" << 34 << "key2" << 45 << "key3" << 47));
+                     << "key1"
+                     << 34
+                     << "key2"
+                     << 45
+                     << "key3"
+                     << 47));
 
     // Rename field
     c.addSample(BSON("name"
                      << "joe"
-                     << "key1" << 34 << "key5" << 45 << "key3" << 47));
+                     << "key1"
+                     << 34
+                     << "key5"
+                     << 45
+                     << "key3"
+                     << 47));
 
     // Change type
     c.addSample(BSON("name"
                      << "joe"
-                     << "key1" << 34 << "key5"
+                     << "key1"
+                     << 34
+                     << "key5"
                      << "45"
-                     << "key3" << 47));
+                     << "key3"
+                     << 47));
 
     // RemoveField
     c.addSample(BSON("name"
                      << "joe"
                      << "key5"
                      << "45"
-                     << "key3" << 47));
+                     << "key3"
+                     << 47));
 }
 
 // Test a full buffer
@@ -225,22 +286,53 @@ TEST(FTDCFileTest, TestFull) {
 
         c.addSample(BSON("name"
                          << "joe"
-                         << "key1" << 33 << "key2" << 42));
+                         << "key1"
+                         << 33
+                         << "key2"
+                         << 42));
 
         for (size_t i = 0; i <= FTDCConfig::kMaxSamplesPerArchiveMetricChunkDefault - 2; i++) {
             c.addSample(BSON("name"
                              << "joe"
-                             << "key1" << static_cast<long long int>(i * j) << "key2" << 45));
+                             << "key1"
+                             << static_cast<long long int>(i * j)
+                             << "key2"
+                             << 45));
         }
 
         c.addSample(BSON("name"
                          << "joe"
-                         << "key1" << 34 << "key2" << 45));
+                         << "key1"
+                         << 34
+                         << "key2"
+                         << 45));
 
         // Add Value
         c.addSample(BSON("name"
                          << "joe"
-                         << "key1" << 34 << "key2" << 45));
+                         << "key1"
+                         << 34
+                         << "key2"
+                         << 45));
+    }
+}
+
+// Test a large documents so that we cause multiple 4kb buffers to flush on Windows.
+TEST(FTDCFileTest, TestLargeDocuments) {
+    FileTestTie c;
+
+    for (int j = 0; j < 5; j++) {
+        for (size_t i = 0; i <= FTDCConfig::kMaxSamplesPerArchiveMetricChunkDefault; i++) {
+            BSONObjBuilder b;
+            b.append("name", "joe");
+            for (size_t k = 0; k < 200; k++) {
+                b.appendNumber(
+                    "num",
+                    static_cast<long long int>(i * j + 5000 - (sin(static_cast<double>(k)) * 100)));
+            }
+
+            c.addSample(b.obj());
+        }
     }
 }
 

@@ -33,10 +33,10 @@
 
 #ifndef _WIN32
 
+#include <errno.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
-#include <errno.h>
 
 #ifdef __OpenBSD__
 #include <sys/uio.h>
@@ -45,6 +45,7 @@
 #endif  // not _WIN32
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,6 +55,7 @@
 #include "mongo/logger/log_severity.h"
 #include "mongo/platform/compiler.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/net/sockaddr.h"
 
 namespace mongo {
 
@@ -61,6 +63,7 @@ namespace mongo {
 class SSLManagerInterface;
 class SSLConnection;
 #endif
+struct SSLPeerInfo;
 
 extern const int portSendFlags;
 extern const int portRecvFlags;
@@ -72,18 +75,7 @@ void disableNagle(int sock);
 // Generate a string representation for getaddrinfo return codes
 std::string getAddrInfoStrError(int code);
 
-#if defined(_WIN32)
-
-typedef short sa_family_t;
-typedef int socklen_t;
-
-// This won't actually be used on windows
-struct sockaddr_un {
-    short sun_family;
-    char sun_path[108];  // length from unix header
-};
-
-#else  // _WIN32
+#if !defined(_WIN32)
 
 inline void closesocket(int s) {
     close(s);
@@ -103,62 +95,6 @@ void enableIPv6(bool state = true);
 bool IPv6Enabled();
 void setSockTimeouts(int sock, double secs);
 
-/**
- * wrapped around os representation of network address
- */
-struct SockAddr {
-    SockAddr();
-    explicit SockAddr(int sourcePort); /* listener side */
-    SockAddr(
-        const char* ip,
-        int port); /* EndPoint (remote) side, or if you want to specify which interface locally */
-
-    template <typename T>
-    T& as() {
-        return *(T*)(&sa);
-    }
-    template <typename T>
-    const T& as() const {
-        return *(const T*)(&sa);
-    }
-
-    std::string toString(bool includePort = true) const;
-
-    bool isValid() const {
-        return _isValid;
-    }
-
-    /**
-     * @return one of AF_INET, AF_INET6, or AF_UNIX
-     */
-    sa_family_t getType() const;
-
-    unsigned getPort() const;
-
-    std::string getAddr() const;
-
-    bool isLocalHost() const;
-
-    bool operator==(const SockAddr& r) const;
-
-    bool operator!=(const SockAddr& r) const;
-
-    bool operator<(const SockAddr& r) const;
-
-    const sockaddr* raw() const {
-        return (sockaddr*)&sa;
-    }
-    sockaddr* raw() {
-        return (sockaddr*)&sa;
-    }
-
-    socklen_t addressSize;
-
-private:
-    struct sockaddr_storage sa;
-    bool _isValid;
-};
-
 /** this is not cache and does a syscall */
 std::string getHostName();
 
@@ -167,69 +103,6 @@ std::string getHostName();
 std::string getHostNameCached();
 
 std::string prettyHostName();
-
-/**
- * thrown by Socket and SockAddr
- */
-class SocketException : public DBException {
-public:
-    const enum Type {
-        CLOSED,
-        RECV_ERROR,
-        SEND_ERROR,
-        RECV_TIMEOUT,
-        SEND_TIMEOUT,
-        FAILED_STATE,
-        CONNECT_ERROR
-    } _type;
-
-    SocketException(Type t,
-                    const std::string& server,
-                    int code = 9001,
-                    const std::string& extra = "")
-        : DBException(std::string("socket exception [") + _getStringType(t) + "] for " + server,
-                      code),
-          _type(t),
-          _server(server),
-          _extra(extra) {}
-
-    virtual ~SocketException() throw() {}
-
-    bool shouldPrint() const {
-        return _type != CLOSED;
-    }
-    virtual std::string toString() const;
-    virtual const std::string* server() const {
-        return &_server;
-    }
-
-private:
-    // TODO: Allow exceptions better control over their messages
-    static std::string _getStringType(Type t) {
-        switch (t) {
-            case CLOSED:
-                return "CLOSED";
-            case RECV_ERROR:
-                return "RECV_ERROR";
-            case SEND_ERROR:
-                return "SEND_ERROR";
-            case RECV_TIMEOUT:
-                return "RECV_TIMEOUT";
-            case SEND_TIMEOUT:
-                return "SEND_TIMEOUT";
-            case FAILED_STATE:
-                return "FAILED_STATE";
-            case CONNECT_ERROR:
-                return "CONNECT_ERROR";
-            default:
-                return "UNKNOWN";  // should never happen
-        }
-    }
-
-    std::string _server;
-    std::string _extra;
-};
-
 
 /**
  * thin wrapped around file descriptor and system calls
@@ -306,6 +179,17 @@ public:
         return _fd;
     }
 
+    /**
+     * This sets the Sock's socket descriptor to be invalid and returns the old descriptor. This
+     * only gets called in listen.cpp in Listener::_accepted(). This gets called on the listener
+     * thread immediately after the thread creates the Sock, so it doesn't need to be thread-safe.
+     */
+    int stealSD() {
+        int tmp = _fd;
+        _fd = -1;
+        return tmp;
+    }
+
     void setTimeout(double secs);
     bool isStillConnected();
 
@@ -338,7 +222,7 @@ public:
      *
      * This function may throw SocketException.
      */
-    std::string doSSLHandshake(const char* firstBytes = NULL, int len = 0);
+    SSLPeerInfo doSSLHandshake(const char* firstBytes = NULL, int len = 0);
 
     /**
      * @return the time when the socket was opened.
@@ -348,7 +232,9 @@ public:
     }
 
     void handleRecvError(int ret, int len);
-    MONGO_COMPILER_NORETURN void handleSendError(int ret, const char* context);
+    void handleSendError(int ret, const char* context);
+
+    std::string getSNIServerName() const;
 
 private:
     void _init();

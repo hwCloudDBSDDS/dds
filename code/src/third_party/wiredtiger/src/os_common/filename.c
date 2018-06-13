@@ -56,74 +56,14 @@ __wt_nfilename(
  *	Remove a file if it exists.
  */
 int
-__wt_remove_if_exists(WT_SESSION_IMPL *session, const char *name)
+__wt_remove_if_exists(WT_SESSION_IMPL *session, const char *name, bool durable)
 {
 	bool exist;
 
-	WT_RET(__wt_exist(session, name, &exist));
+	WT_RET(__wt_fs_exist(session, name, &exist));
 	if (exist)
-		WT_RET(__wt_remove(session, name));
+		WT_RET(__wt_fs_remove(session, name, durable));
 	return (0);
-}
-
-/*
- * __wt_rename_and_sync_directory --
- *	Rename a file and sync the enclosing directory.
- */
-int
-__wt_rename_and_sync_directory(
-    WT_SESSION_IMPL *session, const char *from, const char *to)
-{
-	const char *fp, *tp;
-	bool same_directory;
-
-	/* Rename the source file to the target. */
-	WT_RET(__wt_rename(session, from, to));
-
-	/*
-	 * Flush the backing directory to guarantee the rename. My reading of
-	 * POSIX 1003.1 is there's no guarantee flushing only one of the from
-	 * or to directories, or flushing a common parent, is sufficient, and
-	 * even if POSIX were to make that guarantee, existing filesystems are
-	 * known to not provide the guarantee or only provide the guarantee
-	 * with specific mount options. Flush both of the from/to directories
-	 * until it's a performance problem.
-	 */
-	WT_RET(__wt_directory_sync(session, from));
-
-	/*
-	 * In almost all cases, we're going to be renaming files in the same
-	 * directory, we can at least fast-path that.
-	 */
-	fp = strrchr(from, '/');
-	tp = strrchr(to, '/');
-	same_directory = (fp == NULL && tp == NULL) ||
-	    (fp != NULL && tp != NULL &&
-	    fp - from == tp - to && memcmp(from, to, (size_t)(fp - from)) == 0);
-
-	return (same_directory ? 0 : __wt_directory_sync(session, to));
-}
-
-/*
- * __wt_sync_handle_and_rename --
- *	Sync and close a handle, and swap it into place.
- */
-int
-__wt_sync_handle_and_rename(
-    WT_SESSION_IMPL *session, WT_FH **fhp, const char *from, const char *to)
-{
-	WT_DECL_RET;
-	WT_FH *fh;
-
-	fh = *fhp;
-	*fhp = NULL;
-
-	/* Flush to disk and close the handle. */
-	ret = __wt_fsync(session, fh, true);
-	WT_TRET(__wt_close(session, &fh));
-	WT_RET(ret);
-
-	return (__wt_rename_and_sync_directory(session, from, to));
 }
 
 /*
@@ -156,14 +96,13 @@ __wt_copy_and_sync(WT_SESSION *wt_session, const char *from, const char *to)
 	WT_ERR(__wt_scr_alloc(session, 0, &tmp));
 	WT_ERR(__wt_buf_fmt(session, tmp, "%s.copy", to));
 
-	WT_ERR(__wt_remove_if_exists(session, to));
-	WT_ERR(__wt_remove_if_exists(session, tmp->data));
+	WT_ERR(__wt_remove_if_exists(session, to, false));
+	WT_ERR(__wt_remove_if_exists(session, tmp->data, false));
 
 	/* Open the from and temporary file handles. */
-	WT_ERR(__wt_open(session, from,
-	    WT_FILE_TYPE_REGULAR, WT_OPEN_READONLY, &ffh));
-	WT_ERR(__wt_open(session, tmp->data,
-	    WT_FILE_TYPE_REGULAR, WT_OPEN_CREATE | WT_OPEN_EXCLUSIVE, &tfh));
+	WT_ERR(__wt_open(session, from, WT_FS_OPEN_FILE_TYPE_REGULAR, 0, &ffh));
+	WT_ERR(__wt_open(session, tmp->data, WT_FS_OPEN_FILE_TYPE_REGULAR,
+	    WT_FS_OPEN_CREATE | WT_FS_OPEN_EXCLUSIVE, &tfh));
 
 	/*
 	 * Allocate a copy buffer. Don't use a scratch buffer, this thing is
@@ -182,7 +121,10 @@ __wt_copy_and_sync(WT_SESSION *wt_session, const char *from, const char *to)
 
 	/* Close the from handle, then swap the temporary file into place. */
 	WT_ERR(__wt_close(session, &ffh));
-	ret = __wt_sync_handle_and_rename(session, &tfh, tmp->data, to);
+	WT_ERR(__wt_fsync(session, tfh, true));
+	WT_ERR(__wt_close(session, &tfh));
+
+	ret = __wt_fs_rename(session, tmp->data, to, true);
 
 err:	WT_TRET(__wt_close(session, &ffh));
 	WT_TRET(__wt_close(session, &tfh));

@@ -30,8 +30,8 @@
 
 #include <queue>
 
-#include "mongo/base/string_data.h"
 #include "mongo/base/status_with.h"
+#include "mongo/base/string_data.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/exec/plan_stats.h"
@@ -98,7 +98,7 @@ public:
     ~NearStage();
 
     bool isEOF() final;
-    StageState work(WorkingSetID* out) final;
+    StageState doWork(WorkingSetID* out) final;
 
     void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) final;
 

@@ -28,8 +28,9 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/client.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/repl/database_task.h"
-#include "mongo/db/repl/operation_context_repl_mock.h"
 #include "mongo/db/repl/task_runner.h"
 #include "mongo/db/repl/task_runner_test_fixture.h"
 #include "mongo/stdx/mutex.h"
@@ -44,14 +45,7 @@ const std::string databaseName = "mydb";
 const std::string collectionName = "mycoll";
 const NamespaceString nss(databaseName, collectionName);
 
-class DatabaseTaskTest : public TaskRunnerTest {
-public:
-    OperationContext* createOperationContext() const override;
-};
-
-OperationContext* DatabaseTaskTest::createOperationContext() const {
-    return new OperationContextReplMock();
-}
+class DatabaseTaskTest : public TaskRunnerTest {};
 
 TEST_F(DatabaseTaskTest, TaskRunnerErrorStatus) {
     // Should not attempt to acquire lock on error status from task runner.

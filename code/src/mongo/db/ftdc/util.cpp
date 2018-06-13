@@ -63,7 +63,7 @@ const char kFTDCDocsField[] = "docs";
 const char kFTDCCollectStartField[] = "start";
 const char kFTDCCollectEndField[] = "end";
 
-const std::uint64_t FTDCConfig::kPeriodMillisDefault = 1000;
+const std::int64_t FTDCConfig::kPeriodMillisDefault = 1000;
 
 const std::size_t kMaxRecursion = 10;
 
@@ -152,7 +152,8 @@ StatusWith<bool> extractMetricsFromDocument(const BSONObj& referenceDoc,
                 !(referenceElement.isNumber() == true &&
                   currentElement.isNumber() == referenceElement.isNumber())) {
                 LOG(4) << "full-time diagnostic data capture  schema change: field type change for "
-                          "field '" << referenceElement.fieldNameStringData() << "' from '"
+                          "field '"
+                       << referenceElement.fieldNameStringData() << "' from '"
                        << static_cast<int>(referenceElement.type()) << "' to '"
                        << static_cast<int>(currentElement.type()) << "'";
                 matches = false;
@@ -371,7 +372,9 @@ StatusWith<FTDCType> getBSONDocumentType(const BSONObj& obj) {
         static_cast<FTDCType>(value) != FTDCType::kMetadata) {
         return {ErrorCodes::BadValue,
                 str::stream() << "Field '" << std::string(kFTDCTypeField)
-                              << "' is not an expected value, found '" << value << "'"};
+                              << "' is not an expected value, found '"
+                              << value
+                              << "'"};
     }
 
     return {static_cast<FTDCType>(value)};

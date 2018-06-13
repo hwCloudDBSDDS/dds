@@ -43,6 +43,11 @@ def mongod_program(logger, executable=None, process_kwargs=None, **kwargs):
         "wiredTigerIndexConfigString": config.WT_INDEX_CONFIG,
     }
 
+    if config.STORAGE_ENGINE == "rocksdb":
+        shortcut_opts["rocksdbCacheSizeGB"] = config.STORAGE_ENGINE_CACHE_SIZE
+    elif config.STORAGE_ENGINE == "wiredTiger" or config.STORAGE_ENGINE is None:
+        shortcut_opts["wiredTigerCacheSizeGB"] = config.STORAGE_ENGINE_CACHE_SIZE
+
     # These options are just flags, so they should not take a value.
     opts_without_vals = ("nojournal", "nopreallocj")
 
@@ -110,7 +115,8 @@ def mongos_program(logger, executable=None, process_kwargs=None, **kwargs):
     return _process.Process(logger, args, **process_kwargs)
 
 
-def mongo_shell_program(logger, executable=None, filename=None, process_kwargs=None, **kwargs):
+def mongo_shell_program(logger, executable=None, filename=None, process_kwargs=None,
+                        isMainTest=True, **kwargs):
     """
     Returns a Process instance that starts a mongo shell with arguments
     constructed from 'kwargs'.
@@ -126,6 +132,7 @@ def mongo_shell_program(logger, executable=None, filename=None, process_kwargs=N
         "noJournal": (config.NO_JOURNAL, False),
         "noJournalPrealloc": (config.NO_PREALLOC_JOURNAL, False),
         "storageEngine": (config.STORAGE_ENGINE, ""),
+        "storageEngineCacheSizeGB": (config.STORAGE_ENGINE_CACHE_SIZE, ""),
         "testName": (os.path.splitext(os.path.basename(filename))[0], ""),
         "wiredTigerCollectionConfigString": (config.WT_COLL_CONFIG, ""),
         "wiredTigerEngineConfigString": (config.WT_ENGINE_CONFIG, ""),
@@ -140,6 +147,8 @@ def mongo_shell_program(logger, executable=None, filename=None, process_kwargs=N
         elif opt_name not in test_data:
             # Only use 'opt_default' if the property wasn't set in the YAML configuration.
             test_data[opt_name] = opt_default
+
+    test_data["isMainTest"] = isMainTest
     global_vars["TestData"] = test_data
 
     # Pass setParameters for mongos and mongod through TestData. The setParameter parsing in

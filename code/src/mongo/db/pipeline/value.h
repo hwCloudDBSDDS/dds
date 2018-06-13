@@ -28,7 +28,8 @@
 
 #pragma once
 
-
+#include "mongo/base/static_assert.h"
+#include "mongo/base/string_data.h"
 #include "mongo/db/pipeline/value_internal.h"
 #include "mongo/platform/unordered_set.h"
 
@@ -57,6 +58,28 @@ class BSONElement;
  */
 class Value {
 public:
+    /**
+     * Operator overloads for relops return a DeferredComparison which can subsequently be evaluated
+     * by a ValueComparator.
+     */
+    struct DeferredComparison {
+        enum class Type {
+            kLT,
+            kLTE,
+            kEQ,
+            kGT,
+            kGTE,
+            kNE,
+        };
+
+        DeferredComparison(Type type, const Value& lhs, const Value& rhs)
+            : type(type), lhs(lhs), rhs(rhs) {}
+
+        Type type;
+        const Value& lhs;
+        const Value& rhs;
+    };
+
     /** Construct a Value
      *
      *  All types not listed will be rejected rather than converted (see private for why)
@@ -80,6 +103,7 @@ public:
     explicit Value(const Document& doc) : _storage(Object, doc) {}
     explicit Value(const BSONObj& obj);
     explicit Value(const BSONArray& arr);
+    explicit Value(const std::vector<BSONObj>& arr);
     explicit Value(std::vector<Value> vec) : _storage(Array, new RCVector(std::move(vec))) {}
     explicit Value(const BSONBinData& bd) : _storage(BinData, bd) {}
     explicit Value(const BSONRegEx& re) : _storage(RegEx, re) {}
@@ -96,16 +120,6 @@ public:
     // TODO: add an unsafe version that can share storage with the BSONElement
     /// Deep-convert from BSONElement to Value
     explicit Value(const BSONElement& elem);
-
-#if defined(_MSC_VER) && _MSC_VER < 1900  // MVSC++ <= 2013 can't generate default move operations
-    Value(const Value& other) = default;
-    Value& operator=(const Value& other) = default;
-    Value(Value&& other) : _storage(std::move(other._storage)) {}
-    Value& operator=(Value&& other) {
-        _storage = std::move(other._storage);
-        return *this;
-    }
-#endif
 
     /** Construct a long or integer-valued Value.
      *
@@ -129,11 +143,16 @@ public:
     }
 
     /// true if type represents a number
-    // TODO: Add _storage.type == NumberDecimal
-    // SERVER-19735
     bool numeric() const {
         return _storage.type == NumberDouble || _storage.type == NumberLong ||
-            _storage.type == NumberInt;
+            _storage.type == NumberInt || _storage.type == NumberDecimal;
+    }
+
+    /**
+     * Return true if the Value is an array.
+     */
+    bool isArray() const {
+        return _storage.type == Array;
     }
 
     /**
@@ -204,28 +223,54 @@ public:
     time_t coerceToTimeT() const;
     tm coerceToTm() const;  // broken-out time struct (see man gmtime)
 
+    //
+    // Comparison API.
+    //
+    // Value instances can be compared either using Value::compare() or via operator overloads.
+    // Most callers should prefer operator overloads. Note that the operator overloads return a
+    // DeferredComparison, which must be subsequently evaluated by a ValueComparator. See
+    // value_comparator.h for details.
+    //
 
-    /** Compare two Values.
+    /**
+     * Compare two Values. Most Values should prefer to use ValueComparator instead. See
+     * value_comparator.h for details.
+     *
+     *  Pass a non-null StringData::ComparatorInterface if special string comparison semantics are
+     *  required. If the comparator is null, then a simple binary compare is used for strings. This
+     *  comparator is only used for string *values*; field names are always compared using simple
+     *  binary compare.
+     *
      *  @returns an integer less than zero, zero, or an integer greater than
      *           zero, depending on whether lhs < rhs, lhs == rhs, or lhs > rhs
      *  Warning: may return values other than -1, 0, or 1
      */
-    static int compare(const Value& lhs, const Value& rhs);
+    static int compare(const Value& lhs,
+                       const Value& rhs,
+                       const StringData::ComparatorInterface* stringComparator);
 
-    friend bool operator==(const Value& v1, const Value& v2) {
-        if (v1._storage.identical(v2._storage)) {
-            // Simple case
-            return true;
-        }
-        return (Value::compare(v1, v2) == 0);
+    friend DeferredComparison operator==(const Value& lhs, const Value& rhs) {
+        return DeferredComparison(DeferredComparison::Type::kEQ, lhs, rhs);
     }
 
-    friend bool operator!=(const Value& v1, const Value& v2) {
-        return !(v1 == v2);
+    friend DeferredComparison operator!=(const Value& lhs, const Value& rhs) {
+        return DeferredComparison(DeferredComparison::Type::kNE, lhs, rhs);
     }
 
-    friend bool operator<(const Value& lhs, const Value& rhs) {
-        return (Value::compare(lhs, rhs) < 0);
+    friend DeferredComparison operator<(const Value& lhs, const Value& rhs) {
+        return DeferredComparison(DeferredComparison::Type::kLT, lhs, rhs);
+    }
+
+    friend DeferredComparison operator<=(const Value& lhs, const Value& rhs) {
+        return DeferredComparison(DeferredComparison::Type::kLTE, lhs, rhs);
+    }
+
+    friend DeferredComparison operator>(const Value& lhs, const Value& rhs) {
+        return DeferredComparison(DeferredComparison::Type::kGT, lhs, rhs);
+    }
+
+    friend DeferredComparison operator>=(const Value& lhs, const Value& rhs) {
+        return DeferredComparison(DeferredComparison::Type::kGTE, lhs, rhs);
     }
 
     /// This is for debugging, logging, etc. See getString() for how to extract a string.
@@ -246,17 +291,16 @@ public:
     /// Get the approximate memory size of the value, in bytes. Includes sizeof(Value)
     size_t getApproximateSize() const;
 
-    /** Calculate a hash value.
+    /**
+     * Calculate a hash value.
      *
-     *  Meant to be used to create composite hashes suitable for
-     *  hashed container classes such as unordered_map<>.
+     * Meant to be used to create composite hashes suitable for hashed container classes such as
+     * unordered_map<>.
+     *
+     * Most callers should prefer the utilities in ValueComparator for hashing and creating function
+     * objects for computing the hash. See value_comparator.h.
      */
-    void hash_combine(size_t& seed) const;
-
-    /// struct Hash is defined to enable the use of Values as keys in unordered_map.
-    struct Hash : std::unary_function<const Value&, size_t> {
-        size_t operator()(const Value& rV) const;
-    };
+    void hash_combine(size_t& seed, const StringData::ComparatorInterface* stringComparator) const;
 
     /// Call this after memcpying to update ref counts if needed
     void memcpyed() const {
@@ -291,13 +335,21 @@ private:
     ValueStorage _storage;
     friend class MutableValue;  // gets and sets _storage.genericRCPtr
 };
-static_assert(sizeof(Value) == 16, "sizeof(Value) == 16");
-
-typedef unordered_set<Value, Value::Hash> ValueSet;
+MONGO_STATIC_ASSERT(sizeof(Value) == 16);
 
 inline void swap(mongo::Value& lhs, mongo::Value& rhs) {
     lhs.swap(rhs);
 }
+
+/**
+ * This class is identical to Value, but supports implicit creation from any of the types explicitly
+ * supported by Value.
+ */
+class ImplicitValue : public Value {
+public:
+    template <typename T>
+    ImplicitValue(T arg) : Value(std::move(arg)) {}
+};
 }
 
 /* ======================= INLINED IMPLEMENTATIONS ========================== */
@@ -307,12 +359,6 @@ namespace mongo {
 inline size_t Value::getArrayLength() const {
     verify(getType() == Array);
     return getArray().size();
-}
-
-inline size_t Value::Hash::operator()(const Value& v) const {
-    size_t seed = 0xf0afbeef;
-    v.hash_combine(seed);
-    return seed;
 }
 
 inline StringData Value::getStringData() const {

@@ -33,7 +33,6 @@
 #include "mongo/db/storage/kv/kv_storage_engine.h"
 
 #include "mongo/db/operation_context_noop.h"
-#include "mongo/db/storage/kv/kv_catalog_feature_tracker.h"
 #include "mongo/db/storage/kv/kv_database_catalog_entry.h"
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/util/assert_util.h"
@@ -44,9 +43,6 @@ namespace mongo {
 
 using std::string;
 using std::vector;
-
-using NonRepairableFeature = KVCatalog::FeatureTracker::NonRepairableFeature;
-using RepairableFeature = KVCatalog::FeatureTracker::RepairableFeature;
 
 namespace {
 const std::string catalogInfo = "_mdb_catalog";
@@ -79,13 +75,15 @@ KVStorageEngine::KVStorageEngine(KVEngine* engine, const KVStorageEngineOptions&
 
     OperationContextNoop opCtx(_engine->newRecoveryUnit());
 
-    if (options.forRepair && engine->hasIdent(&opCtx, catalogInfo)) {
+    bool catalogExists = engine->hasIdent(&opCtx, catalogInfo);
+
+    if (options.forRepair && catalogExists) {
         log() << "Repairing catalog metadata";
         // TODO should also validate all BSON in the catalog.
         engine->repairIdent(&opCtx, catalogInfo);
     }
 
-    {
+    if (!catalogExists) {
         WriteUnitOfWork uow(&opCtx);
 
         Status status =
@@ -96,39 +94,41 @@ KVStorageEngine::KVStorageEngine(KVEngine* engine, const KVStorageEngineOptions&
             fassertFailedNoTrace(28562);
         }
         fassert(28520, status);
+        uow.commit();
+    }
 
-        _catalogRecordStore.reset(
-            _engine->getRecordStore(&opCtx, catalogInfo, catalogInfo, CollectionOptions()));
-        _catalog.reset(new KVCatalog(_catalogRecordStore.get(),
-                                     _supportsDocLocking,
-                                     _options.directoryPerDB,
-                                     _options.directoryForIndexes));
-        _catalog->init(&opCtx);
+    _catalogRecordStore =
+        _engine->getRecordStore(&opCtx, catalogInfo, catalogInfo, CollectionOptions());
+    _catalog.reset(new KVCatalog(_catalogRecordStore.get(),
+                                 _supportsDocLocking,
+                                 _options.directoryPerDB,
+                                 _options.directoryForIndexes));
+    _catalog->init(&opCtx);
 
-        std::vector<std::string> collections;
-        _catalog->getAllCollections(&collections);
+    std::vector<std::string> collections;
+    _catalog->getAllCollections(&collections);
 
-        for (size_t i = 0; i < collections.size(); i++) {
-            std::string coll = collections[i];
-            NamespaceString nss(coll);
-            string dbName = nss.db().toString();
+    for (size_t i = 0; i < collections.size(); i++) {
+        std::string coll = collections[i];
+        NamespaceString nss(coll);
+        string dbName = nss.db().toString();
 
-            // No rollback since this is only for committed dbs.
-            KVDatabaseCatalogEntry*& db = _dbs[dbName];
-            if (!db) {
-                db = new KVDatabaseCatalogEntry(dbName, this);
-            }
-
-            db->initCollection(&opCtx, coll, options.forRepair);
+        // No rollback since this is only for committed dbs.
+        KVDatabaseCatalogEntry*& db = _dbs[dbName];
+        if (!db) {
+            db = new KVDatabaseCatalogEntry(dbName, this);
         }
 
-        uow.commit();
+        db->initCollection(&opCtx, coll, options.forRepair);
     }
 
     opCtx.recoveryUnit()->abandonSnapshot();
 
     // now clean up orphaned idents
-
+    // we don't do this in readOnly mode.
+    if (storageGlobalParams.readOnly) {
+        return;
+    }
     {
         // get all idents
         std::set<std::string> allIdents;
@@ -175,37 +175,6 @@ void KVStorageEngine::cleanShutdown() {
 KVStorageEngine::~KVStorageEngine() {}
 
 void KVStorageEngine::finishInit() {}
-
-Status KVStorageEngine::requireDataFileCompatibilityWithPriorRelease(OperationContext* opCtx) {
-    if (_catalog->getFeatureTracker()->isRepairableFeatureInUse(
-            opCtx, RepairableFeature::kPathLevelMultikeyTracking)) {
-        {
-            stdx::lock_guard<stdx::mutex> lk(_dbsLock);
-            for (auto&& db : _dbs) {
-                db.second->removePathLevelMultikeyInfoFromAllCollections(opCtx);
-            }
-        }
-
-        {
-            WriteUnitOfWork wuow(opCtx);
-            _catalog->getFeatureTracker()->markRepairableFeatureAsNotInUse(
-                opCtx, RepairableFeature::kPathLevelMultikeyTracking);
-            wuow.commit();
-        }
-    }
-
-    auto status = _catalog->getFeatureTracker()->hasNoFeaturesMarkedAsInUse(opCtx);
-    if (!status.isOK()) {
-        return status;
-    }
-
-    {
-        WriteUnitOfWork wuow(opCtx);
-        _catalog->destroyFeatureTracker(opCtx);
-        wuow.commit();
-    }
-    return Status::OK();
-}
 
 RecoveryUnit* KVStorageEngine::newRecoveryUnit() {
     if (!_engine) {
@@ -279,9 +248,6 @@ Status KVStorageEngine::dropDatabase(OperationContext* txn, StringData db) {
 }
 
 int KVStorageEngine::flushAllFiles(bool sync) {
-    if (isEphemeral()) {
-        return 0;
-    }
     return _engine->flushAllFiles(sync);
 }
 

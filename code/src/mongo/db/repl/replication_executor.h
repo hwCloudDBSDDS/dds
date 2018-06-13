@@ -61,8 +61,6 @@ class NetworkInterface;
 
 namespace repl {
 
-class StorageInterface;
-
 /**
  * Implementation of the TaskExecutor interface for providing an event loop for driving state
  * machines in replication.
@@ -100,17 +98,15 @@ public:
      *
      * Takes ownership of the passed NetworkInterface object.
      */
-    ReplicationExecutor(executor::NetworkInterface* netInterface,
-                        StorageInterface* storageInterface,
-                        int64_t pnrgSeed);
+    ReplicationExecutor(executor::NetworkInterface* netInterface, int64_t pnrgSeed);
 
     /**
      * Destroys an executor.
      */
     virtual ~ReplicationExecutor();
 
-    std::string getDiagnosticString() override;
-    BSONObj getDiagnosticBSON();
+    std::string getDiagnosticString() const override;
+    BSONObj getDiagnosticBSON() const;
     Date_t now() override;
     void startup() override;
     void shutdown() override;
@@ -200,6 +196,14 @@ public:
      */
     int64_t nextRandomInt64(int64_t limit);
 
+    /**
+     * Wait until DB worker thread is not active. Test only.
+     *
+     * Usually NetworkInterfaceMock::runReadyNetworkOperations() is called before and after this
+     * function to ensure the synchronization of executor thread and DB worker thread.
+     */
+    void waitForDBWork_forTest();
+
 private:
     class Callback;
     class Event;
@@ -267,7 +271,7 @@ private:
     void finishShutdown();
 
     void _finishRemoteCommand(const executor::RemoteCommandRequest& request,
-                              const StatusWith<executor::RemoteCommandResponse>& response,
+                              const executor::RemoteCommandResponse& response,
                               const CallbackHandle& cbHandle,
                               const uint64_t expectedHandleGeneration,
                               const RemoteCommandCallbackFn& cb);
@@ -306,12 +310,11 @@ private:
     PseudoRandom _random;
 
     std::unique_ptr<executor::NetworkInterface> _networkInterface;
-    std::unique_ptr<StorageInterface> _storageInterface;
 
     // Thread which executes the run method. Started by startup and must be jointed after shutdown.
     stdx::thread _executorThread;
 
-    stdx::mutex _mutex;
+    mutable stdx::mutex _mutex;
     stdx::mutex _terribleExLockSyncMutex;
     stdx::condition_variable _noMoreWaitingThreads;
     WorkQueue _freeQueue;

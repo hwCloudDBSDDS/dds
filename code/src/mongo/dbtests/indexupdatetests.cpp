@@ -28,23 +28,29 @@
  *    then also delete it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include <cstdint>
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_create.h"
+#include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
-#include "mongo/db/service_context_d.h"
-#include "mongo/db/service_context.h"
 #include "mongo/db/index/index_descriptor.h"
-#include "mongo/db/operation_context_impl.h"
+#include "mongo/db/service_context.h"
+#include "mongo/db/service_context_d.h"
 #include "mongo/dbtests/dbtests.h"
 
 namespace IndexUpdateTests {
 
 using std::unique_ptr;
+
+namespace {
+const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
+}  // namespace
 
 static const char* const _ns = "unittests.indexupdate";
 
@@ -115,7 +121,8 @@ protected:
         return false;
     }
 
-    OperationContextImpl _txn;
+    const ServiceContext::UniqueOperationContext _txnPtr = cc().makeOperationContext();
+    OperationContext& _txn = *_txnPtr;
     OldClientWriteContext _ctx;
     DBDirectClient _client;
 };
@@ -348,13 +355,16 @@ public:
             db->dropCollection(&_txn, _ns);
             coll = db->createCollection(&_txn, _ns);
 
+            OpDebug* const nullOpDebug = nullptr;
             coll->insertDocument(&_txn,
                                  BSON("_id" << 1 << "a"
                                             << "dup"),
+                                 nullOpDebug,
                                  true);
             coll->insertDocument(&_txn,
                                  BSON("_id" << 2 << "a"
                                             << "dup"),
+                                 nullOpDebug,
                                  true);
             wunit.commit();
         }
@@ -366,10 +376,18 @@ public:
 
         const BSONObj spec = BSON("name"
                                   << "a"
-                                  << "ns" << coll->ns().ns() << "key" << BSON("a" << 1) << "unique"
-                                  << true << "background" << background);
+                                  << "ns"
+                                  << coll->ns().ns()
+                                  << "key"
+                                  << BSON("a" << 1)
+                                  << "v"
+                                  << static_cast<int>(kIndexVersion)
+                                  << "unique"
+                                  << true
+                                  << "background"
+                                  << background);
 
-        ASSERT_OK(indexer.init(spec));
+        ASSERT_OK(indexer.init(spec).getStatus());
         ASSERT_OK(indexer.insertAllDocumentsInCollection());
 
         WriteUnitOfWork wunit(&_txn);
@@ -391,13 +409,16 @@ public:
             db->dropCollection(&_txn, _ns);
             coll = db->createCollection(&_txn, _ns);
 
+            OpDebug* const nullOpDebug = nullptr;
             coll->insertDocument(&_txn,
                                  BSON("_id" << 1 << "a"
                                             << "dup"),
+                                 nullOpDebug,
                                  true);
             coll->insertDocument(&_txn,
                                  BSON("_id" << 2 << "a"
                                             << "dup"),
+                                 nullOpDebug,
                                  true);
             wunit.commit();
         }
@@ -409,10 +430,18 @@ public:
 
         const BSONObj spec = BSON("name"
                                   << "a"
-                                  << "ns" << coll->ns().ns() << "key" << BSON("a" << 1) << "unique"
-                                  << true << "background" << background);
+                                  << "ns"
+                                  << coll->ns().ns()
+                                  << "key"
+                                  << BSON("a" << 1)
+                                  << "v"
+                                  << static_cast<int>(kIndexVersion)
+                                  << "unique"
+                                  << true
+                                  << "background"
+                                  << background);
 
-        ASSERT_OK(indexer.init(spec));
+        ASSERT_OK(indexer.init(spec).getStatus());
         const Status status = indexer.insertAllDocumentsInCollection();
         ASSERT_EQUALS(status.code(), ErrorCodes::DuplicateKey);
     }
@@ -433,13 +462,16 @@ public:
             db->dropCollection(&_txn, _ns);
             coll = db->createCollection(&_txn, _ns);
 
+            OpDebug* const nullOpDebug = nullptr;
             ASSERT_OK(coll->insertDocument(&_txn,
                                            BSON("_id" << 1 << "a"
                                                       << "dup"),
+                                           nullOpDebug,
                                            true));
             ASSERT_OK(coll->insertDocument(&_txn,
                                            BSON("_id" << 2 << "a"
                                                       << "dup"),
+                                           nullOpDebug,
                                            true));
             wunit.commit();
         }
@@ -451,10 +483,18 @@ public:
 
         const BSONObj spec = BSON("name"
                                   << "a"
-                                  << "ns" << coll->ns().ns() << "key" << BSON("a" << 1) << "unique"
-                                  << true << "background" << background);
+                                  << "ns"
+                                  << coll->ns().ns()
+                                  << "key"
+                                  << BSON("a" << 1)
+                                  << "v"
+                                  << static_cast<int>(kIndexVersion)
+                                  << "unique"
+                                  << true
+                                  << "background"
+                                  << background);
 
-        ASSERT_OK(indexer.init(spec));
+        ASSERT_OK(indexer.init(spec).getStatus());
 
         std::set<RecordId> dups;
         ASSERT_OK(indexer.insertAllDocumentsInCollection(&dups));
@@ -485,15 +525,18 @@ public:
             coll->getIndexCatalog()->dropAllIndexes(&_txn, true);
             // Insert some documents with enforceQuota=true.
             int32_t nDocs = 1000;
+            OpDebug* const nullOpDebug = nullptr;
             for (int32_t i = 0; i < nDocs; ++i) {
-                coll->insertDocument(&_txn, BSON("a" << i), true);
+                coll->insertDocument(&_txn, BSON("a" << i), nullOpDebug, true);
             }
             wunit.commit();
         }
         // Request an interrupt.
         getGlobalServiceContext()->setKillAllOperations();
         BSONObj indexInfo = BSON("key" << BSON("a" << 1) << "ns" << _ns << "name"
-                                       << "a_1");
+                                       << "a_1"
+                                       << "v"
+                                       << static_cast<int>(kIndexVersion));
         // The call is interrupted because mayInterrupt == true.
         ASSERT_TRUE(buildIndexInterrupted(indexInfo, true));
         // only want to interrupt the index build
@@ -517,15 +560,18 @@ public:
             coll->getIndexCatalog()->dropAllIndexes(&_txn, true);
             // Insert some documents.
             int32_t nDocs = 1000;
+            OpDebug* const nullOpDebug = nullptr;
             for (int32_t i = 0; i < nDocs; ++i) {
-                coll->insertDocument(&_txn, BSON("a" << i), true);
+                coll->insertDocument(&_txn, BSON("a" << i), nullOpDebug, true);
             }
             wunit.commit();
         }
         // Request an interrupt.
         getGlobalServiceContext()->setKillAllOperations();
         BSONObj indexInfo = BSON("key" << BSON("a" << 1) << "ns" << _ns << "name"
-                                       << "a_1");
+                                       << "a_1"
+                                       << "v"
+                                       << static_cast<int>(kIndexVersion));
         // The call is not interrupted because mayInterrupt == false.
         ASSERT_FALSE(buildIndexInterrupted(indexInfo, false));
         // only want to interrupt the index build
@@ -552,15 +598,18 @@ public:
             coll->getIndexCatalog()->dropAllIndexes(&_txn, true);
             // Insert some documents.
             int32_t nDocs = 1000;
+            OpDebug* const nullOpDebug = nullptr;
             for (int32_t i = 0; i < nDocs; ++i) {
-                coll->insertDocument(&_txn, BSON("_id" << i), true);
+                coll->insertDocument(&_txn, BSON("_id" << i), nullOpDebug, true);
             }
             wunit.commit();
         }
         // Request an interrupt.
         getGlobalServiceContext()->setKillAllOperations();
         BSONObj indexInfo = BSON("key" << BSON("_id" << 1) << "ns" << _ns << "name"
-                                       << "_id_");
+                                       << "_id_"
+                                       << "v"
+                                       << static_cast<int>(kIndexVersion));
         // The call is interrupted because mayInterrupt == true.
         ASSERT_TRUE(buildIndexInterrupted(indexInfo, true));
         // only want to interrupt the index build
@@ -587,15 +636,18 @@ public:
             coll->getIndexCatalog()->dropAllIndexes(&_txn, true);
             // Insert some documents.
             int32_t nDocs = 1000;
+            OpDebug* const nullOpDebug = nullptr;
             for (int32_t i = 0; i < nDocs; ++i) {
-                coll->insertDocument(&_txn, BSON("_id" << i), true);
+                coll->insertDocument(&_txn, BSON("_id" << i), nullOpDebug, true);
             }
             wunit.commit();
         }
         // Request an interrupt.
         getGlobalServiceContext()->setKillAllOperations();
         BSONObj indexInfo = BSON("key" << BSON("_id" << 1) << "ns" << _ns << "name"
-                                       << "_id_");
+                                       << "_id_"
+                                       << "v"
+                                       << static_cast<int>(kIndexVersion));
         // The call is not interrupted because mayInterrupt == false.
         ASSERT_FALSE(buildIndexInterrupted(indexInfo, false));
         // only want to interrupt the index build
@@ -619,7 +671,7 @@ public:
         // Request an interrupt.
         getGlobalServiceContext()->setKillAllOperations();
         // The call is not interrupted.
-        Helpers::ensureIndex(&_txn, collection(), BSON("a" << 1), false, "a_1");
+        Helpers::ensureIndex(&_txn, collection(), BSON("a" << 1), kIndexVersion, false, "a_1");
         // only want to interrupt the index build
         getGlobalServiceContext()->unsetKillAllOperations();
         // The new index is listed in getIndexSpecs because the index build completed.
@@ -687,7 +739,7 @@ public:
 
 Status IndexBuildBase::createIndex(const std::string& dbname, const BSONObj& indexSpec) {
     MultiIndexBlock indexer(&_txn, collection());
-    Status status = indexer.init(indexSpec);
+    Status status = indexer.init(indexSpec).getStatus();
     if (status == ErrorCodes::IndexAlreadyExists) {
         return Status::OK();
     }
@@ -713,7 +765,12 @@ public:
         ASSERT_OK(createIndex("unittest",
                               BSON("name"
                                    << "x"
-                                   << "ns" << _ns << "key" << BSON("x" << 1 << "y" << 1))));
+                                   << "ns"
+                                   << _ns
+                                   << "key"
+                                   << BSON("x" << 1 << "y" << 1)
+                                   << "v"
+                                   << static_cast<int>(kIndexVersion))));
     }
 };
 
@@ -725,8 +782,14 @@ public:
                       createIndex("unittest",
                                   BSON("name"
                                        << "x"
-                                       << "ns" << _ns << "unique" << true << "key"
-                                       << BSON("x" << 1 << "y" << 1))));
+                                       << "ns"
+                                       << _ns
+                                       << "unique"
+                                       << true
+                                       << "key"
+                                       << BSON("x" << 1 << "y" << 1)
+                                       << "v"
+                                       << static_cast<int>(kIndexVersion))));
     }
 };
 
@@ -736,7 +799,12 @@ public:
         ASSERT_OK(createIndex("unittest",
                               BSON("name"
                                    << "x"
-                                   << "ns" << _ns << "key" << BSON("x" << 1 << "y" << 1))));
+                                   << "ns"
+                                   << _ns
+                                   << "key"
+                                   << BSON("x" << 1 << "y" << 1)
+                                   << "v"
+                                   << static_cast<int>(kIndexVersion))));
     }
 };
 
@@ -748,7 +816,12 @@ public:
                       createIndex("unittest",
                                   BSON("name"
                                        << "x"
-                                       << "ns" << _ns << "key" << BSON("y" << 1 << "x" << 1))));
+                                       << "ns"
+                                       << _ns
+                                       << "key"
+                                       << BSON("y" << 1 << "x" << 1)
+                                       << "v"
+                                       << static_cast<int>(kIndexVersion))));
     }
 };
 
@@ -761,9 +834,19 @@ public:
         ASSERT_OK(createIndex("unittests",
                               BSON("name"
                                    << "super"
-                                   << "ns" << _ns << "unique" << 1 << "sparse" << true
-                                   << "expireAfterSeconds" << 3600 << "key" << BSON("superIdx"
-                                                                                    << "2d"))));
+                                   << "ns"
+                                   << _ns
+                                   << "unique"
+                                   << 1
+                                   << "sparse"
+                                   << true
+                                   << "expireAfterSeconds"
+                                   << 3600
+                                   << "key"
+                                   << BSON("superIdx"
+                                           << "2d")
+                                   << "v"
+                                   << static_cast<int>(kIndexVersion))));
     }
 };
 
@@ -775,9 +858,19 @@ public:
         ASSERT_OK(createIndex("unittests",
                               BSON("name"
                                    << "super2"
-                                   << "ns" << _ns << "expireAfterSeconds" << 3600 << "sparse"
-                                   << true << "unique" << 1 << "key" << BSON("superIdx"
-                                                                             << "2d"))));
+                                   << "ns"
+                                   << _ns
+                                   << "expireAfterSeconds"
+                                   << 3600
+                                   << "sparse"
+                                   << true
+                                   << "unique"
+                                   << 1
+                                   << "key"
+                                   << BSON("superIdx"
+                                           << "2d")
+                                   << "v"
+                                   << static_cast<int>(kIndexVersion))));
     }
 };
 
@@ -791,23 +884,44 @@ public:
                       createIndex("unittest",
                                   BSON("name"
                                        << "super2"
-                                       << "ns" << _ns << "unique" << false << "sparse" << true
-                                       << "expireAfterSeconds" << 3600 << "key" << BSON("superIdx"
-                                                                                        << "2d"))));
+                                       << "ns"
+                                       << _ns
+                                       << "unique"
+                                       << false
+                                       << "sparse"
+                                       << true
+                                       << "expireAfterSeconds"
+                                       << 3600
+                                       << "key"
+                                       << BSON("superIdx"
+                                               << "2d")
+                                       << "v"
+                                       << static_cast<int>(kIndexVersion))));
     }
 };
 
 class SameSpecDifferentSparse : public ComplexIndex {
 public:
     void run() {
-        ASSERT_EQUALS(
-            ErrorCodes::IndexOptionsConflict,
-            createIndex("unittest",
-                        BSON("name"
-                             << "super2"
-                             << "ns" << _ns << "unique" << 1 << "sparse" << false << "background"
-                             << true << "expireAfterSeconds" << 3600 << "key" << BSON("superIdx"
-                                                                                      << "2d"))));
+        ASSERT_EQUALS(ErrorCodes::IndexOptionsConflict,
+                      createIndex("unittest",
+                                  BSON("name"
+                                       << "super2"
+                                       << "ns"
+                                       << _ns
+                                       << "unique"
+                                       << 1
+                                       << "sparse"
+                                       << false
+                                       << "background"
+                                       << true
+                                       << "expireAfterSeconds"
+                                       << 3600
+                                       << "key"
+                                       << BSON("superIdx"
+                                               << "2d")
+                                       << "v"
+                                       << static_cast<int>(kIndexVersion))));
     }
 };
 
@@ -818,9 +932,19 @@ public:
                       createIndex("unittest",
                                   BSON("name"
                                        << "super2"
-                                       << "ns" << _ns << "unique" << 1 << "sparse" << true
-                                       << "expireAfterSeconds" << 2400 << "key" << BSON("superIdx"
-                                                                                        << "2d"))));
+                                       << "ns"
+                                       << _ns
+                                       << "unique"
+                                       << 1
+                                       << "sparse"
+                                       << true
+                                       << "expireAfterSeconds"
+                                       << 2400
+                                       << "key"
+                                       << BSON("superIdx"
+                                               << "2d")
+                                       << "v"
+                                       << static_cast<int>(kIndexVersion))));
     }
 };
 
@@ -867,7 +991,13 @@ protected:
     BSONObj _createSpec(T storageEngineValue) {
         return BSON("name"
                     << "super2"
-                    << "ns" << _ns << "key" << BSON("a" << 1) << "storageEngine"
+                    << "ns"
+                    << _ns
+                    << "key"
+                    << BSON("a" << 1)
+                    << "v"
+                    << static_cast<int>(kIndexVersion)
+                    << "storageEngine"
                     << storageEngineValue);
     }
 };
@@ -875,11 +1005,11 @@ protected:
 class IndexCatatalogFixIndexKey {
 public:
     void run() {
-        ASSERT_EQUALS(BSON("x" << 1), IndexCatalog::fixIndexKey(BSON("x" << 1)));
+        ASSERT_BSONOBJ_EQ(BSON("x" << 1), IndexCatalog::fixIndexKey(BSON("x" << 1)));
 
-        ASSERT_EQUALS(BSON("_id" << 1), IndexCatalog::fixIndexKey(BSON("_id" << 1)));
+        ASSERT_BSONOBJ_EQ(BSON("_id" << 1), IndexCatalog::fixIndexKey(BSON("_id" << 1)));
 
-        ASSERT_EQUALS(BSON("_id" << 1), IndexCatalog::fixIndexKey(BSON("_id" << true)));
+        ASSERT_BSONOBJ_EQ(BSON("_id" << 1), IndexCatalog::fixIndexKey(BSON("_id" << true)));
     }
 };
 

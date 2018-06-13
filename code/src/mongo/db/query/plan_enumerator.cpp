@@ -32,9 +32,10 @@
 
 #include <set>
 
-#include "mongo/db/query/indexability.h"
 #include "mongo/db/query/index_tag.h"
+#include "mongo/db/query/indexability.h"
 #include "mongo/util/log.h"
+#include "mongo/util/string_map.h"
 
 namespace {
 
@@ -60,6 +61,157 @@ std::string getPathPrefix(std::string path) {
 bool expressionRequiresIndex(const MatchExpression* node) {
     return CanonicalQuery::countNodes(node, MatchExpression::GEO_NEAR) > 0 ||
         CanonicalQuery::countNodes(node, MatchExpression::TEXT) > 0;
+}
+
+size_t getPathLength(const MatchExpression* expr) {
+    return FieldRef{expr->path()}.numParts();
+}
+
+/**
+ * Returns true if 'component' refers to a part of 'rt->path' outside the innermost $elemMatch
+ * expression, and returns false otherwise. In particular, this function returns false if an
+ * expression isn't contained in an $elemMatch.
+ *
+ * For example, consider the expression {a: {$elemMatch: {b: {$gte: 0, $lt: 10}}}. The path "a.b"
+ * (component=1) is inside the $elemMatch expression, whereas the path "a" (component=0) is outside
+ * the $elemMatch expression.
+ */
+bool isPathOutsideElemMatch(const RelevantTag* rt, size_t component) {
+    if (rt->elemMatchExpr == nullptr) {
+        return false;
+    }
+
+    const size_t elemMatchRootLength = getPathLength(rt->elemMatchExpr);
+    invariant(elemMatchRootLength > 0);
+    return component < elemMatchRootLength;
+}
+
+using PossibleFirstAssignment = std::vector<MatchExpression*>;
+
+void getPossibleFirstAssignments(const IndexEntry& thisIndex,
+                                 const vector<MatchExpression*>& predsOverLeadingField,
+                                 std::vector<PossibleFirstAssignment>* possibleFirstAssignments) {
+    invariant(thisIndex.multikey && !thisIndex.multikeyPaths.empty());
+
+    if (thisIndex.multikeyPaths[0].empty()) {
+        // No prefix of the leading index field causes the index to be multikey. In other words, the
+        // index isn't multikey as a result of the leading index field. We can then safely assign
+        // all predicates on it to the index and the access planner will intersect the bounds.
+        *possibleFirstAssignments = {predsOverLeadingField};
+        return;
+    }
+
+    // At least one prefix of the leading index field causes the index to be multikey. We can't
+    // intersect bounds on the leading index field unless the predicates are joined by an
+    // $elemMatch.
+    std::map<MatchExpression*, std::vector<MatchExpression*>> predsByElemMatchExpr;
+    for (auto* pred : predsOverLeadingField) {
+        invariant(pred->getTag());
+        RelevantTag* rt = static_cast<RelevantTag*>(pred->getTag());
+
+        if (rt->elemMatchExpr == nullptr) {
+            // 'pred' isn't part of an $elemMatch, so we can't assign any other predicates on the
+            // leading index field to the index.
+            possibleFirstAssignments->push_back({pred});
+        } else {
+            // 'pred' is part of an $elemMatch, so we group it together with any other leaf
+            // expressions in the same $elemMatch context.
+            predsByElemMatchExpr[rt->elemMatchExpr].push_back(pred);
+        }
+    }
+
+    // We can only assign all of the leaf expressions in the $elemMatch to the index if no prefix of
+    // the leading index field that is longer than the root of the $elemMatch causes the index to be
+    // multikey. For example, consider the index {'a.b': 1} and the query
+    // {a: $elemMatch: {b: {$gte: 0, $lt: 10}}}. If 'a.b' refers to an array value, then the two
+    // leaf expressions inside the $elemMatch can match distinct elements. We are therefore unable
+    // to assign both to the index and intersect the bounds.
+    for (const auto& elemMatchExprIt : predsByElemMatchExpr) {
+        invariant(!elemMatchExprIt.second.empty());
+        const auto* pred = elemMatchExprIt.second.front();
+
+        invariant(pred->getTag());
+        RelevantTag* rt = static_cast<RelevantTag*>(pred->getTag());
+        invariant(rt->elemMatchExpr != nullptr);
+
+        const size_t elemMatchRootLength = getPathLength(elemMatchExprIt.first);
+        invariant(elemMatchRootLength > 0);
+
+        // Since the multikey path components are 0-indexed, 'elemMatchRootLength' actually
+        // corresponds to the path component immediately following the root of the $elemMatch.
+        if (thisIndex.multikeyPaths[0].lower_bound(elemMatchRootLength) ==
+            thisIndex.multikeyPaths[0].end()) {
+            // The root of the $elemMatch is the longest prefix of the leading index field that
+            // causes the index to be multikey, so we can assign all of the leaf expressions in the
+            // $elemMatch to the index.
+            possibleFirstAssignments->push_back(elemMatchExprIt.second);
+        } else {
+            // There is a path longer than the root of the $elemMatch that causes the index to be
+            // multikey, so we can only assign one of the leaf expressions in the $elemMatch to the
+            // index. Since we don't know which one is the most selective, we generate a plan for
+            // each predicate and rank them against each other.
+            for (auto* predCannotIntersect : elemMatchExprIt.second) {
+                possibleFirstAssignments->push_back({predCannotIntersect});
+            }
+        }
+    }
+}
+
+/**
+ * Returns true if the leaf expression associated with 'rt' can be assigned to the index given the
+ * path prefixes of the queried field that cause the index to be multikey and the predicates already
+ * assigned to the index. Otherwise, this function returns false if the leaf expression associated
+ * with 'rt' can't be assigned to the index.
+ *
+ * This function modifies 'used' under the assumption that if it returns true, then the predicate
+ * will be assigned to the index.
+ */
+bool canAssignPredToIndex(const RelevantTag* rt,
+                          const std::set<size_t>& multikeyComponents,
+                          StringMap<MatchExpression*>* used) {
+    invariant(used);
+    const FieldRef path(rt->path);
+
+    // We start by checking with the shortest prefix of the queried path to avoid needing to undo
+    // any changes we make to 'used' as we go.
+    for (const auto multikeyComponent : multikeyComponents) {
+        // 'pathPrefix' is a prefix of a queried path that causes the index to be multikey.
+        StringData pathPrefix = path.dottedSubstring(0, multikeyComponent + 1);
+
+        auto search = used->find(pathPrefix);
+        if (search == used->end()) {
+            // 'pathPrefix' is a prefix of a queried path that we haven't seen before.
+            if (isPathOutsideElemMatch(rt, multikeyComponent)) {
+                // 'pathPrefix' is outside the innermost $elemMatch, so we record its $elemMatch
+                // context to ensure that we don't assign another predicate to 'thisIndex' along
+                // this path unless they are part of the same $elemMatch.
+                invariant(rt->elemMatchExpr != nullptr);
+                (*used)[pathPrefix] = rt->elemMatchExpr;
+            } else {
+                // 'pathPrefix' is either inside the innermost $elemMatch or not inside an
+                // $elemMatch at all. We record that we can't assign another predicate to
+                // 'thisIndex' either at or beyond 'pathPrefix' without violating the intersecting
+                // and compounding rules for multikey indexes.
+                (*used)[pathPrefix] = nullptr;
+
+                // Since we check starting with the shortest prefixes of the queried path that cause
+                // 'thisIndex' to be multikey, marking 'used' with nullptr here means that there
+                // will be no further attempts to intersect or compound bounds by assigning a
+                // different predicate at or beyond 'pathPrefix'.
+                break;
+            }
+        } else {
+            // 'pathPrefix' is a prefix of a queried path that we've already assigned to
+            // 'thisIndex'. We can only intersect or compound bounds by assigning 'couldAssignPred'
+            // to 'thisIndex' if the leaf expressions are joined by the same $elemMatch context.
+            const bool cannotAssignPred =
+                (search->second == nullptr || search->second != rt->elemMatchExpr);
+            if (cannotAssignPred) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 }  // namespace
@@ -177,11 +329,9 @@ bool PlanEnumerator::getNext(MatchExpression** tree) {
 
     *tree = _root->shallowClone().release();
     tagForSort(*tree);
-    sortUsingTags(*tree);
 
     _root->resetTag();
-    LOG(5) << "Enumerator: memo just before moving:" << endl
-           << dumpMemo();
+    LOG(5) << "Enumerator: memo just before moving:" << endl << dumpMemo();
     _done = nextMemo(memoIDForNode(_root));
     return true;
 }
@@ -463,7 +613,58 @@ bool PlanEnumerator::enumerateMandatoryIndex(const IndexToPredMap& idxToFirst,
 
         const vector<MatchExpression*>& predsOverLeadingField = it->second;
 
-        if (thisIndex.multikey) {
+        if (thisIndex.multikey && !thisIndex.multikeyPaths.empty()) {
+            // 2dsphere indexes are the only special index type that should ever have path-level
+            // multikey information.
+            invariant(INDEX_2DSPHERE == thisIndex.type);
+
+            if (predsOverLeadingField.end() != std::find(predsOverLeadingField.begin(),
+                                                         predsOverLeadingField.end(),
+                                                         mandatoryPred)) {
+                // The mandatory predicate is on the leading field of 'thisIndex'. We assign it to
+                // 'thisIndex' and skip assigning any other predicates on the leading field to
+                // 'thisIndex' because no additional predicate on the leading field will generate a
+                // more efficient data access plan.
+                indexAssign.preds.push_back(mandatoryPred);
+                indexAssign.positions.push_back(0);
+
+                auto compIt = idxToNotFirst.find(indexAssign.index);
+                if (compIt != idxToNotFirst.end()) {
+                    // Assign any predicates on the non-leading index fields to 'indexAssign' that
+                    // don't violate the intersecting or compounding rules for multikey indexes.
+                    assignMultikeySafePredicates(compIt->second, &indexAssign);
+                }
+            } else {
+                // Assign any predicates on the leading index field to 'indexAssign' that don't
+                // violate the intersecting rules for multikey indexes.
+                assignMultikeySafePredicates(predsOverLeadingField, &indexAssign);
+
+                // Assign the mandatory predicate to 'thisIndex'. Due to how keys are generated for
+                // 2dsphere indexes, it is always safe to assign a predicate on a distinct path to
+                // 'thisIndex' and compound bounds; an index entry is produced for each combination
+                // of unique values along all of the indexed fields, even if they are in separate
+                // array elements. See SERVER-23533 for more details.
+                compound({mandatoryPred}, thisIndex, &indexAssign);
+
+                auto compIt = idxToNotFirst.find(indexAssign.index);
+                if (compIt != idxToNotFirst.end()) {
+                    // Copy the predicates on the non-leading index fields and remove
+                    // 'mandatoryPred' to avoid assigning it twice to 'thisIndex'.
+                    vector<MatchExpression*> predsOverNonLeadingFields = compIt->second;
+
+                    auto mandIt = std::find(predsOverNonLeadingFields.begin(),
+                                            predsOverNonLeadingFields.end(),
+                                            mandatoryPred);
+                    invariant(mandIt != predsOverNonLeadingFields.end());
+
+                    predsOverNonLeadingFields.erase(mandIt);
+
+                    // Assign any predicates on the non-leading index fields to 'indexAssign' that
+                    // don't violate the intersecting or compounding rules for multikey indexes.
+                    assignMultikeySafePredicates(predsOverNonLeadingFields, &indexAssign);
+                }
+            }
+        } else if (thisIndex.multikey) {
             // Special handling for multikey mandatory indices.
             if (predsOverLeadingField.end() != std::find(predsOverLeadingField.begin(),
                                                          predsOverLeadingField.end(),
@@ -591,14 +792,42 @@ void PlanEnumerator::enumerateOneIndex(const IndexToPredMap& idxToFirst,
     for (IndexToPredMap::const_iterator it = idxToFirst.begin(); it != idxToFirst.end(); ++it) {
         const IndexEntry& thisIndex = (*_indices)[it->first];
 
-        // If the index is multikey, we only assign one pred to it.  We also skip
-        // compounding.  TODO: is this also true for 2d and 2dsphere indices?  can they be
-        // multikey but still compoundable?
-        if (thisIndex.multikey) {
-            // Since the index is multikey, we can only use one of the predicates over the leading
-            // field of the index. However, we do not know which of these predicates is most
-            // selective. Therefore, we will generate a plan for each so that they can be ranked
-            // against each other.
+        if (thisIndex.multikey && !thisIndex.multikeyPaths.empty()) {
+            // We have path-level information about what causes 'thisIndex' to be multikey and can
+            // use this information to get tighter bounds by assigning additional predicates to the
+            // index.
+            //
+            // Depending on the predicates specified and what parts of the leading index field cause
+            // the index to be multikey, we may not be able to assign all of predicates to the
+            // index. Since we don't know which set of predicates is the most selective, we generate
+            // multiple plans and rank them against each other.
+            std::vector<PossibleFirstAssignment> possibleFirstAssignments;
+            getPossibleFirstAssignments(thisIndex, it->second, &possibleFirstAssignments);
+
+            // Output an assignment for each of the possible assignments on the leading index field.
+            for (const auto& firstAssignment : possibleFirstAssignments) {
+                OneIndexAssignment indexAssign;
+                indexAssign.index = it->first;
+                indexAssign.preds = firstAssignment;
+                indexAssign.positions.resize(indexAssign.preds.size(), 0);
+
+                auto compIt = idxToNotFirst.find(indexAssign.index);
+                if (compIt != idxToNotFirst.end()) {
+                    // Assign any predicates on the non-leading index fields to 'indexAssign' that
+                    // don't violate the intersecting and compounding rules for multikey indexes.
+                    assignMultikeySafePredicates(compIt->second, &indexAssign);
+                }
+
+                AndEnumerableState state;
+                state.assignments.push_back(indexAssign);
+                andAssignment->choices.push_back(state);
+            }
+        } else if (thisIndex.multikey) {
+            // We don't have path-level information about what causes 'thisIndex' to be multikey.
+            // We therefore must assume the worst-case scenario: all prefixes of all indexed fields
+            // cause the index to be multikey. We therefore can only assign one of the predicates on
+            // the leading index field to the index. Since we don't know which one is the most
+            // selective, we generate a plan for each predicate and rank them against each other.
             for (auto pred : it->second) {
                 OneIndexAssignment indexAssign;
                 indexAssign.index = it->first;
@@ -712,6 +941,7 @@ void PlanEnumerator::enumerateAndIntersect(const IndexToPredMap& idxToFirst,
         // have at least 2 scans (one predicate per scan as the planner can't
         // intersect bounds when the index is multikey), so we stop here.
         if (oneIndex.multikey && oneAssign.preds.size() > 1) {
+            oneAssign.canCombineBounds = false;
             // One could imagine an enormous auto-generated $all query with too many clauses to
             // have an ixscan per clause.
             static const size_t kMaxSelfIntersections = 10;
@@ -1054,6 +1284,78 @@ void PlanEnumerator::getMultikeyCompoundablePreds(const vector<MatchExpression*>
     }
 }
 
+void PlanEnumerator::assignMultikeySafePredicates(const std::vector<MatchExpression*>& couldAssign,
+                                                  OneIndexAssignment* indexAssignment) {
+    invariant(indexAssignment);
+    invariant(indexAssignment->preds.size() == indexAssignment->positions.size());
+
+    const IndexEntry& thisIndex = (*_indices)[indexAssignment->index];
+    invariant(!thisIndex.multikeyPaths.empty());
+
+    // 'used' is a map from each prefix of a queried path that causes 'thisIndex' to be multikey to
+    // the 'elemMatchExpr' of the associated leaf expression's RelevantTag. We use it to ensure that
+    // leaf expressions sharing a prefix of their queried paths are only both assigned to
+    // 'thisIndex' if they are joined by the same $elemMatch context.
+    StringMap<MatchExpression*> used;
+
+    // Initialize 'used' with the predicates already assigned to 'thisIndex'.
+    for (size_t i = 0; i < indexAssignment->preds.size(); ++i) {
+        const auto* assignedPred = indexAssignment->preds[i];
+        const auto posInIdx = indexAssignment->positions[i];
+
+        invariant(assignedPred->getTag());
+        RelevantTag* rt = static_cast<RelevantTag*>(assignedPred->getTag());
+
+        // 'assignedPred' has already been assigned to 'thisIndex', so canAssignPredToIndex() ought
+        // to return true.
+        const bool shouldHaveAssigned =
+            canAssignPredToIndex(rt, thisIndex.multikeyPaths[posInIdx], &used);
+        if (!shouldHaveAssigned) {
+            // However, there are cases with multikey 2dsphere indexes where the mandatory predicate
+            // is still safe to compound with, even though a prefix of it that causes the index to
+            // be multikey can be shared with the leading index field. The predicates cannot
+            // possibly be joined by an $elemMatch because $near predicates must be specified at the
+            // top-level of the query.
+            invariant(assignedPred->matchType() == MatchExpression::GEO_NEAR);
+        }
+    }
+
+    size_t posInIdx = 0;
+
+    for (const auto keyElem : thisIndex.keyPattern) {
+        // Attempt to assign the predicates to 'thisIndex' according to their position in the index
+        // key pattern.
+        for (auto* couldAssignPred : couldAssign) {
+            invariant(Indexability::nodeCanUseIndexOnOwnField(couldAssignPred));
+            RelevantTag* rt = static_cast<RelevantTag*>(couldAssignPred->getTag());
+
+            if (keyElem.fieldNameStringData() != rt->path) {
+                continue;
+            }
+
+            if (thisIndex.multikeyPaths[posInIdx].empty()) {
+                // We can always intersect or compound the bounds when no prefix of the queried path
+                // causes the index to be multikey.
+                indexAssignment->preds.push_back(couldAssignPred);
+                indexAssignment->positions.push_back(posInIdx);
+                continue;
+            }
+
+            // See if any of the predicates that are already assigned to 'thisIndex' prevent us from
+            // assigning 'couldAssignPred' as well.
+            const bool shouldAssign =
+                canAssignPredToIndex(rt, thisIndex.multikeyPaths[posInIdx], &used);
+
+            if (shouldAssign) {
+                indexAssignment->preds.push_back(couldAssignPred);
+                indexAssignment->positions.push_back(posInIdx);
+            }
+        }
+
+        ++posInIdx;
+    }
+}
+
 bool PlanEnumerator::alreadyCompounded(const set<MatchExpression*>& ixisectAssigned,
                                        const AndAssignment* andAssignment) {
     for (size_t i = 0; i < andAssignment->choices.size(); ++i) {
@@ -1139,7 +1441,7 @@ void PlanEnumerator::compound(const vector<MatchExpression*>& tryCompound,
 //
 
 void PlanEnumerator::tagMemo(size_t id) {
-    LOG(5) << "Tagging memoID " << id << endl;
+    LOG(5) << "Tagging memoID " << id;
     NodeAssignment* assign = _memo[id];
     verify(NULL != assign);
 
@@ -1172,7 +1474,8 @@ void PlanEnumerator::tagMemo(size_t id) {
             for (size_t j = 0; j < assign.preds.size(); ++j) {
                 MatchExpression* pred = assign.preds[j];
                 verify(NULL == pred->getTag());
-                pred->setTag(new IndexTag(assign.index, assign.positions[j]));
+                pred->setTag(
+                    new IndexTag(assign.index, assign.positions[j], assign.canCombineBounds));
             }
         }
     } else {

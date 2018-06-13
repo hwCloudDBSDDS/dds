@@ -70,7 +70,6 @@ public:
         then perhaps stop.
     */
     int objsLeftInBatch() const {
-        _assertIfNull();
         return _putBack.size() + batch.nReturned - batch.pos;
     }
     bool moreInCurrentBatch() {
@@ -97,6 +96,11 @@ public:
 
     /** throws AssertionException if get back { $err : ... } */
     BSONObj nextSafe();
+    BSONObj nextSafeOwned() {
+        BSONObj out = nextSafe();
+        out.shareOwnershipWith(batch.m.sharedBuffer());
+        return out;
+    }
 
     /** peek ahead at items buffered for future next() calls.
         never requests new data from the server.  so peek only effective
@@ -143,7 +147,6 @@ public:
         ResultFlag_ErrSet is the possible exception to that
     */
     bool hasResultFlag(int flag) {
-        _assertIfNull();
         return (resultFlags & flag) != 0;
     }
 
@@ -195,16 +198,6 @@ public:
     }
 
     /**
-     * Used mainly to run commands on connections that doesn't support lazy initialization and
-     * does not support commands through the call interface.
-     *
-     * @param cmd The BSON representation of the command to send.
-     *
-     * @return true if command was sent successfully
-     */
-    bool initCommand();
-
-    /**
      * actually does the query
      */
     bool init();
@@ -219,6 +212,7 @@ public:
         int nReturned{0};
         int pos{0};
         const char* data{nullptr};
+        int remainingBytes{0};
 
     public:
         Batch() = default;
@@ -273,6 +267,7 @@ private:
     std::string _scopedHost;
     std::string _lazyHost;
     bool wasError;
+    BSONVersion _enabledBSONVersion;
 
     void dataReceived() {
         bool retry;
@@ -289,11 +284,6 @@ private:
     void commandDataReceived();
 
     void requestMore();
-
-    // Don't call from a virtual function
-    void _assertIfNull() const {
-        uassert(13348, "connection died", this);
-    }
 
     // init pieces
     void _assembleInit(Message& toSend);

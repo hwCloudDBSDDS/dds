@@ -42,18 +42,17 @@
 #include "mongo/db/db.h"
 #include "mongo/db/index_legacy.h"
 #include "mongo/db/json.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/ops/delete.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/storage/mmap_v1/catalog/namespace_index.h"
-#include "mongo/db/operation_context.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/util/startup_test.h"
 
 namespace mongo {
 
 NamespaceDetails::NamespaceDetails(const DiskLoc& loc, bool capped) {
-    static_assert(sizeof(NamespaceDetails::Extra) <= sizeof(NamespaceDetails),
-                  "sizeof(NamespaceDetails::Extra) <= sizeof(NamespaceDetails)");
+    MONGO_STATIC_ASSERT(sizeof(NamespaceDetails::Extra) <= sizeof(NamespaceDetails));
 
     /* be sure to initialize new fields here -- doesn't default to zeroes the way we use it */
     firstExtent = lastExtent = capExtent = loc;
@@ -97,7 +96,6 @@ NamespaceDetails::Extra* NamespaceDetails::allocExtra(OperationContext* txn,
     Namespace fullns(ns);
     Namespace extrans(fullns.extraName(i));  // throws UserException if ns name too long
 
-    massert(10350, "allocExtra: base ns missing?", this);
     massert(10351, "allocExtra: extra already exists", ni.details(extrans) == 0);
 
     Extra temp;

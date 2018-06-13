@@ -30,9 +30,9 @@
 #include "mongo/executor/connection_pool_test_fixture.h"
 
 #include "mongo/executor/connection_pool.h"
-#include "mongo/unittest/unittest.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/future.h"
+#include "mongo/stdx/memory.h"
+#include "mongo/unittest/unittest.h"
 
 namespace mongo {
 namespace executor {
@@ -56,7 +56,7 @@ private:
 };
 
 #define CONN2ID(swConn)                                                     \
-    [](StatusWith<ConnectionPool::ConnectionHandle> & swConn) {             \
+    [](StatusWith<ConnectionPool::ConnectionHandle>& swConn) {              \
         ASSERT(swConn.isOK());                                              \
         return static_cast<ConnectionImpl*>(swConn.getValue().get())->id(); \
     }(swConn)
@@ -66,7 +66,7 @@ private:
  * another.
  */
 TEST_F(ConnectionPoolTest, SameConn) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>());
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
 
     // Grab and stash an id for the first request
     size_t conn1Id = 0;
@@ -98,7 +98,7 @@ TEST_F(ConnectionPoolTest, SameConn) {
  * Verify that a failed connection isn't returned to the pool
  */
 TEST_F(ConnectionPoolTest, FailedConnDifferentConn) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>());
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
 
     // Grab the first connection and indicate that it failed
     size_t conn1Id = 0;
@@ -131,7 +131,7 @@ TEST_F(ConnectionPoolTest, FailedConnDifferentConn) {
  * connections.
  */
 TEST_F(ConnectionPoolTest, DifferentHostDifferentConn) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>());
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
 
     // Conn 1 from port 30000
     size_t conn1Id = 0;
@@ -163,7 +163,7 @@ TEST_F(ConnectionPoolTest, DifferentHostDifferentConn) {
  * Verify that not returning handle's to the pool spins up new connections.
  */
 TEST_F(ConnectionPoolTest, DifferentConnWithoutReturn) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>());
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
 
     // Get the first connection, move it out rather than letting it return
     ConnectionPool::ConnectionHandle conn1;
@@ -199,7 +199,7 @@ TEST_F(ConnectionPoolTest, DifferentConnWithoutReturn) {
  * Note that the lack of pushSetup() calls delays the get.
  */
 TEST_F(ConnectionPoolTest, TimeoutOnSetup) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>());
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
 
     bool notOk = false;
 
@@ -234,7 +234,7 @@ TEST_F(ConnectionPoolTest, refreshHappens) {
 
     ConnectionPool::Options options;
     options.refreshRequirement = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), options);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
     auto now = Date_t::now();
 
@@ -270,7 +270,7 @@ TEST_F(ConnectionPoolTest, refreshTimeoutHappens) {
     ConnectionPool::Options options;
     options.refreshRequirement = Milliseconds(1000);
     options.refreshTimeout = Milliseconds(2000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), options);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
     auto now = Date_t::now();
 
@@ -338,7 +338,7 @@ TEST_F(ConnectionPoolTest, refreshTimeoutHappens) {
  * Verify that requests are served in expiration order, not insertion order
  */
 TEST_F(ConnectionPoolTest, requestsServedByUrgency) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>());
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
 
     bool reachedA = false;
     bool reachedB = false;
@@ -385,7 +385,7 @@ TEST_F(ConnectionPoolTest, maxPoolRespected) {
     ConnectionPool::Options options;
     options.minConnections = 1;
     options.maxConnections = 2;
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), options);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
     ConnectionPool::ConnectionHandle conn1;
     ConnectionPool::ConnectionHandle conn2;
@@ -445,7 +445,7 @@ TEST_F(ConnectionPoolTest, minPoolRespected) {
     options.maxConnections = 3;
     options.refreshRequirement = Milliseconds(1000);
     options.refreshTimeout = Milliseconds(2000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), options);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
     auto now = Date_t::now();
 
@@ -554,7 +554,7 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappens) {
     options.refreshRequirement = Milliseconds(5000);
     options.refreshTimeout = Milliseconds(5000);
     options.hostTimeout = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), options);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
     auto now = Date_t::now();
 
@@ -603,7 +603,7 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensMoreGetsDelay) {
     options.refreshRequirement = Milliseconds(5000);
     options.refreshTimeout = Milliseconds(5000);
     options.hostTimeout = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), options);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
     auto now = Date_t::now();
 
@@ -665,7 +665,7 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensCheckoutDelays) {
     options.refreshRequirement = Milliseconds(5000);
     options.refreshTimeout = Milliseconds(5000);
     options.hostTimeout = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), options);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
     auto now = Date_t::now();
 
@@ -745,7 +745,7 @@ TEST_F(ConnectionPoolTest, dropConnections) {
     options.maxConnections = 1;
     options.refreshRequirement = Seconds(1);
     options.refreshTimeout = Seconds(2);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), options);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
     auto now = Date_t::now();
     PoolImpl::setNow(now);

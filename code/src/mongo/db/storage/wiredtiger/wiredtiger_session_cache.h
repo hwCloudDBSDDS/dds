@@ -1,7 +1,7 @@
 // wiredtiger_session_cache.h
 
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2016 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -46,6 +46,7 @@
 namespace mongo {
 
 class WiredTigerKVEngine;
+class WiredTigerSessionCache;
 
 class WiredTigerCachedCursor {
 public:
@@ -68,14 +69,24 @@ public:
      * Creates a new WT session on the specified connection.
      *
      * @param conn WT connection
-     * @param cachePartition If the session comes from the session cache, this indicates to
-     *          which partition it should be returned. Value of -1 means it doesn't come from
-     *          cache and that it should not be cached, but closed directly.
-     * @param epoch In which session cache cleanup epoch was this session instantiated. Value
-     *          of -1 means that this value is not necessary since the session will not be
-     *          cached.
+     * @param epoch In which session cache cleanup epoch was this session instantiated.
+     * @param cursorEpoch In which cursor cache cleanup epoch was this session instantiated.
      */
-    WiredTigerSession(WT_CONNECTION* conn, int epoch = -1);
+    WiredTigerSession(WT_CONNECTION* conn, uint64_t epoch = 0, uint64_t cursorEpoch = 0);
+
+    /**
+     * Creates a new WT session on the specified connection.
+     *
+     * @param conn WT connection
+     * @param cache The WiredTigerSessionCache that owns this session.
+     * @param epoch In which session cache cleanup epoch was this session instantiated.
+     * @param cursorEpoch In which cursor cache cleanup epoch was this session instantiated.
+     */
+    WiredTigerSession(WT_CONNECTION* conn,
+                      WiredTigerSessionCache* cache,
+                      uint64_t epoch = 0,
+                      uint64_t cursorEpoch = 0);
+
     ~WiredTigerSession();
 
     WT_SESSION* getSession() const {
@@ -110,9 +121,16 @@ private:
         return _epoch;
     }
 
+    // Used internally by WiredTigerSessionCache
+    uint64_t _getCursorEpoch() const {
+        return _cursorEpoch;
+    }
+
     const uint64_t _epoch;
-    WT_SESSION* _session;  // owned
-    CursorCache _cursors;  // owned
+    uint64_t _cursorEpoch;
+    WiredTigerSessionCache* _cache;  // not owned
+    WT_SESSION* _session;            // owned
+    CursorCache _cursors;            // owned
     uint64_t _cursorGen;
     int _cursorsCached, _cursorsOut;
 };
@@ -128,23 +146,31 @@ public:
     ~WiredTigerSessionCache();
 
     /**
-     * Returns a previously released session for reuse, or creates a new session.
+     * This deleter automatically releases WiredTigerSession objects when no longer needed.
+     */
+    class WiredTigerSessionDeleter {
+    public:
+        void operator()(WiredTigerSession* session) const;
+    };
+
+    /**
+     * Returns a smart pointer to a previously released session for reuse, or creates a new session.
      * This method must only be called while holding the global lock to avoid races with
      * shuttingDown, but otherwise is thread safe.
      */
-    WiredTigerSession* getSession();
-
-    /**
-     * Returns a session to the cache for later reuse. If closeAll was called between getting this
-     * session and releasing it, the session is directly released. This method is thread safe.
-     */
-    void releaseSession(WiredTigerSession* session);
+    std::unique_ptr<WiredTigerSession, WiredTigerSessionDeleter> getSession();
 
     /**
      * Free all cached sessions and ensures that previously acquired sessions will be freed on
      * release.
      */
     void closeAll();
+
+    /**
+     * Closes all cached cursors and ensures that previously opened cursors will be closed on
+     * release.
+     */
+    void closeAllCursors();
 
     /**
      * Transitions the cache to shutting down mode. Any already released sessions are freed and
@@ -174,6 +200,10 @@ public:
 
     void setJournalListener(JournalListener* jl);
 
+    uint64_t getCursorEpoch() const {
+        return _cursorEpoch.load();
+    }
+
 private:
     WiredTigerKVEngine* _engine;  // not owned, might be NULL
     WT_CONNECTION* _conn;         // not owned
@@ -192,6 +222,9 @@ private:
     // Bumped when all open sessions need to be closed
     AtomicUInt64 _epoch;  // atomic so we can check it outside of the lock
 
+    // Bumped when all open cursors need to be closed
+    AtomicUInt64 _cursorEpoch;  // atomic so we can check it outside of the lock
+
     // Counter and critical section mutex for waitUntilDurable
     AtomicUInt32 _lastSyncTime;
     stdx::mutex _lastSyncMutex;
@@ -200,5 +233,18 @@ private:
     JournalListener* _journalListener = &NoOpJournalListener::instance;
     // Protects _journalListener.
     stdx::mutex _journalListenerMutex;
+
+    /**
+     * Returns a session to the cache for later reuse. If closeAll was called between getting this
+     * session and releasing it, the session is directly released. This method is thread safe.
+     */
+    void releaseSession(WiredTigerSession* session);
 };
+
+/**
+ * A unique handle type for WiredTigerSession pointers obtained from a WiredTigerSessionCache.
+ */
+typedef std::unique_ptr<WiredTigerSession,
+                        typename WiredTigerSessionCache::WiredTigerSessionDeleter>
+    UniqueWiredTigerSession;
 }  // namespace

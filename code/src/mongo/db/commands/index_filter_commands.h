@@ -29,8 +29,8 @@
 #pragma once
 
 #include "mongo/db/commands.h"
-#include "mongo/db/query/query_settings.h"
 #include "mongo/db/query/plan_cache.h"
+#include "mongo/db/query/query_settings.h"
 
 namespace mongo {
 
@@ -70,7 +70,7 @@ public:
              std::string& errmsg,
              BSONObjBuilder& result);
 
-    virtual bool isWriteCommandForConfigServer() const;
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override;
 
     virtual bool slaveOk() const;
 
@@ -82,7 +82,7 @@ public:
      * One action type defined for index filter commands:
      * - planCacheIndexFilter
      */
-    virtual Status checkAuthForCommand(ClientBasic* client,
+    virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
                                        const BSONObj& cmdObj);
 

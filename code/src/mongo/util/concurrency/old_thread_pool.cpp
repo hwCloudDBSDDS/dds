@@ -60,6 +60,14 @@ OldThreadPool::OldThreadPool(const DoNotStartThreadsTag&,
                              const std::string& threadNamePrefix)
     : _pool(makeOptions(nThreads, threadNamePrefix)) {}
 
+std::size_t OldThreadPool::getNumThreads() const {
+    return _pool.getStats().numThreads;
+}
+
+ThreadPool::Stats OldThreadPool::getStats() const {
+    return _pool.getStats();
+}
+
 void OldThreadPool::startThreads() {
     _pool.startup();
 }
@@ -69,7 +77,7 @@ void OldThreadPool::join() {
 }
 
 void OldThreadPool::schedule(Task task) {
-    fassert(28705, _pool.schedule(task));
+    fassert(28705, _pool.schedule(std::move(task)));
 }
 
 }  // namespace mongo

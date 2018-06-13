@@ -37,6 +37,7 @@
 #include "mongo/db/ftdc/constants.h"
 #include "mongo/db/ftdc/util.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -55,11 +56,17 @@ std::tuple<BSONObj, Date_t> FTDCCollectorCollection::collect(Client* client) {
 
     BSONObjBuilder builder;
 
-    Date_t start = client->getServiceContext()->getClockSource()->now();
+    Date_t start = client->getServiceContext()->getPreciseClockSource()->now();
     Date_t end;
     bool firstLoop = true;
 
     builder.appendDate(kFTDCCollectStartField, start);
+
+    // All collectors should be ok seeing the inconsistent states in the middle of replication
+    // batches. This is desirable because we want to be able to collect data in the middle of
+    // batches that are taking a long time.
+    auto txn = client->makeOperationContext();
+    txn->lockState()->setShouldConflictWithSecondaryBatchApplication(false);
 
     for (auto& collector : _collectors) {
         BSONObjBuilder subObjBuilder(builder.subobjStart(collector->name()));
@@ -69,7 +76,7 @@ std::tuple<BSONObj, Date_t> FTDCCollectorCollection::collect(Client* client) {
         Date_t now = start;
 
         if (!firstLoop) {
-            now = client->getServiceContext()->getClockSource()->now();
+            now = client->getServiceContext()->getPreciseClockSource()->now();
         }
 
         firstLoop = false;
@@ -77,14 +84,11 @@ std::tuple<BSONObj, Date_t> FTDCCollectorCollection::collect(Client* client) {
         subObjBuilder.appendDate(kFTDCCollectStartField, now);
 
         {
-            // Create a operation context per command so that we do not share operation contexts
-            // across multiple command invocations.
-            auto txn = client->makeOperationContext();
-
+            ScopedTransaction st(txn.get(), MODE_IS);
             collector->collect(txn.get(), subObjBuilder);
         }
 
-        end = client->getServiceContext()->getClockSource()->now();
+        end = client->getServiceContext()->getPreciseClockSource()->now();
         subObjBuilder.appendDate(kFTDCCollectEndField, end);
     }
 

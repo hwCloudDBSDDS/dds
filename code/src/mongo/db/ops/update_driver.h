@@ -43,6 +43,9 @@
 
 namespace mongo {
 
+class CollatorInterface;
+class OperationContext;
+
 class UpdateDriver {
 public:
     struct Options;
@@ -67,7 +70,8 @@ public:
      * Returns Status::OK() if the document can be used. If there are any error or
      * conflicts along the way then those errors will be returned.
      */
-    Status populateDocumentWithQueryFields(const BSONObj& query,
+    Status populateDocumentWithQueryFields(OperationContext* txn,
+                                           const BSONObj& query,
                                            const std::vector<FieldRef*>* immutablePaths,
                                            mutablebson::Document& doc) const;
 
@@ -131,6 +135,13 @@ public:
     bool needMatchDetails() const {
         return _positional;
     }
+
+    /**
+     * Set the collator which will be used by all of the UpdateDriver's underlying modifiers.
+     *
+     * 'collator' must outlive the UpdateDriver.
+     */
+    void setCollator(const CollatorInterface* collator);
 
 private:
     /** Resets the state of the class associated with mods (not the error state) */

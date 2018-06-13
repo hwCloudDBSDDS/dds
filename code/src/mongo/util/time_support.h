@@ -37,54 +37,16 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/stdx/chrono.h"
+#include "mongo/stdx/mutex.h"
+#include "mongo/util/duration.h"
 
 namespace mongo {
 
 template <typename Allocator>
 class StringBuilderImpl;
 
-using Microseconds = stdx::chrono::microseconds;
-using Milliseconds = stdx::chrono::milliseconds;
-using Seconds = stdx::chrono::seconds;
-using Minutes = stdx::chrono::minutes;
-using Hours = stdx::chrono::hours;
-using stdx::chrono::duration_cast;
-
 void time_t_to_Struct(time_t t, struct tm* buf, bool local = false);
 std::string time_t_to_String_short(time_t t);
-
-//
-// Operators for putting durations to streams. Note that these will
-// *not* normally be found by ADL since the duration types are
-// typedefs, but see the handling of chrono::duration in
-// logstream_builder.h for why they are useful.
-//
-
-std::ostream& operator<<(std::ostream& os, Microseconds us);
-std::ostream& operator<<(std::ostream& os, Milliseconds ms);
-std::ostream& operator<<(std::ostream& os, Seconds s);
-
-template <typename Allocator>
-StringBuilderImpl<Allocator>& operator<<(StringBuilderImpl<Allocator>& os, Microseconds us);
-
-template <typename Allocator>
-StringBuilderImpl<Allocator>& operator<<(StringBuilderImpl<Allocator>& os, Milliseconds ms);
-
-template <typename Allocator>
-StringBuilderImpl<Allocator>& operator<<(StringBuilderImpl<Allocator>& os, Seconds s);
-
-/**
- * Convenience method for reading the count of a duration with specified units.
- *
- * Use when logging or comparing to integers, to ensure that you're using
- * the units you intend.
- *
- * E.g., log() << durationCount<Seconds>(some duration) << " seconds";
- */
-template <typename DOut, typename DIn>
-long long durationCount(DIn d) {
-    return duration_cast<DOut>(d).count();
-}
 
 /**
  * Representation of a point in time, with millisecond resolution and capable
@@ -181,6 +143,8 @@ public:
 
     /*
      * Returns a system clock time_point representing the same point in time as this Date_t.
+     * Warning: careful when using with Date_t::max() as it can have a value that is bigger than
+     * time_point can store.
      */
     stdx::chrono::system_clock::time_point toSystemTimePoint() const;
 
@@ -195,6 +159,8 @@ public:
     /**
      * Implicit conversion operator to system clock time point.  Enables use of Date_t with
      * condition_variable::wait_until.
+     * Warning: careful when using with Date_t::max() as it can have a value that is bigger than
+     * time_point can store.
      */
     operator stdx::chrono::system_clock::time_point() const {
         return toSystemTimePoint();
@@ -208,7 +174,7 @@ public:
 
     template <typename Duration>
     Date_t& operator-=(Duration d) {
-        return * this += (-d);
+        return *this += (-d);
     }
 
     template <typename Duration>

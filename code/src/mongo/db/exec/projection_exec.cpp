@@ -29,9 +29,10 @@
 #include "mongo/db/exec/projection_exec.h"
 
 #include "mongo/db/exec/working_set_computed_data.h"
-#include "mongo/db/matcher/expression_parser.h"
 #include "mongo/db/matcher/expression.h"
-#include "mongo/db/query/lite_parsed_query.h"
+#include "mongo/db/matcher/expression_parser.h"
+#include "mongo/db/query/collation/collator_interface.h"
+#include "mongo/db/query/query_request.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -74,6 +75,7 @@ ProjectionExec::ProjectionExec()
 
 ProjectionExec::ProjectionExec(const BSONObj& spec,
                                const MatchExpression* queryExpression,
+                               const CollatorInterface* collator,
                                const ExtensionsCallback& extensionsCallback)
     : _include(true),
       _special(false),
@@ -83,7 +85,8 @@ ProjectionExec::ProjectionExec(const BSONObj& spec,
       _limit(-1),
       _arrayOpType(ARRAY_OP_NORMAL),
       _queryExpression(queryExpression),
-      _hasReturnKey(false) {
+      _hasReturnKey(false),
+      _collator(collator) {
     // Whether we're including or excluding fields.
     enum class IncludeExclude { kUninitialized, kInclude, kExclude };
     IncludeExclude includeExclude = IncludeExclude::kUninitialized;
@@ -126,7 +129,7 @@ ProjectionExec::ProjectionExec(const BSONObj& spec,
                 verify(elemMatchObj.isOwned());
                 _elemMatchObjs.push_back(elemMatchObj);
                 StatusWithMatchExpression statusWithMatcher =
-                    MatchExpressionParser::parse(elemMatchObj, extensionsCallback);
+                    MatchExpressionParser::parse(elemMatchObj, extensionsCallback, _collator);
                 verify(statusWithMatcher.isOK());
                 // And store it in _matchers.
                 _matchers[mongoutils::str::before(e.fieldName(), '.').c_str()] =
@@ -135,18 +138,18 @@ ProjectionExec::ProjectionExec(const BSONObj& spec,
                 add(e.fieldName(), true);
             } else if (mongoutils::str::equals(e2.fieldName(), "$meta")) {
                 verify(String == e2.type());
-                if (e2.valuestr() == LiteParsedQuery::metaTextScore) {
+                if (e2.valuestr() == QueryRequest::metaTextScore) {
                     _meta[e.fieldName()] = META_TEXT_SCORE;
-                } else if (e2.valuestr() == LiteParsedQuery::metaSortKey) {
+                } else if (e2.valuestr() == QueryRequest::metaSortKey) {
                     _sortKeyMetaFields.push_back(e.fieldName());
                     _meta[_sortKeyMetaFields.back()] = META_SORT_KEY;
-                } else if (e2.valuestr() == LiteParsedQuery::metaRecordId) {
+                } else if (e2.valuestr() == QueryRequest::metaRecordId) {
                     _meta[e.fieldName()] = META_RECORDID;
-                } else if (e2.valuestr() == LiteParsedQuery::metaGeoNearPoint) {
+                } else if (e2.valuestr() == QueryRequest::metaGeoNearPoint) {
                     _meta[e.fieldName()] = META_GEONEAR_POINT;
-                } else if (e2.valuestr() == LiteParsedQuery::metaGeoNearDistance) {
+                } else if (e2.valuestr() == QueryRequest::metaGeoNearDistance) {
                     _meta[e.fieldName()] = META_GEONEAR_DIST;
-                } else if (e2.valuestr() == LiteParsedQuery::metaIndexKey) {
+                } else if (e2.valuestr() == QueryRequest::metaIndexKey) {
                     _hasReturnKey = true;
                 } else {
                     // This shouldn't happen, should be caught by parsing.
@@ -250,7 +253,7 @@ Status ProjectionExec::transform(WorkingSetMember* member) const {
 
         member->obj = Snapshotted<BSONObj>(SnapshotId(), builder.obj());
         member->keyData.clear();
-        member->loc = RecordId();
+        member->recordId = RecordId();
         member->transitionToOwnedObj();
         return Status::OK();
     }
@@ -347,14 +350,14 @@ Status ProjectionExec::transform(WorkingSetMember* member) const {
                 return sortKeyMetaStatus;
             }
         } else if (META_RECORDID == it->second) {
-            bob.append(it->first, static_cast<long long>(member->loc.repr()));
+            bob.append(it->first, static_cast<long long>(member->recordId.repr()));
         }
     }
 
     BSONObj newObj = bob.obj();
     member->obj = Snapshotted<BSONObj>(SnapshotId(), newObj);
     member->keyData.clear();
-    member->loc = RecordId();
+    member->recordId = RecordId();
     member->transitionToOwnedObj();
 
     return Status::OK();

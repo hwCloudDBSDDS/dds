@@ -69,8 +69,8 @@ using std::vector;
 
 AuthInfo internalSecurity;
 
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser,
-                                     MONGO_NO_PREREQUISITES)(InitializerContext* context) {
+MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, MONGO_NO_PREREQUISITES)
+(InitializerContext* context) {
     User* user = new User(UserName("__system", "local"));
 
     user->incrementRefCount();  // Pin this user so the ref count never drops below 1.
@@ -107,12 +107,10 @@ const BSONObj AuthorizationManager::versionDocumentQuery = BSON("_id"
 
 const std::string AuthorizationManager::schemaVersionFieldName = "currentVersion";
 
-#ifndef _MSC_EXTENSIONS
 const int AuthorizationManager::schemaVersion24;
 const int AuthorizationManager::schemaVersion26Upgrade;
 const int AuthorizationManager::schemaVersion26Final;
 const int AuthorizationManager::schemaVersion28SCRAM;
-#endif
 
 /**
  * Guard object for synchronizing accesses to data cached in AuthorizationManager instances.
@@ -268,6 +266,14 @@ std::unique_ptr<AuthorizationSession> AuthorizationManager::makeAuthorizationSes
         _externalState->makeAuthzSessionExternalState(this));
 }
 
+void AuthorizationManager::setShouldValidateAuthSchemaOnStartup(bool validate) {
+    _startupAuthSchemaValidation = validate;
+}
+
+bool AuthorizationManager::shouldValidateAuthSchemaOnStartup() {
+    return _startupAuthSchemaValidation;
+}
+
 Status AuthorizationManager::getAuthorizationVersion(OperationContext* txn, int* version) {
     CacheGuard guard(this, CacheGuard::fetchSynchronizationManual);
     int newVersion = _version;
@@ -279,7 +285,7 @@ Status AuthorizationManager::getAuthorizationVersion(OperationContext* txn, int*
         guard.endFetchPhase();
         if (!status.isOK()) {
             warning() << "Problem fetching the stored schema version of authorization data: "
-                      << status;
+                      << redact(status);
             *version = schemaVersionInvalid;
             return status;
         }
@@ -383,7 +389,8 @@ Status AuthorizationManager::_initializeUserFromPrivilegeDocument(User* user,
                       mongoutils::str::stream() << "User name from privilege document \""
                                                 << userName
                                                 << "\" doesn't match name of provided User \""
-                                                << user->getName().getUser() << "\"",
+                                                << user->getName().getUser()
+                                                << "\"",
                       0);
     }
 
@@ -415,18 +422,26 @@ Status AuthorizationManager::getUserDescription(OperationContext* txn,
 
 Status AuthorizationManager::getRoleDescription(OperationContext* txn,
                                                 const RoleName& roleName,
-                                                bool showPrivileges,
+                                                PrivilegeFormat privileges,
                                                 BSONObj* result) {
-    return _externalState->getRoleDescription(txn, roleName, showPrivileges, result);
+    return _externalState->getRoleDescription(txn, roleName, privileges, result);
 }
+
+Status AuthorizationManager::getRolesDescription(OperationContext* txn,
+                                                 const std::vector<RoleName>& roleName,
+                                                 PrivilegeFormat privileges,
+                                                 BSONObj* result) {
+    return _externalState->getRolesDescription(txn, roleName, privileges, result);
+}
+
 
 Status AuthorizationManager::getRoleDescriptionsForDB(OperationContext* txn,
                                                       const std::string dbname,
-                                                      bool showPrivileges,
+                                                      PrivilegeFormat privileges,
                                                       bool showBuiltinRoles,
                                                       vector<BSONObj>* result) {
     return _externalState->getRoleDescriptionsForDB(
-        txn, dbname, showPrivileges, showBuiltinRoles, result);
+        txn, dbname, privileges, showBuiltinRoles, result);
 }
 
 Status AuthorizationManager::acquireUser(OperationContext* txn,
@@ -486,7 +501,8 @@ Status AuthorizationManager::acquireUser(OperationContext* txn,
             case schemaVersion24:
                 status = Status(ErrorCodes::AuthSchemaIncompatible,
                                 mongoutils::str::stream()
-                                    << "Authorization data schema version " << schemaVersion24
+                                    << "Authorization data schema version "
+                                    << schemaVersion24
                                     << " not supported after MongoDB version 2.6.");
                 break;
         }
@@ -671,7 +687,8 @@ StatusWith<UserName> extractUserNameFromIdString(StringData idstr) {
         return StatusWith<UserName>(ErrorCodes::FailedToParse,
                                     mongoutils::str::stream()
                                         << "_id entries for user documents must be of "
-                                           "the form <dbname>.<username>.  Found: " << idstr);
+                                           "the form <dbname>.<username>.  Found: "
+                                        << idstr);
     }
     return StatusWith<UserName>(
         UserName(idstr.substr(splitPoint + 1), idstr.substr(0, splitPoint)));
@@ -704,7 +721,8 @@ void AuthorizationManager::_invalidateRelevantCacheData(const char* op,
 
         if (!userName.isOK()) {
             warning() << "Invalidating user cache based on user being updated failed, will "
-                         "invalidate the entire cache instead: " << userName.getStatus() << endl;
+                         "invalidate the entire cache instead: "
+                      << userName.getStatus();
             invalidateUserCache();
             return;
         }
@@ -715,7 +733,7 @@ void AuthorizationManager::_invalidateRelevantCacheData(const char* op,
 }
 
 void AuthorizationManager::logOp(
-    OperationContext* txn, const char* op, const char* ns, const BSONObj& o, BSONObj* o2) {
+    OperationContext* txn, const char* op, const char* ns, const BSONObj& o, const BSONObj* o2) {
     if (appliesToAuthzData(op, ns, o)) {
         _externalState->logOp(txn, op, ns, o, o2);
         _invalidateRelevantCacheData(op, ns, o, o2);

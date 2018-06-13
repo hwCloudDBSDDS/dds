@@ -11,10 +11,7 @@ load("jstests/replsets/rslib.js");
     // Initiate set with default for write concern
     var config = replTest.getReplSetConfig();
     config.settings = {};
-    config.settings.getLastErrorDefaults = {
-        'w': 3,
-        'wtimeout': 20000
-    };
+    config.settings.getLastErrorDefaults = {'w': 3, 'wtimeout': 5 * 60 * 1000};
     config.settings.heartbeatTimeoutSecs = 15;
     // Prevent node 2 from becoming primary, as we will attempt to set it to hidden later.
     config.members[2].priority = 0;
@@ -57,13 +54,13 @@ load("jstests/replsets/rslib.js");
     slaves[0].setSlaveOk();
     slaves[1].setSlaveOk();
 
-    var slave0count = slaves[0].getDB(testDB).foo.count();
+    var slave0count = slaves[0].getDB(testDB).foo.find().itcount();
     assert(slave0count == docNum, "Slave 0 has " + slave0count + " of " + docNum + " documents!");
 
-    var slave1count = slaves[1].getDB(testDB).foo.count();
+    var slave1count = slaves[1].getDB(testDB).foo.find().itcount();
     assert(slave1count == docNum, "Slave 1 has " + slave1count + " of " + docNum + " documents!");
 
-    var master1count = master.getDB(testDB).foo.count();
+    var master1count = master.getDB(testDB).foo.find().itcount();
     assert(master1count == docNum, "Master has " + master1count + " of " + docNum + " documents!");
 
     print("replset5.js reconfigure with hidden=1");

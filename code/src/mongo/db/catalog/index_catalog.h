@@ -33,9 +33,11 @@
 #include <vector>
 
 #include "mongo/db/catalog/index_catalog_entry.h"
+#include "mongo/db/index/multikey_paths.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/record_id.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/platform/unordered_map.h"
 
@@ -46,6 +48,7 @@ class Collection;
 
 class IndexDescriptor;
 class IndexAccessMethod;
+struct InsertDeleteOptions;
 
 /**
  * how many: 1 per Collection
@@ -80,11 +83,14 @@ public:
     /**
      * Returns the spec for the id index to create by default for this collection.
      */
-    BSONObj getDefaultIdIndexSpec() const;
+    BSONObj getDefaultIdIndexSpec(
+        ServerGlobalParams::FeatureCompatibility::Version featureCompatibilityVersion) const;
 
     IndexDescriptor* findIdIndex(OperationContext* txn) const;
 
     /**
+     * Find index by name.  The index name uniquely identifies an index.
+     *
      * @return null if cannot find
      */
     IndexDescriptor* findIndexByName(OperationContext* txn,
@@ -92,11 +98,31 @@ public:
                                      bool includeUnfinishedIndexes = false) const;
 
     /**
-     * @return null if cannot find
+     * Find index by matching key pattern and collation spec.  The key pattern and collation spec
+     * uniquely identify an index.
+     *
+     * Collation is specified as a normalized collation spec as returned by
+     * CollationInterface::getSpec.  An empty object indicates the simple collation.
+     *
+     * @return null if cannot find index, otherwise the index with a matching key pattern and
+     * collation.
      */
-    IndexDescriptor* findIndexByKeyPattern(OperationContext* txn,
-                                           const BSONObj& key,
-                                           bool includeUnfinishedIndexes = false) const;
+    IndexDescriptor* findIndexByKeyPatternAndCollationSpec(
+        OperationContext* txn,
+        const BSONObj& key,
+        const BSONObj& collationSpec,
+        bool includeUnfinishedIndexes = false) const;
+
+    /**
+     * Find indexes with a matching key pattern, putting them into the vector 'matches'.  The key
+     * pattern alone does not uniquely identify an index.
+     *
+     * Consider using 'findIndexByName' if expecting to match one index.
+     */
+    void findIndexesByKeyPattern(OperationContext* txn,
+                                 const BSONObj& key,
+                                 bool includeUnfinishedIndexes,
+                                 std::vector<IndexDescriptor*>* matches) const;
 
     /**
      * Returns an index suitable for shard key range scans.
@@ -104,6 +130,7 @@ public:
      * This index:
      * - must be prefixed by 'shardKey', and
      * - must not be a partial index.
+     * - must have the simple collation.
      *
      * If the parameter 'requireSingleKey' is true, then this index additionally must not be
      * multi-key.
@@ -185,9 +212,10 @@ public:
 
     /**
      * Call this only on an empty collection from inside a WriteUnitOfWork. Index creation on an
-     * empty collection can be rolled back as part of a larger WUOW.
+     * empty collection can be rolled back as part of a larger WUOW. Returns the full specification
+     * of the created index, as it is stored in this index catalog.
      */
-    Status createIndexOnEmptyCollection(OperationContext* txn, BSONObj spec);
+    StatusWith<BSONObj> createIndexOnEmptyCollection(OperationContext* txn, BSONObj spec);
 
     StatusWith<BSONObj> prepareSpecForCreate(OperationContext* txn, const BSONObj& original) const;
 
@@ -210,7 +238,21 @@ public:
 
     // ---- modify single index
 
-    bool isMultikey(OperationContext* txn, const IndexDescriptor* idex);
+    /**
+     * Returns true if the index 'idx' is multikey, and returns false otherwise.
+     */
+    bool isMultikey(OperationContext* txn, const IndexDescriptor* idx);
+
+    /**
+     * Returns the path components that cause the index 'idx' to be multikey if the index supports
+     * path-level multikey tracking, and returns an empty vector if path-level multikey tracking
+     * isn't supported.
+     *
+     * If the index supports path-level multikey tracking but isn't multikey, then this function
+     * returns a vector with size equal to the number of elements in the index key pattern where
+     * each element in the vector is an empty set.
+     */
+    MultikeyPaths getMultikeyPaths(OperationContext* txn, const IndexDescriptor* idx);
 
     // --- these probably become private?
 
@@ -263,10 +305,25 @@ public:
 
     // ----- data modifiers ------
 
-    // this throws for now
-    Status indexRecords(OperationContext* txn, const std::vector<BsonRecord>& bsonRecords);
+    /**
+     * When 'keysInsertedOut' is not null, it will be set to the number of index keys inserted by
+     * this operation.
+     *
+     * This method may throw.
+     */
+    Status indexRecords(OperationContext* txn,
+                        const std::vector<BsonRecord>& bsonRecords,
+                        int64_t* keysInsertedOut);
 
-    void unindexRecord(OperationContext* txn, const BSONObj& obj, const RecordId& loc, bool noWarn);
+    /**
+     * When 'keysDeletedOut' is not null, it will be set to the number of index keys removed by
+     * this operation.
+     */
+    void unindexRecord(OperationContext* txn,
+                       const BSONObj& obj,
+                       const RecordId& loc,
+                       bool noWarn,
+                       int64_t* keysDeletedOut);
 
     // ------- temp internal -------
 
@@ -280,6 +337,14 @@ public:
     // public static helpers
 
     static BSONObj fixIndexKey(const BSONObj& key);
+
+    /**
+     * Fills out 'options' in order to indicate whether to allow dups or relax
+     * index constraints, as needed by replication.
+     */
+    static void prepareInsertDeleteOptions(OperationContext* txn,
+                                           const IndexDescriptor* desc,
+                                           InsertDeleteOptions* options);
 
 private:
     static const BSONObj _idObj;  // { _id : 1 }
@@ -297,17 +362,20 @@ private:
 
     Status _indexFilteredRecords(OperationContext* txn,
                                  IndexCatalogEntry* index,
-                                 const std::vector<BsonRecord>& bsonRecords);
+                                 const std::vector<BsonRecord>& bsonRecords,
+                                 int64_t* keysInsertedOut);
 
     Status _indexRecords(OperationContext* txn,
                          IndexCatalogEntry* index,
-                         const std::vector<BsonRecord>& bsonRecords);
+                         const std::vector<BsonRecord>& bsonRecords,
+                         int64_t* keysInsertedOut);
 
     Status _unindexRecord(OperationContext* txn,
                           IndexCatalogEntry* index,
                           const BSONObj& obj,
                           const RecordId& loc,
-                          bool logIfError);
+                          bool logIfError,
+                          int64_t* keysDeletedOut);
 
     /**
      * this does no sanity checks
@@ -331,9 +399,11 @@ private:
     // conform to the standard for insertion.  This function adds the 'v' field if it didn't
     // exist, removes the '_id' field if it exists, applies plugin-level transformations if
     // appropriate, etc.
-    static BSONObj _fixIndexSpec(const BSONObj& spec);
+    static StatusWith<BSONObj> _fixIndexSpec(OperationContext* txn,
+                                             Collection* collection,
+                                             const BSONObj& spec);
 
-    Status _isSpecOk(const BSONObj& spec) const;
+    Status _isSpecOk(OperationContext* txn, const BSONObj& spec) const;
 
     Status _doesSpecConflictWithExisting(OperationContext* txn, const BSONObj& spec) const;
 

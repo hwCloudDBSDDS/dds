@@ -4,11 +4,9 @@
 
 var options = {
     chunkSize: 1,  // MB
-    mongosOptions: {noAutoSplit: ""}
 };
 
 var st = new ShardingTest({shards: 1, mongos: 1, other: options});
-st.stopBalancer();
 
 var mongos = st.s0;
 var admin = mongos.getDB("admin");
@@ -40,13 +38,15 @@ jsTest.log("Get split points of the chunk using force : true...");
 
 var maxChunkSizeBytes = 1024 * 1024;
 
-var splitKeys = shardAdmin.runCommand({
-    splitVector: coll + "",
-    keyPattern: {_id: 1},
-    min: {_id: 0},
-    max: {_id: MaxKey},
-    force: true
-}).splitKeys;
+var splitKeys = shardAdmin
+                    .runCommand({
+                        splitVector: coll + "",
+                        keyPattern: {_id: 1},
+                        min: {_id: 0},
+                        max: {_id: MaxKey},
+                        force: true
+                    })
+                    .splitKeys;
 
 printjson(splitKeys);
 printjson(coll.stats());

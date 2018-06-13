@@ -35,7 +35,6 @@
 #include <string>
 #include <vector>
 
-
 #include "mongo/base/string_data.h"
 
 namespace mongo {
@@ -61,6 +60,22 @@ inline std::string tolowerString(StringData input) {
     return copy;
 }
 
+inline std::string toAsciiLowerCase(StringData input) {
+    size_t sz = input.size();
+    std::unique_ptr<char[]> line(new char[sz + 1]);
+    char* res = line.get();
+    for (size_t i = 0; i < sz; i++) {
+        char c = input[i];
+        if (c >= 'A' && c <= 'Z') {
+            res[i] = c + 32;
+        } else {
+            res[i] = c;
+        }
+    }
+    res[sz] = 0;
+    return res;
+}
+
 /** Functor for combining lexical and numeric comparisons. */
 class LexNumCmp {
 public:
@@ -83,5 +98,11 @@ private:
 // TODO: Sane-ify core std::string functionality
 // For now, this needs to be near the LexNumCmp or else
 int versionCmp(const StringData rhs, const StringData lhs);
+
+/**
+ * A method to escape whitespace and control characters in strings. For example, the string "\t"
+ * goes to "\\t". If `escape_slash` is true, then "/" goes to "\\/".
+ */
+std::string escape(StringData s, bool escape_slash = false);
 
 }  // namespace mongo

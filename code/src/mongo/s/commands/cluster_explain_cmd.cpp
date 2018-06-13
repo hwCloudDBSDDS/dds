@@ -31,7 +31,6 @@
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/query/explain.h"
-#include "mongo/db/query/lite_parsed_query.h"
 #include "mongo/rpc/metadata/server_selection_metadata.h"
 #include "mongo/s/query/cluster_find.h"
 
@@ -56,7 +55,7 @@ class ClusterExplainCmd : public Command {
 public:
     ClusterExplainCmd() : Command("explain") {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -66,6 +65,7 @@ public:
     virtual bool slaveOk() const {
         return false;
     }
+
     virtual bool slaveOverrideOk() const {
         return true;
     }
@@ -87,9 +87,9 @@ public:
      * the command that you are explaining. The auth check is performed recursively
      * on the nested command.
      */
-    virtual Status checkAuthForCommand(ClientBasic* client,
-                                       const std::string& dbname,
-                                       const BSONObj& cmdObj) {
+    virtual Status checkAuthForOperation(OperationContext* txn,
+                                         const std::string& dbname,
+                                         const BSONObj& cmdObj) {
         if (Object != cmdObj.firstElement().type()) {
             return Status(ErrorCodes::BadValue, "explain command requires a nested object");
         }
@@ -103,7 +103,7 @@ public:
             return Status(ErrorCodes::CommandNotFound, ss);
         }
 
-        return commToExplain->checkAuthForCommand(client, dbname, explainObj);
+        return commToExplain->checkAuthForOperation(txn, dbname, explainObj);
     }
 
     virtual bool run(OperationContext* txn,
@@ -123,11 +123,11 @@ public:
 
         const std::string cmdName = explainObj.firstElementFieldName();
         Command* commToExplain = Command::findCommand(cmdName);
-        if (NULL == commToExplain) {
-            mongoutils::str::stream ss;
-            ss << "Explain failed due to unknown command: " << cmdName;
-            Status explainStatus(ErrorCodes::CommandNotFound, ss);
-            return appendCommandStatus(result, explainStatus);
+        if (!commToExplain) {
+            return appendCommandStatus(
+                result,
+                Status{ErrorCodes::CommandNotFound,
+                       str::stream() << "Explain failed due to unknown command: " << cmdName});
         }
 
         auto readPref =

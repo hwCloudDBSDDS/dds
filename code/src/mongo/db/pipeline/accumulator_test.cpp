@@ -28,9 +28,12 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/pipeline/accumulation_statement.h"
 #include "mongo/db/pipeline/accumulator.h"
 #include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/dbtests/dbtests.h"
 
 namespace AccumulatorTests {
@@ -45,45 +48,51 @@ using std::string;
  * evaluate to the expected results.
  */
 static void assertExpectedResults(
-    std::string accumulator,
+    std::string accumulatorName,
+    const intrusive_ptr<ExpressionContext>& expCtx,
     std::initializer_list<std::pair<std::vector<Value>, Value>> operations) {
-    auto factory = Accumulator::getFactory(accumulator);
+    auto factory = AccumulationStatement::getFactory(accumulatorName);
     for (auto&& op : operations) {
         try {
             // Asserts that result equals expected result when not sharded.
             {
                 boost::intrusive_ptr<Accumulator> accum = factory();
+                accum->injectExpressionContext(expCtx);
                 for (auto&& val : op.first) {
                     accum->process(val, false);
                 }
                 Value result = accum->getValue(false);
-                ASSERT_EQUALS(op.second, result);
+                ASSERT_VALUE_EQ(op.second, result);
                 ASSERT_EQUALS(op.second.getType(), result.getType());
             }
 
             // Asserts that result equals expected result when all input is on one shard.
             {
                 boost::intrusive_ptr<Accumulator> accum = factory();
+                accum->injectExpressionContext(expCtx);
                 boost::intrusive_ptr<Accumulator> shard = factory();
+                shard->injectExpressionContext(expCtx);
                 for (auto&& val : op.first) {
                     shard->process(val, false);
                 }
                 accum->process(shard->getValue(true), true);
                 Value result = accum->getValue(false);
-                ASSERT_EQUALS(op.second, result);
+                ASSERT_VALUE_EQ(op.second, result);
                 ASSERT_EQUALS(op.second.getType(), result.getType());
             }
 
             // Asserts that result equals expected result when each input is on a separate shard.
             {
                 boost::intrusive_ptr<Accumulator> accum = factory();
+                accum->injectExpressionContext(expCtx);
                 for (auto&& val : op.first) {
                     boost::intrusive_ptr<Accumulator> shard = factory();
+                    shard->injectExpressionContext(expCtx);
                     shard->process(val, false);
                     accum->process(shard->getValue(true), true);
                 }
                 Value result = accum->getValue(false);
-                ASSERT_EQUALS(op.second, result);
+                ASSERT_VALUE_EQ(op.second, result);
                 ASSERT_EQUALS(op.second.getType(), result.getType());
             }
         } catch (...) {
@@ -94,45 +103,66 @@ static void assertExpectedResults(
 }
 
 TEST(Accumulators, Avg) {
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext());
     assertExpectedResults(
         "$avg",
-        {// No documents evaluated.
-         {{}, Value(BSONNULL)},
+        expCtx,
+        {
+            // No documents evaluated.
+            {{}, Value(BSONNULL)},
 
-         // One int value is converted to double.
-         {{Value(3)}, Value(3.0)},
-         // One long value is converted to double.
-         {{Value(-4LL)}, Value(-4.0)},
-         // One double value.
-         {{Value(22.6)}, Value(22.6)},
+            // One int value is converted to double.
+            {{Value(3)}, Value(3.0)},
+            // One long value is converted to double.
+            {{Value(-4LL)}, Value(-4.0)},
+            // One double value.
+            {{Value(22.6)}, Value(22.6)},
 
-         // Averaging two ints.
-         {{Value(10), Value(11)}, Value(10.5)},
-         // Averaging two longs.
-         {{Value(10LL), Value(11LL)}, Value(10.5)},
-         // Averaging two doubles.
-         {{Value(10.0), Value(11.0)}, Value(10.5)},
+            // Averaging two ints.
+            {{Value(10), Value(11)}, Value(10.5)},
+            // Averaging two longs.
+            {{Value(10LL), Value(11LL)}, Value(10.5)},
+            // Averaging two doubles.
+            {{Value(10.0), Value(11.0)}, Value(10.5)},
 
-         // The average of an int and a double is a double.
-         {{Value(10), Value(11.0)}, Value(10.5)},
-         // The average of a long and a double is a double.
-         {{Value(5LL), Value(1.0)}, Value(3.0)},
-         // The average of an int and a long is a double.
-         {{Value(5), Value(3LL)}, Value(4.0)},
-         // Averaging an int, long, and double.
-         {{Value(1), Value(2LL), Value(6.0)}, Value(3.0)},
+            // The average of an int and a double is a double.
+            {{Value(10), Value(11.0)}, Value(10.5)},
+            // The average of a long and a double is a double.
+            {{Value(5LL), Value(1.0)}, Value(3.0)},
+            // The average of an int and a long is a double.
+            {{Value(5), Value(3LL)}, Value(4.0)},
+            // Averaging an int, long, and double.
+            {{Value(1), Value(2LL), Value(6.0)}, Value(3.0)},
 
-         // Unlike $sum, two ints do not overflow in the 'total' portion of the average.
-         {{Value(numeric_limits<int>::max()), Value(numeric_limits<int>::max())},
-          Value(static_cast<double>(numeric_limits<int>::max()))},
-         // Two longs do overflow in the 'total' portion of the average.
-         {{Value(numeric_limits<long long>::max()), Value(numeric_limits<long long>::max())},
-          Value(static_cast<double>(numeric_limits<long long>::max()))}});
+            // Unlike $sum, two ints do not overflow in the 'total' portion of the average.
+            {{Value(numeric_limits<int>::max()), Value(numeric_limits<int>::max())},
+             Value(static_cast<double>(numeric_limits<int>::max()))},
+            // Two longs do overflow in the 'total' portion of the average.
+            {{Value(numeric_limits<long long>::max()), Value(numeric_limits<long long>::max())},
+             Value(static_cast<double>(numeric_limits<long long>::max()))},
+
+            // Averaging two decimals.
+            {{Value(Decimal128("-1234567890.1234567889")),
+              Value(Decimal128("-1234567890.1234567891"))},
+             Value(Decimal128("-1234567890.1234567890"))},
+
+            // Averaging two longs and a decimal results in an accurate decimal result.
+            {{Value(1234567890123456788LL),
+              Value(1234567890123456789LL),
+              Value(Decimal128("1234567890123456790.037037036703702"))},
+             Value(Decimal128("1234567890123456789.012345678901234"))},
+
+            // Averaging a double and a decimal
+            {{Value(1.0E22), Value(Decimal128("9999999999999999999999.9999999999"))},
+             Value(Decimal128("9999999999999999999999.99999999995"))},
+        });
 }
 
 TEST(Accumulators, First) {
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext());
     assertExpectedResults(
         "$first",
+        expCtx,
         {// No documents evaluated.
          {{}, Value()},
 
@@ -148,8 +178,10 @@ TEST(Accumulators, First) {
 }
 
 TEST(Accumulators, Last) {
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext());
     assertExpectedResults(
         "$last",
+        expCtx,
         {// No documents evaluated.
          {{}, Value()},
 
@@ -165,8 +197,10 @@ TEST(Accumulators, Last) {
 }
 
 TEST(Accumulators, Min) {
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext());
     assertExpectedResults(
         "$min",
+        expCtx,
         {// No documents evaluated.
          {{}, Value(BSONNULL)},
 
@@ -181,9 +215,18 @@ TEST(Accumulators, Min) {
          {{Value(7), Value()}, Value(7)}});
 }
 
+TEST(Accumulators, MinRespectsCollation) {
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext());
+    expCtx->setCollator(
+        stdx::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString));
+    assertExpectedResults("$min", expCtx, {{{Value("abc"), Value("cba")}, Value("cba")}});
+}
+
 TEST(Accumulators, Max) {
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext());
     assertExpectedResults(
         "$max",
+        expCtx,
         {// No documents evaluated.
          {{}, Value(BSONNULL)},
 
@@ -198,9 +241,18 @@ TEST(Accumulators, Max) {
          {{Value(7), Value()}, Value(7)}});
 }
 
+TEST(Accumulators, MaxRespectsCollation) {
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext());
+    expCtx->setCollator(
+        stdx::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString));
+    assertExpectedResults("$max", expCtx, {{{Value("abc"), Value("cba")}, Value("abc")}});
+}
+
 TEST(Accumulators, Sum) {
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext());
     assertExpectedResults(
         "$sum",
+        expCtx,
         {// No documents evaluated.
          {{}, Value(0)},
 
@@ -231,7 +283,16 @@ TEST(Accumulators, Sum) {
          // Two doubles.
          {{Value(2.5), Value(5.5)}, Value(8.0)},
          // An int, a long, and a double.
-         {{Value(5), Value(99), Value(0.2)}, Value(104.2)},
+         {{Value(5), Value(99LL), Value(0.2)}, Value(104.2)},
+         // Two decimals.
+         {{Value(Decimal128("-10.100")), Value(Decimal128("20.200"))}, Value(Decimal128("10.100"))},
+         // Two longs and a decimal.
+         {{Value(10LL), Value(10LL), Value(Decimal128("10.000"))}, Value(Decimal128("30.000"))},
+         // A double and a decimal.
+         {{Value(2.5), Value(Decimal128("2.5"))}, Value(Decimal128("5.0"))},
+         // An int, long, double and decimal.
+         {{Value(10), Value(10LL), Value(10.5), Value(Decimal128("9.6"))},
+          Value(Decimal128("40.1"))},
 
          // A negative value is summed.
          {{Value(5), Value(-8.5)}, Value(-3.5)},
@@ -249,12 +310,12 @@ TEST(Accumulators, Sum) {
          // An int and a double do not trigger an int overflow.
          {{Value(numeric_limits<int>::max()), Value(1.0)},
           Value(static_cast<long long>(numeric_limits<int>::max()) + 1.0)},
-         // An int and a long overflow.
+         // An int and a long overflow into a double.
          {{Value(1), Value(numeric_limits<long long>::max())},
-          Value(numeric_limits<long long>::max() + 1)},
-         // Two longs overflow.
+          Value(-static_cast<double>(numeric_limits<long long>::min()))},
+         // Two longs overflow into a double.
          {{Value(numeric_limits<long long>::max()), Value(numeric_limits<long long>::max())},
-          Value(numeric_limits<long long>::max() + numeric_limits<long long>::max())},
+          Value(static_cast<double>(numeric_limits<long long>::max()) * 2)},
          // A long and a double do not trigger a long overflow.
          {{Value(numeric_limits<long long>::max()), Value(1.0)},
           Value(numeric_limits<long long>::max() + 1.0)},
@@ -275,6 +336,16 @@ TEST(Accumulators, Sum) {
          {{Value(5), Value(BSONNULL)}, Value(5)},
          // Missing values are ignored.
          {{Value(9), Value()}, Value(9)}});
+}
+
+TEST(Accumulators, AddToSetRespectsCollation) {
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext());
+    expCtx->setCollator(
+        stdx::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kAlwaysEqual));
+    assertExpectedResults(
+        "$addToSet",
+        expCtx,
+        {{{Value("a"), Value("b"), Value("c")}, Value(std::vector<Value>{Value("a")})}});
 }
 
 }  // namespace AccumulatorTests

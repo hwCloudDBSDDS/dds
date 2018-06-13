@@ -7,11 +7,21 @@
     'use strict';
 
     var name = 'disallow_adding_initialized_node1';
-    var replSetA = new ReplSetTest({name: name, nodes: [{rsConfig: {_id: 10}}, ]});
+    var replSetA = new ReplSetTest({
+        name: name,
+        nodes: [
+            {rsConfig: {_id: 10}},
+        ]
+    });
     replSetA.startSet({dbpath: "$set-A-$node"});
     replSetA.initiate();
 
-    var replSetB = new ReplSetTest({name: name, nodes: [{rsConfig: {_id: 20}}, ]});
+    var replSetB = new ReplSetTest({
+        name: name,
+        nodes: [
+            {rsConfig: {_id: 20}},
+        ]
+    });
     replSetB.startSet({dbpath: "$set-B-$node"});
     replSetB.initiate();
 
@@ -54,7 +64,7 @@
                 }
             }
             return false;
-        }, 'Did not see a log entry containing the following message: ' + msg, 10000, 1000);
+        }, 'Did not see a log entry containing the following message: ' + msg, 60000, 1000);
     };
     var msgB = "replica set IDs do not match, ours: " + configB.settings.replicaSetId +
         "; remote node's: " + configA.settings.replicaSetId;

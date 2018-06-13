@@ -80,6 +80,7 @@ std::vector<RemoteCommandRequest> ElectCmdRunner::Algorithm::getRequests() const
             *it,
             "admin",
             replSetElectCmd,
+            nullptr,
             Milliseconds(30 * 1000)));  // trying to match current Socket timeout
     }
 
@@ -107,7 +108,7 @@ void ElectCmdRunner::Algorithm::processResponse(const RemoteCommandRequest& requ
     ++_actualResponses;
 
     if (response.isOK()) {
-        BSONObj res = response.getValue().data;
+        BSONObj res = response.data;
         log() << "received " << res["vote"] << " votes from " << request.target;
         LOG(1) << "full elect res: " << res.toString();
         BSONElement vote(res["vote"]);
@@ -120,7 +121,7 @@ void ElectCmdRunner::Algorithm::processResponse(const RemoteCommandRequest& requ
 
         _receivedVotes += vote._numberInt();
     } else {
-        warning() << "elect command to " << request.target << " failed: " << response.getStatus();
+        warning() << "elect command to " << request.target << " failed: " << response.status;
     }
 }
 
@@ -131,16 +132,15 @@ StatusWith<ReplicationExecutor::EventHandle> ElectCmdRunner::start(
     ReplicationExecutor* executor,
     const ReplicaSetConfig& currentConfig,
     int selfIndex,
-    const std::vector<HostAndPort>& targets,
-    const stdx::function<void()>& onCompletion) {
+    const std::vector<HostAndPort>& targets) {
     _algorithm.reset(new Algorithm(currentConfig, selfIndex, targets, OID::gen()));
-    _runner.reset(new ScatterGatherRunner(_algorithm.get()));
-    return _runner->start(executor, onCompletion);
+    _runner.reset(new ScatterGatherRunner(_algorithm.get(), executor));
+    return _runner->start();
 }
 
-void ElectCmdRunner::cancel(ReplicationExecutor* executor) {
+void ElectCmdRunner::cancel() {
     _isCanceled = true;
-    _runner->cancel(executor);
+    _runner->cancel();
 }
 
 int ElectCmdRunner::getReceivedVotes() const {

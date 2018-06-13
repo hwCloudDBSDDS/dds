@@ -68,6 +68,7 @@
             "    'auth_create_role.js'," + "    'auth_create_user.js'," +
             "    'auth_drop_role.js'," + "    'auth_drop_user.js'," +
             "    'reindex_background.js'," + "    'yield_sort.js'," +
+            "    'create_index_background.js'," +
             "].map(function(file) { return dir + '/' + file; });" + "Random.setRandomSeed();" +
             // run indefinitely
             "while (true) {" + "   try {" +
@@ -225,16 +226,12 @@
             rst.start(secondary.nodeId, {}, true);
         }
 
-        // Wait up to 60 seconds until restarted node is in state secondary
-        rst.waitForState(rst.getSecondaries(), ReplSetTest.State.SECONDARY, 60 * 1000);
+        // Wait up to 5 minutes until restarted node is in state secondary.
+        rst.waitForState(rst.getSecondaries(), ReplSetTest.State.SECONDARY);
 
         // Add new hidden node to replSetTest
-        var hiddenCfg = {
-            restart: true,
-            oplogSize: 1024,
-            dbpath: hiddenDbpath,
-            replSet: replSetName
-        };
+        var hiddenCfg =
+            {noCleanData: true, oplogSize: 1024, dbpath: hiddenDbpath, replSet: replSetName};
         rst.add(hiddenCfg);
         var hiddenHost = rst.nodes[numNodes].host;
 
@@ -242,28 +239,29 @@
         // Note the dbhash can only run when the DB is inactive to get a result
         // that can be compared, which is only in the fsyncLock/fsynUnlock case
         if (dbHash !== undefined) {
-            assert.eq(dbHash,
-                      rst.nodes[numNodes].getDB(crudDb).runCommand({dbhash: 1}).md5,
-                      testName + ' dbHash');
+            assert.soon(function() {
+                try {
+                    // Need to hammer this since the node can disconnect connections as it is
+                    // starting up into REMOVED replication state.
+                    return (dbHash ===
+                            rst.nodes[numNodes].getDB(crudDb).runCommand({dbhash: 1}).md5);
+                } catch (e) {
+                    return false;
+                }
+            });
         }
 
         // Add new hidden secondary to replica set
         var rsConfig = primary.getDB("local").system.replset.findOne();
         rsConfig.version += 1;
-        var hiddenMember = {
-            _id: numNodes,
-            host: hiddenHost,
-            priority: 0,
-            hidden: true
-        };
+        var hiddenMember = {_id: numNodes, host: hiddenHost, priority: 0, hidden: true};
         rsConfig.members.push(hiddenMember);
         assert.commandWorked(primary.adminCommand({replSetReconfig: rsConfig}),
                              testName + ' failed to reconfigure replSet ' + tojson(rsConfig));
 
-        // Wait up to 60 seconds until the new hidden node is in state RECOVERING.
+        // Wait up to 5 minutes until the new hidden node is in state RECOVERING.
         rst.waitForState(rst.nodes[numNodes],
-                         [ReplSetTest.State.RECOVERING, ReplSetTest.State.SECONDARY],
-                         60 * 1000);
+                         [ReplSetTest.State.RECOVERING, ReplSetTest.State.SECONDARY]);
 
         // Stop CRUD client and FSM client.
         assert(checkProgram(crudPid), testName + ' CRUD client was not running at end of test');
@@ -271,8 +269,13 @@
         stopMongoProgramByPid(crudPid);
         stopMongoProgramByPid(fsmPid);
 
-        // Wait up to 60 seconds until the new hidden node is in state SECONDARY.
-        rst.waitForState(rst.nodes[numNodes], ReplSetTest.State.SECONDARY, 60 * 1000);
+        // Wait up to 5 minutes until the new hidden node is in state SECONDARY.
+        rst.waitForState(rst.nodes[numNodes], ReplSetTest.State.SECONDARY);
+
+        // Wait for secondaries to finish catching up before shutting down.
+        primary = rst.getPrimary();
+        assert.writeOK(primary.getDB("test").foo.insert(
+            {}, {writeConcern: {w: rst.nodes.length, wtimeout: 10 * 60 * 1000}}));
 
         // Stop set.
         rst.stopSet();

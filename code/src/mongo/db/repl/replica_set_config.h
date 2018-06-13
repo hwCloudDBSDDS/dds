@@ -33,6 +33,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
+#include "mongo/client/connection_string.h"
 #include "mongo/db/repl/member_config.h"
 #include "mongo/db/repl/replica_set_tag.h"
 #include "mongo/db/write_concern_options.h"
@@ -62,6 +63,7 @@ public:
     static const Milliseconds kDefaultElectionTimeoutPeriod;
     static const Milliseconds kDefaultHeartbeatInterval;
     static const Seconds kDefaultHeartbeatTimeoutPeriod;
+    static const Milliseconds kDefaultCatchUpTimeoutPeriod;
     static const bool kDefaultChainingAllowed;
 
     /**
@@ -118,6 +120,13 @@ public:
      */
     const std::string& getReplSetName() const {
         return _replSetName;
+    }
+
+    /**
+     * Gets the connection string that can be used to talk to this replica set.
+     */
+    ConnectionString getConnectionString() const {
+        return _connectionString;
     }
 
     /**
@@ -210,6 +219,13 @@ public:
     }
 
     /**
+     * Gets the timeout to wait for a primary to catch up its oplog.
+     */
+    Milliseconds getCatchUpTimeoutPeriod() const {
+        return _catchUpTimeoutPeriod;
+    }
+
+    /**
      * Gets the number of votes required to win an election.
      */
     int getMajorityVoteCount() const {
@@ -229,6 +245,11 @@ public:
     bool isChainingAllowed() const {
         return _chainingAllowed;
     }
+
+    /**
+     * Returns whether all members of this replica set have hostname localhost.
+     */
+    bool isLocalHostAllowed() const;
 
     /**
      * Returns whether or not majority write concerns should implicitly journal, if j has not been
@@ -340,6 +361,11 @@ private:
     void _addInternalWriteConcernModes();
 
     /**
+     * Populate _connectionString based on the contents of _members and _replSetName.
+     */
+    void _initializeConnectionString();
+
+    /**
      * Sets replica set ID to 'defaultReplicaSetId' if forInitiate is false and 'cfg' does not
      * contain an ID.
      */
@@ -356,6 +382,7 @@ private:
     Milliseconds _electionTimeoutPeriod = kDefaultElectionTimeoutPeriod;
     Milliseconds _heartbeatInterval = kDefaultHeartbeatInterval;
     Seconds _heartbeatTimeoutPeriod = kDefaultHeartbeatTimeoutPeriod;
+    Milliseconds _catchUpTimeoutPeriod = kDefaultCatchUpTimeoutPeriod;
     bool _chainingAllowed = kDefaultChainingAllowed;
     bool _writeConcernMajorityJournalDefault = false;
     int _majorityVoteCount = 0;
@@ -366,6 +393,7 @@ private:
     long long _protocolVersion = 0;
     bool _configServer = false;
     OID _replicaSetId;
+    ConnectionString _connectionString;
 };
 
 

@@ -38,6 +38,7 @@ env.Library(
         'expression_where_base.cpp',
         'expression_where_noop.cpp',
         'extensions_callback.cpp',
+        'extensions_callback_disallow_extensions.cpp',
         'extensions_callback_noop.cpp',
         'match_details.cpp',
         'matchable.cpp',
@@ -48,6 +49,7 @@ env.Library(
         '$BUILD_DIR/mongo/bson/util/bson_extract',
         '$BUILD_DIR/mongo/db/common',
         '$BUILD_DIR/mongo/db/fts/fts_query_noop',
+        '$BUILD_DIR/mongo/db/query/collation/collator_interface',
         '$BUILD_DIR/third_party/shim_pcrecpp',
         'path',
     ],
@@ -62,6 +64,7 @@ env.CppUnitTest(
         'expression_tree_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/query/collation/collator_interface_mock',
         'expressions',
     ],
 )
@@ -75,6 +78,7 @@ env.CppUnitTest(
         'expression_parser_tree_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/query/collation/collator_interface_mock',
         'expressions',
     ],
 )
@@ -95,6 +99,7 @@ env.CppUnitTest(
         'expression_algo_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/query/collation/collator_interface_mock',
         'expression_algo',
     ],
 )
@@ -132,11 +137,22 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/auth/authorization_manager_global',
+        '$BUILD_DIR/mongo/db/catalog/catalog',
+        '$BUILD_DIR/mongo/db/concurrency/lock_manager',
+        '$BUILD_DIR/mongo/db/db_raii',
+        '$BUILD_DIR/mongo/db/fts/base',
         '$BUILD_DIR/mongo/scripting/scripting_server',
         'expressions',
     ],
-    LIBDEPS_TAGS=[
-        # Depends on symbols from serverOnlyFiles.
-        'incomplete',
+)
+
+env.CppUnitTest(
+    target='expression_serialization_test',
+    source=[
+        'expression_serialization_test.cpp',
+    ],
+    LIBDEPS=[
+        'expressions',
+        'expressions_geo',
     ],
 )

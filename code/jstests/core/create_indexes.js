@@ -114,9 +114,11 @@
     res = t.runCommand("createIndexes", {indexes: [{key: {"c": 1}, sparse: true, name: "c_1"}]});
     assert.eq(6, t.getIndexes().length);
     assert.eq(1,
-              t.getIndexes().filter(function(z) {
-                  return z.sparse;
-              }).length);
+              t.getIndexes()
+                  .filter(function(z) {
+                      return z.sparse;
+                  })
+                  .length);
 
     res = t.runCommand("createIndexes", {indexes: [{key: {"x": "foo"}, name: "x_1"}]});
     assert(!res.ok);
@@ -135,5 +137,19 @@
     // Test that v1 indexes can be created explicitly.
     res = t.runCommand('createIndexes', {indexes: [{key: {d: 1}, name: 'd_1', v: 1}]});
     assert.commandWorked(res, 'v1 index creation should succeed');
+
+    // Test that index creation fails with an invalid top-level field.
+    res = t.runCommand('createIndexes', {indexes: [{key: {e: 1}, name: 'e_1'}], 'invalidField': 1});
+    assert.commandFailedWithCode(res, ErrorCodes.BadValue);
+
+    // Test that index creation fails with an invalid field in the index spec for index version V2.
+    res = t.runCommand('createIndexes',
+                       {indexes: [{key: {e: 1}, name: 'e_1', 'v': 2, 'invalidField': 1}]});
+    assert.commandFailedWithCode(res, ErrorCodes.InvalidIndexSpecificationOption);
+
+    // Test that index creation fails with an invalid field in the index spec for index version V1.
+    res = t.runCommand('createIndexes',
+                       {indexes: [{key: {e: 1}, name: 'e_1', 'v': 1, 'invalidField': 1}]});
+    assert.commandFailedWithCode(res, ErrorCodes.InvalidIndexSpecificationOption);
 
 }());

@@ -28,13 +28,14 @@
 
 #pragma once
 
-#include <boost/optional/optional.hpp>
 #include <boost/intrusive_ptr.hpp>
+#include <boost/optional/optional.hpp>
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/exec/plan_stats.h"
 #include "mongo/db/pipeline/pipeline.h"
+#include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/record_id.h"
 
 namespace mongo {
@@ -46,14 +47,11 @@ class PipelineProxyStage final : public PlanStage {
 public:
     PipelineProxyStage(OperationContext* opCtx,
                        boost::intrusive_ptr<Pipeline> pipeline,
-                       const std::shared_ptr<PlanExecutor>& child,
                        WorkingSet* ws);
 
-    PlanStage::StageState work(WorkingSetID* out) final;
+    PlanStage::StageState doWork(WorkingSetID* out) final;
 
     bool isEOF() final;
-
-    void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) final;
 
     //
     // Manage our OperationContext.
@@ -61,20 +59,16 @@ public:
     void doDetachFromOperationContext() final;
     void doReattachToOperationContext() final;
 
-    /**
-     * Return a shared pointer to the PlanExecutor that feeds the pipeline. The returned
-     * pointer may be NULL.
-     */
-    std::shared_ptr<PlanExecutor> getChildExecutor();
-
     // Returns empty PlanStageStats object
     std::unique_ptr<PlanStageStats> getStats() final;
-
 
     // Not used.
     SpecificStats* getSpecificStats() const final {
         return NULL;
     }
+
+    std::string getPlanSummaryStr() const;
+    void getPlanSummaryStats(PlanSummaryStats* statsOut) const;
 
     // Not used.
     StageType stageType() const final {
@@ -90,7 +84,6 @@ private:
     const boost::intrusive_ptr<Pipeline> _pipeline;
     std::vector<BSONObj> _stash;
     const bool _includeMetaData;
-    std::weak_ptr<PlanExecutor> _childExec;
 
     // Not owned by us.
     WorkingSet* _ws;

@@ -21,20 +21,6 @@ var resetDropDistLockTimeout = function resetDropDistLockTimeout(db) {
         db.runCommand({configureFailPoint: 'setDropCollDistLockWait', mode: 'off'}));
 };
 
-var increaseDropDistLockTimeoutSCCC = function increaseDropDistLockTimeoutSCCC(db) {
-    var waitTimeSecs = 10 * 60;  // 10 minutes
-    assert.commandWorked(db.runCommand({
-        configureFailPoint: 'setSCCCDropCollDistLockWait',
-        mode: 'alwaysOn',
-        data: {waitForSecs: waitTimeSecs}
-    }));
-};
-
-var resetDropDistLockTimeoutSCCC = function resetDropDistLockTimeoutSCCC(db) {
-    assert.commandWorked(
-        db.runCommand({configureFailPoint: 'setSCCCDropCollDistLockWait', mode: 'off'}));
-};
-
 var setYieldAllLocksFailPoint = function setYieldAllLocksFailPoint(db) {
     var waitTimeMillis = 20;
     assert.commandWorked(db.runCommand({

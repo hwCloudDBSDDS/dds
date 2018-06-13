@@ -27,21 +27,24 @@
  *    then also delete it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/shell/shell_utils.h"
 
-#include "mongo/client/replica_set_monitor.h"
 #include "mongo/client/dbclientinterface.h"
+#include "mongo/client/replica_set_monitor.h"
 #include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/index/external_key_generator.h"
 #include "mongo/platform/random.h"
-#include "mongo/shell/bench.h"
 #include "mongo/scripting/engine.h"
+#include "mongo/shell/bench.h"
 #include "mongo/shell/shell_options.h"
 #include "mongo/shell/shell_utils_extended.h"
 #include "mongo/shell/shell_utils_launcher.h"
 #include "mongo/util/concurrency/threadlocal.h"
+#include "mongo/util/log.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/text.h"
@@ -151,27 +154,10 @@ BSONObj isWindows(const BSONObj& a, void* data) {
 #endif
 }
 
-BSONObj isAddressSanitizerActive(const BSONObj& a, void* data) {
-    bool isSanitized = false;
-// See the following for information on how we detect address sanitizer in clang and gcc.
-//
-// - http://clang.llvm.org/docs/AddressSanitizer.html#has-feature-address-sanitizer
-// - https://gcc.gnu.org/ml/gcc-patches/2012-11/msg01827.html
-//
-#if defined(__has_feature)
-#if __has_feature(address_sanitizer)
-    isSanitized = true;
-#endif
-#elif defined(__SANITIZE_ADDRESS__)
-    isSanitized = true;
-#endif
-    return BSON("" << isSanitized);
-}
-
 BSONObj getBuildInfo(const BSONObj& a, void* data) {
     uassert(16822, "getBuildInfo accepts no arguments", a.nFields() == 0);
     BSONObjBuilder b;
-    appendBuildInfo(b);
+    VersionInfoInterface::instance().appendBuildInfo(&b);
     return BSON("" << b.done());
 }
 
@@ -186,7 +172,10 @@ BSONObj isKeyTooLarge(const BSONObj& a, void* data) {
 
 BSONObj validateIndexKey(const BSONObj& a, void* data) {
     BSONObj key = a[0].Obj();
-    Status indexValid = validateKeyPattern(key);
+    // This is related to old upgrade-checking code when v:1 indexes were the latest version, hence
+    // always validate using v:1 rules here.
+    Status indexValid =
+        index_key_validate::validateKeyPattern(key, IndexDescriptor::IndexVersion::kV1);
     if (!indexValid.isOK()) {
         return BSON("" << BSON("ok" << false << "type" << indexValid.codeString() << "errmsg"
                                     << indexValid.reason()));
@@ -224,7 +213,7 @@ BSONObj readMode(const BSONObj&, void*) {
 
 BSONObj interpreterVersion(const BSONObj& a, void* data) {
     uassert(16453, "interpreterVersion accepts no arguments", a.nFields() == 0);
-    return BSON("" << globalScriptEngine->getInterpreterVersionString());
+    return BSON("" << getGlobalScriptEngine()->getInterpreterVersionString());
 }
 
 void installShellUtils(Scope& scope) {
@@ -233,7 +222,6 @@ void installShellUtils(Scope& scope) {
     scope.injectNative("_srand", JSSrand);
     scope.injectNative("_rand", JSRand);
     scope.injectNative("_isWindows", isWindows);
-    scope.injectNative("_isAddressSanitizerActive", isAddressSanitizerActive);
     scope.injectNative("interpreterVersion", interpreterVersion);
     scope.injectNative("getBuildInfo", getBuildInfo);
     scope.injectNative("isKeyTooLarge", isKeyTooLarge);
@@ -315,7 +303,7 @@ void ConnectionRegistry::killOperationsOnAllConnections(bool withPrompt) const {
         const ConnectionString cs(status.getValue());
 
         string errmsg;
-        std::unique_ptr<DBClientWithCommands> conn(cs.connect(errmsg));
+        std::unique_ptr<DBClientWithCommands> conn(cs.connect("MongoDB Shell", errmsg));
         if (!conn) {
             continue;
         }
@@ -324,13 +312,43 @@ void ConnectionRegistry::killOperationsOnAllConnections(bool withPrompt) const {
 
         BSONObj currentOpRes;
         conn->runPseudoCommand("admin", "currentOp", "$cmd.sys.inprog", {}, currentOpRes);
+        if (!currentOpRes["inprog"].isABSONObj()) {
+            // We don't have permissions (or the call didn't succeed) - go to the next connection.
+            continue;
+        }
         auto inprog = currentOpRes["inprog"].embeddedObject();
-        BSONForEach(op, inprog) {
-            if (uris.count(op["client"].String())) {
+        for (const auto op : inprog) {
+            // For sharded clusters, `client_s` is used instead and `client` is not present.
+            string client;
+            if (auto elem = op["client"]) {
+                // mongod currentOp client
+                if (elem.type() != String) {
+                    warning() << "Ignoring operation " << op["opid"].toString(false)
+                              << "; expected 'client' field in currentOp response to have type "
+                                 "string, but found "
+                              << typeName(elem.type());
+                    continue;
+                }
+                client = elem.str();
+            } else if (auto elem = op["client_s"]) {
+                // mongos currentOp client
+                if (elem.type() != String) {
+                    warning() << "Ignoring operation " << op["opid"].toString(false)
+                              << "; expected 'client_s' field in currentOp response to have type "
+                                 "string, but found "
+                              << typeName(elem.type());
+                    continue;
+                }
+                client = elem.str();
+            } else {
+                // Internal operation, like TTL index.
+                continue;
+            }
+            if (uris.count(client)) {
                 if (!withPrompt || prompter.confirm()) {
                     BSONObjBuilder cmdBob;
                     BSONObj info;
-                    cmdBob.append("op", op["opid"]);
+                    cmdBob.appendAs(op["opid"], "op");
                     auto cmdArgs = cmdBob.done();
                     conn->runPseudoCommand("admin", "killOp", "$cmd.sys.killop", cmdArgs, info);
                 } else {

@@ -156,6 +156,7 @@ err:		__wt_logrec_free(session, &logrec);
 int
 __wt_txn_log_op(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt)
 {
+	WT_DECL_RET;
 	WT_ITEM *logrec;
 	WT_TXN *txn;
 	WT_TXN_OP *op;
@@ -179,24 +180,25 @@ __wt_txn_log_op(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt)
 
 	switch (op->type) {
 	case WT_TXN_OP_BASIC:
-		return (__txn_op_log(session, logrec, op, cbt));
+		ret = __txn_op_log(session, logrec, op, cbt);
+		break;
 	case WT_TXN_OP_INMEM:
 	case WT_TXN_OP_REF:
 		/* Nothing to log, we're done. */
-		return (0);
+		break;
 	case WT_TXN_OP_TRUNCATE_COL:
-		return (__wt_logop_col_truncate_pack(session, logrec,
+		ret = __wt_logop_col_truncate_pack(session, logrec,
 		    op->fileid,
-		    op->u.truncate_col.start, op->u.truncate_col.stop));
+		    op->u.truncate_col.start, op->u.truncate_col.stop);
+		break;
 	case WT_TXN_OP_TRUNCATE_ROW:
-		return (__wt_logop_row_truncate_pack(session, txn->logrec,
+		ret = __wt_logop_row_truncate_pack(session, txn->logrec,
 		    op->fileid,
 		    &op->u.truncate_row.start, &op->u.truncate_row.stop,
-		    (uint32_t)op->u.truncate_row.mode));
-	WT_ILLEGAL_VALUE(session);
+		    (uint32_t)op->u.truncate_row.mode);
+		break;
 	}
-
-	/* NOTREACHED */
+	return (ret);
 }
 
 /*
@@ -260,20 +262,20 @@ err:	__wt_logrec_free(session, &logrec);
  *	Read a log record for a checkpoint operation.
  */
 int
-__wt_txn_checkpoint_logread(
-    WT_SESSION_IMPL *session, const uint8_t **pp, const uint8_t *end,
-    WT_LSN *ckpt_lsn)
+__wt_txn_checkpoint_logread(WT_SESSION_IMPL *session,
+    const uint8_t **pp, const uint8_t *end, WT_LSN *ckpt_lsn)
 {
-	WT_ITEM ckpt_snapshot;
+	WT_DECL_RET;
+	WT_ITEM ckpt_snapshot_unused;
 	uint32_t ckpt_file, ckpt_offset;
-	u_int ckpt_nsnapshot;
+	u_int ckpt_nsnapshot_unused;
 	const char *fmt = WT_UNCHECKED_STRING(IIIU);
 
-	WT_RET(__wt_struct_unpack(session, *pp, WT_PTRDIFF(end, *pp), fmt,
+	if ((ret = __wt_struct_unpack(session, *pp, WT_PTRDIFF(end, *pp), fmt,
 	    &ckpt_file, &ckpt_offset,
-	    &ckpt_nsnapshot, &ckpt_snapshot));
-	WT_UNUSED(ckpt_nsnapshot);
-	WT_UNUSED(ckpt_snapshot);
+	    &ckpt_nsnapshot_unused, &ckpt_snapshot_unused)) != 0)
+		WT_RET_MSG(session,
+		    ret, "txn_checkpoint_logread: unpack failure");
 	WT_SET_LSN(ckpt_lsn, ckpt_file, ckpt_offset);
 	*pp = end;
 	return (0);
@@ -327,7 +329,7 @@ __wt_txn_checkpoint_log(
 	case WT_TXN_LOG_CKPT_START:
 		/* Take a copy of the transaction snapshot. */
 		txn->ckpt_nsnapshot = txn->snapshot_count;
-		recsize = txn->ckpt_nsnapshot * WT_INTPACK64_MAXSIZE;
+		recsize = (size_t)txn->ckpt_nsnapshot * WT_INTPACK64_MAXSIZE;
 		WT_ERR(__wt_scr_alloc(session, recsize, &txn->ckpt_snapshot));
 		p = txn->ckpt_snapshot->mem;
 		end = p + recsize;
@@ -374,7 +376,7 @@ __wt_txn_checkpoint_log(
 		 * that case.
 		 */
 		if (!S2C(session)->hot_backup && txn->full_ckpt)
-			WT_ERR(__wt_log_ckpt(session, ckpt_lsn));
+			__wt_log_ckpt(session, ckpt_lsn);
 
 		/* FALLTHROUGH */
 	case WT_TXN_LOG_CKPT_CLEANUP:
@@ -448,11 +450,10 @@ __wt_txn_truncate_log(
  * __wt_txn_truncate_end --
  *	Finish truncating a range of a file.
  */
-int
+void
 __wt_txn_truncate_end(WT_SESSION_IMPL *session)
 {
 	F_CLR(session, WT_SESSION_LOGGING_INMEM);
-	return (0);
 }
 
 /*

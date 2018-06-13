@@ -28,6 +28,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/dbdirectclient.h"
 
 #include "mongo/db/client.h"
@@ -36,18 +38,13 @@
 #include "mongo/db/lasterror.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/wire_version.h"
+#include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
 
 using std::unique_ptr;
-using std::endl;
 using std::string;
-
-// Called from scripting/engine.cpp and scripting/v8_db.cpp.
-DBClientBase* createDirectClient(OperationContext* txn) {
-    return new DBDirectClient(txn);
-}
 
 namespace {
 
@@ -92,12 +89,12 @@ std::string DBDirectClient::getServerAddress() const {
 
 // Returned version should match the incoming connections restrictions.
 int DBDirectClient::getMinWireVersion() {
-    return WireSpec::instance().minWireVersionIncoming;
+    return WireSpec::instance().incoming.minWireVersion;
 }
 
 // Returned version should match the incoming connections restrictions.
 int DBDirectClient::getMaxWireVersion() {
-    return WireSpec::instance().maxWireVersionIncoming;
+    return WireSpec::instance().incoming.maxWireVersion;
 }
 
 ConnectionString::ConnectionType DBDirectClient::type() const {
@@ -129,9 +126,6 @@ bool DBDirectClient::call(Message& toSend, Message& response, bool assertOk, str
     CurOp curOp(_txn);
     assembleResponse(_txn, toSend, dbResponse, dummyHost);
     verify(!dbResponse.response.empty());
-
-    // can get rid of this if we make response handling smarter
-    dbResponse.response.concat();
     response = std::move(dbResponse.response);
 
     return true;
@@ -174,7 +168,7 @@ unsigned long long DBDirectClient::count(
     bool runRetval = countCmd->run(_txn, dbname, cmdObj, options, errmsg, result);
     if (!runRetval) {
         Command::appendCommandStatus(result, runRetval, errmsg);
-        Status commandStatus = Command::getStatusFromCommandResult(result.obj());
+        Status commandStatus = getStatusFromCommandResult(result.obj());
         invariant(!commandStatus.isOK());
         uassertStatusOK(commandStatus);
     }

@@ -31,9 +31,9 @@
 #include <list>
 #include <memory>
 
-#include "mongo/db/jsobj.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/exec/working_set.h"
+#include "mongo/db/jsobj.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/query_planner_params.h"
 #include "mongo/db/query/query_solution.h"
@@ -63,7 +63,7 @@ public:
 
     bool isEOF() final;
 
-    StageState work(WorkingSetID* out) final;
+    StageState doWork(WorkingSetID* out) final;
 
     void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) final;
 
@@ -110,7 +110,8 @@ private:
     /**
      * May yield during the cached plan stage's trial period or replanning phases.
      *
-     * Returns a non-OK status if the plan was killed during a yield.
+     * Returns a non-OK status if query planning fails. In particular, this function returns
+     * ErrorCodes::QueryPlanKilled if the query plan was killed during a yield.
      */
     Status tryYield(PlanYieldPolicy* yieldPolicy);
 

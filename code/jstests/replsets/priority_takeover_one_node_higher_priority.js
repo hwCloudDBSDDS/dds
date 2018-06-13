@@ -8,12 +8,18 @@
     load('jstests/replsets/rslib.js');
 
     var name = 'priority_takeover_one_node_higher_priority';
-    var replSet = new ReplSetTest(
-        {name: name, nodes: [{rsConfig: {priority: 3}}, {}, {rsConfig: {arbiterOnly: true}}, ]});
+    var replSet = new ReplSetTest({
+        name: name,
+        nodes: [
+            {rsConfig: {priority: 3}},
+            {},
+            {rsConfig: {arbiterOnly: true}},
+        ]
+    });
     replSet.startSet();
     replSet.initiate();
 
-    replSet.waitForState(replSet.nodes[0], ReplSetTest.State.PRIMARY, 60 * 1000);
+    replSet.waitForState(replSet.nodes[0], ReplSetTest.State.PRIMARY);
     var primary = replSet.getPrimary();
 
     replSet.awaitSecondaryNodes();
@@ -24,7 +30,8 @@
     var electionTimeoutMillis = config.settings.electionTimeoutMillis;
     var stepDownGuardMillis = electionTimeoutMillis * 2;
     var stepDownException = assert.throws(function() {
-        primary.adminCommand({replSetStepDown: stepDownGuardMillis / 1000});
+        var result = primary.adminCommand({replSetStepDown: stepDownGuardMillis / 1000});
+        print('replSetStepDown did not throw exception but returned: ' + tojson(result));
     });
     assert.neq(-1,
                tojson(stepDownException).indexOf('error doing query'),

@@ -31,6 +31,7 @@
 #include "mongo/db/ops/modifier_push.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include "mongo/base/error_codes.h"
@@ -104,7 +105,7 @@ Status parseEachMode(ModifierPush::ModifierPushMode pushMode,
     if (eachElem->type() != Array) {
         return Status(ErrorCodes::BadValue,
                       str::stream() << "The argument to $each in $push must be"
-                                       " an array but it was of type "
+                                       " an array but it was of type: "
                                     << typeName(eachElem->type()));
     }
 
@@ -148,8 +149,8 @@ Status parseEachMode(ModifierPush::ModifierPushMode pushMode,
             seenPosition = true;
         } else if (!mongoutils::str::equals(elem.fieldName(), kEach)) {
             return Status(ErrorCodes::BadValue,
-                          str::stream()
-                              << "Unrecognized clause in $push: " << elem.fieldNameStringData());
+                          str::stream() << "Unrecognized clause in $push: "
+                                        << elem.fieldNameStringData());
         }
     }
 
@@ -213,7 +214,8 @@ Status ModifierPush::init(const BSONElement& modExpr, const Options& opts, bool*
     if (foundDollar && foundCount > 1) {
         return Status(ErrorCodes::BadValue,
                       str::stream() << "Too many positional (i.e. '$') elements found in path '"
-                                    << _fieldRef.dottedField() << "'");
+                                    << _fieldRef.dottedField()
+                                    << "'");
     }
 
     //
@@ -263,7 +265,8 @@ Status ModifierPush::init(const BSONElement& modExpr, const Options& opts, bool*
             if (_pushMode == PUSH_ALL) {
                 return Status(ErrorCodes::BadValue,
                               str::stream() << "$pushAll requires an array of values "
-                                               "but was given an " << typeName(modExpr.type()));
+                                               "but was given type: "
+                                            << typeName(modExpr.type()));
             }
 
             _val = modExpr;
@@ -279,7 +282,7 @@ Status ModifierPush::init(const BSONElement& modExpr, const Options& opts, bool*
         if (!sliceElem.isNumber()) {
             return Status(ErrorCodes::BadValue,
                           str::stream() << "The value for $slice must "
-                                           "be a numeric value not a "
+                                           "be a numeric value but was given type: "
                                         << typeName(sliceElem.type()));
         }
 
@@ -302,38 +305,41 @@ Status ModifierPush::init(const BSONElement& modExpr, const Options& opts, bool*
             return Status(ErrorCodes::BadValue, "cannot use $position in $pushAll");
         }
 
-        if (!positionElem.isNumber()) {
-            return Status(ErrorCodes::BadValue,
-                          str::stream() << "The value for $position must "
-                                           "be a positive numeric value not a "
-                                        << typeName(positionElem.type()));
+        // Check that $position can be represented by a 32-bit integer.
+        switch (positionElem.type()) {
+            case NumberInt:
+                break;
+            case NumberLong:
+                if (positionElem.numberInt() != positionElem.numberLong()) {
+                    return Status(
+                        ErrorCodes::BadValue,
+                        "The $position value in $push must be representable as a 32-bit integer.");
+                }
+                break;
+            case NumberDouble: {
+                const auto doubleVal = positionElem.numberDouble();
+                if (doubleVal != 0.0) {
+                    if (!std::isnormal(doubleVal) || (doubleVal != positionElem.numberInt())) {
+                        return Status(ErrorCodes::BadValue,
+                                      "The $position value in $push must be representable as a "
+                                      "32-bit integer.");
+                    }
+                }
+                break;
+            }
+            default:
+                return Status(ErrorCodes::BadValue,
+                              str::stream() << "The value for $position must "
+                                               "be a non-negative numeric value, not of type: "
+                                            << typeName(positionElem.type()));
         }
 
-        // TODO: Cleanup and unify numbers wrt getting int32/64 bson values (from doubles)
-
-        // If the value of position is not fraction, even if it's a double, we allow it. The
-        // reason here is that the shell will use doubles by default unless told otherwise.
-        const double doubleVal = positionElem.numberDouble();
-        if (doubleVal - static_cast<int64_t>(doubleVal) != 0) {
-            return Status(ErrorCodes::BadValue,
-                          "The $position value in $push cannot be fractional");
+        if (positionElem.numberInt() < 0) {
+            return {
+                Status(ErrorCodes::BadValue, "The $position value in $push must be non-negative.")};
         }
 
-        if (static_cast<double>(numeric_limits<int64_t>::max()) < doubleVal) {
-            return Status(ErrorCodes::BadValue,
-                          "The $position value in $push is too large a number.");
-        }
-
-        if (static_cast<double>(numeric_limits<int64_t>::min()) > doubleVal) {
-            return Status(ErrorCodes::BadValue,
-                          "The $position value in $push is too small a number.");
-        }
-
-        const int64_t tempVal = positionElem.numberLong();
-        if (tempVal < 0)
-            return Status(ErrorCodes::BadValue, "The $position value in $push must be positive.");
-
-        _startPosition = size_t(tempVal);
+        _startPosition = size_t(positionElem.numberInt());
     }
 
     // Is sort present and correct?
@@ -375,14 +381,14 @@ Status ModifierPush::init(const BSONElement& modExpr, const Options& opts, bool*
                 for (size_t i = 0; i < sortField.numParts(); i++) {
                     if (sortField.getPart(i).size() == 0) {
                         return Status(ErrorCodes::BadValue,
-                                      str::stream()
-                                          << "The $sort field is a dotted field "
-                                             "but has an empty part: " << sortField.dottedField());
+                                      str::stream() << "The $sort field is a dotted field "
+                                                       "but has an empty part: "
+                                                    << sortField.dottedField());
                     }
                 }
             }
 
-            _sort = PatternElementCmp(sortElem.embeddedObject());
+            _sort = PatternElementCmp(sortElem.embeddedObject(), opts.collator);
         } else {
             // Ensure the sortElem number is valid.
             if (!isPatternElement(sortElem)) {
@@ -390,13 +396,20 @@ Status ModifierPush::init(const BSONElement& modExpr, const Options& opts, bool*
                               "The $sort element value must be either 1 or -1");
             }
 
-            _sort = PatternElementCmp(BSON("" << sortElem.number()));
+            _sort = PatternElementCmp(BSON("" << sortElem.number()), opts.collator);
         }
 
         _sortPresent = true;
     }
 
     return Status::OK();
+}
+
+void ModifierPush::setCollator(const CollatorInterface* collator) {
+    invariant(!_sort.collator);
+    if (_sortPresent) {
+        _sort.collator = collator;
+    }
 }
 
 Status ModifierPush::prepare(mutablebson::Element root,
@@ -438,7 +451,9 @@ Status ModifierPush::prepare(mutablebson::Element root,
                           str::stream() << "The field '" << _fieldRef.dottedField() << "'"
                                         << " must be an array but is of type "
                                         << typeName(_preparedState->elemFound.getType())
-                                        << " in document {" << idElem.toString() << "}");
+                                        << " in document {"
+                                        << idElem.toString()
+                                        << "}");
         }
     } else {
         return status;
@@ -473,7 +488,8 @@ Status pushFirstElement(mb::Element& arrayElem,
         if (!fromElem.ok()) {
             return Status(ErrorCodes::InvalidLength,
                           str::stream() << "The specified position (" << appendPos << "/" << pos
-                                        << ") is invalid based on the length ( " << arraySize
+                                        << ") is invalid based on the length ( "
+                                        << arraySize
                                         << ") of the array");
         }
 
@@ -490,7 +506,7 @@ Status ModifierPush::apply() const {
     // 1. Create the doc array we'll push into, if it is not there
     // 2. Add the items in the $each array (or the simple $push) to the doc array
     // 3. Sort the resulting array according to $sort clause, if present
-    // 4. Trim the resulting array according the $slice clasue, if present
+    // 4. Trim the resulting array according the $slice clause, if present
     //
     // TODO There are _lots_ of optimization opportunities that we'll consider once the
     // test coverage is adequate.

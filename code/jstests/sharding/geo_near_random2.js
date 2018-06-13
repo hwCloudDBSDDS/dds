@@ -36,13 +36,7 @@
     // Turn balancer back on, for actual tests
     // s.startBalancer(); // SERVER-13365
 
-    printShardingSizes();
-
-    opts = {
-        sphere: 0,
-        nToTest: test.nPts * 0.01,
-        sharded: true
-    };
+    opts = {sphere: 0, nToTest: test.nPts * 0.01, sharded: true};
     test.testPt([0, 0], opts);
     test.testPt(test.mkPt(), opts);
     test.testPt(test.mkPt(), opts);

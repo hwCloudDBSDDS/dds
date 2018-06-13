@@ -41,6 +41,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/time_support.h"
 
+using mongo::BSONObj;
 using mongo::FailPoint;
 namespace stdx = mongo::stdx;
 
@@ -140,16 +141,6 @@ TEST(FailPoint, SetGetParam) {
     MONGO_FAIL_POINT_BLOCK(failPoint, scopedFp) {
         ASSERT_EQUALS(20, scopedFp.getData()["x"].numberInt());
     }
-}
-
-TEST(FailPoint, SetInvalidMode) {
-    FailPoint failPoint;
-
-    ASSERT_THROWS(failPoint.setMode(static_cast<FailPoint::Mode>(9999)), mongo::UserException);
-    ASSERT_FALSE(failPoint.shouldFail());
-
-    ASSERT_THROWS(failPoint.setMode(static_cast<FailPoint::Mode>(-1)), mongo::UserException);
-    ASSERT_FALSE(failPoint.shouldFail());
 }
 
 class FailPointStress : public mongo::unittest::Test {
@@ -332,5 +323,79 @@ TEST(FailPoint, RandomActivationP001) {
         runParallelFailPointTest(
             FailPoint::random, std::numeric_limits<int32_t>::max() / 1000, 10, 100000),
         500);
+}
+
+TEST(FailPoint, parseBSONEmptyFails) {
+    auto swTuple = FailPoint::parseBSON(BSONObj());
+    ASSERT_FALSE(swTuple.isOK());
+}
+
+TEST(FailPoint, parseBSONInvalidModeFails) {
+    auto swTuple = FailPoint::parseBSON(BSON("missingModeField" << 1));
+    ASSERT_FALSE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode" << 1));
+    ASSERT_FALSE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode" << true));
+    ASSERT_FALSE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode"
+                                        << "notAMode"));
+    ASSERT_FALSE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode" << BSON("invalidSubField" << 1)));
+    ASSERT_FALSE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode" << BSON("times"
+                                                       << "notAnInt")));
+    ASSERT_FALSE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode" << BSON("times" << -5)));
+    ASSERT_FALSE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode" << BSON("activationProbability"
+                                                       << "notADouble")));
+    ASSERT_FALSE(swTuple.isOK());
+
+    double greaterThan1 = 1.3;
+    swTuple = FailPoint::parseBSON(BSON("mode" << BSON("activationProbability" << greaterThan1)));
+    ASSERT_FALSE(swTuple.isOK());
+
+    double lessThan1 = -0.3;
+    swTuple = FailPoint::parseBSON(BSON("mode" << BSON("activationProbability" << lessThan1)));
+    ASSERT_FALSE(swTuple.isOK());
+}
+
+TEST(FailPoint, parseBSONValidModeSucceeds) {
+    auto swTuple = FailPoint::parseBSON(BSON("mode"
+                                             << "off"));
+    ASSERT_TRUE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode"
+                                        << "alwaysOn"));
+    ASSERT_TRUE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode" << BSON("times" << 1)));
+    ASSERT_TRUE(swTuple.isOK());
+
+    swTuple = FailPoint::parseBSON(BSON("mode" << BSON("activationProbability" << 0.2)));
+    ASSERT_TRUE(swTuple.isOK());
+}
+
+TEST(FailPoint, parseBSONInvalidDataFails) {
+    auto swTuple = FailPoint::parseBSON(BSON("mode"
+                                             << "alwaysOn"
+                                             << "data"
+                                             << "notABSON"));
+    ASSERT_FALSE(swTuple.isOK());
+}
+
+TEST(FailPoint, parseBSONValidDataSucceeds) {
+    auto swTuple = FailPoint::parseBSON(BSON("mode"
+                                             << "alwaysOn"
+                                             << "data"
+                                             << BSON("a" << 1)));
+    ASSERT_TRUE(swTuple.isOK());
 }
 }

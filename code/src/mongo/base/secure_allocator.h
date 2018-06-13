@@ -36,6 +36,8 @@
 #include <type_traits>
 #include <vector>
 
+#include "mongo/base/static_assert.h"
+#include "mongo/stdx/type_traits.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -82,8 +84,8 @@ struct SecureAllocator {
  *
  */
 #ifdef MONGO_CONFIG_HAVE_STD_IS_TRIVIALLY_COPYABLE
-    static_assert(std::is_trivially_copyable<T>::value,
-                  "SecureAllocator can only be used with trivially copyable types");
+    MONGO_STATIC_ASSERT_MSG(std::is_trivially_copyable<T>::value,
+                            "SecureAllocator can only be used with trivially copyable types");
 #endif
 
     // NOTE: The standard doesn't seem to require these, but libstdc++
@@ -211,11 +213,11 @@ public:
     SecureHandle() : _t(_new()) {}
 
     // Generic constructor that forwards to the underlying T if the first arg isn't a SecureHandle
-    template <typename Arg,
-              typename... Args,
-              typename std::enable_if<
-                  !std::is_same<SecureHandle<T>, typename std::decay<Arg>::type>::value,
-                  int>::type = 0>
+    template <
+        typename Arg,
+        typename... Args,
+        stdx::enable_if_t<!std::is_same<SecureHandle<T>, typename std::decay<Arg>::type>::value,
+                          int> = 0>
     SecureHandle(Arg&& arg, Args&&... args)
         : _t(_new(std::forward<Arg>(arg), std::forward<Args>(args)...)) {}
 

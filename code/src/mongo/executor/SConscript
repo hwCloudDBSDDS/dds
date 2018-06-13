@@ -59,15 +59,6 @@ env.Library(target='network_interface',
                 'task_executor_interface',
             ])
 
-env.Library(target='network_interface_impl', # TODO: rename to thread_pool_network_interface
-            source=['network_interface_impl.cpp',],
-            LIBDEPS=[
-                '$BUILD_DIR/mongo/client/remote_command_runner_impl',
-                '$BUILD_DIR/mongo/util/concurrency/thread_pool',
-                'network_interface',
-                'task_executor_interface',
-            ])
-
 env.Library('network_interface_mock',
             [
                 'network_interface_mock.cpp',
@@ -113,6 +104,10 @@ env.CppIntegrationTest(
     LIBDEPS=[
         '$BUILD_DIR/mongo/rpc/command_status',
         'network_interface_asio',
+        '$BUILD_DIR/mongo/executor/thread_pool_task_executor',
+        '$BUILD_DIR/mongo/executor/network_interface_thread_pool',
+        '$BUILD_DIR/mongo/executor/network_interface_factory',
+        '$BUILD_DIR/mongo/util/version_impl',
     ],
 )
 
@@ -147,14 +142,16 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/base/system_error',
+        '$BUILD_DIR/mongo/client/client_query',
         '$BUILD_DIR/mongo/db/auth/authcommon',
         '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
+        '$BUILD_DIR/mongo/db/wire_version',
+        '$BUILD_DIR/mongo/rpc/command_status',
         '$BUILD_DIR/mongo/rpc/rpc',
         '$BUILD_DIR/third_party/shim_asio',
         'async_stream',
         'async_timer_asio',
         'connection_pool',
-        'downconvert_find_and_getmore_commands',
         'network_interface',
         'task_executor_interface',
     ])
@@ -195,6 +192,10 @@ env.CppUnitTest(
     LIBDEPS=[
         'async_timer_mock',
         'network_interface_asio',
+        '$BUILD_DIR/mongo/executor/thread_pool_task_executor',
+        '$BUILD_DIR/mongo/executor/network_interface_thread_pool',
+        '$BUILD_DIR/mongo/executor/network_interface_factory',
+        '$BUILD_DIR/mongo/util/version_impl',
     ],
 )
 
@@ -204,8 +205,12 @@ env.CppIntegrationTest(
         'network_interface_asio_integration_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/executor/thread_pool_task_executor',
+        '$BUILD_DIR/mongo/executor/network_interface_thread_pool',
+        '$BUILD_DIR/mongo/executor/network_interface_factory',
         '$BUILD_DIR/mongo/rpc/command_status',
         '$BUILD_DIR/mongo/util/concurrency/thread_pool',
+        '$BUILD_DIR/mongo/util/version_impl',
         'network_interface_asio',
     ],
 )
@@ -216,10 +221,14 @@ env.CppIntegrationTest(
         'network_interface_perf_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
-        '$BUILD_DIR/mongo/rpc/command_status',
         'network_interface_asio',
-        'network_interface_impl',
+        '$BUILD_DIR/mongo/executor/thread_pool_task_executor',
+        '$BUILD_DIR/mongo/executor/network_interface_thread_pool',
+        '$BUILD_DIR/mongo/executor/network_interface_factory',
+        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/rpc/command_status',
+        '$BUILD_DIR/mongo/util/version_impl',
     ],
 )
 
@@ -232,7 +241,6 @@ env.Library(
     LIBDEPS=[
         'network_interface',
         'network_interface_asio',
-        'network_interface_impl',
     ])
 
 env.Library(
@@ -255,6 +263,7 @@ env.Library(
     ],
     LIBDEPS=[
         'task_executor_interface',
+        '$BUILD_DIR/mongo/util/fail_point',
     ]
 )
 
@@ -275,9 +284,13 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/util/concurrency/thread_pool_test_fixture',
+        'async_timer_mock',
         'connection_pool',
         'network_interface_asio',
         'network_interface_thread_pool',
+        '$BUILD_DIR/mongo/executor/thread_pool_task_executor',
+        '$BUILD_DIR/mongo/executor/network_interface_thread_pool',
+        '$BUILD_DIR/mongo/executor/network_interface_factory'
     ],
 )
 
@@ -299,22 +312,8 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'thread_pool_task_executor_test_fixture',
+        '$BUILD_DIR/mongo/unittest/concurrency',
     ]
-)
-
-env.Library(
-    target='downconvert_find_and_getmore_commands',
-    source=[
-        'downconvert_find_and_getmore_commands.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/client/clientdriver',
-        '$BUILD_DIR/mongo/db/query/command_request_response',
-        '$BUILD_DIR/mongo/db/query/command_request_response',
-        '$BUILD_DIR/mongo/db/query/lite_parsed_query',
-        '$BUILD_DIR/mongo/rpc/protocol',
-    ],
 )
 
 env.Library(
@@ -323,6 +322,7 @@ env.Library(
         'task_executor_pool.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/server_parameters',
         '$BUILD_DIR/mongo/util/processinfo',
         'task_executor_interface',
     ],

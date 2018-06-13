@@ -32,23 +32,21 @@
 
 #include "mongo/db/repl/initial_sync.h"
 
-#include "mongo/db/operation_context_impl.h"
+#include "mongo/db/client.h"
 #include "mongo/db/repl/bgsync.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/repl_client_info.h"
-
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
-
 
 namespace mongo {
 namespace repl {
 
 unsigned replSetForceInitialSyncFailure = 0;
 
-InitialSync::InitialSync(BackgroundSyncInterface* q, MultiSyncApplyFunc func) : SyncTail(q, func) {}
+InitialSync::InitialSync(BackgroundSync* q, MultiSyncApplyFunc func) : SyncTail(q, func) {}
 
 InitialSync::~InitialSync() {}
 
@@ -73,7 +71,14 @@ void InitialSync::_applyOplogUntil(OperationContext* txn, const OpTime& endOpTim
         OpQueue ops;
 
         auto replCoord = repl::ReplicationCoordinator::get(txn);
-        while (!tryPopAndWaitForMore(txn, &ops)) {
+        while (!tryPopAndWaitForMore(txn, &ops, BatchLimits{})) {
+            if (inShutdown()) {
+                return;
+            }
+
+            // This code is only prepared for this to happen after inShutdown() becomes true.
+            invariant(!ops.mustShutdown());
+
             // nothing came back last time, so go again
             if (ops.empty())
                 continue;
@@ -91,26 +96,19 @@ void InitialSync::_applyOplogUntil(OperationContext* txn, const OpTime& endOpTim
                          << " without seeing it. Rollback?";
                 fassertFailedNoTrace(18693);
             }
-
-            // apply replication batch limits
-            if (ops.getSize() > replBatchLimitBytes)
-                break;
-            if (ops.getDeque().size() > replBatchLimitOperations)
-                break;
         };
 
         if (ops.empty()) {
-            severe() << "got no ops for batch...";
-            fassertFailedNoTrace(18692);
+            // nothing came back last time, so go again
+            continue;
         }
 
         const BSONObj lastOp = ops.back().raw.getOwned();
 
-        // Tally operation information
-        bytesApplied += ops.getSize();
-        entriesApplied += ops.getDeque().size();
-
-        const OpTime lastOpTime = multiApply(txn, ops);
+        // Tally operation information and apply batch. Don't use ops again after these lines.
+        bytesApplied += ops.getBytes();
+        entriesApplied += ops.getCount();
+        const OpTime lastOpTime = multiApply(txn, ops.releaseBatch());
 
         replCoord->setMyLastAppliedOpTime(lastOpTime);
         setNewTimestamp(lastOpTime.getTimestamp());

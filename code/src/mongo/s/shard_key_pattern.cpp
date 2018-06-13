@@ -26,6 +26,8 @@
  *    then also delete it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/s/shard_key_pattern.h"
 
 #include <vector>
@@ -60,7 +62,10 @@ Status ShardKeyPattern::checkShardKeySize(const BSONObj& shardKey) {
 
     return Status(ErrorCodes::ShardKeyTooBig,
                   stream() << "shard keys must be less than " << kMaxShardKeySizeBytes
-                           << " bytes, but key " << shardKey << " is " << shardKey.objsize()
+                           << " bytes, but key "
+                           << shardKey
+                           << " is "
+                           << shardKey.objsize()
                            << " bytes");
 }
 
@@ -209,8 +214,7 @@ static BSONElement extractKeyElementFromMatchable(const MatchableDocument& match
     return matchEl;
 }
 
-BSONObj  //
-    ShardKeyPattern::extractShardKeyFromMatchable(const MatchableDocument& matchable) const {
+BSONObj ShardKeyPattern::extractShardKeyFromMatchable(const MatchableDocument& matchable) const {
     if (!isValid())
         return BSONObj();
 
@@ -261,12 +265,15 @@ static BSONElement findEqualityElement(const EqualityMatches& equalities, const 
     return extractKeyElementFromMatchable(matchable, suffixStr);
 }
 
-StatusWith<BSONObj> ShardKeyPattern::extractShardKeyFromQuery(const BSONObj& basicQuery) const {
+StatusWith<BSONObj> ShardKeyPattern::extractShardKeyFromQuery(OperationContext* txn,
+                                                              const BSONObj& basicQuery) const {
     if (!isValid())
         return StatusWith<BSONObj>(BSONObj());
 
-    auto statusWithCQ =
-        CanonicalQuery::canonicalize(NamespaceString(""), basicQuery, ExtensionsCallbackNoop());
+    auto qr = stdx::make_unique<QueryRequest>(NamespaceString(""));
+    qr->setFilter(basicQuery);
+
+    auto statusWithCQ = CanonicalQuery::canonicalize(txn, std::move(qr), ExtensionsCallbackNoop());
     if (!statusWithCQ.isOK()) {
         return StatusWith<BSONObj>(statusWithCQ.getStatus());
     }
@@ -275,9 +282,9 @@ StatusWith<BSONObj> ShardKeyPattern::extractShardKeyFromQuery(const BSONObj& bas
     return extractShardKeyFromQuery(*query);
 }
 
-StatusWith<BSONObj> ShardKeyPattern::extractShardKeyFromQuery(const CanonicalQuery& query) const {
+BSONObj ShardKeyPattern::extractShardKeyFromQuery(const CanonicalQuery& query) const {
     if (!isValid())
-        return StatusWith<BSONObj>(BSONObj());
+        return BSONObj();
 
     // Extract equalities from query.
     EqualityMatches equalities;
@@ -290,7 +297,7 @@ StatusWith<BSONObj> ShardKeyPattern::extractShardKeyFromQuery(const CanonicalQue
     // NOTE: Failure to extract equality matches just means we return no shard key - it's not
     // an error we propagate
     if (!eqStatus.isOK())
-        return StatusWith<BSONObj>(BSONObj());
+        return BSONObj();
 
     // Extract key from equalities
     // NOTE: The method below is equivalent to constructing a BSONObj and running
@@ -305,7 +312,7 @@ StatusWith<BSONObj> ShardKeyPattern::extractShardKeyFromQuery(const CanonicalQue
         BSONElement equalEl = findEqualityElement(equalities, patternPath);
 
         if (!isShardKeyElement(equalEl, false))
-            return StatusWith<BSONObj>(BSONObj());
+            return BSONObj();
 
         if (isHashedPattern()) {
             keyBuilder.append(
@@ -319,7 +326,7 @@ StatusWith<BSONObj> ShardKeyPattern::extractShardKeyFromQuery(const CanonicalQue
     }
 
     dassert(isShardKey(keyBuilder.asTempObj()));
-    return StatusWith<BSONObj>(keyBuilder.obj());
+    return keyBuilder.obj();
 }
 
 bool ShardKeyPattern::isUniqueIndexCompatible(const BSONObj& uniqueIndexPattern) const {
@@ -423,4 +430,5 @@ BoundList ShardKeyPattern::flattenBounds(const IndexBounds& indexBounds) const {
         ret.push_back(make_pair(i->first->obj(), i->second->obj()));
     return ret;
 }
-}
+
+}  // namespace mongo

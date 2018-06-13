@@ -30,14 +30,25 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/catalog/collection.h"
+#include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/operation_context_impl.h"
+#include "mongo/db/exec/multi_plan.h"
+#include "mongo/db/exec/plan_stage.h"
+#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/pipeline/dependencies.h"
 #include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_cursor.h"
+#include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/query/get_executor.h"
+#include "mongo/db/query/plan_executor.h"
+#include "mongo/db/query/query_planner.h"
+#include "mongo/db/query/stage_builder.h"
 #include "mongo/dbtests/dbtests.h"
+
 namespace DocumentSourceCursorTests {
 
 using boost::intrusive_ptr;
@@ -64,7 +75,8 @@ public:
     }
 
 protected:
-    OperationContextImpl _opCtx;
+    const ServiceContext::UniqueOperationContext _opCtxPtr = cc().makeOperationContext();
+    OperationContext& _opCtx = *_opCtxPtr;
     DBDirectClient client;
 };
 
@@ -74,36 +86,43 @@ using mongo::DocumentSourceCursor;
 
 class Base : public CollectionBase {
 public:
-    Base() : _ctx(new ExpressionContext(&_opCtx, nss)) {
+    Base() : _ctx(new ExpressionContext(&_opCtx, AggregationRequest(nss, {}))) {
         _ctx->tempDir = storageGlobalParams.dbpath + "/_tmp";
     }
 
 protected:
-    void createSource() {
+    void createSource(boost::optional<BSONObj> hint = boost::none) {
         // clean up first if this was called before
         _source.reset();
-        _exec.reset();
 
         OldClientWriteContext ctx(&_opCtx, nss.ns());
-        auto cq = uassertStatusOK(CanonicalQuery::canonicalize(nss, /*query=*/BSONObj()));
-        _exec = uassertStatusOK(
+
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        if (hint) {
+            qr->setHint(*hint);
+        }
+        auto cq = uassertStatusOK(CanonicalQuery::canonicalize(
+            &_opCtx, std::move(qr), ExtensionsCallbackDisallowExtensions()));
+
+        auto exec = uassertStatusOK(
             getExecutor(&_opCtx, ctx.getCollection(), std::move(cq), PlanExecutor::YIELD_MANUAL));
 
-        _exec->saveState();
-        _exec->registerExec();
+        exec->saveState();
+        exec->registerExec(ctx.getCollection());
 
-        _source = DocumentSourceCursor::create(nss.ns(), _exec, _ctx);
+        _source = DocumentSourceCursor::create(nss.ns(), std::move(exec), _ctx);
     }
+
     intrusive_ptr<ExpressionContext> ctx() {
         return _ctx;
     }
+
     DocumentSourceCursor* source() {
         return _source.get();
     }
 
 private:
     // It is important that these are ordered to ensure correct destruction order.
-    std::shared_ptr<PlanExecutor> _exec;
     intrusive_ptr<ExpressionContext> _ctx;
     intrusive_ptr<DocumentSourceCursor> _source;
 };
@@ -116,7 +135,7 @@ public:
         // The DocumentSourceCursor doesn't hold a read lock.
         ASSERT(!_opCtx.lockState()->isReadLocked());
         // The collection is empty, so the source produces no results.
-        ASSERT(!source()->getNext());
+        ASSERT(source()->getNext().isEOF());
         // Exhausting the source releases the read lock.
         ASSERT(!_opCtx.lockState()->isReadLocked());
     }
@@ -131,11 +150,11 @@ public:
         // The DocumentSourceCursor doesn't hold a read lock.
         ASSERT(!_opCtx.lockState()->isReadLocked());
         // The cursor will produce the expected result.
-        boost::optional<Document> next = source()->getNext();
-        ASSERT(bool(next));
-        ASSERT_EQUALS(Value(1), next->getField("a"));
+        auto next = source()->getNext();
+        ASSERT(next.isAdvanced());
+        ASSERT_VALUE_EQ(Value(1), next.getDocument().getField("a"));
         // There are no more results.
-        ASSERT(!source()->getNext());
+        ASSERT(source()->getNext().isEOF());
         // Exhausting the source releases the read lock.
         ASSERT(!_opCtx.lockState()->isReadLocked());
     }
@@ -152,7 +171,7 @@ public:
         // Releasing the cursor releases the read lock.
         ASSERT(!_opCtx.lockState()->isReadLocked());
         // The source is marked as exhausted.
-        ASSERT(!source()->getNext());
+        ASSERT(source()->getNext().isEOF());
     }
 };
 
@@ -165,20 +184,20 @@ public:
         client.insert(nss.ns(), BSON("a" << 3));
         createSource();
         // The result is as expected.
-        boost::optional<Document> next = source()->getNext();
-        ASSERT(bool(next));
-        ASSERT_EQUALS(Value(1), next->getField("a"));
+        auto next = source()->getNext();
+        ASSERT(next.isAdvanced());
+        ASSERT_VALUE_EQ(Value(1), next.getDocument().getField("a"));
         // The next result is as expected.
         next = source()->getNext();
-        ASSERT(bool(next));
-        ASSERT_EQUALS(Value(2), next->getField("a"));
+        ASSERT(next.isAdvanced());
+        ASSERT_VALUE_EQ(Value(2), next.getDocument().getField("a"));
         // The DocumentSourceCursor doesn't hold a read lock.
         ASSERT(!_opCtx.lockState()->isReadLocked());
         source()->dispose();
         // Disposing of the source releases the lock.
         ASSERT(!_opCtx.lockState()->isReadLocked());
         // The source cannot be advanced further.
-        ASSERT(!source()->getNext());
+        ASSERT(source()->getNext().isEOF());
     }
 };
 
@@ -217,22 +236,76 @@ public:
         client.insert(nss.ns(), BSON("a" << 3));
         createSource();
 
+        Pipeline::SourceContainer container;
+        container.push_back(source());
+        container.push_back(mkLimit(10));
+        source()->optimizeAt(container.begin(), &container);
+
         // initial limit becomes limit of cursor
-        ASSERT(source()->coalesce(mkLimit(10)));
+        ASSERT_EQUALS(container.size(), 1U);
         ASSERT_EQUALS(source()->getLimit(), 10);
 
+        container.push_back(mkLimit(2));
+        source()->optimizeAt(container.begin(), &container);
         // smaller limit lowers cursor limit
-        ASSERT(source()->coalesce(mkLimit(2)));
+        ASSERT_EQUALS(container.size(), 1U);
         ASSERT_EQUALS(source()->getLimit(), 2);
 
+        container.push_back(mkLimit(3));
+        source()->optimizeAt(container.begin(), &container);
         // higher limit doesn't effect cursor limit
-        ASSERT(source()->coalesce(mkLimit(3)));
+        ASSERT_EQUALS(container.size(), 1U);
         ASSERT_EQUALS(source()->getLimit(), 2);
 
         // The cursor allows exactly 2 documents through
-        ASSERT(bool(source()->getNext()));
-        ASSERT(bool(source()->getNext()));
-        ASSERT(!source()->getNext());
+        ASSERT(source()->getNext().isAdvanced());
+        ASSERT(source()->getNext().isAdvanced());
+        ASSERT(source()->getNext().isEOF());
+    }
+};
+
+//
+// Test cursor output sort.
+//
+class CollectionScanProvidesNoSort : public Base {
+public:
+    void run() {
+        createSource(BSON("$natural" << 1));
+        ASSERT_EQ(source()->getOutputSorts().size(), 0U);
+    }
+};
+
+class IndexScanProvidesSortOnKeys : public Base {
+public:
+    void run() {
+        client.createIndex(nss.ns(), BSON("a" << 1));
+        createSource(BSON("a" << 1));
+
+        ASSERT_EQ(source()->getOutputSorts().size(), 1U);
+        ASSERT_EQ(source()->getOutputSorts().count(BSON("a" << 1)), 1U);
+    }
+};
+
+class ReverseIndexScanProvidesSort : public Base {
+public:
+    void run() {
+        client.createIndex(nss.ns(), BSON("a" << -1));
+        createSource(BSON("a" << -1));
+
+        ASSERT_EQ(source()->getOutputSorts().size(), 1U);
+        ASSERT_EQ(source()->getOutputSorts().count(BSON("a" << -1)), 1U);
+    }
+};
+
+class CompoundIndexScanProvidesMultipleSorts : public Base {
+public:
+    void run() {
+        client.createIndex(nss.ns(), BSON("a" << 1 << "b" << -1));
+        createSource(BSON("a" << 1 << "b" << -1));
+
+        ASSERT_EQ(source()->getOutputSorts().size(), 2U);
+        ASSERT_EQ(source()->getOutputSorts().count(BSON("a" << 1)), 1U);
+        ASSERT_EQ(source()->getOutputSorts().count(BSON("a" << 1 << "b" << -1)), 1U);
     }
 };
 
@@ -247,6 +320,10 @@ public:
         add<DocumentSourceCursor::Dispose>();
         add<DocumentSourceCursor::IterateDispose>();
         add<DocumentSourceCursor::LimitCoalesce>();
+        add<DocumentSourceCursor::CollectionScanProvidesNoSort>();
+        add<DocumentSourceCursor::IndexScanProvidesSortOnKeys>();
+        add<DocumentSourceCursor::ReverseIndexScanProvidesSort>();
+        add<DocumentSourceCursor::CompoundIndexScanProvidesMultipleSorts>();
     }
 };
 

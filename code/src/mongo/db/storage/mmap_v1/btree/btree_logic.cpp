@@ -38,8 +38,8 @@
 #include "mongo/db/storage/mmap_v1/btree/btree_logic.h"
 #include "mongo/db/storage/mmap_v1/btree/key.h"
 #include "mongo/db/storage/mmap_v1/diskloc.h"
-#include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/mmap_v1/record_store_v1_base.h"
+#include "mongo/db/storage/record_store.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -396,7 +396,8 @@ bool BtreeLogic<BtreeLayout>::pushBack(BucketType* bucket,
         const FullKey klast = getFullKey(bucket, bucket->n - 1);
         if (klast.data.woCompare(key, _ordering) > 0) {
             log() << "btree bucket corrupt? "
-                     "consider reindexing or running validate command" << endl;
+                     "consider reindexing or running validate command"
+                  << endl;
             log() << "  klast: " << klast.data.toString() << endl;
             log() << "  key:   " << key.toString() << endl;
             invariant(false);
@@ -1822,7 +1823,7 @@ void BtreeLogic<BtreeLayout>::split(OperationContext* txn,
     }
 }
 
-class DummyDocWriter : public DocWriter {
+class DummyDocWriter final : public DocWriter {
 public:
     DummyDocWriter(size_t sz) : _sz(sz) {}
     virtual void writeDocument(char* buf) const { /* no-op */
@@ -1848,7 +1849,7 @@ Status BtreeLogic<BtreeLayout>::initAsEmpty(OperationContext* txn) {
 template <class BtreeLayout>
 DiskLoc BtreeLogic<BtreeLayout>::_addBucket(OperationContext* txn) {
     DummyDocWriter docWriter(BtreeLayout::BucketSize);
-    StatusWith<RecordId> loc = _recordStore->insertRecord(txn, &docWriter, false);
+    StatusWith<RecordId> loc = _recordStore->insertRecordWithDocWriter(txn, &docWriter);
     // XXX: remove this(?) or turn into massert or sanely bubble it back up.
     uassertStatusOK(loc.getStatus());
 
@@ -1871,7 +1872,7 @@ void BtreeLogic<BtreeLayout>::dumpBucket(const BucketType* bucket, int indentLen
         string ks = k.data.toString();
         log() << "  " << hex << k.prevChildBucket.getOfs() << "<-- prevChildBucket for " << i
               << '\n';
-        log() << indent << "    " << i << ' ' << ks.substr(0, 30)
+        log() << indent << "    " << i << ' ' << redact(ks.substr(0, 30))
               << " Loc:" << k.recordLoc.toString() << dec;
         if (getKeyHeader(bucket, i).isUnused()) {
             log() << " UNUSED";
@@ -2108,7 +2109,7 @@ void BtreeLogic<BtreeLayout>::assertValid(const std::string& ns,
                 log() << "ERROR: btree key order corrupt.  Keys:" << endl;
                 if (++nDumped < 5) {
                     for (int j = 0; j < bucket->n; j++) {
-                        log() << "  " << getFullKey(bucket, j).data.toString() << endl;
+                        log() << "  " << redact(getFullKey(bucket, j).data.toString()) << endl;
                     }
                     dumpBucket(bucket);
                 }
@@ -2117,9 +2118,9 @@ void BtreeLogic<BtreeLayout>::assertValid(const std::string& ns,
             } else if (z == 0) {
                 if (!(firstKey.header.recordLoc < secondKey.header.recordLoc)) {
                     log() << "ERROR: btree key order corrupt (recordlocs wrong):" << endl;
-                    log() << " k(" << i << ")" << firstKey.data.toString()
+                    log() << " k(" << i << ")" << redact(firstKey.data.toString())
                           << " RL:" << firstKey.header.recordLoc.toString() << endl;
-                    log() << " k(" << i + 1 << ")" << secondKey.data.toString()
+                    log() << " k(" << i + 1 << ")" << redact(secondKey.data.toString())
                           << " RL:" << secondKey.header.recordLoc.toString() << endl;
                     wassert(firstKey.header.recordLoc < secondKey.header.recordLoc);
                 }
@@ -2194,7 +2195,10 @@ Status BtreeLogic<BtreeLayout>::_insert(OperationContext* txn,
         // The logic in _find() prohibits finding and returning a position if the 'used' bit
         // in the header is set and dups are disallowed.
         invariant(dupsAllowed);
-        return Status(ErrorCodes::DuplicateKeyValue, "key/value already in index");
+
+        // The key and value are already in the index. Not an error because documents that have
+        // already been indexed may be seen again due to updates during a background index scan.
+        return Status::OK();
     }
 
     DiskLoc childLoc = childLocForPos(bucket, pos);

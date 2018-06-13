@@ -42,6 +42,8 @@ TEST(NamespaceStringTest, Normal) {
 
     ASSERT(!NamespaceString::normal("a.b.$c"));
     ASSERT(!NamespaceString::normal("a.b.$.c"));
+    ASSERT(!NamespaceString::normal("a.b$.c"));
+    ASSERT(!NamespaceString::normal("a$.b.c"));
 
     ASSERT(NamespaceString::normal("local.oplog.$main"));
     ASSERT(NamespaceString::normal("local.oplog.rs"));
@@ -65,15 +67,58 @@ TEST(NamespaceStringTest, Special) {
     ASSERT(!NamespaceString::special("a.systemfoo"));
 }
 
+TEST(NamespaceStringTest, Virtualized) {
+    ASSERT(!NamespaceString::virtualized("a"));
+    ASSERT(!NamespaceString::virtualized("a.b"));
+    ASSERT(!NamespaceString::virtualized("a.b.c"));
+
+    ASSERT(NamespaceString::virtualized("a.b.$c"));
+    ASSERT(NamespaceString::virtualized("a.b.$.c"));
+    ASSERT(NamespaceString::virtualized("a.b$.c"));
+    ASSERT(NamespaceString::virtualized("a$.b.c"));
+
+    ASSERT(!NamespaceString::virtualized("local.oplog.$main"));
+    ASSERT(!NamespaceString::virtualized("local.oplog.rs"));
+}
+
 TEST(NamespaceStringTest, DatabaseValidNames) {
+    ASSERT(NamespaceString::validDBName("foo", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(NamespaceString::validDBName("foo$bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo/bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo.bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo\\bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo\"bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("a\0b"_sd, NamespaceString::DollarInDbNameBehavior::Allow));
+#ifdef _WIN32
+    ASSERT(
+        !NamespaceString::validDBName("foo*bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo<bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo>bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo:bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo|bar", NamespaceString::DollarInDbNameBehavior::Allow));
+    ASSERT(
+        !NamespaceString::validDBName("foo?bar", NamespaceString::DollarInDbNameBehavior::Allow));
+#endif
+
     ASSERT(NamespaceString::validDBName("foo"));
+    ASSERT(!NamespaceString::validDBName("foo$bar"));
     ASSERT(!NamespaceString::validDBName("foo/bar"));
     ASSERT(!NamespaceString::validDBName("foo bar"));
     ASSERT(!NamespaceString::validDBName("foo.bar"));
-    ASSERT(!NamespaceString::validDBName("foo.bar"));
     ASSERT(!NamespaceString::validDBName("foo\\bar"));
     ASSERT(!NamespaceString::validDBName("foo\"bar"));
-    ASSERT(!NamespaceString::validDBName(StringData("a\0b", StringData::LiteralTag())));
+    ASSERT(!NamespaceString::validDBName("a\0b"_sd));
 #ifdef _WIN32
     ASSERT(!NamespaceString::validDBName("foo*bar"));
     ASSERT(!NamespaceString::validDBName("foo<bar"));
@@ -82,6 +127,11 @@ TEST(NamespaceStringTest, DatabaseValidNames) {
     ASSERT(!NamespaceString::validDBName("foo|bar"));
     ASSERT(!NamespaceString::validDBName("foo?bar"));
 #endif
+
+    ASSERT(NamespaceString::validDBName(
+        "ThisIsADatabaseNameThatBrokeAllRecordsForValidLengthForDBName63"));
+    ASSERT(!NamespaceString::validDBName(
+        "WhileThisDatabaseNameExceedsTheMaximumLengthForDatabaseNamesof63"));
 
     ASSERT(NamespaceString::normal("asdads"));
     ASSERT(!NamespaceString::normal("asda$ds"));
@@ -140,7 +190,7 @@ TEST(NamespaceStringTest, CollectionValidNames) {
     ASSERT(!NamespaceString::validCollectionName("$a"));
     ASSERT(!NamespaceString::validCollectionName("a$b"));
     ASSERT(!NamespaceString::validCollectionName(""));
-    ASSERT(!NamespaceString::validCollectionName(StringData("a\0b", StringData::LiteralTag())));
+    ASSERT(!NamespaceString::validCollectionName("a\0b"_sd));
 }
 
 TEST(NamespaceStringTest, DBHash) {
@@ -155,35 +205,6 @@ TEST(NamespaceStringTest, DBHash) {
     ASSERT_NOT_EQUALS(nsDBHash("foo"), nsDBHash("food"));
     ASSERT_NOT_EQUALS(nsDBHash("foo."), nsDBHash("food"));
     ASSERT_NOT_EQUALS(nsDBHash("foo.d"), nsDBHash("food"));
-}
-
-#define testEqualsBothWays(X, Y)       \
-    ASSERT_TRUE(nsDBEquals((X), (Y))); \
-    ASSERT_TRUE(nsDBEquals((Y), (X)));
-#define testNotEqualsBothWays(X, Y)     \
-    ASSERT_FALSE(nsDBEquals((X), (Y))); \
-    ASSERT_FALSE(nsDBEquals((Y), (X)));
-
-TEST(NamespaceStringTest, DBEquals) {
-    testEqualsBothWays("foo", "foo");
-    testEqualsBothWays("foo", "foo.a");
-    testEqualsBothWays("foo.a", "foo.a");
-    testEqualsBothWays("foo.a", "foo.b");
-
-    testEqualsBothWays("", "");
-    testEqualsBothWays("", ".");
-    testEqualsBothWays("", ".x");
-
-    testNotEqualsBothWays("foo", "bar");
-    testNotEqualsBothWays("foo", "food");
-    testNotEqualsBothWays("foo.", "food");
-
-    testNotEqualsBothWays("", "x");
-    testNotEqualsBothWays("", "x.");
-    testNotEqualsBothWays("", "x.y");
-    testNotEqualsBothWays(".", "x");
-    testNotEqualsBothWays(".", "x.");
-    testNotEqualsBothWays(".", "x.y");
 }
 
 TEST(NamespaceStringTest, nsToDatabase1) {
@@ -233,5 +254,22 @@ TEST(NamespaceStringTest, NamespaceStringParse4) {
     NamespaceString ns("abc.");
     ASSERT_EQUALS((string) "abc", ns.db());
     ASSERT_EQUALS((string) "", ns.coll());
+}
+
+TEST(NamespaceStringTest, makeListCollectionsNSIsCorrect) {
+    NamespaceString ns = NamespaceString::makeListCollectionsNSS("DB");
+    ASSERT_EQUALS("DB", ns.db());
+    ASSERT_EQUALS("$cmd.listCollections", ns.coll());
+    ASSERT(ns.isValid());
+    ASSERT(ns.isListCollectionsCursorNS());
+}
+
+TEST(NamespaceStringTest, makeListIndexesNSIsCorrect) {
+    NamespaceString ns = NamespaceString::makeListIndexesNSS("DB", "COLL");
+    ASSERT_EQUALS("DB", ns.db());
+    ASSERT_EQUALS("$cmd.listIndexes.COLL", ns.coll());
+    ASSERT(ns.isValid());
+    ASSERT(ns.isListIndexesCursorNS());
+    ASSERT_EQUALS(NamespaceString("DB.COLL"), ns.getTargetNSForListIndexes());
 }
 }

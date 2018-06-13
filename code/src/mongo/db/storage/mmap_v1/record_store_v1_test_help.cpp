@@ -32,8 +32,8 @@
 
 #include "mongo/db/storage/mmap_v1/record_store_v1_test_help.h"
 
-#include <boost/next_prior.hpp>
 #include <algorithm>
+#include <boost/next_prior.hpp>
 #include <map>
 #include <set>
 #include <vector>
@@ -293,6 +293,16 @@ int DummyExtentManager::maxSize() const {
 DummyExtentManager::CacheHint* DummyExtentManager::cacheHint(const DiskLoc& extentLoc,
                                                              const HintType& hint) {
     return new CacheHint();
+}
+
+DataFileVersion DummyExtentManager::getFileFormat(OperationContext* txn) const {
+    return DataFileVersion::defaultForNewFiles();
+}
+
+void DummyExtentManager::setFileFormat(OperationContext* txn, DataFileVersion newVersion) {}
+
+const DataFile* DummyExtentManager::getOpenFile(int n) const {
+    return nullptr;
 }
 
 namespace {

@@ -44,7 +44,7 @@ public:
     virtual bool slaveOk() const {
         return true;
     }
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
@@ -61,7 +61,7 @@ public:
              int,
              string& errmsg,
              BSONObjBuilder& result) {
-        AuthorizationSession* authSession = AuthorizationSession::get(ClientBasic::getCurrent());
+        AuthorizationSession* authSession = AuthorizationSession::get(Client::getCurrent());
 
         bool showPrivileges;
         Status status =

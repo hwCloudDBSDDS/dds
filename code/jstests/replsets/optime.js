@@ -21,6 +21,10 @@ function optimesAreEqual(replTest) {
     for (var i = 1; i < replTest.nodes.length; i++) {
         var status = replTest.nodes[i].getDB('admin').serverStatus({oplog: true}).oplog;
         if (timestampCompare(prevStatus.latestOptime, status.latestOptime) != 0) {
+            jsTest.log("optimesAreEqual returning false match, prevOptime: " +
+                       prevStatus.latestOptime + " latestOptime: " + status.latestOptime);
+            replTest.dumpOplog(replTest.nodes[i], {}, 20);
+            replTest.dumpOplog(replTest.nodes[i - 1], {}, 20);
             return false;
         }
         prevStatus = status;
@@ -42,9 +46,7 @@ var initialInfo = master.getDB('admin').serverStatus({oplog: true}).oplog;
 
 // Do an insert to increment optime, but without rolling the oplog
 // latestOptime should be updated, but earliestOptime should be unchanged
-var options = {
-    writeConcern: {w: replTest.nodes.length}
-};
+var options = {writeConcern: {w: replTest.nodes.length}};
 assert.writeOK(master.getDB('test').foo.insert({a: 1}, options));
 assert(optimesAreEqual(replTest));
 

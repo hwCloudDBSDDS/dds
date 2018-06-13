@@ -31,36 +31,19 @@
 
 #include "mongo/util/net/message.h"
 
-#include <fcntl.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <time.h>
 
 #include "mongo/util/net/listen.h"
-#include "mongo/util/net/message_port.h"
 
 namespace mongo {
 
-void Message::send(MessagingPort& p, const char* context) {
-    if (empty()) {
-        return;
-    }
-    if (_buf != 0) {
-        p.send(_buf, MsgData::ConstView(_buf).getLen(), context);
-    } else {
-        p.send(_data, context);
-    }
-}
+namespace {
+AtomicWord<int32_t> NextMsgId;
+}  // namespace
 
-AtomicWord<MSGID> NextMsgId;
-
-/*struct MsgStart {
-    MsgStart() {
-        NextMsgId = (((unsigned) time(0)) << 16) ^ curTimeMillis();
-        verify(MsgDataHeaderSize == 16);
-    }
-} msgstart;*/
-
-MSGID nextMessageId() {
+int32_t nextMessageId() {
     return NextMsgId.fetchAndAdd(1);
 }
 

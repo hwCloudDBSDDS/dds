@@ -37,6 +37,7 @@
 
 #include "mongo/db/server_options.h"
 #include "mongo/util/log.h"
+#include "mongo/util/net/ssl_options.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/version.h"
 
@@ -50,11 +51,10 @@ void logCommonStartupWarnings(const ServerGlobalParams& serverParams) {
 
     bool warned = false;
     {
-        const char* foo = strchr(versionString, '.') + 1;
-        int bar = atoi(foo);
-        if ((2 * (bar / 2)) != bar) {
+        auto&& vii = VersionInfoInterface::instance();
+        if ((vii.minorVersion() % 2) != 0) {
             log() << startupWarningsLog;
-            log() << "** NOTE: This is a development version (" << versionString << ") of MongoDB."
+            log() << "** NOTE: This is a development version (" << vii.version() << ") of MongoDB."
                   << startupWarningsLog;
             log() << "**       Not recommended for production." << startupWarningsLog;
             warned = true;
@@ -74,37 +74,34 @@ void logCommonStartupWarnings(const ServerGlobalParams& serverParams) {
         warned = true;
     }
 
-    // SERVER-23838 Disable warnings for no access control enabled and no bind_ip
-    // if (serverParams.authState == ServerGlobalParams::AuthState::kUndefined) {
-    //     log() << startupWarningsLog;
-    //     if (serverParams.bind_ip.empty()) {
-    //         log() << "** WARNING: Insecure configuration, access control is not "
-    //                  "enabled and no --bind_ip has been specified." << startupWarningsLog;
-    //         log() << "**          Read and write access to data and configuration is "
-    //                  "unrestricted, " << startupWarningsLog;
-    //        log() << "**          and the server listens on all available network interfaces."
-    //               << startupWarningsLog;
-    //     } else {
-    //         log() << "** WARNING: Access control is not enabled for the database."
-    //               << startupWarningsLog;
-    //         log() << "**          Read and write access to data and configuration is "
-    //                  "unrestricted." << startupWarningsLog;
-    //     }
-    //     warned = true;
-    // } else if (serverParams.bind_ip.empty()) {
-    //     log() << startupWarningsLog;
-    //     log() << "** WARNING: The server was started without specifying a "
-    //              "--bind_ip " << startupWarningsLog;
-    //     log() << "**          and listens for connections on all available "
-    //              "network interfaces." << startupWarningsLog;
-    //     warned = true;
-    // }
+    if (serverParams.authState == ServerGlobalParams::AuthState::kUndefined) {
+        log() << startupWarningsLog;
+        log() << "** WARNING: Access control is not enabled for the database."
+              << startupWarningsLog;
+        log() << "**          Read and write access to data and configuration is "
+                 "unrestricted."
+              << startupWarningsLog;
+        warned = true;
+    }
 
     const bool is32bit = sizeof(int*) == 4;
     if (is32bit) {
         log() << startupWarningsLog;
         log() << "** WARNING: This 32-bit MongoDB binary is deprecated" << startupWarningsLog;
         warned = true;
+    }
+
+    /*
+    * We did not add the message to startupWarningsLog as the user can not
+    * specify a sslCAFile parameter from the shell
+    */
+    if (sslGlobalParams.sslMode.load() != SSLParams::SSLMode_disabled &&
+        sslGlobalParams.sslCAFile.empty()) {
+        log() << "";
+        log() << "** WARNING: No SSL certificate validation can be performed since"
+                 " no CA file has been provided";
+
+        log() << "**          Please specify an sslCAFile parameter.";
     }
 
 #if defined(_WIN32) && !defined(_WIN64)

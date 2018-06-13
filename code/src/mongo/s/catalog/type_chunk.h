@@ -31,15 +31,61 @@
 #include <boost/optional.hpp>
 #include <string>
 
-#include "mongo/db/jsobj.h"
+#include "mongo/bson/bsonobj.h"
 #include "mongo/s/chunk_version.h"
+#include "mongo/s/shard_id.h"
 
 namespace mongo {
 
-class BSONObj;
+class BSONObjBuilder;
 class Status;
 template <typename T>
 class StatusWith;
+
+/**
+ * Contains the minimum representation of a chunk - its bounds in the format [min, max) along with
+ * utilities for parsing and persistence.
+ */
+class ChunkRange {
+public:
+    ChunkRange(BSONObj minKey, BSONObj maxKey);
+
+    /**
+     * Parses a chunk range using the format { min: <min bound>, max: <max bound> }.
+     */
+    static StatusWith<ChunkRange> fromBSON(const BSONObj& obj);
+
+    const BSONObj& getMin() const {
+        return _minKey;
+    }
+
+    const BSONObj& getMax() const {
+        return _maxKey;
+    }
+
+    /**
+     * Checks whether the specified key is within the bounds of this chunk range.
+     */
+    bool containsKey(const BSONObj& key) const;
+
+    /**
+     * Writes the contents of this chunk range as { min: <min bound>, max: <max bound> }.
+     */
+    void append(BSONObjBuilder* builder) const;
+
+    std::string toString() const;
+
+    /**
+     * Returns true if two chunk ranges match exactly in terms of the min and max keys (including
+     * element order within the keys).
+     */
+    bool operator==(const ChunkRange& other) const;
+    bool operator!=(const ChunkRange& other) const;
+
+private:
+    BSONObj _minKey;
+    BSONObj _maxKey;
+};
 
 /**
  * This class represents the layout and contents of documents contained in the
@@ -68,6 +114,11 @@ public:
     static StatusWith<ChunkType> fromBSON(const BSONObj& source);
 
     /**
+     * Generates chunk id based on the namespace name and the lower bound of the chunk.
+     */
+    static std::string genID(StringData ns, const BSONObj& min);
+
+    /**
      * Returns OK if all fields have been set. Otherwise returns NoSuchKey
      * and information about the first field that is missing.
      */
@@ -83,10 +134,7 @@ public:
      */
     std::string toString() const;
 
-    const std::string& getName() const {
-        return _name.get();
-    }
-    void setName(const std::string& name);
+    std::string getName() const;
 
     const std::string& getNS() const {
         return _ns.get();
@@ -111,10 +159,10 @@ public:
     }
     void setVersion(const ChunkVersion& version);
 
-    const std::string& getShard() const {
+    const ShardId& getShard() const {
         return _shard.get();
     }
-    void setShard(const std::string& shard);
+    void setShard(const ShardId& shard);
 
     bool getJumbo() const {
         return _jumbo.get_value_or(false);
@@ -124,8 +172,6 @@ public:
 private:
     // Convention: (M)andatory, (O)ptional, (S)pecial rule.
 
-    // (M)  chunk's id
-    boost::optional<std::string> _name;
     // (M)  collection this chunk is in
     boost::optional<std::string> _ns;
     // (M)  first key of the range, inclusive
@@ -135,7 +181,7 @@ private:
     // (M)  version of this chunk
     boost::optional<ChunkVersion> _version;
     // (M)  shard this chunk lives in
-    boost::optional<std::string> _shard;
+    boost::optional<ShardId> _shard;
     // (O)  too big to move?
     boost::optional<bool> _jumbo;
 };

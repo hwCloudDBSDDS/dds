@@ -48,10 +48,7 @@ var ElectionTimingTest = function(opts) {
 ElectionTimingTest.prototype._runTimingTest = function() {
     for (var run = 0; run < this.testRuns; run++) {
         var collectionName = "test." + this.name;
-        var cycleData = {
-            testRun: run,
-            results: []
-        };
+        var cycleData = {testRun: run, results: []};
 
         jsTestLog("Starting ReplSetTest for test " + this.name + " run: " + run);
         this.rst =
@@ -219,8 +216,9 @@ ElectionTimingTest.calculateElectionTimeoutLimitMillis = function(primary) {
     }
     var assertSoonIntervalMillis = 200;  // from assert.js
     var applierDrainWaitMillis = 1000;   // from SyncTail::tryPopAndWaitForMore()
+    var padding = 5000;                  // extra padding for slow hosts
     var electionTimeoutLimitMillis =
         (1 + electionTimeoutOffsetLimitFraction) * electionTimeoutMillis + applierDrainWaitMillis +
-        assertSoonIntervalMillis;
+        assertSoonIntervalMillis + padding;
     return electionTimeoutLimitMillis;
 };

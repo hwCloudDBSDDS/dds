@@ -61,8 +61,8 @@ ProjectionStage::ProjectionStage(OperationContext* opCtx,
     _projObj = params.projObj;
 
     if (ProjectionStageParams::NO_FAST_PATH == _projImpl) {
-        _exec.reset(
-            new ProjectionExec(params.projObj, params.fullExpression, *params.extensionsCallback));
+        _exec.reset(new ProjectionExec(
+            params.projObj, params.fullExpression, params.collator, *params.extensionsCallback));
     } else {
         // We shouldn't need the full expression if we're fast-pathing.
         invariant(NULL == params.fullExpression);
@@ -182,7 +182,7 @@ Status ProjectionStage::transform(WorkingSetMember* member) {
     }
 
     member->keyData.clear();
-    member->loc = RecordId();
+    member->recordId = RecordId();
     member->obj = Snapshotted<BSONObj>(SnapshotId(), bob.obj());
     member->transitionToOwnedObj();
     return Status::OK();
@@ -192,12 +192,7 @@ bool ProjectionStage::isEOF() {
     return child()->isEOF();
 }
 
-PlanStage::StageState ProjectionStage::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState ProjectionStage::doWork(WorkingSetID* out) {
     WorkingSetID id = WorkingSet::INVALID_ID;
     StageState status = child()->work(&id);
 
@@ -208,13 +203,12 @@ PlanStage::StageState ProjectionStage::work(WorkingSetID* out) {
         // Punt to our specific projection impl.
         Status projStatus = transform(member);
         if (!projStatus.isOK()) {
-            warning() << "Couldn't execute projection, status = " << projStatus.toString() << endl;
+            warning() << "Couldn't execute projection, status = " << redact(projStatus);
             *out = WorkingSetCommon::allocateStatusMember(_ws, projStatus);
             return PlanStage::FAILURE;
         }
 
         *out = id;
-        ++_commonStats.advanced;
     } else if (PlanStage::FAILURE == status || PlanStage::DEAD == status) {
         *out = id;
         // If a stage fails, it may create a status WSM to indicate why it
@@ -226,10 +220,7 @@ PlanStage::StageState ProjectionStage::work(WorkingSetID* out) {
             Status status(ErrorCodes::InternalError, ss);
             *out = WorkingSetCommon::allocateStatusMember(_ws, status);
         }
-    } else if (PlanStage::NEED_TIME == status) {
-        _commonStats.needTime++;
     } else if (PlanStage::NEED_YIELD == status) {
-        _commonStats.needYield++;
         *out = id;
     }
 

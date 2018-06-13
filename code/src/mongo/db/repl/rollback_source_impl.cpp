@@ -35,8 +35,8 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/oplogreader.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 namespace repl {
@@ -72,7 +72,9 @@ void RollbackSourceImpl::copyCollectionFromRemote(OperationContext* txn,
                                                   const NamespaceString& nss) const {
     std::string errmsg;
     std::unique_ptr<DBClientConnection> tmpConn(new DBClientConnection());
-    uassert(15908, errmsg, tmpConn->connect(_source, errmsg) && replAuthenticate(tmpConn.get()));
+    uassert(15908,
+            errmsg,
+            tmpConn->connect(_source, StringData(), errmsg) && replAuthenticate(tmpConn.get()));
 
     // cloner owns _conn in unique_ptr
     Cloner cloner;

@@ -94,7 +94,8 @@ TEST(KillCursorsRequestTest, parseFromBSONCursorFieldNotArray) {
         KillCursorsRequest::parseFromBSON("db",
                                           BSON("killCursors"
                                                << "coll"
-                                               << "cursors" << CursorId(123)));
+                                               << "cursors"
+                                               << CursorId(123)));
     ASSERT_NOT_OK(result.getStatus());
     ASSERT_EQ(result.getStatus().code(), ErrorCodes::FailedToParse);
 }
@@ -104,7 +105,8 @@ TEST(KillCursorsRequestTest, parseFromBSONCursorFieldEmptyArray) {
         KillCursorsRequest::parseFromBSON("db",
                                           BSON("killCursors"
                                                << "coll"
-                                               << "cursors" << BSONArrayBuilder().arr()));
+                                               << "cursors"
+                                               << BSONArrayBuilder().arr()));
     ASSERT_NOT_OK(result.getStatus());
     ASSERT_EQ(result.getStatus().code(), ErrorCodes::BadValue);
 }
@@ -129,8 +131,9 @@ TEST(KillCursorsRequestTest, toBSON) {
     BSONObj requestObj = request.toBSON();
     BSONObj expectedObj = BSON("killCursors"
                                << "coll"
-                               << "cursors" << BSON_ARRAY(CursorId(123) << CursorId(456)));
-    ASSERT_EQ(requestObj, expectedObj);
+                               << "cursors"
+                               << BSON_ARRAY(CursorId(123) << CursorId(456)));
+    ASSERT_BSONOBJ_EQ(requestObj, expectedObj);
 }
 
 }  // namespace

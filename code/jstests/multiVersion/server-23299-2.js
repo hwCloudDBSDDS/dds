@@ -15,23 +15,23 @@ load('./jstests/multiVersion/libs/verify_versions.js');
     var versionsNotSubjectToSERVER23299 = ['latest', '3.0'];
 
     function doTest(priorVersion, expectTempToDrop) {
+        var storageEngine = jsTest.options().storageEngine;
         jsTest.log((expectTempToDrop ? "" : " not") + " expecting temp collections created in " +
                    priorVersion + " to be dropped when starting latest mongod version");
-        var mongod = MongoRunner.runMongod({binVersion: priorVersion});
+        var mongod =
+            MongoRunner.runMongod({binVersion: priorVersion, storageEngine: storageEngine});
         assert.binVersion(mongod, priorVersion);
-        assert.commandWorked(mongod.getDB("test").createCollection("tempcoll", {temp: true}),
-                             priorVersion);
-        mongod.getDB("test").tempcoll.insert({_id: 0});
-        assert.gleOK(mongod.getDB("test").getLastErrorObj(), priorVersion);
-        assert.eq(1, mongod.getDB("test").tempcoll.find().itcount(), priorVersion);
+        assert.commandWorked(mongod.getDB("test").createCollection("tempcoll", {temp: true}));
+        assert.writeOK(mongod.getDB("test").tempcoll.insert({_id: 0}));
+        assert.eq(1, mongod.getDB("test").tempcoll.find().itcount());
 
         MongoRunner.stopMongod(mongod);
         var newOpts = Object.extend({}, mongod.fullOptions);
-        mongod = MongoRunner.runMongod(Object.extend(Object.extend({}, mongod.fullOptions),
-                                                     {restart: true, binVersion: "latest"}));
+        mongod = MongoRunner.runMongod(
+            Object.extend(Object.extend({}, mongod.fullOptions),
+                          {restart: true, binVersion: "latest", storageEngine: storageEngine}));
         assert.binVersion(mongod, "latest");
-        assert.eq(
-            expectTempToDrop ? 0 : 1, mongod.getDB("test").tempcoll.find().itcount(), priorVersion);
+        assert.eq(expectTempToDrop ? 0 : 1, mongod.getDB("test").tempcoll.find().itcount());
     }
 
     versionsNotSubjectToSERVER23299.forEach(function(priorVersion) {

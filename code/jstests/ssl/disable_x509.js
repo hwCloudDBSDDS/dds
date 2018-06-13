@@ -31,7 +31,7 @@ if (cmdOut.ok) {
     // Localhost exception should not be in place anymore
     assert.throws(function() {
         test.foo.findOne();
-    }, {}, "read without login");
+    }, [], "read without login");
 
     assert(external.auth({user: CLIENT_USER, mechanism: 'MONGODB-X509'}),
            "authentication with valid user failed");

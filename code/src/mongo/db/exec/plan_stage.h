@@ -37,9 +37,10 @@
 
 namespace mongo {
 
+class ClockSource;
 class Collection;
-class RecordId;
 class OperationContext;
+class RecordId;
 
 /**
  * A PlanStage ("stage") is the basic building block of a "Query Execution Plan."  A stage is
@@ -185,7 +186,7 @@ public:
      * Stage returns StageState::ADVANCED if *out is set to the next unit of output.  Otherwise,
      * returns another value of StageState to indicate the stage's status.
      */
-    virtual StageState work(WorkingSetID* out) = 0;
+    StageState work(WorkingSetID* out);
 
     /**
      * Returns true if no more work can be done on the query / out of results.
@@ -319,6 +320,11 @@ public:
 
 protected:
     /**
+     * Performs one unit of work.  See comment at work() above.
+     */
+    virtual StageState doWork(WorkingSetID* out) = 0;
+
+    /**
      * Saves any stage-specific state required to resume where it was if the underlying data
      * changes.
      *
@@ -351,6 +357,8 @@ protected:
      * Does the stage-specific invalidation work.
      */
     virtual void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {}
+
+    ClockSource* getClock() const;
 
     OperationContext* getOpCtx() const {
         return _opCtx;

@@ -35,11 +35,11 @@
 #include <boost/filesystem.hpp>
 #include <fcntl.h>
 #include <ostream>
+#include <sstream>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <sstream>
 
 #include "mongo/db/storage/paths.h"
 #include "mongo/platform/process_id.h"
@@ -93,7 +93,8 @@ Status StorageEngineLockFile::open() {
     } catch (const std::exception& ex) {
         return Status(ErrorCodes::UnknownError,
                       str::stream() << "Unable to check existence of data directory " << _dbpath
-                                    << ": " << ex.what());
+                                    << ": "
+                                    << ex.what());
     }
 
     // Use file permissions 644
@@ -101,6 +102,12 @@ Status StorageEngineLockFile::open() {
         ::open(_filespec.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (lockFile < 0) {
         int errorcode = errno;
+        if (errorcode == EACCES) {
+            return Status(ErrorCodes::IllegalOperation,
+                          str::stream()
+                              << "Attempted to create a lock file on a read-only directory: "
+                              << _dbpath);
+        }
         return Status(ErrorCodes::DBPathInUse,
                       str::stream() << "Unable to create/open lock file: " << _filespec << ' '
                                     << errnoWithDescription(errorcode)
@@ -145,7 +152,9 @@ Status StorageEngineLockFile::writePid() {
         int errorcode = errno;
         return Status(ErrorCodes::FileStreamFailed,
                       str::stream() << "Unable to write process id to file (ftruncate failed): "
-                                    << _filespec << ' ' << errnoWithDescription(errorcode));
+                                    << _filespec
+                                    << ' '
+                                    << errnoWithDescription(errorcode));
     }
 
     ProcessId pid = ProcessId::getCurrent();
@@ -157,20 +166,26 @@ Status StorageEngineLockFile::writePid() {
         int errorcode = errno;
         return Status(ErrorCodes::FileStreamFailed,
                       str::stream() << "Unable to write process id " << pid.toString()
-                                    << " to file: " << _filespec << ' '
+                                    << " to file: "
+                                    << _filespec
+                                    << ' '
                                     << errnoWithDescription(errorcode));
 
     } else if (bytesWritten == 0) {
         return Status(ErrorCodes::FileStreamFailed,
                       str::stream() << "Unable to write process id " << pid.toString()
-                                    << " to file: " << _filespec << " no data written.");
+                                    << " to file: "
+                                    << _filespec
+                                    << " no data written.");
     }
 
     if (::fsync(_lockFileHandle->_fd)) {
         int errorcode = errno;
         return Status(ErrorCodes::FileStreamFailed,
                       str::stream() << "Unable to write process id " << pid.toString()
-                                    << " to file (fsync failed): " << _filespec << ' '
+                                    << " to file (fsync failed): "
+                                    << _filespec
+                                    << ' '
                                     << errnoWithDescription(errorcode));
     }
 
@@ -186,7 +201,7 @@ void StorageEngineLockFile::clearPidAndUnlock() {
     log() << "shutdown: removing fs lock...";
     // This ought to be an unlink(), but Eliot says the last
     // time that was attempted, there was a race condition
-    // with acquirePathLock().
+    // with StorageEngineLockFile::open().
     if (::ftruncate(_lockFileHandle->_fd, 0)) {
         int errorcode = errno;
         log() << "couldn't remove fs lock " << errnoWithDescription(errorcode);

@@ -67,10 +67,11 @@ public:
         virtual ~Factory() {}
 
         /**
-         * Return a new instance of the StorageEngine.  Caller owns the returned pointer.
+         * Return a new instance of the StorageEngine. The lockFile parameter may be null if
+         * params.readOnly is set. Caller owns the returned pointer.
          */
         virtual StorageEngine* create(const StorageGlobalParams& params,
-                                      const StorageEngineLockFile& lockFile) const = 0;
+                                      const StorageEngineLockFile* lockFile) const = 0;
 
         /**
          * Returns the name of the storage engine.
@@ -123,6 +124,17 @@ public:
          * on restart.
          */
         virtual BSONObj createMetadataOptions(const StorageGlobalParams& params) const = 0;
+
+        /**
+         * Returns whether the engine supports read-only mode. If read-only mode is enabled, the
+         * engine may be started on a read-only filesystem (either mounted read-only or with
+         * read-only permissions). If readOnly mode is enabled, it is undefined behavior to call
+         * methods that write data (e.g. insertRecord). This method is provided on the Factory
+         * because it must be called before the storageEngine is instantiated.
+         */
+        virtual bool supportsReadOnly() const {
+            return false;
+        }
     };
 
     /**
@@ -131,24 +143,6 @@ public:
      * should be done here rather than in the constructor.
      */
     virtual void finishInit() {}
-
-    /**
-     * Returns whethers the data files are compatible with previous versions of the same major
-     * release.
-     *
-     *   - Status::OK() if there aren't any features unsupported by a previous version of the same
-     *     major release still enabled on some collection or index in the data files.
-     *
-     *   - ErrorCodes::MustUpgrade if a feature that is unsupported by a previous version of the
-     *     same major release is still enabled on some collection or index in the data files and a
-     *     newer version is required to start up and ensure downgrade-compatibility.
-     *
-     * This function should be overridden by a storage engine if additional steps are needed to
-     * ensure downgrade-compatibility.
-     */
-    virtual Status requireDataFileCompatibilityWithPriorRelease(OperationContext* opCtx) {
-        return Status::OK();
-    }
 
     /**
      * Returns a new interface to the storage engine's recovery unit.  The recovery

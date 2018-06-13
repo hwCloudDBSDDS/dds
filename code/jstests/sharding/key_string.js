@@ -6,7 +6,7 @@
     s.ensurePrimaryShard('test', 'shard0001');
     s.adminCommand({shardcollection: "test.foo", key: {name: 1}});
 
-    primary = s.getServer("test").getDB("test");
+    primary = s.getPrimaryShard("test").getDB("test");
     seconday = s.getOther(primary).getDB("test");
 
     assert.eq(1, s.config.chunks.count(), "sanity check A");
@@ -49,12 +49,9 @@
               }),
               "sort 1");
     assert.eq("sara,mark,joe,eliot,bob,allan",
-              db.foo.find()
-                  .sort({name: -1})
-                  .toArray()
-                  .map(function(z) {
-                      return z.name;
-                  }),
+              db.foo.find().sort({name: -1}).toArray().map(function(z) {
+                  return z.name;
+              }),
               "sort 2");
 
     // make sure we can't foce a split on an extreme key

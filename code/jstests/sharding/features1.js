@@ -23,7 +23,7 @@
 
     s.adminCommand({split: "test.foo", middle: {num: 10}});
     s.adminCommand(
-        {movechunk: "test.foo", find: {num: 20}, to: s.getOther(s.getServer("test")).name});
+        {movechunk: "test.foo", find: {num: 20}, to: s.getOther(s.getPrimaryShard("test")).name});
 
     db.foo.save({num: 5});
     db.foo.save({num: 15});
@@ -94,7 +94,7 @@
         db.eval(function() {
             return db.foo2.findOne().a;
         });
-    }, null, "eval 2");
+    }, [], "eval 2");
 
     assert.eq(1,
               db.eval(function() {
@@ -105,7 +105,7 @@
         db.eval(function() {
             return db.foo2.count();
         });
-    }, null, "eval 4");
+    }, [], "eval 4");
 
     // ----- "eval" new command name SERVER-5588 -----
     var result;
@@ -130,7 +130,7 @@
     s.adminCommand({split: "test.foo4", middle: {num: 10}});
 
     s.admin.runCommand(
-        {movechunk: "test.foo4", find: {num: 20}, to: s.getOther(s.getServer("test")).name});
+        {movechunk: "test.foo4", find: {num: 20}, to: s.getOther(s.getPrimaryShard("test")).name});
 
     assert.writeOK(db.foo4.save({num: 5}));
     assert.writeOK(db.foo4.save({num: 15}));
@@ -182,13 +182,15 @@
     printjson(db.foo6.getIndexes());
 
     assert.eq(2,
-              db.foo6.group({
-                  key: {a: 1},
-                  initial: {count: 0},
-                  reduce: function(z, prev) {
-                      prev.count++;
-                  }
-              }).length);
+              db.foo6
+                  .group({
+                      key: {a: 1},
+                      initial: {count: 0},
+                      reduce: function(z, prev) {
+                          prev.count++;
+                      }
+                  })
+                  .length);
 
     assert.eq(3, db.foo6.find().count());
     assert(s.admin.runCommand({shardcollection: "test.foo6", key: {a: 1}}).ok);
@@ -203,7 +205,7 @@
 
     assert.soon(function() {
         var cmdRes = s.admin.runCommand(
-            {movechunk: "test.foo6", find: {a: 3}, to: s.getOther(s.getServer("test")).name});
+            {movechunk: "test.foo6", find: {a: 3}, to: s.getOther(s.getPrimaryShard("test")).name});
         return cmdRes.ok;
     }, 'move chunk test.foo6', 60000, 1000);
 
@@ -233,8 +235,8 @@
     // --- listDatabases ---
 
     r = db.getMongo().getDBs();
-    assert.eq(2, r.databases.length, tojson(r));
-    assert.eq("number", typeof(r.totalSize), "listDatabases 2 : " + tojson(r));
+    assert.eq(3, r.databases.length, tojson(r));
+    assert.eq("number", typeof(r.totalSize), "listDatabases 3 : " + tojson(r));
 
     s.stop();
 

@@ -8,7 +8,7 @@ env.Library(
         'hostandport.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/util/foundation',
+        '$BUILD_DIR/mongo/base',
     ],
 )
 
@@ -22,32 +22,43 @@ env.CppUnitTest(
     ],
 )
 
-env.Library(
+networkEnv = env.Clone();
+
+networkEnv.InjectThirdPartyIncludePaths(libraries=[
+    'asio',
+])
+
+networkEnv.Library(
     target='network',
     source=[
+        "asio_message_port.cpp",
+        "asio_ssl_context.cpp",
         "hostname_canonicalization.cpp",
         "httpclient.cpp",
         "listen.cpp",
         "message.cpp",
         "message_port.cpp",
+        "message_port_startup_param.cpp",
         "sock.cpp",
+        "sockaddr.cpp",
+        'socket_exception.cpp',
         "socket_poll.cpp",
         "ssl_expiration.cpp",
         "ssl_manager.cpp",
         "ssl_options.cpp",
+        "thread_idle_callback.cpp",
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/auth_rolename',
         '$BUILD_DIR/mongo/db/server_options_core',
+        '$BUILD_DIR/mongo/db/server_parameters',
         '$BUILD_DIR/mongo/util/background_job',
         '$BUILD_DIR/mongo/util/concurrency/ticketholder',
+        '$BUILD_DIR/mongo/util/decorable',
         '$BUILD_DIR/mongo/util/fail_point',
-        '$BUILD_DIR/mongo/util/foundation',
         '$BUILD_DIR/mongo/util/options_parser/options_parser',
+        '$BUILD_DIR/third_party/shim_asio',
         'hostandport',
-    ],
-    LIBDEPS_TAGS=[
-        # Depends on inShutdown
-        'incomplete',
     ],
 )
 
@@ -67,35 +78,7 @@ env.CppUnitTest(
         'sock_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/util/concurrency/synchronization',
         'network',
-    ],
-)
-
-env.Library(
-    target="hostname_canonicalization_worker",
-    source=[
-        "hostname_canonicalization_worker.cpp",
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/service_context',
-        'network',
-    ],
-)
-
-env.Library(
-    target="message_server_port",
-    source=[
-        "message_server_port.cpp",
-    ],
-    LIBDEPS=[
-        'network',
-        '$BUILD_DIR/mongo/db/stats/counters',
-    ],
-    LIBDEPS_TAGS=[
-        # Depends on inShutdown and dbexit
-        'incomplete',
     ],
 )
 

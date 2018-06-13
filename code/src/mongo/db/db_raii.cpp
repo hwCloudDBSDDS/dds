@@ -30,14 +30,14 @@
 
 #include "mongo/db/db_raii.h"
 
-#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/stats/top.h"
-#include "mongo/s/d_state.h"
 
 namespace mongo {
 
@@ -46,10 +46,20 @@ AutoGetDb::AutoGetDb(OperationContext* txn, StringData ns, LockMode mode)
 
 AutoGetCollection::AutoGetCollection(OperationContext* txn,
                                      const NamespaceString& nss,
-                                     LockMode mode)
-    : _autoDb(txn, nss.db(), mode),
-      _collLock(txn->lockState(), nss.ns(), mode),
-      _coll(_autoDb.getDb() ? _autoDb.getDb()->getCollection(nss) : nullptr) {}
+                                     LockMode modeDB,
+                                     LockMode modeColl,
+                                     ViewMode viewMode)
+    : _viewMode(viewMode),
+      _autoDb(txn, nss.db(), modeDB),
+      _collLock(txn->lockState(), nss.ns(), modeColl),
+      _coll(_autoDb.getDb() ? _autoDb.getDb()->getCollection(nss) : nullptr) {
+    Database* db = _autoDb.getDb();
+    // If the database exists, but not the collection, check for views.
+    if (_viewMode == ViewMode::kViewsForbidden && db && !_coll &&
+        db->getViewCatalog()->lookup(txn, nss.ns()))
+        uasserted(ErrorCodes::CommandNotSupportedOnView,
+                  str::stream() << "Namespace " << nss.ns() << " is a view, not a collection");
+}
 
 AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* txn, StringData ns, LockMode mode)
     : _transaction(txn, MODE_IX),
@@ -67,14 +77,13 @@ AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* txn, StringData ns, LockM
     }
 }
 
-AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* txn, const std::string& ns)
-    : AutoGetCollectionForRead(txn, NamespaceString(ns)) {}
-
 AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* txn,
-                                                   const NamespaceString& nss)
+                                                   const NamespaceString& nss,
+                                                   AutoGetCollection::ViewMode viewMode)
     : _txn(txn), _transaction(txn, MODE_IS) {
     {
-        _autoColl.emplace(txn, nss, MODE_IS);
+        _autoColl.emplace(txn, nss, MODE_IS, MODE_IS, viewMode);
+
         auto curOp = CurOp::get(_txn);
         stdx::lock_guard<Client> lk(*_txn->getClient());
 
@@ -95,18 +104,21 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* txn,
 
     // We have both the DB and collection locked, which is the prerequisite to do a stable shard
     // version check, but we'd like to do the check after we have a satisfactory snapshot.
-    ensureShardVersionOKOrThrow(_txn, nss.ns());
+    auto css = CollectionShardingState::get(txn, nss);
+    css->checkShardVersionOrThrow(txn);
 }
 
 AutoGetCollectionForRead::~AutoGetCollectionForRead() {
     // Report time spent in read lock
     auto currentOp = CurOp::get(_txn);
     Top::get(_txn->getClient()->getServiceContext())
-        .record(currentOp->getNS(),
+        .record(_txn,
+                currentOp->getNS(),
                 currentOp->getLogicalOp(),
                 -1,  // "read locked"
                 _timer.micros(),
-                currentOp->isCommand());
+                currentOp->isCommand(),
+                currentOp->getReadWriteType());
 }
 
 void AutoGetCollectionForRead::_ensureMajorityCommittedSnapshotIsValid(const NamespaceString& nss) {
@@ -134,12 +146,27 @@ void AutoGetCollectionForRead::_ensureMajorityCommittedSnapshotIsValid(const Nam
 
         uassertStatusOK(_txn->recoveryUnit()->setReadFromMajorityCommittedSnapshot());
 
-        stdx::lock_guard<Client> lk(*_txn->getClient());
-        CurOp::get(_txn)->yielded();
+        {
+            stdx::lock_guard<Client> lk(*_txn->getClient());
+            CurOp::get(_txn)->yielded();
+        }
 
         // Relock.
         _autoColl.emplace(_txn, nss, MODE_IS);
     }
+}
+
+AutoGetCollectionOrViewForRead::AutoGetCollectionOrViewForRead(OperationContext* txn,
+                                                               const NamespaceString& nss)
+    : AutoGetCollectionForRead(txn, nss, AutoGetCollection::ViewMode::kViewsPermitted),
+      _view(_autoColl->getDb() && !getCollection()
+                ? _autoColl->getDb()->getViewCatalog()->lookup(txn, nss.ns())
+                : nullptr) {}
+
+void AutoGetCollectionOrViewForRead::releaseLocksForView() noexcept {
+    invariant(_view);
+    _view = nullptr;
+    _autoColl = boost::none;
 }
 
 OldClientContext::OldClientContext(OperationContext* txn,
@@ -186,7 +213,8 @@ void OldClientContext::_checkNotStale() const {
         case dbDelete:   // here as well.
             break;
         default:
-            ensureShardVersionOKOrThrow(_txn, _ns);
+            auto css = CollectionShardingState::get(_txn, _ns);
+            css->checkShardVersionOrThrow(_txn);
     }
 }
 
@@ -196,11 +224,13 @@ OldClientContext::~OldClientContext() {
 
     auto currentOp = CurOp::get(_txn);
     Top::get(_txn->getClient()->getServiceContext())
-        .record(currentOp->getNS(),
+        .record(_txn,
+                currentOp->getNS(),
                 currentOp->getLogicalOp(),
                 _txn->lockState()->isWriteLocked() ? 1 : -1,
                 _timer.micros(),
-                currentOp->isCommand());
+                currentOp->isCommand(),
+                currentOp->getReadWriteType());
 }
 
 

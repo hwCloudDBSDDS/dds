@@ -12,12 +12,22 @@
     'use strict';
 
     var name = 'disallow_adding_initialized_node2';
-    var replSetA = new ReplSetTest(
-        {name: name, nodes: [{rsConfig: {_id: 10}}, {rsConfig: {_id: 11, arbiterOnly: true}}, ]});
+    var replSetA = new ReplSetTest({
+        name: name,
+        nodes: [
+            {rsConfig: {_id: 10}},
+            {rsConfig: {_id: 11, arbiterOnly: true}},
+        ]
+    });
     replSetA.startSet({dbpath: "$set-A-$node"});
     replSetA.initiate();
 
-    var replSetB = new ReplSetTest({name: name, nodes: [{rsConfig: {_id: 20}}, ]});
+    var replSetB = new ReplSetTest({
+        name: name,
+        nodes: [
+            {rsConfig: {_id: 20}},
+        ]
+    });
     replSetB.startSet({dbpath: "$set-B-$node"});
     replSetB.initiate();
 
@@ -61,7 +71,7 @@
                 }
             }
             return false;
-        }, 'Did not see a log entry containing the following message: ' + msg, 10000, 1000);
+        }, 'Did not see a log entry containing the following message: ' + msg, 60000, 1000);
     };
     var msgA = "replica set IDs do not match, ours: " + configA.settings.replicaSetId +
         "; remote node's: " + configB.settings.replicaSetId;
@@ -83,9 +93,6 @@
     assert.eq(12, statusA.members[2]._id);
     assert.eq(primaryB.host, statusA.members[2].name);
     assert.eq(ReplSetTest.State.DOWN, statusA.members[2].state);
-    assert(statusA.members[2].lastHeartbeatMessage.indexOf(msgA) != -1 ||
-           statusA.members[2].lastHeartbeatMessage.indexOf(
-               'no response within election timeout period') != -1);
 
     // Replica set B's config should remain unchanged.
     assert.eq(1, statusB.members.length);

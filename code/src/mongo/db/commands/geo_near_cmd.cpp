@@ -30,6 +30,7 @@
 
 #include <vector>
 
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/privilege.h"
@@ -50,7 +51,9 @@
 #include "mongo/db/query/explain.h"
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/get_executor.h"
+#include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/range_preserver.h"
+#include "mongo/db/server_options.h"
 #include "mongo/platform/unordered_map.h"
 #include "mongo/util/log.h"
 
@@ -63,7 +66,7 @@ class Geo2dFindNearCmd : public Command {
 public:
     Geo2dFindNearCmd() : Command("geoNear") {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     bool slaveOk() const {
@@ -74,6 +77,10 @@ public:
     }
     bool supportsReadConcern() const final {
         return true;
+    }
+
+    ReadWriteType getReadWriteType() const {
+        return ReadWriteType::kRead;
     }
 
     std::size_t reserveBytesForReply() const override {
@@ -164,7 +171,28 @@ public:
         }
         BSONObj rewritten = queryBob.obj();
 
-        // cout << "rewritten query: " << rewritten.toString() << endl;
+        // Extract the collation, if it exists.
+        BSONObj collation;
+        {
+            BSONElement collationElt;
+            Status collationEltStatus =
+                bsonExtractTypedField(cmdObj, "collation", BSONType::Object, &collationElt);
+            if (!collationEltStatus.isOK() && (collationEltStatus != ErrorCodes::NoSuchKey)) {
+                return appendCommandStatus(result, collationEltStatus);
+            }
+            if (collationEltStatus.isOK()) {
+                collation = collationElt.Obj();
+            }
+        }
+        if (!collation.isEmpty() &&
+            serverGlobalParams.featureCompatibility.version.load() ==
+                ServerGlobalParams::FeatureCompatibility::Version::k32) {
+            return appendCommandStatus(
+                result,
+                Status(ErrorCodes::InvalidOptions,
+                       "The featureCompatibilityVersion must be 3.4 to use collation. See "
+                       "http://dochub.mongodb.org/core/3.4-feature-compatibility."));
+        }
 
         long long numWanted = 100;
         const char* limitName = !cmdObj["num"].eoo() ? "num" : "limit";
@@ -188,12 +216,16 @@ public:
             uassert(17297, "distanceMultiplier must be non-negative", distanceMultiplier >= 0);
         }
 
-        BSONObj projObj = BSON("$pt" << BSON("$meta" << LiteParsedQuery::metaGeoNearPoint) << "$dis"
-                                     << BSON("$meta" << LiteParsedQuery::metaGeoNearDistance));
+        BSONObj projObj = BSON("$pt" << BSON("$meta" << QueryRequest::metaGeoNearPoint) << "$dis"
+                                     << BSON("$meta" << QueryRequest::metaGeoNearDistance));
 
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        qr->setFilter(rewritten);
+        qr->setProj(projObj);
+        qr->setLimit(numWanted);
+        qr->setCollation(collation);
         const ExtensionsCallbackReal extensionsCallback(txn, &nss);
-        auto statusWithCQ = CanonicalQuery::canonicalize(
-            nss, rewritten, BSONObj(), projObj, 0, numWanted, BSONObj(), extensionsCallback);
+        auto statusWithCQ = CanonicalQuery::canonicalize(txn, std::move(qr), extensionsCallback);
         if (!statusWithCQ.isOK()) {
             errmsg = "Can't parse filter / create query";
             return false;
@@ -212,6 +244,12 @@ public:
         }
 
         unique_ptr<PlanExecutor> exec = std::move(statusWithPlanExecutor.getValue());
+
+        auto curOp = CurOp::get(txn);
+        {
+            stdx::lock_guard<Client>(*txn->getClient());
+            curOp->setPlanSummary_inlock(Explain::getPlanSummary(exec.get()));
+        }
 
         double totalDistance = 0;
         BSONObjBuilder resultBuilder(result.subarrayStart("results"));
@@ -243,7 +281,7 @@ public:
 
             // Don't make a too-big result object.
             if (resultBuilder.len() + resObj.objsize() > BSONObjMaxUserSize) {
-                warning() << "Too many geoNear results for query " << rewritten.toString()
+                warning() << "Too many geoNear results for query " << redact(rewritten)
                           << ", truncating output.";
                 break;
             }
@@ -271,7 +309,7 @@ public:
         // Return an error if execution fails for any reason.
         if (PlanExecutor::FAILURE == state || PlanExecutor::DEAD == state) {
             log() << "Plan executor error during geoNear command: " << PlanExecutor::statestr(state)
-                  << ", stats: " << Explain::getWinningPlanStats(exec.get());
+                  << ", stats: " << redact(Explain::getWinningPlanStats(exec.get()));
 
             return appendCommandStatus(result,
                                        Status(ErrorCodes::OperationFailed,
@@ -280,15 +318,11 @@ public:
                                                   << WorkingSetCommon::toStatusString(currObj)));
         }
 
-        // Fill out the stats subobj.
-        BSONObjBuilder stats(result.subobjStart("stats"));
-
-        // Fill in nscanned from the explain.
         PlanSummaryStats summary;
         Explain::getSummaryStats(*exec, &summary);
-        collection->infoCache()->notifyOfQuery(txn, summary.indexesUsed);
-        CurOp::get(txn)->debug().fromMultiPlanner = summary.fromMultiPlanner;
-        CurOp::get(txn)->debug().replanned = summary.replanned;
+
+        // Fill out the stats subobj.
+        BSONObjBuilder stats(result.subobjStart("stats"));
 
         stats.appendNumber("nscanned", summary.totalKeysExamined);
         stats.appendNumber("objectsLoaded", summary.totalDocsExamined);
@@ -297,8 +331,18 @@ public:
             stats.append("avgDistance", totalDistance / results);
         }
         stats.append("maxDistance", farthestDist);
-        stats.append("time", CurOp::get(txn)->elapsedMillis());
+        stats.appendIntOrLL("time", curOp->elapsedMicros() / 1000);
         stats.done();
+
+        collection->infoCache()->notifyOfQuery(txn, summary.indexesUsed);
+
+        curOp->debug().setPlanSummaryMetrics(summary);
+
+        if (curOp->shouldDBProfile()) {
+            BSONObjBuilder execStatsBob;
+            Explain::getWinningPlanStats(exec.get(), &execStatsBob);
+            curOp->debug().execStats = execStatsBob.obj();
+        }
 
         return true;
     }

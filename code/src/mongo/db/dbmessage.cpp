@@ -30,7 +30,10 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/dbmessage.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/platform/strnlen.h"
+#include "mongo/rpc/object_check.h"
+#include "mongo/transport/session.h"
 
 namespace mongo {
 
@@ -118,13 +121,14 @@ const char* DbMessage::getArray(size_t count) const {
 }
 
 BSONObj DbMessage::nextJsObj() {
-    massert(10304,
+    uassert(ErrorCodes::InvalidBSON,
             "Client Error: Remaining data too small for BSON object",
             _nextjsobj != NULL && _theEnd - _nextjsobj >= 5);
 
     if (serverGlobalParams.objcheck) {
-        Status status = validateBSON(_nextjsobj, _theEnd - _nextjsobj);
-        massert(10307,
+        Status status = validateBSON(
+            _nextjsobj, _theEnd - _nextjsobj, Validator<BSONObj>::enabledBSONVersion());
+        uassert(ErrorCodes::InvalidBSON,
                 str::stream() << "Client Error: bad object in message: " << status.reason(),
                 status.isOK());
     }
@@ -173,20 +177,24 @@ OpQueryReplyBuilder::OpQueryReplyBuilder() : _buffer(32768) {
     _buffer.skip(sizeof(QueryResult::Value));
 }
 
-void OpQueryReplyBuilder::send(AbstractMessagingPort* destination,
+void OpQueryReplyBuilder::send(const transport::SessionHandle& session,
                                int queryResultFlags,
-                               Message& requestMsg,
+                               const Message& requestMsg,
                                int nReturned,
                                int startingFrom,
                                long long cursorId) {
     Message response;
     putInMessage(&response, queryResultFlags, nReturned, startingFrom, cursorId);
-    destination->reply(requestMsg, response, requestMsg.header().getId());
+
+    response.header().setId(nextMessageId());
+    response.header().setResponseToMsgId(requestMsg.header().getId());
+
+    uassertStatusOK(session->sinkMessage(response).wait());
 }
 
-void OpQueryReplyBuilder::sendCommandReply(AbstractMessagingPort* destination,
-                                           Message& requestMsg) {
-    send(destination, /*queryFlags*/ 0, requestMsg, /*nReturned*/ 1);
+void OpQueryReplyBuilder::sendCommandReply(const transport::SessionHandle& session,
+                                           const Message& requestMsg) {
+    send(session, /*queryFlags*/ 0, requestMsg, /*nReturned*/ 1);
 }
 
 void OpQueryReplyBuilder::putInMessage(
@@ -198,12 +206,11 @@ void OpQueryReplyBuilder::putInMessage(
     qr.setCursorId(cursorId);
     qr.setStartingFrom(startingFrom);
     qr.setNReturned(nReturned);
-    _buffer.decouple();
-    out->setData(qr.view2ptr(), true);  // transport will free
+    out->setData(_buffer.release());  // transport will free
 }
 
 void replyToQuery(int queryResultFlags,
-                  AbstractMessagingPort* p,
+                  const transport::SessionHandle& session,
                   Message& requestMsg,
                   const void* data,
                   int size,
@@ -212,22 +219,26 @@ void replyToQuery(int queryResultFlags,
                   long long cursorId) {
     OpQueryReplyBuilder reply;
     reply.bufBuilderForResults().appendBuf(data, size);
-    reply.send(p, queryResultFlags, requestMsg, nReturned, startingFrom, cursorId);
+    reply.send(session, queryResultFlags, requestMsg, nReturned, startingFrom, cursorId);
 }
 
 void replyToQuery(int queryResultFlags,
-                  AbstractMessagingPort* p,
+                  const transport::SessionHandle& session,
                   Message& requestMsg,
                   const BSONObj& responseObj) {
-    replyToQuery(
-        queryResultFlags, p, requestMsg, (void*)responseObj.objdata(), responseObj.objsize(), 1);
+    replyToQuery(queryResultFlags,
+                 session,
+                 requestMsg,
+                 (void*)responseObj.objdata(),
+                 responseObj.objsize(),
+                 1);
 }
 
 void replyToQuery(int queryResultFlags, Message& m, DbResponse& dbresponse, BSONObj obj) {
     Message resp;
     replyToQuery(queryResultFlags, resp, obj);
     dbresponse.response = std::move(resp);
-    dbresponse.responseTo = m.header().getId();
+    dbresponse.responseToMsgId = m.header().getId();
 }
 
 void replyToQuery(int queryResultFlags, Message& response, const BSONObj& resultObj) {

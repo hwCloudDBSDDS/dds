@@ -34,7 +34,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
-#include "mongo/db/query/lite_parsed_query.h"
+#include "mongo/db/query/query_request.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -52,7 +52,7 @@ const char kNoConnectionVersioning[] = "noConnectionVersioning";
 }  // namespace
 
 SetShardVersionRequest::SetShardVersionRequest(ConnectionString configServer,
-                                               std::string shardName,
+                                               ShardId shardName,
                                                ConnectionString shardConnectionString)
     : _init(true),
       _isAuthoritative(true),
@@ -61,7 +61,7 @@ SetShardVersionRequest::SetShardVersionRequest(ConnectionString configServer,
       _shardCS(std::move(shardConnectionString)) {}
 
 SetShardVersionRequest::SetShardVersionRequest(ConnectionString configServer,
-                                               std::string shardName,
+                                               ShardId shardName,
                                                ConnectionString shardConnectionString,
                                                NamespaceString nss,
                                                ChunkVersion version,
@@ -78,14 +78,14 @@ SetShardVersionRequest::SetShardVersionRequest() = default;
 
 SetShardVersionRequest SetShardVersionRequest::makeForInit(
     const ConnectionString& configServer,
-    const std::string& shardName,
+    const ShardId& shardName,
     const ConnectionString& shardConnectionString) {
     return SetShardVersionRequest(configServer, shardName, shardConnectionString);
 }
 
 SetShardVersionRequest SetShardVersionRequest::makeForInitNoPersist(
     const ConnectionString& configServer,
-    const std::string& shardName,
+    const ShardId& shardName,
     const ConnectionString& shardConnectionString) {
     auto ssv = SetShardVersionRequest(configServer, shardName, shardConnectionString);
     ssv._noConnectionVersioning = true;
@@ -94,18 +94,19 @@ SetShardVersionRequest SetShardVersionRequest::makeForInitNoPersist(
 
 SetShardVersionRequest SetShardVersionRequest::makeForVersioning(
     const ConnectionString& configServer,
-    const std::string& shardName,
+    const ShardId& shardName,
     const ConnectionString& shardConnectionString,
     const NamespaceString& nss,
     const ChunkVersion& nssVersion,
     bool isAuthoritative) {
+    invariant(nss.isValid());
     return SetShardVersionRequest(
         configServer, shardName, shardConnectionString, nss, nssVersion, isAuthoritative);
 }
 
 SetShardVersionRequest SetShardVersionRequest::makeForVersioningNoPersist(
     const ConnectionString& configServer,
-    const std::string& shardName,
+    const ShardId& shardName,
     const ConnectionString& shard,
     const NamespaceString& nss,
     const ChunkVersion& nssVersion,
@@ -133,7 +134,10 @@ StatusWith<SetShardVersionRequest> SetShardVersionRequest::parseFromBSON(const B
     }
 
     {
-        Status status = bsonExtractStringField(cmdObj, kShardName, &request._shardName);
+        std::string shardName;
+        Status status = bsonExtractStringField(cmdObj, kShardName, &shardName);
+        request._shardName = ShardId(shardName);
+
         if (!status.isOK())
             return status;
     }
@@ -211,13 +215,13 @@ BSONObj SetShardVersionRequest::toBSON() const {
     cmdBuilder.append(kInit, _init);
     cmdBuilder.append(kAuthoritative, _isAuthoritative);
     cmdBuilder.append(kConfigServer, _configServer.toString());
-    cmdBuilder.append(kShardName, _shardName);
+    cmdBuilder.append(kShardName, _shardName.toString());
     cmdBuilder.append(kShardConnectionString, _shardCS.toString());
 
     if (_init) {
         // Always include a 30 second timeout on sharding state initialization, to work around
         // SERVER-21458.
-        cmdBuilder.append(LiteParsedQuery::cmdOptionMaxTimeMS, 30000);
+        cmdBuilder.append(QueryRequest::cmdOptionMaxTimeMS, 30000);
     } else {
         _version.get().appendForSetShardVersion(&cmdBuilder);
     }

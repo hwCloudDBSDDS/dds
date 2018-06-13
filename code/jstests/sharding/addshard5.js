@@ -1,8 +1,6 @@
 // Tests that dropping and re-adding a shard with the same name to a cluster doesn't mess up
 // migrations
-
 (function() {
-
     'use strict';
 
     var st = new ShardingTest({shards: 2, mongos: 1});
@@ -38,14 +36,11 @@
     assert.commandWorked(mongos.adminCommand({removeShard: shards[1]._id}));
     assert.commandWorked(mongos.adminCommand({removeShard: shards[1]._id}));
 
-    var shard2 = MongoRunner.runMongod({});
+    var shard2 = MongoRunner.runMongod({'shardsvr': ''});
     assert.commandWorked(mongos.adminCommand({addShard: shard2.host, name: shards[1]._id}));
 
     jsTest.log('Shard was dropped and re-added with same name...');
     st.printShardingStatus();
-
-    shards[0].conn.getDB('admin').runCommand({setParameter: 1, traceExceptions: true});
-    shard2.getDB('admin').runCommand({setParameter: 1, traceExceptions: true});
 
     // Try a migration
     assert.commandWorked(
@@ -54,5 +49,4 @@
     assert.eq('world', shard2.getCollection(coll + '').findOne().hello);
 
     st.stop();
-
 })();

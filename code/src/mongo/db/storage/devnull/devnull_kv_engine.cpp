@@ -104,20 +104,26 @@ public:
         return StatusWith<RecordId>(RecordId(6, 4));
     }
 
-    virtual StatusWith<RecordId> insertRecord(OperationContext* txn,
-                                              const DocWriter* doc,
-                                              bool enforceQuota) {
-        _numInserts++;
-        return StatusWith<RecordId>(RecordId(6, 4));
+    virtual Status insertRecordsWithDocWriter(OperationContext* txn,
+                                              const DocWriter* const* docs,
+                                              size_t nDocs,
+                                              RecordId* idsOut) {
+        _numInserts += nDocs;
+        if (idsOut) {
+            for (size_t i = 0; i < nDocs; i++) {
+                idsOut[i] = RecordId(6, 4);
+            }
+        }
+        return Status::OK();
     }
 
-    virtual StatusWith<RecordId> updateRecord(OperationContext* txn,
-                                              const RecordId& oldLocation,
-                                              const char* data,
-                                              int len,
-                                              bool enforceQuota,
-                                              UpdateNotifier* notifier) {
-        return StatusWith<RecordId>(oldLocation);
+    virtual Status updateRecord(OperationContext* txn,
+                                const RecordId& oldLocation,
+                                const char* data,
+                                int len,
+                                bool enforceQuota,
+                                UpdateNotifier* notifier) {
+        return Status::OK();
     }
 
     virtual bool updateWithDamagesSupported() const {
@@ -145,8 +151,7 @@ public:
     virtual void temp_cappedTruncateAfter(OperationContext* txn, RecordId end, bool inclusive) {}
 
     virtual Status validate(OperationContext* txn,
-                            bool full,
-                            bool scanData,
+                            ValidateCmdLevel level,
                             ValidateAdaptor* adaptor,
                             ValidateResults* results,
                             BSONObjBuilder* output) {
@@ -162,6 +167,8 @@ public:
     virtual Status touch(OperationContext* txn, BSONObjBuilder* output) const {
         return Status::OK();
     }
+
+    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* txn) const override {}
 
     virtual void updateStatsAfterRepair(OperationContext* txn,
                                         long long numRecords,
@@ -209,9 +216,8 @@ public:
     }
 
     virtual void fullValidate(OperationContext* txn,
-                              bool full,
                               long long* numKeysOut,
-                              BSONObjBuilder* output) const {}
+                              ValidateResults* fullResults) const {}
 
     virtual bool appendCustomStats(OperationContext* txn,
                                    BSONObjBuilder* output,
@@ -238,14 +244,14 @@ public:
 };
 
 
-RecordStore* DevNullKVEngine::getRecordStore(OperationContext* opCtx,
-                                             StringData ns,
-                                             StringData ident,
-                                             const CollectionOptions& options) {
+std::unique_ptr<RecordStore> DevNullKVEngine::getRecordStore(OperationContext* opCtx,
+                                                             StringData ns,
+                                                             StringData ident,
+                                                             const CollectionOptions& options) {
     if (ident == "_mdb_catalog") {
-        return new EphemeralForTestRecordStore(ns, &_catalogInfo);
+        return stdx::make_unique<EphemeralForTestRecordStore>(ns, &_catalogInfo);
     }
-    return new DevNullRecordStore(ns, options);
+    return stdx::make_unique<DevNullRecordStore>(ns, options);
 }
 
 SortedDataInterface* DevNullKVEngine::getSortedDataInterface(OperationContext* opCtx,

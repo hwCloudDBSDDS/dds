@@ -32,16 +32,21 @@
 
 #include "mongo/base/string_data.h"
 #include "mongo/client/connection_string.h"
+#include "mongo/client/index_spec.h"
+#include "mongo/client/mongo_uri.h"
+#include "mongo/client/query.h"
 #include "mongo/client/read_preference.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/write_concern_options.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/rpc/protocol.h"
 #include "mongo/rpc/metadata.h"
+#include "mongo/rpc/protocol.h"
 #include "mongo/rpc/unique_message.h"
 #include "mongo/stdx/functional.h"
+#include "mongo/transport/message_compressor_manager.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/net/abstract_message_port.h"
 #include "mongo/util/net/message.h"
-#include "mongo/util/net/message_port.h"
 
 namespace mongo {
 
@@ -150,141 +155,6 @@ enum ReservedOptions {
 class DBClientCursor;
 class DBClientCursorBatchIterator;
 
-/** Represents a Mongo query expression.  Typically one uses the QUERY(...) macro to construct a
- * Query object.
-    Examples:
-       QUERY( "age" << 33 << "school" << "UCLA" ).sort("name")
-       QUERY( "age" << GT << 30 << LT << 50 )
-*/
-class Query {
-public:
-    static const BSONField<BSONObj> ReadPrefField;
-    static const BSONField<std::string> ReadPrefModeField;
-    static const BSONField<BSONArray> ReadPrefTagsField;
-
-    BSONObj obj;
-    Query() : obj(BSONObj()) {}
-    Query(const BSONObj& b) : obj(b) {}
-    Query(const std::string& json);
-    Query(const char* json);
-
-    /** Add a sort (ORDER BY) criteria to the query expression.
-        @param sortPattern the sort order template.  For example to order by name ascending, time
-            descending:
-          { name : 1, ts : -1 }
-        i.e.
-          BSON( "name" << 1 << "ts" << -1 )
-        or
-          fromjson(" name : 1, ts : -1 ")
-    */
-    Query& sort(const BSONObj& sortPattern);
-
-    /** Add a sort (ORDER BY) criteria to the query expression.
-        This version of sort() assumes you want to sort on a single field.
-        @param asc = 1 for ascending order
-        asc = -1 for descending order
-    */
-    Query& sort(const std::string& field, int asc = 1) {
-        sort(BSON(field << asc));
-        return *this;
-    }
-
-    /** Provide a hint to the query.
-        @param keyPattern Key pattern for the index to use.
-        Example:
-          hint("{ts:1}")
-    */
-    Query& hint(BSONObj keyPattern);
-    Query& hint(const std::string& jsonKeyPatt);
-
-    /** Provide min and/or max index limits for the query.
-        min <= x < max
-     */
-    Query& minKey(const BSONObj& val);
-    /**
-       max is exclusive
-     */
-    Query& maxKey(const BSONObj& val);
-
-    /** Return explain information about execution of this query instead of the actual query
-     * results.
-     *  Normally it is easier to use the mongo shell to run db.find(...).explain().
-     */
-    Query& explain();
-
-    /** Use snapshot mode for the query.  Snapshot mode assures no duplicates are returned, or
-     * objects missed, which were present at both the start and end of the query's execution (if an
-     * object is new during the query, or deleted during the query, it may or may not be returned,
-     * even with snapshot mode).
-
-        Note that short query responses (less than 1MB) are always effectively snapshotted.
-
-        Currently, snapshot mode may not be used with sorting or explicit hints.
-    */
-    Query& snapshot();
-
-    /** Queries to the Mongo database support a $where parameter option which contains
-        a javascript function that is evaluated to see whether objects being queried match
-        its criteria.  Use this helper to append such a function to a query object.
-        Your query may also contain other traditional Mongo query terms.
-
-        @param jscode The javascript function to evaluate against each potential object
-               match.  The function must return true for matched objects.  Use the this
-               variable to inspect the current object.
-        @param scope SavedContext for the javascript object.  List in a BSON object any
-               variables you would like defined when the jscode executes.  One can think
-               of these as "bind variables".
-
-        Examples:
-          conn.findOne("test.coll", Query("{a:3}").where("this.b == 2 || this.c == 3"));
-          Query badBalance = Query().where("this.debits - this.credits < 0");
-    */
-    Query& where(const std::string& jscode, BSONObj scope);
-    Query& where(const std::string& jscode) {
-        return where(jscode, BSONObj());
-    }
-
-    /**
-     * Sets the read preference for this query.
-     *
-     * @param pref the read preference mode for this query.
-     * @param tags the set of tags to use for this query.
-     */
-    Query& readPref(ReadPreference pref, const BSONArray& tags);
-
-    /**
-     * @return true if this query has an orderby, hint, or some other field
-     */
-    bool isComplex(bool* hasDollar = 0) const;
-    static bool isComplex(const BSONObj& obj, bool* hasDollar = 0);
-
-    BSONObj getFilter() const;
-    BSONObj getSort() const;
-    BSONObj getHint() const;
-    bool isExplain() const;
-
-    /**
-     * @return true if the query object contains a read preference specification object.
-     */
-    static bool hasReadPreference(const BSONObj& queryObj);
-
-    std::string toString() const;
-    operator std::string() const {
-        return toString();
-    }
-
-private:
-    void makeComplex();
-    template <class T>
-    void appendComplex(const char* fieldName, const T& val) {
-        makeComplex();
-        BSONObjBuilder b;
-        b.appendElements(obj);
-        b.append(fieldName, val);
-        obj = b.obj();
-    }
-};
-
 /**
  * Represents a full query description, including all options required for the query to be passed on
  * to other hosts
@@ -365,9 +235,14 @@ public:
     }
 
     std::string toString() const {
-        return str::stream() << "QSpec " << BSON("ns" << _ns << "n2skip" << _ntoskip << "n2return"
-                                                      << _ntoreturn << "options" << _options
-                                                      << "query" << _query << "fields" << _fields);
+        return str::stream() << "QSpec "
+                             << BSON("ns" << _ns << "n2skip" << _ntoskip << "n2return" << _ntoreturn
+                                          << "options"
+                                          << _options
+                                          << "query"
+                                          << _query
+                                          << "fields"
+                                          << _fields);
     }
 };
 
@@ -545,6 +420,19 @@ public:
                                                     const BSONObj& metadata,
                                                     const BSONObj& commandArgs);
 
+    /*
+     * This wraps up the runCommandWithMetadata function above, but returns the DBClient that
+     * actually ran the command. When called against a replica set, this will return the specific
+     * replica set member the command ran against.
+     *
+     * This is used in the shell so that cursors can send getMore through the correct connection.
+     */
+    virtual std::tuple<rpc::UniqueReply, DBClientWithCommands*> runCommandWithMetadataAndTarget(
+        StringData database,
+        StringData command,
+        const BSONObj& metadata,
+        const BSONObj& commandArgs);
+
     /** Run a database command.  Database commands are represented as BSON objects.  Common database
         commands have prebuilt helper functions -- see below.  If a helper is not available you can
         directly call runCommand.
@@ -562,6 +450,18 @@ public:
                             const BSONObj& cmd,
                             BSONObj& info,
                             int options = 0);
+
+    /*
+     * This wraps up the runCommand function avove, but returns the DBClient that actually ran
+     * the command. When called against a replica set, this will return the specific
+     * replica set member the command ran against.
+     *
+     * This is used in the shell so that cursors can send getMore through the correct connection.
+     */
+    virtual std::tuple<bool, DBClientWithCommands*> runCommandWithTarget(const std::string& dbname,
+                                                                         const BSONObj& cmd,
+                                                                         BSONObj& info,
+                                                                         int options = 0);
 
     /**
     * Authenticates to another cluster member using appropriate authentication data.
@@ -709,17 +609,20 @@ public:
      *  @param info An optional output parameter that receives the result object the database
      *  returns from the drop command.  May be null if the caller doesn't need that info.
      */
-    virtual bool dropCollection(const std::string& ns, BSONObj* info = NULL) {
+    virtual bool dropCollection(const std::string& ns,
+                                const WriteConcernOptions& writeConcern = WriteConcernOptions(),
+                                BSONObj* info = nullptr) {
         std::string db = nsGetDB(ns);
         std::string coll = nsGetCollection(ns);
         uassert(10011, "no collection name", coll.size());
 
         BSONObj temp;
-        if (info == NULL) {
+        if (info == nullptr) {
             info = &temp;
         }
 
-        bool res = runCommand(db.c_str(), BSON("drop" << coll), *info);
+        bool res = runCommand(
+            db.c_str(), BSON("drop" << coll << "writeConcern" << writeConcern.toBSON()), *info);
         return res;
     }
 
@@ -815,12 +718,6 @@ public:
     std::list<std::string> getDatabaseNames();
 
     /**
-     * Get a list of all the current collections in db.
-     * Returns fully qualified names.
-     */
-    std::list<std::string> getCollectionNames(const std::string& db);
-
-    /**
      * { name : "<short collection name>",
      *   options : { }
      * }
@@ -829,23 +726,28 @@ public:
 
     bool exists(const std::string& ns);
 
-    /** Create an index if it does not already exist.
-       @param ns collection to be indexed
-       @param keys the "key pattern" for the index.  e.g., { name : 1 }
-       @param unique if true, indicates that key uniqueness should be enforced for this index
-       @param name if not specified, it will be created from the keys automatically (which is
-              recommended)
-       @param background build index in the background (see mongodb docs for details)
-       @param v index version. leave at default value. (unit tests set this parameter.)
-       @param ttl. The value of how many seconds before data should be removed from a collection.
+    /** Create an index on the collection 'ns' as described by the given keys. If you wish
+     *  to specify options, see the more flexible overload of 'createIndex' which takes an
+     *  IndexSpec object. Failure to construct the index is reported by throwing a
+     *  UserException.
+     *
+     *  @param ns Namespace on which to create the index
+     *  @param keys Document describing keys and index types. You must provide at least one
+     *  field and its direction.
      */
-    virtual void ensureIndex(const std::string& ns,
-                             BSONObj keys,
-                             bool unique = false,
-                             const std::string& name = "",
-                             bool background = false,
-                             int v = -1,
-                             int ttl = 0);
+    void createIndex(StringData ns, const BSONObj& keys) {
+        return createIndex(ns, IndexSpec().addKeys(keys));
+    }
+
+    /** Create an index on the collection 'ns' as described by the given
+     *  descriptor. Failure to construct the index is reported by throwing a
+     *  UserException.
+     *
+     *  @param ns Namespace on which to create the index
+     *  @param descriptor Configuration object describing the index to create. The
+     *  descriptor must describe at least one key and index type.
+     */
+    virtual void createIndex(StringData ns, const IndexSpec& descriptor);
 
     virtual std::list<BSONObj> getIndexSpecs(const std::string& ns, int options = 0);
 
@@ -862,8 +764,14 @@ public:
     static std::string genIndexName(const BSONObj& keys);
 
     /** Erase / drop an entire database */
-    virtual bool dropDatabase(const std::string& dbname, BSONObj* info = 0) {
-        return simpleCommand(dbname, info, "dropDatabase");
+    virtual bool dropDatabase(const std::string& dbname,
+                              const WriteConcernOptions& writeConcern = WriteConcernOptions(),
+                              BSONObj* info = nullptr) {
+        BSONObj o;
+        if (info == nullptr)
+            info = &o;
+        return runCommand(
+            dbname, BSON("dropDatabase" << 1 << "writeConcern" << writeConcern.toBSON()), *info);
     }
 
     virtual std::string toString() const = 0;
@@ -1072,6 +980,7 @@ public:
      */
     DBClientConnection(bool _autoReconnect = false,
                        double so_timeout = 0,
+                       MongoURI uri = {},
                        const HandshakeValidationHook& hook = HandshakeValidationHook());
 
     virtual ~DBClientConnection() {
@@ -1088,7 +997,9 @@ public:
      * @param errmsg any relevant error message will appended to the string
      * @return false if fails to connect.
      */
-    virtual bool connect(const HostAndPort& server, std::string& errmsg);
+    virtual bool connect(const HostAndPort& server,
+                         StringData applicationName,
+                         std::string& errmsg);
 
     /**
      * Semantically equivalent to the previous connect method, but returns a Status
@@ -1099,7 +1010,7 @@ public:
      * @param a hook to validate the 'isMaster' reply received during connection. If the hook
      * fails, the connection will be terminated and a non-OK status will be returned.
      */
-    Status connect(const HostAndPort& server);
+    Status connect(const HostAndPort& server, StringData applicationName);
 
     /**
      * This version of connect does not run 'isMaster' after creating a TCP connection to the
@@ -1177,7 +1088,7 @@ public:
         return _maxWireVersion;
     }
 
-    MessagingPort& port() {
+    AbstractMessagingPort& port() {
         verify(_port);
         return *_port;
     }
@@ -1230,13 +1141,17 @@ public:
 
     uint64_t getSockCreationMicroSec() const;
 
+    MessageCompressorManager& getCompressorManager() {
+        return _compressorManager;
+    }
+
 protected:
     int _minWireVersion{0};
     int _maxWireVersion{0};
 
     virtual void _auth(const BSONObj& params);
 
-    std::unique_ptr<MessagingPort> _port;
+    std::unique_ptr<AbstractMessagingPort> _port;
 
     bool _failed;
     const bool autoReconnect;
@@ -1244,6 +1159,7 @@ protected:
 
     HostAndPort _serverAddress;
     std::string _resolvedAddress;
+    std::string _applicationName;
 
     void _checkConnection();
 
@@ -1272,6 +1188,10 @@ private:
 
     // Hook ran on every call to connect()
     HandshakeValidationHook _hook;
+
+    MessageCompressorManager _compressorManager;
+
+    MongoURI _uri;
 };
 
 BSONElement getErrField(const BSONObj& result);
@@ -1280,14 +1200,6 @@ bool hasErrField(const BSONObj& result);
 inline std::ostream& operator<<(std::ostream& s, const Query& q) {
     return s << q.toString();
 }
-
-void assembleQueryRequest(const std::string& ns,
-                          BSONObj query,
-                          int nToReturn,
-                          int nToSkip,
-                          const BSONObj* fieldsToReturn,
-                          int queryOptions,
-                          Message& toSend);
 
 }  // namespace mongo
 

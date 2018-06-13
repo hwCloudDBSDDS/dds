@@ -32,16 +32,30 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/s/collection_sharding_state.h"
 
 namespace mongo {
 struct CollectionOptions;
 class NamespaceString;
 class OperationContext;
 
-struct oplogUpdateEntryArgs {
+/**
+ * Holds document update information used in logging.
+ */
+struct OplogUpdateEntryArgs {
+    // Name of the collection in which document is being updated.
     std::string ns;
+
+    // Fully updated document with damages (update modifiers) applied.
+    BSONObj updatedDoc;
+
+    // Document containing update modifiers -- e.g. $set and $unset
     BSONObj update;
+
+    // Document containing the _id field of the doc being updated.
     BSONObj criteria;
+
+    // True if this update comes from a chunk migration.
     bool fromMigrate;
 };
 
@@ -52,11 +66,6 @@ public:
     OpObserver() {}
     ~OpObserver() {}
 
-    struct DeleteState {
-        BSONObj idDoc;
-        bool isMigrating = false;
-    };
-
     void onCreateIndex(OperationContext* txn,
                        const std::string& ns,
                        BSONObj indexDoc,
@@ -66,8 +75,10 @@ public:
                    std::vector<BSONObj>::const_iterator begin,
                    std::vector<BSONObj>::const_iterator end,
                    bool fromMigrate = false);
-    void onUpdate(OperationContext* txn, oplogUpdateEntryArgs args);
-    DeleteState aboutToDelete(OperationContext* txn, const NamespaceString& ns, const BSONObj& doc);
+    void onUpdate(OperationContext* txn, const OplogUpdateEntryArgs& args);
+    CollectionShardingState::DeleteState aboutToDelete(OperationContext* txn,
+                                                       const NamespaceString& ns,
+                                                       const BSONObj& doc);
     /**
      * Handles logging before document is deleted.
      *
@@ -79,12 +90,13 @@ public:
      */
     void onDelete(OperationContext* txn,
                   const NamespaceString& ns,
-                  DeleteState deleteState,
+                  CollectionShardingState::DeleteState deleteState,
                   bool fromMigrate);
     void onOpMessage(OperationContext* txn, const BSONObj& msgObj);
     void onCreateCollection(OperationContext* txn,
                             const NamespaceString& collectionName,
-                            const CollectionOptions& options);
+                            const CollectionOptions& options,
+                            const BSONObj& idIndex);
     void onCollMod(OperationContext* txn, const std::string& dbName, const BSONObj& collModCmd);
     void onDropDatabase(OperationContext* txn, const std::string& dbName);
     void onDropCollection(OperationContext* txn, const NamespaceString& collectionName);

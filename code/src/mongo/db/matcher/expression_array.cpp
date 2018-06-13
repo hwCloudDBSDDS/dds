@@ -35,7 +35,7 @@
 
 namespace mongo {
 
-Status ArrayMatchingMatchExpression::initPath(StringData path) {
+Status ArrayMatchingMatchExpression::setPath(StringData path) {
     _path = path;
     Status s = _elementPath.init(_path);
     _elementPath.setTraverseLeafArray(false);
@@ -95,7 +95,7 @@ bool ArrayMatchingMatchExpression::equivalent(const MatchExpression* other) cons
 
 Status ElemMatchObjectMatchExpression::init(StringData path, MatchExpression* sub) {
     _sub.reset(sub);
-    return initPath(path);
+    return setPath(path);
 }
 
 bool ElemMatchObjectMatchExpression::matchesArray(const BSONObj& anArray,
@@ -128,14 +128,10 @@ void ElemMatchObjectMatchExpression::debugString(StringBuilder& debug, int level
     _sub->debugString(debug, level + 1);
 }
 
-void ElemMatchObjectMatchExpression::toBSON(BSONObjBuilder* out) const {
+void ElemMatchObjectMatchExpression::serialize(BSONObjBuilder* out) const {
     BSONObjBuilder subBob;
-    _sub->toBSON(&subBob);
-    if (path().empty()) {
-        out->append("$elemMatch", subBob.obj());
-    } else {
-        out->append(path(), BSON("$elemMatch" << subBob.obj()));
-    }
+    _sub->serialize(&subBob);
+    out->append(path(), BSON("$elemMatch" << subBob.obj()));
 }
 
 
@@ -154,7 +150,7 @@ Status ElemMatchValueMatchExpression::init(StringData path, MatchExpression* sub
 }
 
 Status ElemMatchValueMatchExpression::init(StringData path) {
-    return initPath(path);
+    return setPath(path);
 }
 
 
@@ -202,16 +198,16 @@ void ElemMatchValueMatchExpression::debugString(StringBuilder& debug, int level)
     }
 }
 
-void ElemMatchValueMatchExpression::toBSON(BSONObjBuilder* out) const {
+void ElemMatchValueMatchExpression::serialize(BSONObjBuilder* out) const {
     BSONObjBuilder emBob;
+
     for (unsigned i = 0; i < _subs.size(); i++) {
-        _subs[i]->toBSON(&emBob);
+        BSONObjBuilder predicate;
+        _subs[i]->serialize(&predicate);
+        BSONObj predObj = predicate.obj();
+        emBob.appendElements(predObj.firstElement().embeddedObject());
     }
-    if (path().empty()) {
-        out->append("$elemMatch", emBob.obj());
-    } else {
-        out->append(path(), BSON("$elemMatch" << emBob.obj()));
-    }
+    out->append(path(), BSON("$elemMatch" << emBob.obj()));
 }
 
 
@@ -219,7 +215,7 @@ void ElemMatchValueMatchExpression::toBSON(BSONObjBuilder* out) const {
 
 Status SizeMatchExpression::init(StringData path, int size) {
     _size = size;
-    return initPath(path);
+    return setPath(path);
 }
 
 bool SizeMatchExpression::matchesArray(const BSONObj& anArray, MatchDetails* details) const {
@@ -239,7 +235,7 @@ void SizeMatchExpression::debugString(StringBuilder& debug, int level) const {
     }
 }
 
-void SizeMatchExpression::toBSON(BSONObjBuilder* out) const {
+void SizeMatchExpression::serialize(BSONObjBuilder* out) const {
     out->append(path(), BSON("$size" << _size));
 }
 

@@ -13,7 +13,7 @@ var cursor;
 // Pre-split collection: shard 0 takes {_id: {$lt: 0}}, shard 1 takes {_id: {$gte: 0}}.
 //
 assert.commandWorked(admin.runCommand({enableSharding: coll.getDB().getName()}));
-admin.runCommand({movePrimary: coll.getDB().getName(), to: "shard0000"});
+st.ensurePrimaryShard(coll.getDB().toString(), "shard0000");
 assert.commandWorked(admin.runCommand({shardCollection: coll.getFullName(), key: {_id: 1}}));
 assert.commandWorked(admin.runCommand({split: coll.getFullName(), middle: {_id: 0}}));
 assert.commandWorked(
@@ -51,8 +51,9 @@ assert.throws(function() {
 });
 
 // Projection specified with incorrect field name.
-cursor = coll.find({$text: {$search: "pizza"}}, {t: {$meta: "textScore"}})
-             .sort({s: {$meta: "textScore"}});
+cursor = coll.find({$text: {$search: "pizza"}}, {t: {$meta: "textScore"}}).sort({
+    s: {$meta: "textScore"}
+});
 assert.throws(function() {
     cursor.next();
 });

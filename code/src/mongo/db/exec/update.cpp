@@ -33,14 +33,18 @@
 #include "mongo/db/exec/update.h"
 
 #include "mongo/bson/mutable/algorithm.h"
+#include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set_common.h"
-#include "mongo/db/service_context.h"
+#include "mongo/db/exec/write_stage_common.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/ops/update_lifecycle.h"
 #include "mongo/db/query/explain.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/s/collection_metadata.h"
+#include "mongo/db/s/collection_sharding_state.h"
+#include "mongo/db/service_context.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
@@ -53,6 +57,7 @@ using std::vector;
 using stdx::make_unique;
 
 namespace mb = mutablebson;
+namespace dps = ::mongo::dotted_path_support;
 
 namespace {
 
@@ -145,7 +150,8 @@ Status validateDollarPrefixElement(const mb::ConstElement elem, const bool deep)
         // not an okay, $ prefixed field name.
         return Status(ErrorCodes::DollarPrefixedFieldName,
                       str::stream() << "The dollar ($) prefixed field '" << elem.getFieldName()
-                                    << "' in '" << mb::getFullName(elem)
+                                    << "' in '"
+                                    << mb::getFullName(elem)
                                     << "' is not valid for storage.");
     }
 
@@ -197,7 +203,8 @@ Status storageValid(const mb::ConstElement& elem, const bool deep) {
             // Field name cannot have a "." in it.
             return Status(ErrorCodes::DottedFieldName,
                           str::stream() << "The dotted field '" << elem.getFieldName() << "' in '"
-                                        << mb::getFullName(elem) << "' is not valid for storage.");
+                                        << mb::getFullName(elem)
+                                        << "' is not valid for storage.");
         }
     }
 
@@ -339,13 +346,16 @@ inline Status validate(const BSONObj& original,
                     return Status(ErrorCodes::ImmutableField,
                                   mongoutils::str::stream()
                                       << "After applying the update to the document with "
-                                      << newIdElem.toString() << ", the '" << current.dottedField()
+                                      << newIdElem.toString()
+                                      << ", the '"
+                                      << current.dottedField()
                                       << "' (required and immutable) field was "
-                                         "found to have been removed --" << original);
+                                         "found to have been removed --"
+                                      << original);
             }
         } else {
             // Find the potentially affected field in the original document.
-            const BSONElement oldElem = original.getFieldDotted(current.dottedField());
+            const BSONElement oldElem = dps::extractElementAtPath(original, current.dottedField());
             const BSONElement oldIdElem = original.getField(idFieldName);
 
             // Ensure no arrays since neither _id nor shard keys can be in an array, or one.
@@ -357,19 +367,22 @@ inline Status validate(const BSONObj& original,
                         mongoutils::str::stream()
                             << "After applying the update to the document {"
                             << (oldIdElem.ok() ? oldIdElem.toString() : newIdElem.toString())
-                            << " , ...}, the (immutable) field '" << current.dottedField()
+                            << " , ...}, the (immutable) field '"
+                            << current.dottedField()
                             << "' was found to be an array or array descendant.");
                 }
                 currElem = currElem.parent();
             }
 
             // If we have both (old and new), compare them. If we just have new we are good
-            if (oldElem.ok() && newElem.compareWithBSONElement(oldElem, false) != 0) {
+            if (oldElem.ok() && newElem.compareWithBSONElement(oldElem, nullptr, false) != 0) {
                 return Status(ErrorCodes::ImmutableField,
                               mongoutils::str::stream()
                                   << "After applying the update to the document {"
-                                  << oldElem.toString() << " , ...}, the (immutable) field '"
-                                  << current.dottedField() << "' was found to have been altered to "
+                                  << oldElem.toString()
+                                  << " , ...}, the (immutable) field '"
+                                  << current.dottedField()
+                                  << "' was found to have been altered to "
                                   << newElem.toString());
             }
         }
@@ -410,6 +423,28 @@ Status addObjectIDIdField(mb::Document* doc) {
     return Status::OK();
 }
 
+/**
+ * Returns true if we should throw a WriteConflictException in order to retry the operation in the
+ * case of a conflict. Returns false if we should skip the document and keep going.
+ */
+bool shouldRestartUpdateIfNoLongerMatches(const UpdateStageParams& params) {
+    // When we're doing a findAndModify with a sort, the sort will have a limit of 1, so it will not
+    // produce any more results even if there is another matching document. Throw a WCE here so that
+    // these operations get another chance to find a matching document. The findAndModify command
+    // should automatically retry if it gets a WCE.
+    return params.request->shouldReturnAnyDocs() && !params.request->getSort().isEmpty();
+};
+
+const std::vector<FieldRef*>* getImmutableFields(OperationContext* txn, const NamespaceString& ns) {
+    auto metadata = CollectionShardingState::get(txn, ns)->getMetadata();
+    if (metadata) {
+        const std::vector<FieldRef*>& fields = metadata->getKeyPatternFields();
+        // Return shard-keys as immutable for the update system.
+        return &fields;
+    }
+    return NULL;
+}
+
 }  // namespace
 
 const char* UpdateStage::kStageType = "UPDATE";
@@ -425,7 +460,7 @@ UpdateStage::UpdateStage(OperationContext* txn,
       _collection(collection),
       _idRetrying(WorkingSet::INVALID_ID),
       _idReturning(WorkingSet::INVALID_ID),
-      _updatedLocs(params.request->isMulti() ? new DiskLocSet() : NULL),
+      _updatedRecordIds(params.request->isMulti() ? new RecordIdSet() : NULL),
       _doc(params.driver->getDocument()) {
     _children.emplace_back(child);
     // We are an update until we fall into the insert case.
@@ -436,7 +471,7 @@ UpdateStage::UpdateStage(OperationContext* txn,
     _specificStats.isDocReplacement = params.driver->isDocReplacement();
 }
 
-BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, RecordId& loc) {
+BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, RecordId& recordId) {
     const UpdateRequest* request = _params.request;
     UpdateDriver* driver = _params.driver;
     CanonicalQuery* cq = _params.canonicalQuery;
@@ -524,7 +559,7 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
         if (!(!getOpCtx()->writesAreReplicated() || request->isFromMigration())) {
             const std::vector<FieldRef*>* immutableFields = NULL;
             if (lifecycle)
-                immutableFields = lifecycle->getImmutableFields();
+                immutableFields = getImmutableFields(getOpCtx(), request->getNamespaceString());
 
             uassertStatusOK(validate(
                 oldObj.value(), updatedFields, _doc, immutableFields, driver->modOptions()));
@@ -533,7 +568,7 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
         // Prepare to write back the modified document
         WriteUnitOfWork wunit(getOpCtx());
 
-        RecordId newLoc;
+        RecordId newRecordId;
 
         if (inPlace) {
             // Don't actually do the write if this is an explain.
@@ -542,22 +577,22 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
                 newObj = oldObj.value();
                 const RecordData oldRec(oldObj.value().objdata(), oldObj.value().objsize());
                 BSONObj idQuery = driver->makeOplogEntryQuery(newObj, request->isMulti());
-                oplogUpdateEntryArgs args;
+                OplogUpdateEntryArgs args;
+                args.ns = _collection->ns().ns();
                 args.update = logObj;
                 args.criteria = idQuery;
                 args.fromMigrate = request->isFromMigration();
                 StatusWith<RecordData> newRecStatus = _collection->updateDocumentWithDamages(
                     getOpCtx(),
-                    loc,
+                    recordId,
                     Snapshotted<RecordData>(oldObj.snapshotId(), oldRec),
                     source,
                     _damages,
-                    args);
+                    &args);
                 newObj = uassertStatusOK(std::move(newRecStatus)).releaseToBson();
             }
 
-            _specificStats.fastmod = true;
-            newLoc = loc;
+            newRecordId = recordId;
         } else {
             // The updates were not in place. Apply them through the file manager.
 
@@ -571,20 +606,21 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
             if (!request->isExplain()) {
                 invariant(_collection);
                 BSONObj idQuery = driver->makeOplogEntryQuery(newObj, request->isMulti());
-                oplogUpdateEntryArgs args;
+                OplogUpdateEntryArgs args;
+                args.ns = _collection->ns().ns();
                 args.update = logObj;
                 args.criteria = idQuery;
                 args.fromMigrate = request->isFromMigration();
                 StatusWith<RecordId> res = _collection->updateDocument(getOpCtx(),
-                                                                       loc,
+                                                                       recordId,
                                                                        oldObj,
                                                                        newObj,
                                                                        true,
                                                                        driver->modsAffectIndices(),
                                                                        _params.opDebug,
-                                                                       args);
+                                                                       &args);
                 uassertStatusOK(res.getStatus());
-                newLoc = res.getValue();
+                newRecordId = res.getValue();
             }
         }
 
@@ -596,11 +632,11 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
         //
         // If the document is indexed and the mod changes an indexed value, we might see
         // it again.  For an example, see the comment above near declaration of
-        // updatedLocs.
+        // updatedRecordIds.
         //
         // This must be done after the wunit commits so we are sure we won't be rolling back.
-        if (_updatedLocs && (newLoc != loc || driver->modsAffectIndices())) {
-            _updatedLocs->insert(newLoc);
+        if (_updatedRecordIds && (newRecordId != recordId || driver->modsAffectIndices())) {
+            _updatedRecordIds->insert(newRecordId);
         }
     }
 
@@ -613,12 +649,13 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
     return newObj;
 }
 
-Status UpdateStage::applyUpdateOpsForInsert(const CanonicalQuery* cq,
+Status UpdateStage::applyUpdateOpsForInsert(OperationContext* txn,
+                                            const CanonicalQuery* cq,
                                             const BSONObj& query,
                                             UpdateDriver* driver,
-                                            UpdateLifecycle* lifecycle,
                                             mutablebson::Document* doc,
                                             bool isInternalRequest,
+                                            const NamespaceString& ns,
                                             UpdateStats* stats,
                                             BSONObj* out) {
     // Since this is an insert (no docs found and upsert:true), we will be logging it
@@ -629,8 +666,8 @@ Status UpdateStage::applyUpdateOpsForInsert(const CanonicalQuery* cq,
     driver->setContext(ModifierInterface::ExecInfo::INSERT_CONTEXT);
 
     const vector<FieldRef*>* immutablePaths = NULL;
-    if (!isInternalRequest && lifecycle)
-        immutablePaths = lifecycle->getImmutableFields();
+    if (!isInternalRequest)
+        immutablePaths = getImmutableFields(txn, ns);
 
     // The original document we compare changes to - immutable paths must not change
     BSONObj original;
@@ -701,12 +738,13 @@ void UpdateStage::doInsert() {
     _doc.reset();
 
     BSONObj newObj;
-    uassertStatusOK(applyUpdateOpsForInsert(_params.canonicalQuery,
+    uassertStatusOK(applyUpdateOpsForInsert(getOpCtx(),
+                                            _params.canonicalQuery,
                                             request->getQuery(),
                                             _params.driver,
-                                            request->getLifecycle(),
                                             &_doc,
                                             isInternalRequest,
+                                            request->getNamespaceString(),
                                             &_specificStats,
                                             &newObj));
 
@@ -721,7 +759,7 @@ void UpdateStage::doInsert() {
         invariant(_collection);
         const bool enforceQuota = !request->isGod();
         uassertStatusOK(_collection->insertDocument(
-            getOpCtx(), newObj, enforceQuota, request->isFromMigration()));
+            getOpCtx(), newObj, _params.opDebug, enforceQuota, request->isFromMigration()));
 
         // Technically, we should save/restore state here, but since we are going to return
         // immediately after, it would just be wasted work.
@@ -749,12 +787,7 @@ bool UpdateStage::isEOF() {
     return doneUpdating() && !needInsert();
 }
 
-PlanStage::StageState UpdateStage::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
     if (isEOF()) {
         return PlanStage::IS_EOF;
     }
@@ -779,7 +812,6 @@ PlanStage::StageState UpdateStage::work(WorkingSetID* out) {
                 member->obj = Snapshotted<BSONObj>(getOpCtx()->recoveryUnit()->getSnapshotId(),
                                                    newObj.getOwned());
                 member->transitionToOwnedObj();
-                ++_commonStats.advanced;
                 return PlanStage::ADVANCED;
             }
         }
@@ -806,7 +838,6 @@ PlanStage::StageState UpdateStage::work(WorkingSetID* out) {
 
         *out = _idReturning;
         _idReturning = WorkingSet::INVALID_ID;
-        ++_commonStats.advanced;
         return PlanStage::ADVANCED;
     }
 
@@ -823,101 +854,90 @@ PlanStage::StageState UpdateStage::work(WorkingSetID* out) {
 
     if (PlanStage::ADVANCED == status) {
         // Need to get these things from the result returned by the child.
-        RecordId loc;
+        RecordId recordId;
 
         WorkingSetMember* member = _ws->get(id);
 
-        // We want to free this member when we return, unless we need to retry it.
+        // We want to free this member when we return, unless we need to retry updating or returning
+        // it.
         ScopeGuard memberFreer = MakeGuard(&WorkingSet::free, _ws, id);
 
-        if (!member->hasLoc()) {
+        if (!member->hasRecordId()) {
             // We expect to be here because of an invalidation causing a force-fetch.
             ++_specificStats.nInvalidateSkips;
-            ++_commonStats.needTime;
             return PlanStage::NEED_TIME;
         }
-        loc = member->loc;
+        recordId = member->recordId;
 
         // Updates can't have projections. This means that covering analysis will always add
         // a fetch. We should always get fetched data, and never just key data.
         invariant(member->hasObj());
 
-        // We fill this with the new locs of moved doc so we don't double-update.
-        if (_updatedLocs && _updatedLocs->count(loc) > 0) {
-            // Found a loc that refers to a document we had already updated. Note that
-            // we can never remove from _updatedLocs because updates by other clients
+        // We fill this with the new RecordIds of moved doc so we don't double-update.
+        if (_updatedRecordIds && _updatedRecordIds->count(recordId) > 0) {
+            // Found a RecordId that refers to a document we had already updated. Note that
+            // we can never remove from _updatedRecordIds because updates by other clients
             // could cause us to encounter a document again later.
-            ++_commonStats.needTime;
             return PlanStage::NEED_TIME;
         }
 
+        bool docStillMatches;
         try {
-            std::unique_ptr<SeekableRecordCursor> cursor;
-            if (getOpCtx()->recoveryUnit()->getSnapshotId() != member->obj.snapshotId()) {
-                cursor = _collection->getCursor(getOpCtx());
-                // our snapshot has changed, refetch
-                if (!WorkingSetCommon::fetch(getOpCtx(), _ws, id, cursor)) {
-                    // document was deleted, we're done here
-                    ++_commonStats.needTime;
-                    return PlanStage::NEED_TIME;
-                }
-
-                // we have to re-match the doc as it might not match anymore
-                CanonicalQuery* cq = _params.canonicalQuery;
-                if (cq && !cq->root()->matchesBSON(member->obj.value(), NULL)) {
-                    // doesn't match predicates anymore!
-                    ++_commonStats.needTime;
-                    return PlanStage::NEED_TIME;
-                }
-            }
-
-            // Ensure that the BSONObj underlying the WorkingSetMember is owned because saveState()
-            // is allowed to free the memory.
-            member->makeObjOwnedIfNeeded();
-
-            // Save state before making changes
-            try {
-                WorkingSetCommon::prepareForSnapshotChange(_ws);
-                child()->saveState();
-            } catch (const WriteConflictException& wce) {
-                std::terminate();
-            }
-
-            // If we care about the pre-updated version of the doc, save it out here.
-            BSONObj oldObj;
-            if (_params.request->shouldReturnOldDocs()) {
-                oldObj = member->obj.value().getOwned();
-            }
-
-            // Do the update, get us the new version of the doc.
-            BSONObj newObj = transformAndUpdate(member->obj, loc);
-
-            // Set member's obj to be the doc we want to return.
-            if (_params.request->shouldReturnAnyDocs()) {
-                if (_params.request->shouldReturnNewDocs()) {
-                    member->obj = Snapshotted<BSONObj>(getOpCtx()->recoveryUnit()->getSnapshotId(),
-                                                       newObj.getOwned());
-                } else {
-                    invariant(_params.request->shouldReturnOldDocs());
-                    member->obj.setValue(oldObj);
-                }
-                member->loc = RecordId();
-                member->transitionToOwnedObj();
-            }
+            docStillMatches = write_stage_common::ensureStillMatches(
+                _collection, getOpCtx(), _ws, id, _params.canonicalQuery);
         } catch (const WriteConflictException& wce) {
-            // When we're doing a findAndModify with a sort, the sort will have a limit of 1, so
-            // will not produce any more results even if there is another matching document.
-            // Re-throw the WCE here so that these operations get another chance to find a matching
-            // document. The findAndModify command should automatically retry if it gets a WCE.
-            // TODO: this is not necessary if there was no sort specified.
-            if (_params.request->shouldReturnAnyDocs()) {
-                throw;
+            // There was a problem trying to detect if the document still exists, so retry.
+            memberFreer.Dismiss();
+            return prepareToRetryWSM(id, out);
+        }
+
+        if (!docStillMatches) {
+            // Either the document has been deleted, or it has been updated such that it no longer
+            // matches the predicate.
+            if (shouldRestartUpdateIfNoLongerMatches(_params)) {
+                throw WriteConflictException();
             }
-            _idRetrying = id;
+            return PlanStage::NEED_TIME;
+        }
+
+        // Ensure that the BSONObj underlying the WorkingSetMember is owned because saveState()
+        // is allowed to free the memory.
+        member->makeObjOwnedIfNeeded();
+
+        // Save state before making changes
+        WorkingSetCommon::prepareForSnapshotChange(_ws);
+        try {
+            child()->saveState();
+        } catch (const WriteConflictException& wce) {
+            std::terminate();
+        }
+
+        // If we care about the pre-updated version of the doc, save it out here.
+        BSONObj oldObj;
+        if (_params.request->shouldReturnOldDocs()) {
+            oldObj = member->obj.value().getOwned();
+        }
+
+        BSONObj newObj;
+        try {
+            // Do the update, get us the new version of the doc.
+            newObj = transformAndUpdate(member->obj, recordId);
+        } catch (const WriteConflictException& wce) {
             memberFreer.Dismiss();  // Keep this member around so we can retry updating it.
-            *out = WorkingSet::INVALID_ID;
-            _commonStats.needYield++;
-            return NEED_YIELD;
+            return prepareToRetryWSM(id, out);
+        }
+
+        // Set member's obj to be the doc we want to return.
+        if (_params.request->shouldReturnAnyDocs()) {
+            if (_params.request->shouldReturnNewDocs()) {
+                member->obj = Snapshotted<BSONObj>(getOpCtx()->recoveryUnit()->getSnapshotId(),
+                                                   newObj.getOwned());
+            } else {
+                invariant(_params.request->shouldReturnOldDocs());
+                member->obj.setValue(oldObj);
+            }
+            member->recordId = RecordId();
+            member->transitionToOwnedObj();
         }
 
         // This should be after transformAndUpdate to make sure we actually updated this doc.
@@ -942,7 +962,6 @@ PlanStage::StageState UpdateStage::work(WorkingSetID* out) {
                 memberFreer.Dismiss();
             }
             *out = WorkingSet::INVALID_ID;
-            _commonStats.needYield++;
             return NEED_YIELD;
         }
 
@@ -952,16 +971,13 @@ PlanStage::StageState UpdateStage::work(WorkingSetID* out) {
 
             memberFreer.Dismiss();  // Keep this member around so we can return it.
             *out = id;
-            ++_commonStats.advanced;
             return PlanStage::ADVANCED;
         }
 
-        ++_commonStats.needTime;
         return PlanStage::NEED_TIME;
     } else if (PlanStage::IS_EOF == status) {
         // The child is out of results, but we might not be done yet because we still might
         // have to do an insert.
-        ++_commonStats.needTime;
         return PlanStage::NEED_TIME;
     } else if (PlanStage::FAILURE == status) {
         *out = id;
@@ -974,10 +990,7 @@ PlanStage::StageState UpdateStage::work(WorkingSetID* out) {
             return PlanStage::FAILURE;
         }
         return status;
-    } else if (PlanStage::NEED_TIME == status) {
-        ++_commonStats.needTime;
     } else if (PlanStage::NEED_YIELD == status) {
-        ++_commonStats.needYield;
         *out = id;
     }
 
@@ -993,7 +1006,7 @@ Status UpdateStage::restoreUpdateState() {
         !repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(nsString);
 
     if (userInitiatedWritesAndNotPrimary) {
-        return Status(ErrorCodes::NotMaster,
+        return Status(ErrorCodes::PrimarySteppedDown,
                       str::stream() << "Demoted from primary while performing update on "
                                     << nsString.ns());
     }
@@ -1037,44 +1050,26 @@ const UpdateStats* UpdateStage::getUpdateStats(const PlanExecutor* exec) {
     return static_cast<const UpdateStats*>(updateStage->getSpecificStats());
 }
 
-void UpdateStage::fillOutOpDebug(const UpdateStats* updateStats,
-                                 const PlanSummaryStats* summaryStats,
-                                 OpDebug* opDebug) {
+void UpdateStage::recordUpdateStatsInOpDebug(const UpdateStats* updateStats, OpDebug* opDebug) {
+    invariant(opDebug);
     opDebug->nMatched = updateStats->nMatched;
     opDebug->nModified = updateStats->nModified;
     opDebug->upsert = updateStats->inserted;
     opDebug->fastmodinsert = updateStats->fastmodinsert;
-    opDebug->fastmod = updateStats->fastmod;
-
-    // Historically, 'opDebug' considers 'nMatched' and 'nModified' to be 1 (rather than 0)
-    // if there is an upsert that inserts a document. The UpdateStage does not participate
-    // in this madness in order to have saner stats reporting for explain. This means that
-    // we have to set these values "manually" in the case of an insert.
-    if (updateStats->inserted) {
-        opDebug->nMatched = 1;
-        opDebug->nModified = 1;
-    }
-
-    // Copy summary information about the plan into OpDebug.
-    opDebug->keysExamined = summaryStats->totalKeysExamined;
-    opDebug->docsExamined = summaryStats->totalDocsExamined;
-    opDebug->fromMultiPlanner = summaryStats->fromMultiPlanner;
-    opDebug->replanned = summaryStats->replanned;
 }
 
 UpdateResult UpdateStage::makeUpdateResult(const UpdateStats* updateStats) {
-    // Historically, UpdateResult considers 'nMatched' and 'nModified' to be 1 (rather than 0) if
-    // there is an upsert that inserts a document. The UpdateStage does not participate in this
-    // madness in order to have saner stats reporting for explain. This means that we have to set
-    // these values "manually" in the case of an insert.
-    size_t nMatched = updateStats->inserted ? 1U : updateStats->nMatched;
-    size_t nModified = updateStats->inserted ? 1U : updateStats->nModified;
-
     return UpdateResult(updateStats->nMatched > 0 /* Did we update at least one obj? */,
                         !updateStats->isDocReplacement /* $mod or obj replacement */,
-                        nModified /* number of modified docs, no no-ops */,
-                        nMatched /* # of docs matched/updated, even no-ops */,
+                        updateStats->nModified /* number of modified docs, no no-ops */,
+                        updateStats->nMatched /* # of docs matched/updated, even no-ops */,
                         updateStats->objInserted);
 };
+
+PlanStage::StageState UpdateStage::prepareToRetryWSM(WorkingSetID idToRetry, WorkingSetID* out) {
+    _idRetrying = idToRetry;
+    *out = WorkingSet::INVALID_ID;
+    return NEED_YIELD;
+}
 
 }  // namespace mongo

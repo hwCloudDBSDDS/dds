@@ -42,6 +42,8 @@ using boost::intrusive_ptr;
 using std::string;
 using std::vector;
 
+const DocumentStorage DocumentStorage::kEmptyDoc;
+
 Position DocumentStorage::findField(StringData requested) const {
     int reqSize = requested.size();  // get size calculation out of the way if needed
 
@@ -184,10 +186,12 @@ intrusive_ptr<DocumentStorage> DocumentStorage::clone() const {
 
     // Make a copy of the buffer.
     // It is very important that the positions of each field are the same after cloning.
-    const size_t bufferBytes = (_bufferEnd + hashTabBytes()) - _buffer;
+    const size_t bufferBytes = allocatedBytes();
     out->_buffer = new char[bufferBytes];
     out->_bufferEnd = out->_buffer + (_bufferEnd - _buffer);
-    memcpy(out->_buffer, _buffer, bufferBytes);
+    if (bufferBytes > 0) {
+        memcpy(out->_buffer, _buffer, bufferBytes);
+    }
 
     // Copy remaining fields
     out->_usedBytes = _usedBytes;
@@ -225,6 +229,16 @@ Document::Document(const BSONObj& bson) {
     *this = md.freeze();
 }
 
+Document::Document(std::initializer_list<std::pair<StringData, ImplicitValue>> initializerList) {
+    MutableDocument mutableDoc(initializerList.size());
+
+    for (auto&& pair : initializerList) {
+        mutableDoc.addField(pair.first, pair.second);
+    }
+
+    *this = mutableDoc.freeze();
+}
+
 BSONObjBuilder& operator<<(BSONObjBuilderValueStream& builder, const Document& doc) {
     BSONObjBuilder subobj(builder.subobjStart());
     doc.toBson(&subobj);
@@ -244,8 +258,8 @@ BSONObj Document::toBson() const {
     return bb.obj();
 }
 
-const StringData Document::metaFieldTextScore("$textScore", StringData::LiteralTag());
-const StringData Document::metaFieldRandVal("$randVal", StringData::LiteralTag());
+const StringData Document::metaFieldTextScore("$textScore"_sd);
+const StringData Document::metaFieldRandVal("$randVal"_sd);
 
 BSONObj Document::toBsonWithMetaData() const {
     BSONObjBuilder bb;
@@ -321,7 +335,7 @@ static Value getNestedFieldHelper(const Document& doc,
                                   const FieldPath& fieldNames,
                                   vector<Position>* positions,
                                   size_t level) {
-    const string& fieldName = fieldNames.getFieldName(level);
+    const auto fieldName = fieldNames.getFieldName(level);
     const Position pos = doc.positionOf(fieldName);
 
     if (!pos.found())
@@ -361,15 +375,18 @@ size_t Document::getApproximateSize() const {
     return size;
 }
 
-void Document::hash_combine(size_t& seed) const {
+void Document::hash_combine(size_t& seed,
+                            const StringData::ComparatorInterface* stringComparator) const {
     for (DocumentStorageIterator it = storage().iterator(); !it.atEnd(); it.advance()) {
         StringData name = it->nameSD();
         boost::hash_range(seed, name.rawData(), name.rawData() + name.size());
-        it->val.hash_combine(seed);
+        it->val.hash_combine(seed, stringComparator);
     }
 }
 
-int Document::compare(const Document& rL, const Document& rR) {
+int Document::compare(const Document& rL,
+                      const Document& rR,
+                      const StringData::ComparatorInterface* stringComparator) {
     DocumentStorageIterator lIt = rL.storage().iterator();
     DocumentStorageIterator rIt = rR.storage().iterator();
 
@@ -398,7 +415,7 @@ int Document::compare(const Document& rL, const Document& rR) {
         if (nameCmp)
             return nameCmp;  // field names are unequal
 
-        const int valueCmp = Value::compare(lField.val, rField.val);
+        const int valueCmp = Value::compare(lField.val, rField.val, stringComparator);
         if (valueCmp)
             return valueCmp;  // fields are unequal
 
@@ -444,7 +461,7 @@ void Document::serializeForSorter(BufBuilder& buf) const {
 }
 
 Document Document::deserializeForSorter(BufReader& buf, const SorterDeserializeSettings&) {
-    const int numElems = buf.read<int>();
+    const int numElems = buf.read<LittleEndian<int>>();
     MutableDocument doc(numElems);
     for (int i = 0; i < numElems; i++) {
         StringData name = buf.readCStr();
@@ -453,9 +470,9 @@ Document Document::deserializeForSorter(BufReader& buf, const SorterDeserializeS
 
     while (char marker = buf.read<char>()) {
         if (marker == char(DocumentStorage::MetaType::TEXT_SCORE) + 1) {
-            doc.setTextScore(buf.read<double>());
+            doc.setTextScore(buf.read<LittleEndian<double>>());
         } else if (marker == char(DocumentStorage::MetaType::RAND_VAL) + 1) {
-            doc.setRandMetaField(buf.read<double>());
+            doc.setRandMetaField(buf.read<LittleEndian<double>>());
         } else {
             uasserted(28744, "Unrecognized marker, unable to deserialize buffer");
         }

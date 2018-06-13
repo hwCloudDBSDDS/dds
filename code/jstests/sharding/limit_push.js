@@ -22,7 +22,7 @@
     s.adminCommand({
         moveChunk: "test.limit_push",
         find: {x: 51},
-        to: s.getOther(s.getServer("test")).name,
+        to: s.getOther(s.getPrimaryShard("test")).name,
         _waitForDelete: true
     });
 
@@ -31,9 +31,7 @@
 
     // The query is asking for the maximum value below a given value
     // db.limit_push.find( { x : { $lt : 60} } ).sort( { x:-1} ).limit(1)
-    q = {
-        x: {$lt: 60}
-    };
+    q = {x: {$lt: 60}};
 
     // Make sure the basic queries are correct
     assert.eq(60, db.limit_push.find(q).count(), "Did not find 60 documents");

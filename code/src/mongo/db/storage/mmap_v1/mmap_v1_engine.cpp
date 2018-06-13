@@ -32,22 +32,23 @@
 
 #include "mongo/db/storage/mmap_v1/mmap_v1_engine.h"
 
-#include <boost/filesystem/path.hpp>
 #include <boost/filesystem/operations.hpp>
+#include <boost/filesystem/path.hpp>
 #include <fstream>
 
 #include "mongo/db/mongod_options.h"
-#include "mongo/db/storage/mmap_v1/mmap.h"
 #include "mongo/db/storage/mmap_v1/data_file_sync.h"
 #include "mongo/db/storage/mmap_v1/dur.h"
 #include "mongo/db/storage/mmap_v1/dur_journal.h"
 #include "mongo/db/storage/mmap_v1/dur_recover.h"
 #include "mongo/db/storage/mmap_v1/dur_recovery_unit.h"
+#include "mongo/db/storage/mmap_v1/file_allocator.h"
+#include "mongo/db/storage/mmap_v1/mmap.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_database_catalog_entry.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/db/storage/storage_engine_lock_file.h"
 #include "mongo/db/storage/storage_options.h"
-#include "mongo/db/storage/mmap_v1/file_allocator.h"
+#include "mongo/util/clock_source.h"
 #include "mongo/util/log.h"
 
 
@@ -65,9 +66,9 @@ namespace {
 
 #if !defined(__sun)
 // if doingRepair is true don't consider unclean shutdown an error
-void acquirePathLock(MMAPV1Engine* storageEngine,
-                     bool doingRepair,
-                     const StorageEngineLockFile& lockFile) {
+void checkForUncleanShutdown(MMAPV1Engine* storageEngine,
+                             bool doingRepair,
+                             const StorageEngineLockFile& lockFile) {
     string name = lockFile.getFilespec();
     bool oldFile = lockFile.createdByUncleanShutdown();
 
@@ -131,28 +132,33 @@ void acquirePathLock(MMAPV1Engine* storageEngine,
     if (!storageGlobalParams.dur && dur::haveJournalFiles()) {
         log() << "**************" << endl;
         log() << "Error: journal files are present in journal directory, yet starting without "
-                 "journaling enabled." << endl;
+                 "journaling enabled."
+              << endl;
         log() << "It is recommended that you start with journaling enabled so that recovery may "
-                 "occur." << endl;
+                 "occur."
+              << endl;
         log() << "**************" << endl;
         uasserted(13597, "can't start without --journal enabled when journal/ files are present");
     }
 }
 #else
-void acquirePathLock(MMAPV1Engine* storageEngine,
-                     bool doingRepair,
-                     const StorageEngineLockFile& lockFile) {
+void checkForUncleanShutdown(MMAPV1Engine* storageEngine,
+                             bool doingRepair,
+                             const StorageEngineLockFile& lockFile) {
     // TODO - this is very bad that the code above not running here.
 
     // Not related to lock file, but this is where we handle unclean shutdown
     if (!storageGlobalParams.dur && dur::haveJournalFiles()) {
         log() << "**************" << endl;
         log() << "Error: journal files are present in journal directory, yet starting without "
-                 "--journal enabled." << endl;
+                 "--journal enabled."
+              << endl;
         log() << "It is recommended that you start with journaling enabled so that recovery may "
-                 "occur." << endl;
+                 "occur."
+              << endl;
         log() << "Alternatively (not recommended), you can backup everything, then delete the "
-                 "journal files, and run --repair" << endl;
+                 "journal files, and run --repair"
+              << endl;
         log() << "**************" << endl;
         uasserted(13618, "can't start without --journal enabled when journal/ files are present");
     }
@@ -220,15 +226,27 @@ void clearTmpFiles() {
 }
 }  // namespace
 
-MMAPV1Engine::MMAPV1Engine(const StorageEngineLockFile& lockFile) {
+MMAPV1Engine::MMAPV1Engine(const StorageEngineLockFile* lockFile, ClockSource* cs)
+    : MMAPV1Engine(lockFile, cs, stdx::make_unique<MmapV1ExtentManager::Factory>()) {}
+
+MMAPV1Engine::MMAPV1Engine(const StorageEngineLockFile* lockFile,
+                           ClockSource* cs,
+                           std::unique_ptr<ExtentManager::Factory> extentManagerFactory)
+    : _recordAccessTracker(cs),
+      _extentManagerFactory(std::move(extentManagerFactory)),
+      _clock(cs),
+      _startMs(_clock->now().toMillisSinceEpoch()) {
     // TODO check non-journal subdirs if using directory-per-db
     checkReadAhead(storageGlobalParams.dbpath);
 
-    acquirePathLock(this, storageGlobalParams.repair, lockFile);
+    if (!storageGlobalParams.readOnly) {
+        invariant(lockFile);
+        checkForUncleanShutdown(this, storageGlobalParams.repair, *lockFile);
 
-    FileAllocator::get()->start();
+        FileAllocator::get()->start();
 
-    MONGO_ASSERT_ON_EXCEPTION_WITH_MSG(clearTmpFiles(), "clear tmp files");
+        MONGO_ASSERT_ON_EXCEPTION_WITH_MSG(clearTmpFiles(), "clear tmp files");
+    }
 }
 
 void MMAPV1Engine::finishInit() {
@@ -236,7 +254,7 @@ void MMAPV1Engine::finishInit() {
 
     // Replays the journal (if needed) and starts the background thread. This requires the
     // ability to create OperationContexts.
-    dur::startup();
+    dur::startup(_clock, _startMs);
 }
 
 MMAPV1Engine::~MMAPV1Engine() {
@@ -269,7 +287,13 @@ DatabaseCatalogEntry* MMAPV1Engine::getDatabaseCatalogEntry(OperationContext* op
     // can be creating the same database concurrenty. We need to create the database outside of
     // the _entryMapMutex so we do not deadlock (see SERVER-15880).
     MMAPV1DatabaseCatalogEntry* entry = new MMAPV1DatabaseCatalogEntry(
-        opCtx, db, storageGlobalParams.dbpath, storageGlobalParams.directoryperdb, false);
+        opCtx,
+        db,
+        storageGlobalParams.dbpath,
+        storageGlobalParams.directoryperdb,
+        false,
+        _extentManagerFactory->create(
+            db, storageGlobalParams.dbpath, storageGlobalParams.directoryperdb));
 
     stdx::lock_guard<stdx::mutex> lk(_entryMapMutex);
 

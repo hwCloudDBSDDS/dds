@@ -60,7 +60,7 @@ void AuthzSessionExternalStateServerCommon::_checkShouldAllowLocalhost(Operation
     if (!_allowLocalhost)
         return;
     // Don't bother checking if we're not on a localhost connection
-    if (!ClientBasic::getCurrent()->getIsLocalHostConnection()) {
+    if (!Client::getCurrent()->getIsLocalHostConnection()) {
         _allowLocalhost = false;
         return;
     }
@@ -69,7 +69,8 @@ void AuthzSessionExternalStateServerCommon::_checkShouldAllowLocalhost(Operation
     if (_allowLocalhost) {
         ONCE {
             log() << "note: no users configured in admin.system.users, allowing localhost "
-                     "access" << std::endl;
+                     "access"
+                  << std::endl;
         }
     }
 }
@@ -79,7 +80,7 @@ bool AuthzSessionExternalStateServerCommon::serverIsArbiter() const {
 }
 
 bool AuthzSessionExternalStateServerCommon::shouldAllowLocalhost() const {
-    ClientBasic* client = ClientBasic::getCurrent();
+    Client* client = Client::getCurrent();
     return _allowLocalhost && client->getIsLocalHostConnection();
 }
 

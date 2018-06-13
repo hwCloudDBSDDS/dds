@@ -46,6 +46,7 @@
 #include "mongo/logger/logstream_builder.h"
 #include "mongo/logger/message_log_domain.h"
 #include "mongo/stdx/functional.h"
+#include "mongo/unittest/bson_test_util.h"
 #include "mongo/unittest/unittest_helpers.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
@@ -126,38 +127,52 @@
  * Behaves like ASSERT_THROWS, above, but also fails if calling what() on the thrown exception
  * does not return a string equal to EXPECTED_WHAT.
  */
-#define ASSERT_THROWS_WHAT(STATEMENT, EXCEPTION_TYPE, EXPECTED_WHAT)                 \
-    ASSERT_THROWS_PRED(STATEMENT,                                                    \
-                       EXCEPTION_TYPE,                                               \
-                       ([&](const EXCEPTION_TYPE& ex) {                              \
-        return ::mongo::StringData(ex.what()) == ::mongo::StringData(EXPECTED_WHAT); \
+#define ASSERT_THROWS_WHAT(STATEMENT, EXCEPTION_TYPE, EXPECTED_WHAT)               \
+    ASSERT_THROWS_PRED(STATEMENT, EXCEPTION_TYPE, ([&](const EXCEPTION_TYPE& ex) { \
+                           return ::mongo::StringData(ex.what()) ==                \
+                               ::mongo::StringData(EXPECTED_WHAT);                 \
                        }))
 
 /**
  * Behaves like ASSERT_THROWS, above, but also fails if calling getCode() on the thrown exception
  * does not return an error code equal to EXPECTED_CODE.
  */
-#define ASSERT_THROWS_CODE(STATEMENT, EXCEPTION_TYPE, EXPECTED_CODE) \
-    ASSERT_THROWS_PRED(STATEMENT,                                    \
-                       EXCEPTION_TYPE,                               \
-                       ([](const EXCEPTION_TYPE& ex) { return (EXPECTED_CODE) == ex.getCode(); }))
+#define ASSERT_THROWS_CODE(STATEMENT, EXCEPTION_TYPE, EXPECTED_CODE)              \
+    ASSERT_THROWS_PRED(STATEMENT, EXCEPTION_TYPE, ([](const EXCEPTION_TYPE& ex) { \
+                           return (EXPECTED_CODE) == ex.getCode();                \
+                       }))
+
+/**
+ * Behaves like ASSERT_THROWS, above, but also fails if calling getCode() on the thrown exception
+ * does not return an error code equal to EXPECTED_CODE or if calling what() on the thrown exception
+ * does not return a string equal to EXPECTED_WHAT.
+ */
+#define ASSERT_THROWS_CODE_AND_WHAT(STATEMENT, EXCEPTION_TYPE, EXPECTED_CODE, EXPECTED_WHAT) \
+    ASSERT_THROWS_PRED(STATEMENT, EXCEPTION_TYPE, ([](const EXCEPTION_TYPE& ex) {            \
+                           return (EXPECTED_CODE) == ex.getCode() &&                         \
+                               ::mongo::StringData(ex.what()) ==                             \
+                               ::mongo::StringData(EXPECTED_WHAT);                           \
+                       }))
 
 /**
  * Behaves like ASSERT_THROWS, above, but also fails if PREDICATE(ex) for the throw exception, ex,
  * is false.
  */
-#define ASSERT_THROWS_PRED(STATEMENT, EXCEPTION_TYPE, PREDICATE)                              \
-    do {                                                                                      \
-        try {                                                                                 \
-            STATEMENT;                                                                        \
-            FAIL("Expected statement " #STATEMENT " to throw " #EXCEPTION_TYPE                \
-                 " but it threw nothing.");                                                   \
-        } catch (const EXCEPTION_TYPE& ex) {                                                  \
-            if (!(PREDICATE(ex))) {                                                           \
-                FAIL("Expected " #STATEMENT " to throw an exception of type " #EXCEPTION_TYPE \
-                     " where " #PREDICATE "(ex) was true, but it was false.");                \
-            }                                                                                 \
-        }                                                                                     \
+#define ASSERT_THROWS_PRED(STATEMENT, EXCEPTION_TYPE, PREDICATE)                                \
+    do {                                                                                        \
+        try {                                                                                   \
+            STATEMENT;                                                                          \
+            FAIL("Expected statement " #STATEMENT " to throw " #EXCEPTION_TYPE                  \
+                 " but it threw nothing.");                                                     \
+        } catch (const EXCEPTION_TYPE& ex) {                                                    \
+            if (!(PREDICATE(ex))) {                                                             \
+                ::mongoutils::str::stream err;                                                  \
+                err << "Expected " #STATEMENT " to throw an exception of type " #EXCEPTION_TYPE \
+                       " where " #PREDICATE "(ex) was true, but it was false: "                 \
+                    << ex.what();                                                               \
+                FAIL(err);                                                                      \
+            }                                                                                   \
+        }                                                                                       \
     } while (false)
 
 #define ASSERT_STRING_CONTAINS(BIG_STRING, CONTAINS)                                            \
@@ -165,7 +180,7 @@
         std::string myString(BIG_STRING);                                                       \
         std::string myContains(CONTAINS);                                                       \
         if (myString.find(myContains) == std::string::npos) {                                   \
-            str::stream err;                                                                    \
+            ::mongoutils::str::stream err;                                                      \
             err << "Expected to find " #CONTAINS " (" << myContains << ") in " #BIG_STRING " (" \
                 << myString << ")";                                                             \
             ::mongo::unittest::TestAssertionFailure(__FILE__, __LINE__, err).stream();          \
@@ -288,6 +303,12 @@ protected:
 
     public:
         RegistrationAgent(const std::string& suiteName, const std::string& testName);
+        std::string getSuiteName() const;
+        std::string getTestName() const;
+
+    private:
+        const std::string _suiteName;
+        const std::string _testName;
     };
 
     /**
@@ -323,6 +344,11 @@ protected:
      * Returns the number of collected log lines containing "needle".
      */
     int64_t countLogLinesContaining(const std::string& needle);
+
+    /**
+     * Prints the captured log lines.
+     */
+    void printCapturedLogLines() const;
 
 private:
     /**
@@ -460,6 +486,10 @@ public:
         _message = message;
     }
 
+    const std::string& what() const {
+        return getMessage();
+    }
+
     std::string toString() const;
 
 private:
@@ -516,12 +546,12 @@ private:
         std::shared_ptr<TestAssertionFailure> _assertion;                                     \
     }
 
-DECLARE_COMPARISON_ASSERTION(EQ, == );
-DECLARE_COMPARISON_ASSERTION(NE, != );
-DECLARE_COMPARISON_ASSERTION(LT, < );
-DECLARE_COMPARISON_ASSERTION(LTE, <= );
-DECLARE_COMPARISON_ASSERTION(GT, > );
-DECLARE_COMPARISON_ASSERTION(GTE, >= );
+DECLARE_COMPARISON_ASSERTION(EQ, ==);
+DECLARE_COMPARISON_ASSERTION(NE, !=);
+DECLARE_COMPARISON_ASSERTION(LT, <);
+DECLARE_COMPARISON_ASSERTION(LTE, <=);
+DECLARE_COMPARISON_ASSERTION(GT, >);
+DECLARE_COMPARISON_ASSERTION(GTE, >=);
 #undef DECLARE_COMPARISON_ASSERTION
 
 /**

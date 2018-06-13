@@ -43,7 +43,8 @@ if (jsTest.options().storageEngine && jsTest.options().storageEngine !== "wiredT
 
     // make sure node 0 becomes primary initially
     var config = replTest.getReplSetConfig();
-    config.members[0].priority = 1;
+    config.members[1].priority = 0;
+    config.members[2].priority = 0;
     replTest.initiate(config);
 
     var masterDB = replTest.getPrimary().getDB("test");
@@ -73,10 +74,9 @@ if (jsTest.options().storageEngine && jsTest.options().storageEngine !== "wiredT
 
     // Test that the restarted secondary did NOT do an initial sync by checking the log
     var res = secondary1.adminCommand({getLog: "global"});
-    assert(!contains(res.log,
-                     function(v) {
-                         return v.indexOf("initial sync") != -1;
-                     }));
+    assert(!contains(res.log, function(v) {
+        return v.indexOf("initial sync") != -1;
+    }));
 
     jsTestLog("check data is in both collections");
     assert.eq(secondary1.getDB("test").foo.count(), 100);

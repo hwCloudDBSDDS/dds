@@ -1,6 +1,7 @@
 (function() {
 
     'use strict';
+    load("jstests/replsets/rslib.js");
 
     var s = new ShardingTest({name: "rename", shards: 2, mongos: 1, rs: {oplogSize: 10}});
 
@@ -22,7 +23,25 @@
     assert.eq(db.foo.count(), 0, '2.3');
 
     s.adminCommand({enablesharding: "test"});
-    s.getDB('admin').runCommand({movePrimary: 'test', to: 'rename-rs0'});
+    s.ensurePrimaryShard("test", "rename-rs0");
+
+    // Ensure renaming to or from a sharded collection fails.
+    jsTest.log('Testing renaming sharded collections');
+    s.adminCommand({shardCollection: 'test.shardedColl', key: {_id: 'hashed'}});
+
+    // Renaming from a sharded collection
+    assert.commandFailed(db.shardedColl.renameCollection('somethingElse'));
+
+    // Renaming to a sharded collection
+    assert.commandFailed(db.bar.renameCollection('shardedColl'));
+    const dropTarget = true;
+    assert.commandFailed(db.bar.renameCollection('shardedColl', dropTarget));
+
+    jsTest.log('Testing renaming sharded collections, directly on the shard');
+    var primary = replTest.getPrimary();
+    assert.commandFailed(primary.getDB('test').shardedColl.renameCollection('somethingElse'));
+    assert.commandFailed(primary.getDB('test').bar.renameCollection('shardedColl'));
+    assert.commandFailed(primary.getDB('test').bar.renameCollection('shardedColl', dropTarget));
 
     jsTest.log("Testing write concern (1)");
 
@@ -44,8 +63,7 @@
     replTest.stop(0);
 
     replTest.awaitSecondaryNodes();
-    ReplSetTest.awaitRSClientHosts(
-        s.s, replTest.getPrimary(), {ok: true, ismaster: true}, replTest.name);
+    awaitRSClientHosts(s.s, replTest.getPrimary(), {ok: true, ismaster: true}, replTest.name);
 
     assert.writeOK(db.foo.insert({_id: 4}));
     assert.commandWorked(db.foo.renameCollection('bar', true));

@@ -35,15 +35,28 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/query_knobs.h"
 #include "mongo/db/query/query_yield.h"
+#include "mongo/db/service_context.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
 PlanYieldPolicy::PlanYieldPolicy(PlanExecutor* exec, PlanExecutor::YieldPolicy policy)
     : _policy(policy),
       _forceYield(false),
-      _elapsedTracker(internalQueryExecYieldIterations, internalQueryExecYieldPeriodMS),
+      _elapsedTracker(exec->getOpCtx()->getServiceContext()->getFastClockSource(),
+                      internalQueryExecYieldIterations,
+                      Milliseconds(internalQueryExecYieldPeriodMS.load())),
       _planYielding(exec) {}
+
+
+PlanYieldPolicy::PlanYieldPolicy(PlanExecutor::YieldPolicy policy, ClockSource* cs)
+    : _policy(policy),
+      _forceYield(false),
+      _elapsedTracker(cs,
+                      internalQueryExecYieldIterations,
+                      Milliseconds(internalQueryExecYieldPeriodMS.load())),
+      _planYielding(nullptr) {}
 
 bool PlanYieldPolicy::shouldYield() {
     if (!allowedToYield())
@@ -84,11 +97,6 @@ bool PlanYieldPolicy::yield(RecordFetcher* fetcher) {
                 opCtx->checkForInterrupt();
             }
 
-            // No need to yield if the collection is NULL.
-            if (NULL == _planYielding->collection()) {
-                return true;
-            }
-
             try {
                 _planYielding->saveState();
             } catch (const WriteConflictException& wce) {
@@ -107,7 +115,7 @@ bool PlanYieldPolicy::yield(RecordFetcher* fetcher) {
         } catch (const WriteConflictException& wce) {
             CurOp::get(opCtx)->debug().writeConflicts++;
             WriteConflictException::logAndBackoff(
-                attempt, "plan execution restoreState", _planYielding->collection()->ns().ns());
+                attempt, "plan execution restoreState", _planYielding->ns());
             // retry
         }
     }

@@ -55,9 +55,14 @@ DistinctScan::DistinctScan(OperationContext* txn,
       _params(params),
       _checker(&_params.bounds, _descriptor->keyPattern(), _params.direction) {
     _specificStats.keyPattern = _params.descriptor->keyPattern();
+    if (BSONElement collationElement = _params.descriptor->getInfoElement("collation")) {
+        invariant(collationElement.isABSONObj());
+        _specificStats.collation = collationElement.Obj().getOwned();
+    }
     _specificStats.indexName = _params.descriptor->indexName();
-    _specificStats.indexVersion = _params.descriptor->version();
+    _specificStats.indexVersion = static_cast<int>(_params.descriptor->version());
     _specificStats.isMultiKey = _params.descriptor->isMultikey(getOpCtx());
+    _specificStats.multiKeyPaths = _params.descriptor->getMultikeyPaths(getOpCtx());
     _specificStats.isUnique = _params.descriptor->unique();
     _specificStats.isSparse = _params.descriptor->isSparse();
     _specificStats.isPartial = _params.descriptor->isPartial();
@@ -67,13 +72,9 @@ DistinctScan::DistinctScan(OperationContext* txn,
     _commonStats.isEOF = !_checker.getStartSeekPoint(&_seekPoint);
 }
 
-PlanStage::StageState DistinctScan::work(WorkingSetID* out) {
-    ++_commonStats.works;
+PlanStage::StageState DistinctScan::doWork(WorkingSetID* out) {
     if (_commonStats.isEOF)
         return PlanStage::IS_EOF;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
 
     boost::optional<IndexKeyEntry> kv;
     try {
@@ -95,7 +96,6 @@ PlanStage::StageState DistinctScan::work(WorkingSetID* out) {
     switch (_checker.checkKey(kv->key, &_seekPoint)) {
         case IndexBoundsChecker::MUST_ADVANCE:
             // Try again next time. The checker has adjusted the _seekPoint.
-            ++_commonStats.needTime;
             return PlanStage::NEED_TIME;
 
         case IndexBoundsChecker::DONE:
@@ -117,12 +117,11 @@ PlanStage::StageState DistinctScan::work(WorkingSetID* out) {
             // Package up the result for the caller.
             WorkingSetID id = _workingSet->allocate();
             WorkingSetMember* member = _workingSet->get(id);
-            member->loc = kv->loc;
+            member->recordId = kv->loc;
             member->keyData.push_back(IndexKeyDatum(_descriptor->keyPattern(), kv->key, _iam));
-            _workingSet->transitionToLocAndIdx(id);
+            _workingSet->transitionToRecordIdAndIdx(id);
 
             *out = id;
-            ++_commonStats.advanced;
             return PlanStage::ADVANCED;
     }
     invariant(false);

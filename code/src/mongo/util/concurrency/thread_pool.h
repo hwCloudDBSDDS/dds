@@ -81,6 +81,10 @@ public:
         // If the pool has had at least one idle thread for this much time, it may consider reaping
         // a thread.
         Milliseconds maxIdleThreadAge = Seconds{30};
+
+        // This function is run before each worker thread begins consuming tasks.
+        using OnCreateThreadFn = stdx::function<void(const std::string& threadName)>;
+        OnCreateThreadFn onCreateThread = [](const std::string&) {};
     };
 
     /**
@@ -130,7 +134,7 @@ public:
     /**
      * Returns statistics about the thread pool's utilization.
      */
-    Stats getStats();
+    Stats getStats() const;
 
 private:
     using TaskList = std::deque<Task>;
@@ -197,7 +201,7 @@ private:
     const Options _options;
 
     // Mutex guarding all non-const member variables.
-    stdx::mutex _mutex;
+    mutable stdx::mutex _mutex;
 
     // This variable represents the lifecycle state of the pool.
     //

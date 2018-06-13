@@ -42,7 +42,8 @@ class CmdGetShardMap : public Command {
 public:
     CmdGetShardMap() : Command("getShardMap") {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 

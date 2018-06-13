@@ -31,6 +31,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "mongo/base/status.h"
@@ -43,6 +44,7 @@
 #include "mongo/client/replica_set_monitor.h"
 #include "mongo/config.h"
 #include "mongo/db/auth/internal_user_auth.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/json.h"
 #include "mongo/db/namespace_string.h"
@@ -53,6 +55,7 @@
 #include "mongo/rpc/factory.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/metadata.h"
+#include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/rpc/reply_interface.h"
 #include "mongo/rpc/request_builder_interface.h"
 #include "mongo/s/stale_exception.h"  // for RecvStaleConfigException
@@ -63,10 +66,16 @@
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/debug_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/net/sock.h"
+#include "mongo/util/net/asio_message_port.h"
+#include "mongo/util/net/message_port.h"
+#include "mongo/util/net/message_port_startup_param.h"
+#include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/password_digest.h"
+#include "mongo/util/represent_as.h"
+#include "mongo/util/time_support.h"
+#include "mongo/util/version.h"
 
 namespace mongo {
 
@@ -101,130 +110,6 @@ SSLManagerInterface* sslManager() {
 }  // namespace
 
 AtomicInt64 DBClientBase::ConnectionIdSequence;
-
-const BSONField<BSONObj> Query::ReadPrefField("$readPreference");
-const BSONField<string> Query::ReadPrefModeField("mode");
-const BSONField<BSONArray> Query::ReadPrefTagsField("tags");
-
-Query::Query(const string& json) : obj(fromjson(json)) {}
-
-Query::Query(const char* json) : obj(fromjson(json)) {}
-
-Query& Query::hint(const string& jsonKeyPatt) {
-    return hint(fromjson(jsonKeyPatt));
-}
-
-Query& Query::where(const string& jscode, BSONObj scope) {
-    /* use where() before sort() and hint() and explain(), else this will assert. */
-    verify(!isComplex());
-    BSONObjBuilder b;
-    b.appendElements(obj);
-    b.appendWhere(jscode, scope);
-    obj = b.obj();
-    return *this;
-}
-
-void Query::makeComplex() {
-    if (isComplex())
-        return;
-    BSONObjBuilder b;
-    b.append("query", obj);
-    obj = b.obj();
-}
-
-Query& Query::sort(const BSONObj& s) {
-    appendComplex("orderby", s);
-    return *this;
-}
-
-Query& Query::hint(BSONObj keyPattern) {
-    appendComplex("$hint", keyPattern);
-    return *this;
-}
-
-Query& Query::explain() {
-    appendComplex("$explain", true);
-    return *this;
-}
-
-Query& Query::snapshot() {
-    appendComplex("$snapshot", true);
-    return *this;
-}
-
-Query& Query::minKey(const BSONObj& val) {
-    appendComplex("$min", val);
-    return *this;
-}
-
-Query& Query::maxKey(const BSONObj& val) {
-    appendComplex("$max", val);
-    return *this;
-}
-
-bool Query::isComplex(const BSONObj& obj, bool* hasDollar) {
-    if (obj.hasElement("query")) {
-        if (hasDollar)
-            *hasDollar = false;
-        return true;
-    }
-
-    if (obj.hasElement("$query")) {
-        if (hasDollar)
-            *hasDollar = true;
-        return true;
-    }
-
-    return false;
-}
-
-Query& Query::readPref(ReadPreference pref, const BSONArray& tags) {
-    appendComplex(ReadPrefField.name().c_str(), ReadPreferenceSetting(pref, TagSet(tags)).toBSON());
-    return *this;
-}
-
-bool Query::isComplex(bool* hasDollar) const {
-    return isComplex(obj, hasDollar);
-}
-
-bool Query::hasReadPreference(const BSONObj& queryObj) {
-    const bool hasReadPrefOption = queryObj["$queryOptions"].isABSONObj() &&
-        queryObj["$queryOptions"].Obj().hasField(ReadPrefField.name());
-
-    bool canHaveReadPrefField = Query::isComplex(queryObj) ||
-        // The find command has a '$readPreference' option.
-        queryObj.firstElementFieldName() == StringData("find");
-
-    return (canHaveReadPrefField && queryObj.hasField(ReadPrefField.name())) || hasReadPrefOption;
-}
-
-BSONObj Query::getFilter() const {
-    bool hasDollar;
-    if (!isComplex(&hasDollar))
-        return obj;
-
-    return obj.getObjectField(hasDollar ? "$query" : "query");
-}
-BSONObj Query::getSort() const {
-    if (!isComplex())
-        return BSONObj();
-    BSONObj ret = obj.getObjectField("orderby");
-    if (ret.isEmpty())
-        ret = obj.getObjectField("$orderby");
-    return ret;
-}
-BSONObj Query::getHint() const {
-    if (!isComplex())
-        return BSONObj();
-    return obj.getObjectField("$hint");
-}
-bool Query::isExplain() const {
-    return isComplex() && obj.getBoolField("$explain");
-}
-
-string Query::toString() const {
-    return obj.toString();
-}
 
 /* --- dbclientcommands --- */
 
@@ -291,7 +176,7 @@ rpc::UniqueReply DBClientWithCommands::runCommandWithMetadata(StringData databas
                                                               const BSONObj& commandArgs) {
     uassert(ErrorCodes::InvalidNamespace,
             str::stream() << "Database name '" << database << "' is not valid.",
-            NamespaceString::validDBName(database));
+            NamespaceString::validDBName(database, NamespaceString::DollarInDbNameBehavior::Allow));
 
     // call() oddly takes this by pointer, so we need to put it on the stack.
     auto host = getServerAddress();
@@ -300,7 +185,8 @@ rpc::UniqueReply DBClientWithCommands::runCommandWithMetadata(StringData databas
     metadataBob.appendElements(metadata);
 
     if (_metadataWriter) {
-        uassertStatusOK(_metadataWriter(&metadataBob, host));
+        uassertStatusOK(_metadataWriter(
+            (haveClient() ? cc().getOperationContext() : nullptr), &metadataBob, host));
     }
 
     auto requestBuilder = rpc::makeRequestBuilder(getClientRPCProtocols(), getServerRPCProtocols());
@@ -318,16 +204,23 @@ rpc::UniqueReply DBClientWithCommands::runCommandWithMetadata(StringData databas
     // more helpful error message. Note that call() can itself throw a socket exception.
     uassert(ErrorCodes::HostUnreachable,
             str::stream() << "network error while attempting to run "
-                          << "command '" << command << "' "
-                          << "on host '" << host << "' ",
+                          << "command '"
+                          << command
+                          << "' "
+                          << "on host '"
+                          << host
+                          << "' ",
             call(requestMsg, replyMsg, false, &host));
 
     auto commandReply = rpc::makeReply(&replyMsg);
 
     uassert(ErrorCodes::RPCProtocolNegotiationFailed,
             str::stream() << "Mismatched RPC protocols - request was '"
-                          << networkOpToString(requestMsg.operation()) << "' '"
-                          << " but reply was '" << networkOpToString(replyMsg.operation()) << "' ",
+                          << networkOpToString(requestMsg.operation())
+                          << "' '"
+                          << " but reply was '"
+                          << networkOpToString(replyMsg.operation())
+                          << "' ",
             requestBuilder->getProtocol() == commandReply->getProtocol());
 
     if (ErrorCodes::SendStaleConfig ==
@@ -343,10 +236,16 @@ rpc::UniqueReply DBClientWithCommands::runCommandWithMetadata(StringData databas
     return rpc::UniqueReply(std::move(replyMsg), std::move(commandReply));
 }
 
-bool DBClientWithCommands::runCommand(const string& dbname,
-                                      const BSONObj& cmd,
-                                      BSONObj& info,
-                                      int options) {
+std::tuple<rpc::UniqueReply, DBClientWithCommands*>
+DBClientWithCommands::runCommandWithMetadataAndTarget(StringData database,
+                                                      StringData command,
+                                                      const BSONObj& metadata,
+                                                      const BSONObj& commandArgs) {
+    return std::make_tuple(runCommandWithMetadata(database, command, metadata, commandArgs), this);
+}
+
+std::tuple<bool, DBClientWithCommands*> DBClientWithCommands::runCommandWithTarget(
+    const string& dbname, const BSONObj& cmd, BSONObj& info, int options) {
     BSONObj upconvertedCmd;
     BSONObj upconvertedMetadata;
 
@@ -358,12 +257,23 @@ bool DBClientWithCommands::runCommand(const string& dbname,
 
     auto commandName = upconvertedCmd.firstElementFieldName();
 
-    auto result = runCommandWithMetadata(dbname, commandName, upconvertedMetadata, upconvertedCmd);
+    auto resultTuple =
+        runCommandWithMetadataAndTarget(dbname, commandName, upconvertedMetadata, upconvertedCmd);
+    auto result = std::move(std::get<0>(resultTuple));
 
     info = result->getCommandReply().getOwned();
 
-    return isOk(info);
+    return std::make_tuple(isOk(info), std::get<1>(resultTuple));
 }
+
+bool DBClientWithCommands::runCommand(const string& dbname,
+                                      const BSONObj& cmd,
+                                      BSONObj& info,
+                                      int options) {
+    auto res = runCommandWithTarget(dbname, cmd, info, options);
+    return std::get<0>(res);
+}
+
 
 /* note - we build a bson obj here -- for something that is super common like getlasterror you
           should have that object prebuilt as that would be faster.
@@ -399,7 +309,8 @@ bool DBClientWithCommands::runPseudoCommand(StringData db,
         if (status == ErrorCodes::CommandResultSchemaViolation) {
             msgasserted(28624,
                         str::stream() << "Received bad " << realCommandName
-                                      << " response from server: " << info);
+                                      << " response from server: "
+                                      << info);
         } else if (status == ErrorCodes::CommandNotFound) {
             NamespaceString pseudoCommandNss(db, pseudoCommandCol);
             // if this throws we just let it escape as that's how runCommand works.
@@ -553,8 +464,7 @@ void DBClientWithCommands::_auth(const BSONObj& params) {
                 Milliseconds millis(Date_t::now() - start);
 
                 // Hand control back to authenticateClient()
-                handler(StatusWith<RemoteCommandResponse>(
-                    RemoteCommandResponse(data, metadata, millis)));
+                handler({data, metadata, millis});
 
             } catch (...) {
                 handler(exceptionToStatus());
@@ -571,12 +481,9 @@ bool DBClientWithCommands::authenticateInternalUser() {
     }
 
     try {
-        auth(getInternalUserAuthParamsWithFallback());
+        auth(getInternalUserAuthParams());
         return true;
     } catch (const UserException& ex) {
-        if (ex.getCode() == ErrorCodes::IncompatibleCatalogManager) {
-            throw;
-        }
         if (!serverGlobalParams.quiet) {
             log() << "can't authenticate to " << toString()
                   << " as internal user, error: " << ex.what();
@@ -693,85 +600,38 @@ list<string> DBClientWithCommands::getDatabaseNames() {
     return names;
 }
 
-list<string> DBClientWithCommands::getCollectionNames(const string& db) {
-    list<BSONObj> infos = getCollectionInfos(db);
-    list<string> names;
-    for (list<BSONObj>::iterator it = infos.begin(); it != infos.end(); ++it) {
-        names.push_back(db + "." + (*it)["name"].valuestr());
-    }
-    return names;
-}
-
 list<BSONObj> DBClientWithCommands::getCollectionInfos(const string& db, const BSONObj& filter) {
     list<BSONObj> infos;
 
-    // first we're going to try the command
-    // it was only added in 3.0, so if we're talking to an older server
-    // we'll fail back to querying system.namespaces
-    // TODO(spencer): remove fallback behavior after 3.0
-
-    {
-        BSONObj res;
-        if (runCommand(db,
-                       BSON("listCollections" << 1 << "filter" << filter << "cursor" << BSONObj()),
-                       res,
-                       QueryOption_SlaveOk)) {
-            BSONObj cursorObj = res["cursor"].Obj();
-            BSONObj collections = cursorObj["firstBatch"].Obj();
-            BSONObjIterator it(collections);
-            while (it.more()) {
-                BSONElement e = it.next();
-                infos.push_back(e.Obj().getOwned());
-            }
-
-            const long long id = cursorObj["id"].Long();
-
-            if (id != 0) {
-                const std::string ns = cursorObj["ns"].String();
-                unique_ptr<DBClientCursor> cursor = getMore(ns, id, 0, 0);
-                while (cursor->more()) {
-                    infos.push_back(cursor->nextSafe().getOwned());
-                }
-            }
-
-            return infos;
+    BSONObj res;
+    if (runCommand(db,
+                   BSON("listCollections" << 1 << "filter" << filter << "cursor" << BSONObj()),
+                   res,
+                   QueryOption_SlaveOk)) {
+        BSONObj cursorObj = res["cursor"].Obj();
+        BSONObj collections = cursorObj["firstBatch"].Obj();
+        BSONObjIterator it(collections);
+        while (it.more()) {
+            BSONElement e = it.next();
+            infos.push_back(e.Obj().getOwned());
         }
 
-        // command failed
+        const long long id = cursorObj["id"].Long();
 
-        int code = res["code"].numberInt();
-        string errmsg = res["errmsg"].valuestrsafe();
-        if (code == ErrorCodes::CommandNotFound || errmsg.find("no such cmd") != string::npos) {
-            // old version of server, ok, fall through to old code
-        } else {
-            uasserted(18630, str::stream() << "listCollections failed: " << res);
+        if (id != 0) {
+            const std::string ns = cursorObj["ns"].String();
+            unique_ptr<DBClientCursor> cursor = getMore(ns, id, 0, 0);
+            while (cursor->more()) {
+                infos.push_back(cursor->nextSafe().getOwned());
+            }
         }
+
+        return infos;
     }
 
-    // SERVER-14951 filter for old version fallback needs to db qualify the 'name' element
-    BSONObjBuilder fallbackFilter;
-    if (filter.hasField("name") && filter["name"].type() == String) {
-        fallbackFilter.append("name", db + "." + filter["name"].str());
-    }
-    fallbackFilter.appendElementsUnique(filter);
+    // command failed
 
-    string ns = db + ".system.namespaces";
-    unique_ptr<DBClientCursor> c =
-        query(ns.c_str(), fallbackFilter.obj(), 0, 0, 0, QueryOption_SlaveOk);
-    uassert(28611, str::stream() << "listCollections failed querying " << ns, c.get());
-
-    while (c->more()) {
-        BSONObj obj = c->nextSafe();
-        string ns = obj["name"].valuestr();
-        if (ns.find("$") != string::npos)
-            continue;
-        BSONObjBuilder b;
-        b.append("name", ns.substr(db.size() + 1));
-        b.appendElementsUnique(obj);
-        infos.push_back(b.obj());
-    }
-
-    return infos;
+    uasserted(18630, str::stream() << "listCollections failed: " << res);
 }
 
 bool DBClientWithCommands::exists(const string& ns) {
@@ -810,7 +670,10 @@ void DBClientInterface::findN(vector<BSONObj>& out,
 
     uassert(10276,
             str::stream() << "DBClientBase::findN: transport error: " << getServerAddress()
-                          << " ns: " << ns << " query: " << query.toString(),
+                          << " ns: "
+                          << ns
+                          << " query: "
+                          << query.toString(),
             c.get());
 
     if (c->hasResultFlag(ResultFlag_ShardConfigStale)) {
@@ -822,7 +685,7 @@ void DBClientInterface::findN(vector<BSONObj>& out,
     for (int i = 0; i < nToReturn; i++) {
         if (!c->more())
             break;
-        out.push_back(c->nextSafe().copy());
+        out.push_back(c->nextSafeOwned());
     }
 }
 
@@ -859,7 +722,8 @@ private:
 /**
 * Initializes the wire version of conn, and returns the isMaster reply.
 */
-StatusWith<executor::RemoteCommandResponse> initWireVersion(DBClientConnection* conn) {
+executor::RemoteCommandResponse initWireVersion(DBClientConnection* conn,
+                                                StringData applicationName) {
     try {
         // We need to force the usage of OP_QUERY on this command, even if we have previously
         // detected support for OP_COMMAND on a connection. This is necessary to handle the case
@@ -878,6 +742,20 @@ StatusWith<executor::RemoteCommandResponse> initWireVersion(DBClientConnection* 
             bob.append("hostInfo", sb.str());
         }
 
+        auto versionString = VersionInfoInterface::instance().version();
+
+        Status serializeStatus = ClientMetadata::serialize(
+            "MongoDB Internal Client", versionString, applicationName, &bob);
+        if (!serializeStatus.isOK()) {
+            return serializeStatus;
+        }
+
+        conn->getCompressorManager().clientBegin(&bob);
+
+        if (WireSpec::instance().isInternalClient) {
+            WireSpec::appendInternalClientWireVersion(WireSpec::instance().outgoing, &bob);
+        }
+
         Date_t start{Date_t::now()};
         auto result =
             conn->runCommandWithMetadata("admin", "isMaster", rpc::makeEmptyMetadata(), bob.done());
@@ -891,6 +769,8 @@ StatusWith<executor::RemoteCommandResponse> initWireVersion(DBClientConnection* 
             conn->setWireVersions(minWireVersion, maxWireVersion);
         }
 
+        conn->getCompressorManager().clientFinish(isMasterObj);
+
         return executor::RemoteCommandResponse{
             std::move(isMasterObj), result->getMetadata().getOwned(), finish - start};
 
@@ -901,8 +781,10 @@ StatusWith<executor::RemoteCommandResponse> initWireVersion(DBClientConnection* 
 
 }  // namespace
 
-bool DBClientConnection::connect(const HostAndPort& server, std::string& errmsg) {
-    auto connectStatus = connect(server);
+bool DBClientConnection::connect(const HostAndPort& server,
+                                 StringData applicationName,
+                                 std::string& errmsg) {
+    auto connectStatus = connect(server, applicationName);
     if (!connectStatus.isOK()) {
         errmsg = connectStatus.reason();
         return false;
@@ -910,36 +792,56 @@ bool DBClientConnection::connect(const HostAndPort& server, std::string& errmsg)
     return true;
 }
 
-Status DBClientConnection::connect(const HostAndPort& serverAddress) {
+Status DBClientConnection::connect(const HostAndPort& serverAddress, StringData applicationName) {
     auto connectStatus = connectSocketOnly(serverAddress);
     if (!connectStatus.isOK()) {
         return connectStatus;
     }
 
-    auto swIsMasterReply = initWireVersion(this);
+    // NOTE: If the 'applicationName' parameter is a view of the '_applicationName' member, as
+    // happens, for instance, in the call to DBClientConnection::connect from
+    // DBClientConnection::_checkConnection then the following line will invalidate the
+    // 'applicationName' parameter, since the memory that it views within _applicationName will be
+    // freed. Do not reference the 'applicationName' parameter after this line. If you need to
+    // access the application name, do it through the _applicationName member.
+    _applicationName = applicationName.toString();
+
+    auto swIsMasterReply = initWireVersion(this, _applicationName);
     if (!swIsMasterReply.isOK()) {
         _failed = true;
-        return swIsMasterReply.getStatus();
+        return swIsMasterReply.status;
     }
 
-    auto swProtocolSet = rpc::parseProtocolSetFromIsMasterReply(swIsMasterReply.getValue().data);
+    // Ensure that the isMaster response is "ok:1".
+    auto isMasterStatus = getStatusFromCommandResult(swIsMasterReply.data);
+    if (!isMasterStatus.isOK()) {
+        return isMasterStatus;
+    }
+
+    auto swProtocolSet = rpc::parseProtocolSetFromIsMasterReply(swIsMasterReply.data);
     if (!swProtocolSet.isOK()) {
         return swProtocolSet.getStatus();
     }
 
-    _setServerRPCProtocols(swProtocolSet.getValue());
+    auto validateStatus =
+        rpc::validateWireVersion(WireSpec::instance().outgoing, swProtocolSet.getValue().version);
+    if (!validateStatus.isOK()) {
+        warning() << "remote host has incompatible wire version: " << validateStatus;
 
-    auto negotiatedProtocol =
-        rpc::negotiate(getServerRPCProtocols(),
-                       rpc::computeProtocolSet(WireSpec::instance().minWireVersionOutgoing,
-                                               WireSpec::instance().maxWireVersionOutgoing));
+        return validateStatus;
+    }
+
+    _setServerRPCProtocols(swProtocolSet.getValue().protocolSet);
+
+    auto negotiatedProtocol = rpc::negotiate(
+        getServerRPCProtocols(), rpc::computeProtocolSet(WireSpec::instance().outgoing));
 
     if (!negotiatedProtocol.isOK()) {
         return negotiatedProtocol.getStatus();
     }
 
     if (_hook) {
-        auto validationStatus = _hook(swIsMasterReply.getValue());
+        auto validationStatus = _hook(swIsMasterReply);
         if (!validationStatus.isOK()) {
             // Disconnect and mark failed.
             _failed = true;
@@ -951,6 +853,10 @@ Status DBClientConnection::connect(const HostAndPort& serverAddress) {
     return Status::OK();
 }
 
+namespace {
+const auto kMaxMillisCount = Milliseconds::max().count();
+}  // namespace
+
 Status DBClientConnection::connectSocketOnly(const HostAndPort& serverAddress) {
     _serverAddress = serverAddress;
     _failed = true;
@@ -961,10 +867,18 @@ Status DBClientConnection::connectSocketOnly(const HostAndPort& serverAddress) {
     if (!osAddr.isValid()) {
         return Status(ErrorCodes::InvalidOptions,
                       str::stream() << "couldn't initialize connection to host "
-                                    << serverAddress.host() << ", address is invalid");
+                                    << serverAddress.host()
+                                    << ", address is invalid");
     }
 
-    _port.reset(new MessagingPort(_so_timeout, _logLevel));
+    if (isMessagePortImplASIO()) {
+        // `_so_timeout` is in seconds.
+        auto ms = representAs<int64_t>(std::floor(_so_timeout * 1000)).value_or(kMaxMillisCount);
+        _port.reset(new ASIOMessagingPort(
+            ms > kMaxMillisCount ? Milliseconds::max() : Milliseconds(ms), _logLevel));
+    } else {
+        _port.reset(new MessagingPort(_so_timeout, _logLevel));
+    }
 
     if (serverAddress.host().empty()) {
         return Status(ErrorCodes::InvalidOptions,
@@ -987,8 +901,24 @@ Status DBClientConnection::connectSocketOnly(const HostAndPort& serverAddress) {
     }
 
 #ifdef MONGO_CONFIG_SSL
-    int sslModeVal = sslGlobalParams.sslMode.load();
-    if (sslModeVal == SSLParams::SSLMode_preferSSL || sslModeVal == SSLParams::SSLMode_requireSSL) {
+    // Prefer to get SSL mode directly from our URI, but if it is not set, fall back to
+    // checking global SSL params. DBClientConnections create through the shell will have a
+    // meaningful URI set, but DBClientConnections created from within the server may not.
+    int sslMode;
+    auto options = _uri.getOptions();
+    auto iter = options.find("ssl");
+    if (iter != options.end()) {
+        if (iter->second == "true") {
+            sslMode = SSLParams::SSLMode_requireSSL;
+        } else {
+            sslMode = SSLParams::SSLMode_disabled;
+        }
+    } else {
+        sslMode = sslGlobalParams.sslMode.load();
+    }
+
+    if (sslMode == SSLParams::SSLMode_preferSSL || sslMode == SSLParams::SSLMode_requireSSL) {
+        uassert(40312, "SSL is not enabled; cannot create an SSL connection", sslManager());
         if (!_port->secure(sslManager(), serverAddress.host())) {
             return Status(ErrorCodes::SSLHandshakeFailed, "Failed to initialize SSL on connection");
         }
@@ -1032,7 +962,7 @@ void DBClientConnection::_checkConnection() {
     LOG(_logLevel) << "trying reconnect to " << toString() << endl;
     string errmsg;
     _failed = false;
-    auto connectStatus = connect(_serverAddress);
+    auto connectStatus = connect(_serverAddress, _applicationName);
     if (!connectStatus.isOK()) {
         _failed = true;
         LOG(_logLevel) << "reconnect " << toString() << " failed " << errmsg << endl;
@@ -1061,7 +991,9 @@ void DBClientConnection::_checkConnection() {
 void DBClientConnection::setSoTimeout(double timeout) {
     _so_timeout = timeout;
     if (_port) {
-        _port->setSocketTimeout(timeout);
+        // `timeout` is in seconds.
+        auto ms = representAs<int64_t>(std::floor(timeout * 1000)).value_or(kMaxMillisCount);
+        _port->setTimeout(ms > kMaxMillisCount ? Milliseconds::max() : Milliseconds(ms));
     }
 }
 
@@ -1276,51 +1208,34 @@ void DBClientBase::killCursor(long long cursorId) {
 list<BSONObj> DBClientWithCommands::getIndexSpecs(const string& ns, int options) {
     list<BSONObj> specs;
 
-    {
-        BSONObj cmd = BSON("listIndexes" << nsToCollectionSubstring(ns) << "cursor" << BSONObj());
+    BSONObj cmd = BSON("listIndexes" << nsToCollectionSubstring(ns) << "cursor" << BSONObj());
 
-        BSONObj res;
-        if (runCommand(nsToDatabase(ns), cmd, res, options)) {
-            BSONObj cursorObj = res["cursor"].Obj();
-            BSONObjIterator i(cursorObj["firstBatch"].Obj());
-            while (i.more()) {
-                specs.push_back(i.next().Obj().getOwned());
-            }
-
-            const long long id = cursorObj["id"].Long();
-
-            if (id != 0) {
-                const std::string ns = cursorObj["ns"].String();
-                unique_ptr<DBClientCursor> cursor = getMore(ns, id, 0, 0);
-                while (cursor->more()) {
-                    specs.push_back(cursor->nextSafe().getOwned());
-                }
-            }
-
-            return specs;
+    BSONObj res;
+    if (runCommand(nsToDatabase(ns), cmd, res, options)) {
+        BSONObj cursorObj = res["cursor"].Obj();
+        BSONObjIterator i(cursorObj["firstBatch"].Obj());
+        while (i.more()) {
+            specs.push_back(i.next().Obj().getOwned());
         }
-        int code = res["code"].numberInt();
-        string errmsg = res["errmsg"].valuestrsafe();
-        if (code == ErrorCodes::CommandNotFound || errmsg.find("no such cmd") != string::npos) {
-            // old version of server, ok, fall through to old code
-        } else if (code == ErrorCodes::NamespaceNotFound) {
-            return specs;
-        } else {
-            uasserted(18631, str::stream() << "listIndexes failed: " << res);
+
+        const long long id = cursorObj["id"].Long();
+
+        if (id != 0) {
+            invariant(ns == cursorObj["ns"].String());
+            unique_ptr<DBClientCursor> cursor = getMore(ns, id, 0, 0);
+            while (cursor->more()) {
+                specs.push_back(cursor->nextSafe().getOwned());
+            }
         }
-    }
 
-    // fallback to querying system.indexes
-    // TODO(spencer): Remove fallback behavior after 3.0
-    unique_ptr<DBClientCursor> cursor =
-        query(NamespaceString(ns).getSystemIndexesCollection(), BSON("ns" << ns), 0, 0, 0, options);
-    uassert(28612, str::stream() << "listIndexes failed querying " << ns, cursor.get());
-
-    while (cursor->more()) {
-        BSONObj spec = cursor->nextSafe();
-        specs.push_back(spec.getOwned());
+        return specs;
     }
-    return specs;
+    int code = res["code"].numberInt();
+
+    if (code == ErrorCodes::NamespaceNotFound) {
+        return specs;
+    }
+    uasserted(18631, str::stream() << "listIndexes failed: " << res);
 }
 
 
@@ -1378,84 +1293,46 @@ string DBClientWithCommands::genIndexName(const BSONObj& keys) {
     return ss.str();
 }
 
-void DBClientWithCommands::ensureIndex(const string& ns,
-                                       BSONObj keys,
-                                       bool unique,
-                                       const string& name,
-                                       bool background,
-                                       int version,
-                                       int ttl) {
-    BSONObjBuilder toSave;
-    toSave.append("ns", ns);
-    toSave.append("key", keys);
+void DBClientWithCommands::createIndex(StringData ns, const IndexSpec& descriptor) {
+    const BSONObj descriptorObj = descriptor.toBSON();
 
-    string cacheKey(ns);
-    cacheKey += "--";
-
-    if (name != "") {
-        toSave.append("name", name);
-        cacheKey += name;
-    } else {
-        string nn = genIndexName(keys);
-        toSave.append("name", nn);
-        cacheKey += nn;
+    BSONObjBuilder command;
+    command.append("createIndexes", nsToCollectionSubstring(ns));
+    {
+        BSONArrayBuilder indexes(command.subarrayStart("indexes"));
+        indexes.append(descriptorObj);
     }
+    const BSONObj commandObj = command.done();
 
-    if (version >= 0)
-        toSave.append("v", version);
-
-    if (unique)
-        toSave.appendBool("unique", unique);
-
-    if (background)
-        toSave.appendBool("background", true);
-
-    if (ttl > 0)
-        toSave.append("expireAfterSeconds", ttl);
-
-    insert(NamespaceString(ns).getSystemIndexesCollection(), toSave.obj());
+    BSONObj infoObj;
+    if (!runCommand(nsToDatabase(ns), commandObj, infoObj)) {
+        Status runCommandStatus = getStatusFromCommandResult(infoObj);
+        invariant(!runCommandStatus.isOK());
+        uassertStatusOK(runCommandStatus);
+    }
 }
 
 /* -- DBClientCursor ---------------------------------------------- */
-void assembleQueryRequest(const string& ns,
-                          BSONObj query,
-                          int nToReturn,
-                          int nToSkip,
-                          const BSONObj* fieldsToReturn,
-                          int queryOptions,
-                          Message& toSend) {
-    if (kDebugBuild) {
-        massert(10337, (string) "object not valid assembleRequest query", query.isValid());
-    }
-
-    // see query.h for the protocol we are using here.
-    BufBuilder b;
-    int opts = queryOptions;
-    b.appendNum(opts);
-    b.appendStr(ns);
-    b.appendNum(nToSkip);
-    b.appendNum(nToReturn);
-    query.appendSelfToBufBuilder(b);
-    if (fieldsToReturn)
-        fieldsToReturn->appendSelfToBufBuilder(b);
-    toSend.setData(dbQuery, b.buf(), b.len());
-}
 
 DBClientConnection::DBClientConnection(bool _autoReconnect,
                                        double so_timeout,
+                                       MongoURI uri,
                                        const HandshakeValidationHook& hook)
     : _failed(false),
       autoReconnect(_autoReconnect),
       autoReconnectBackoff(1000, 2000),
       _so_timeout(so_timeout),
-      _hook(hook) {
+      _hook(hook),
+      _uri(std::move(uri)) {
     _numConnections.fetchAndAdd(1);
 }
 
 void DBClientConnection::say(Message& toSend, bool isRetry, string* actualServer) {
     checkConnection();
     try {
-        port().say(toSend);
+        auto swm = _compressorManager.compressMessage(toSend);
+        uassertStatusOK(swm.getStatus());
+        port().say(swm.getValue());
     } catch (SocketException&) {
         _failed = true;
         throw;
@@ -1463,12 +1340,18 @@ void DBClientConnection::say(Message& toSend, bool isRetry, string* actualServer
 }
 
 bool DBClientConnection::recv(Message& m) {
-    if (port().recv(m)) {
-        return true;
+    if (!port().recv(m)) {
+        _failed = true;
+        return false;
     }
 
-    _failed = true;
-    return false;
+    if (m.operation() == dbCompressed) {
+        auto swm = _compressorManager.decompressMessage(m);
+        uassertStatusOK(swm.getStatus());
+        m = std::move(swm.getValue());
+    }
+
+    return true;
 }
 
 bool DBClientConnection::call(Message& toSend,
@@ -1481,13 +1364,22 @@ bool DBClientConnection::call(Message& toSend,
     */
     checkConnection();
     try {
-        if (!port().call(toSend, response)) {
+        auto swm = _compressorManager.compressMessage(toSend);
+        uassertStatusOK(swm.getStatus());
+
+        if (!port().call(swm.getValue(), response)) {
             _failed = true;
             if (assertOk)
                 uasserted(10278,
                           str::stream() << "dbclient error communicating with server: "
                                         << getServerAddress());
             return false;
+        }
+
+        if (response.operation() == dbCompressed) {
+            auto swm = _compressorManager.decompressMessage(response);
+            uassertStatusOK(swm.getStatus());
+            response = std::move(swm.getValue());
         }
     } catch (SocketException&) {
         _failed = true;
@@ -1542,12 +1434,13 @@ void DBClientConnection::handleNotMasterResponse(const BSONElement& elemToCheck)
         return;
     }
 
-    MONGO_LOG_COMPONENT(1, logger::LogComponent::kReplication)
-        << "got not master from: " << _serverAddress << " of repl set: " << _parentReplSetName;
-
     ReplicaSetMonitorPtr monitor = ReplicaSetMonitor::get(_parentReplSetName);
     if (monitor) {
-        monitor->failedHost(_serverAddress);
+        monitor->failedHost(_serverAddress,
+                            {ErrorCodes::NotMaster,
+                             str::stream() << "got not master from: " << _serverAddress
+                                           << " of repl set: "
+                                           << _parentReplSetName});
     }
 
     _failed = true;

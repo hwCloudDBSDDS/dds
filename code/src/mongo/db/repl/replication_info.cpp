@@ -25,6 +25,7 @@
 *    exception statement from all source files in the program, then also delete
 *    it in the license file.
 */
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kFTDC
 
 #include "mongo/platform/basic.h"
 
@@ -32,21 +33,28 @@
 #include <vector>
 
 #include "mongo/client/connpool.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
+#include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/lasterror.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/is_master_response.h"
 #include "mongo/db/repl/master_slave.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplogreader.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/server_parameters.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/wire_version.h"
+#include "mongo/executor/network_interface.h"
+#include "mongo/rpc/metadata/client_metadata.h"
+#include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/s/write_ops/batched_command_request.h"
+#include "mongo/util/map_util.h"
 
 namespace mongo {
 
@@ -94,6 +102,9 @@ void appendReplicationInfo(OperationContext* txn, BSONObjBuilder& result, int le
             while (PlanExecutor::ADVANCED == (state = exec->getNext(&obj, NULL))) {
                 src.push_back(obj.getOwned());
             }
+
+            // Non-yielding collection scans from InternalPlanner will never error.
+            invariant(PlanExecutor::IS_EOF == state);
         }
 
         for (list<BSONObj>::const_iterator i = src.begin(); i != src.end(); i++) {
@@ -206,7 +217,7 @@ public:
                 "--slave in simple master/slave setups.\n";
         help << "{ isMaster : 1 }";
     }
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
@@ -222,23 +233,78 @@ public:
         /* currently request to arbiter is (somewhat arbitrarily) an ismaster request that is not
            authenticated.
         */
-        if (cmdObj["forShell"].trueValue())
+        if (cmdObj["forShell"].trueValue()) {
             LastError::get(txn->getClient()).disable();
+        }
+
+        // Tag connections to avoid closing them on stepdown.
+        auto hangUpElement = cmdObj["hangUpOnStepDown"];
+        if (!hangUpElement.eoo() && !hangUpElement.trueValue()) {
+            auto session = txn->getClient()->session();
+            if (session) {
+                session->replaceTags(session->getTags() |
+                                     executor::NetworkInterface::kMessagingPortKeepOpen);
+            }
+        }
+
+        auto& clientMetadataIsMasterState = ClientMetadataIsMasterState::get(txn->getClient());
+        bool seenIsMaster = clientMetadataIsMasterState.hasSeenIsMaster();
+        if (!seenIsMaster) {
+            clientMetadataIsMasterState.setSeenIsMaster();
+        }
+
+        BSONElement element = cmdObj[kMetadataDocumentName];
+        if (!element.eoo()) {
+            if (seenIsMaster) {
+                return Command::appendCommandStatus(
+                    result,
+                    Status(ErrorCodes::ClientMetadataCannotBeMutated,
+                           "The client metadata document may only be sent in the first isMaster"));
+            }
+
+            auto swParseClientMetadata = ClientMetadata::parse(element);
+
+            if (!swParseClientMetadata.getStatus().isOK()) {
+                return Command::appendCommandStatus(result, swParseClientMetadata.getStatus());
+            }
+
+            invariant(swParseClientMetadata.getValue());
+
+            swParseClientMetadata.getValue().get().logClientMetadata(txn->getClient());
+
+            clientMetadataIsMasterState.setClientMetadata(
+                txn->getClient(), std::move(swParseClientMetadata.getValue()));
+        }
 
         appendReplicationInfo(txn, result, 0);
 
-        if (serverGlobalParams.configsvrMode == CatalogManager::ConfigServerMode::CSRS) {
-            result.append("configsvr", 1);
-        } else if (serverGlobalParams.configsvrMode == CatalogManager::ConfigServerMode::SCCC) {
-            result.append("configsvr", 0);
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+            // If we have feature compatibility version 3.4, use a config server mode that 3.2
+            // mongos won't understand. This should prevent a 3.2 mongos from joining the cluster or
+            // making a connection to the config servers.
+            int configServerModeNumber = (serverGlobalParams.featureCompatibility.version.load() ==
+                                          ServerGlobalParams::FeatureCompatibility::Version::k34)
+                ? 2
+                : 1;
+            result.append("configsvr", configServerModeNumber);
         }
 
         result.appendNumber("maxBsonObjectSize", BSONObjMaxUserSize);
         result.appendNumber("maxMessageSizeBytes", MaxMessageSizeBytes);
         result.appendNumber("maxWriteBatchSize", BatchedCommandRequest::kMaxWriteBatchSize);
         result.appendDate("localTime", jsTime());
-        result.append("maxWireVersion", WireSpec::instance().maxWireVersionIncoming);
-        result.append("minWireVersion", WireSpec::instance().minWireVersionIncoming);
+        result.append("maxWireVersion", WireSpec::instance().incoming.maxWireVersion);
+        result.append("minWireVersion", WireSpec::instance().incoming.minWireVersion);
+        result.append("readOnly", storageGlobalParams.readOnly);
+
+        const auto parameter = mapFindWithDefault(ServerParameterSet::getGlobal()->getMap(),
+                                                  "automationServiceDescriptor",
+                                                  static_cast<ServerParameter*>(nullptr));
+        if (parameter)
+            parameter->append(txn, result, "automationServiceDescriptor");
+
+        txn->getClient()->session()->getCompressorManager().serverNegotiate(cmdObj, &result);
+
         return true;
     }
 } cmdismaster;

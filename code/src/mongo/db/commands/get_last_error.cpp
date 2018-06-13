@@ -32,18 +32,19 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/field_parser.h"
 #include "mongo/db/lasterror.h"
+#include "mongo/db/repl/bson_extract_optime.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+namespace {
 
 using std::string;
 using std::stringstream;
@@ -56,7 +57,7 @@ using std::stringstream;
 */
 class CmdResetError : public Command {
 public:
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual bool slaveOk() const {
@@ -83,7 +84,7 @@ public:
 class CmdGetLastError : public Command {
 public:
     CmdGetLastError() : Command("getLastError", false, "getlasterror") {}
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual bool slaveOk() const {
@@ -219,11 +220,11 @@ public:
         //
         // Validate write concern no matter what, this matches 2.4 behavior
         //
-
-
         if (status.isOK()) {
-            // Ensure options are valid for this host
-            status = validateWriteConcern(txn, writeConcern, dbname);
+            // Ensure options are valid for this host. Since getLastError doesn't do writes itself,
+            // treat it as if these are admin database writes, which need to be replicated so we do
+            // the strictest checks write concern checks.
+            status = validateWriteConcern(txn, writeConcern, NamespaceString::kAdminDb);
         }
 
         if (!status.isOK()) {
@@ -249,6 +250,7 @@ public:
                 if (electionId != OID()) {
                     errmsg = "wElectionId passed but no replication active";
                     result.append("code", ErrorCodes::BadValue);
+                    result.append("codeName", ErrorCodes::errorString(ErrorCodes::BadValue));
                     return false;
                 }
             } else {
@@ -257,20 +259,20 @@ public:
                            << repl::getGlobalReplicationCoordinator()->getElectionId();
                     errmsg = "election occurred after write";
                     result.append("code", ErrorCodes::WriteConcernFailed);
+                    result.append("codeName",
+                                  ErrorCodes::errorString(ErrorCodes::WriteConcernFailed));
                     return false;
                 }
             }
         }
 
-        txn->setWriteConcern(writeConcern);
-        setupSynchronousCommit(txn);
         {
             stdx::lock_guard<Client> lk(*txn->getClient());
             txn->setMessage_inlock("waiting for write concern");
         }
 
         WriteConcernResult wcResult;
-        status = waitForWriteConcern(txn, lastOpTime, txn->getWriteConcern(), &wcResult);
+        status = waitForWriteConcern(txn, lastOpTime, writeConcern, &wcResult);
         wcResult.appendTo(writeConcern, &result);
 
         // For backward compatibility with 2.4, wtimeout returns ok : 1.0
@@ -279,6 +281,7 @@ public:
             dassert(!status.isOK());
             result.append("errmsg", "timed out waiting for slaves");
             result.append("code", status.code());
+            result.append("codeName", ErrorCodes::errorString(status.code()));
             return true;
         }
 
@@ -289,7 +292,7 @@ public:
 
 class CmdGetPrevError : public Command {
 public:
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual void help(stringstream& help) const {
@@ -318,4 +321,6 @@ public:
         return true;
     }
 } cmdGetPrevError;
-}
+
+}  // namespace
+}  // namespace mongo

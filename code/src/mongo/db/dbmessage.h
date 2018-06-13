@@ -30,14 +30,18 @@
 
 #pragma once
 
+#include "mongo/base/static_assert.h"
 #include "mongo/bson/bson_validate.h"
 #include "mongo/client/constants.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/server_options.h"
+#include "mongo/transport/session.h"
+#include "mongo/util/net/abstract_message_port.h"
 #include "mongo/util/net/message.h"
-#include "mongo/util/net/message_port.h"
 
 namespace mongo {
+
+class OperationContext;
 
 /* db response format
 
@@ -132,6 +136,10 @@ public:
         return storage().view(sizeof(Layout));
     }
 
+    int32_t dataLen() const {
+        return msgdata().getLen() - sizeof(Layout);
+    }
+
 protected:
     const ConstDataView& storage() const {
         return _storage;
@@ -192,7 +200,7 @@ private:
 class Value : public EncodedValueStorage<Layout, ConstView, View> {
 public:
     Value() {
-        static_assert(sizeof(Value) == sizeof(Layout), "sizeof(Value) == sizeof(Layout)");
+        MONGO_STATIC_ASSERT(sizeof(Value) == sizeof(Layout));
     }
 
     Value(ZeroInitTag_t zit) : EncodedValueStorage<Layout, ConstView, View>(zit) {}
@@ -207,7 +215,7 @@ public:
 */
 class DbMessage {
     // Assume sizeof(int) == 4 bytes
-    static_assert(sizeof(int) == 4, "sizeof(int) == 4");
+    MONGO_STATIC_ASSERT(sizeof(int) == 4);
 
 public:
     // Note: DbMessage constructor reads the first 4 bytes and stores it in reserved
@@ -237,7 +245,7 @@ public:
 
     /* for insert and update msgs */
     bool moreJSObjs() const {
-        return _nextjsobj != 0;
+        return _nextjsobj != 0 && _nextjsobj != _theEnd;
     }
 
     BSONObj nextJsObj();
@@ -313,9 +321,9 @@ public:
  */
 struct DbResponse {
     Message response;
-    MSGID responseTo;
+    int32_t responseToMsgId;
     std::string exhaustNS; /* points to ns if exhaust mode. 0=normal mode*/
-    DbResponse(Message r, MSGID rt) : response(std::move(r)), responseTo(rt) {}
+    DbResponse(Message r, int32_t rtId) : response(std::move(r)), responseToMsgId(rtId) {}
     DbResponse() = default;
 };
 
@@ -352,9 +360,9 @@ public:
     /**
      * Finishes the reply and sends the message out to 'destination'.
      */
-    void send(AbstractMessagingPort* destination,
+    void send(const transport::SessionHandle& session,
               int queryResultFlags,
-              Message& requestMsg,  // should be const but MessagePort::reply takes non-const.
+              const Message& requestMsg,
               int nReturned,
               int startingFrom = 0,
               long long cursorId = 0);
@@ -362,14 +370,14 @@ public:
     /**
      * Similar to send() but used for replying to a command.
      */
-    void sendCommandReply(AbstractMessagingPort* destination, Message& requestMsg);
+    void sendCommandReply(const transport::SessionHandle& session, const Message& requestMsg);
 
 private:
     BufBuilder _buffer;
 };
 
 void replyToQuery(int queryResultFlags,
-                  AbstractMessagingPort* p,
+                  const transport::SessionHandle& session,
                   Message& requestMsg,
                   const void* data,
                   int size,
@@ -377,10 +385,9 @@ void replyToQuery(int queryResultFlags,
                   int startingFrom = 0,
                   long long cursorId = 0);
 
-
 /* object reply helper. */
 void replyToQuery(int queryResultFlags,
-                  AbstractMessagingPort* p,
+                  const transport::SessionHandle& session,
                   Message& requestMsg,
                   const BSONObj& responseObj);
 

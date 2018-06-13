@@ -39,16 +39,9 @@ load("jstests/replsets/rslib.js");  // For startSetIfSupportsReadMajority.
     var replTest = new ReplSetTest(
         {name: name, nodes: 5, useBridge: true, nodeOptions: {enableMajorityReadConcern: ''}});
 
-    try {
-        replTest.startSet();
-    } catch (e) {
-        var conn = MongoRunner.runMongod();
-        if (!conn.getDB('admin').serverStatus().storageEngine.supportsCommittedReads) {
-            jsTest.log("skipping test since storage engine doesn't support committed reads");
-            MongoRunner.stopMongod(conn);
-            return;
-        }
-        throw e;
+    if (!startSetIfSupportsReadMajority(replTest)) {
+        jsTest.log("skipping test since storage engine doesn't support committed reads");
+        return;
     }
 
     var nodes = replTest.nodeList();
@@ -65,6 +58,7 @@ load("jstests/replsets/rslib.js");  // For startSetIfSupportsReadMajority.
             {"_id": 4, "host": nodes[4], arbiterOnly: true},
         ]
     };
+    updateConfigIfNotDurable(config);
     replTest.initiate(config);
 
     // Get connections.
@@ -149,8 +143,10 @@ load("jstests/replsets/rslib.js");  // For startSetIfSupportsReadMajority.
     // now be visible as a committed read to both oldPrimary and newPrimary.
     assert.commandWorked(
         pureSecondary.adminCommand({configureFailPoint: "rsSyncApplyStop", mode: "off"}));
-    assert.commandWorked(
-        newPrimaryColl.runCommand({getLastError: 1, w: 'majority', wtimeout: 30000}));
+    var gleResponse =
+        newPrimaryColl.runCommand({getLastError: 1, w: 'majority', wtimeout: 5 * 1000 * 60});
+    assert.commandWorked(gleResponse);
+    assert.eq(null, gleResponse.err, "GLE detected write error: " + tojson(gleResponse));
     assert.eq(doCommittedRead(newPrimaryColl), 'new');
     assert.eq(doCommittedRead(oldPrimaryColl), 'new');
 }());

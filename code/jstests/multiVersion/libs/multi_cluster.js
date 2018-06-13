@@ -3,8 +3,8 @@
 //
 
 /**
- * Restarts the specified binaries in options to the binVersion. Note: this does not
- * perform any upgrade operations.
+ * Restarts the specified binaries in options with the specified binVersion.
+ * Note: this does not perform any upgrade operations.
  *
  * @param binVersion {string}
  * @param options {Object} format:
@@ -16,7 +16,6 @@
  * }
  */
 ShardingTest.prototype.upgradeCluster = function(binVersion, options) {
-
     options = options || {};
     if (options.upgradeShards == undefined)
         options.upgradeShards = true;
@@ -25,14 +24,55 @@ ShardingTest.prototype.upgradeCluster = function(binVersion, options) {
     if (options.upgradeMongos == undefined)
         options.upgradeMongos = true;
 
+    var upgradedSingleShards = [];
+
+    if (options.upgradeConfigs) {
+        // Upgrade config servers if they aren't already upgraded shards
+        var numConfigs = this._configServers.length;
+
+        for (var i = 0; i < numConfigs; i++) {
+            var configSvr = this._configServers[i];
+
+            if (configSvr.host in upgradedSingleShards) {
+                configSvr = upgradedSingleShards[configSvr.host];
+            } else {
+                MongoRunner.stopMongod(configSvr);
+                configSvr = MongoRunner.runMongod(
+                    {restart: configSvr, binVersion: binVersion, appendOptions: true});
+            }
+
+            this["config" + i] = this["c" + i] = this._configServers[i] = configSvr;
+        }
+    }
+
+    if (options.upgradeShards) {
+        var numShards = this._connections.length;
+
+        // Upgrade shards
+        for (var i = 0; i < numShards; i++) {
+            if (this._rs && this._rs[i]) {
+                // Upgrade replica set
+                var rst = this._rs[i].test;
+                rst.upgradeSet({binVersion: binVersion});
+            } else {
+                // Upgrade shard
+                var shard = this._connections[i];
+                MongoRunner.stopMongod(shard);
+                shard = MongoRunner.runMongod(
+                    {restart: shard, binVersion: binVersion, appendOptions: true});
+
+                upgradedSingleShards[shard.host] = shard;
+                this["shard" + i] = this["d" + i] = this._connections[i] = shard;
+            }
+        }
+    }
+
     if (options.upgradeMongos) {
         // Upgrade all mongos hosts if specified
-
         var numMongoses = this._mongos.length;
 
         for (var i = 0; i < numMongoses; i++) {
             var mongos = this._mongos[i];
-
             MongoRunner.stopMongos(mongos);
 
             mongos = MongoRunner.runMongos(
@@ -46,55 +86,6 @@ ShardingTest.prototype.upgradeCluster = function(binVersion, options) {
         this.config = this.s.getDB("config");
         this.admin = this.s.getDB("admin");
     }
-
-    var upgradedSingleShards = [];
-
-    if (options.upgradeShards) {
-        var numShards = this._connections.length;
-
-        // Upgrade shards
-        for (var i = 0; i < numShards; i++) {
-            if (this._rs && this._rs[i]) {
-                // Upgrade replica set
-                var rst = this._rs[i].test;
-
-                rst.upgradeSet({binVersion: binVersion});
-            } else {
-                // Upgrade shard
-                var shard = this._connections[i];
-
-                MongoRunner.stopMongod(shard);
-
-                shard = MongoRunner.runMongod(
-                    {restart: shard, binVersion: binVersion, appendOptions: true});
-
-                upgradedSingleShards[shard.host] = shard;
-
-                this["shard" + i] = this["d" + i] = this._connections[i] = shard;
-            }
-        }
-    }
-
-    if (options.upgradeConfigs) {
-        // Upgrade config servers if they aren't already upgraded shards
-        var numConfigs = this._configServers.length;
-
-        for (var i = 0; i < numConfigs; i++) {
-            var configSvr = this._configServers[i];
-
-            if (configSvr.host in upgradedSingleShards) {
-                configSvr = upgradedSingleShards[configSvr.host];
-            } else {
-                MongoRunner.stopMongod(configSvr);
-
-                configSvr = MongoRunner.runMongod(
-                    {restart: configSvr, binVersion: binVersion, appendOptions: true});
-            }
-
-            this["config" + i] = this["c" + i] = this._configServers[i] = configSvr;
-        }
-    }
-
 };
 
 ShardingTest.prototype.restartMongoses = function() {

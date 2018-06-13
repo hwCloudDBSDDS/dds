@@ -30,22 +30,22 @@
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/stats/timer_stats.h"
-#include "mongo/util/time_support.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/time_support.h"
 
 namespace {
 
 using namespace mongo;
 
 TEST(TimerStatsTest, GetReportNoRecording) {
-    ASSERT_EQUALS(BSON("num" << 0 << "totalMillis" << 0), TimerStats().getReport());
+    ASSERT_BSONOBJ_EQ(BSON("num" << 0 << "totalMillis" << 0), TimerStats().getReport());
 }
 
 TEST(TimerStatsTest, GetReportOneRecording) {
     TimerStats timerStats;
     Timer timer;
     int millis = timerStats.record(timer);
-    ASSERT_EQUALS(BSON("num" << 1 << "totalMillis" << millis), timerStats.getReport());
+    ASSERT_BSONOBJ_EQ(BSON("num" << 1 << "totalMillis" << millis), timerStats.getReport());
 }
 
 }  // namespace

@@ -42,11 +42,11 @@ doTest = function(signal) {
         sleep(1000);
     }
 
-    // within 30 seconds delayed slave should have it
+    // within 120 seconds delayed slave should have it
     assert.soon(function() {
         var z = slaves[1].foo.findOne();
         return z && z.x == 1;
-    });
+    }, 'waiting for inserted document ' + tojson(doc) + ' on delayed slave', 120 * 1000);
 
     /************* Part 2 *******************/
 
@@ -66,10 +66,8 @@ doTest = function(signal) {
     master = reconfig(replTest, config);
     master = master.getSisterDB(name);
 
-    // wait for the node to catch up
-    replTest.awaitReplication(90 * 1000);
-
-    assert.writeOK(master.foo.insert({_id: 123, x: 'foo'}, {writeConcern: {w: 2}}));
+    assert.writeOK(
+        master.foo.insert({_id: 123, x: 'foo'}, {writeConcern: {w: 2, wtimeout: 10 * 60 * 1000}}));
 
     for (var i = 0; i < 8; i++) {
         assert.eq(conn.getDB(name).foo.findOne({_id: 123}), null);

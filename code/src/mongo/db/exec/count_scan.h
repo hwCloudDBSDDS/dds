@@ -57,18 +57,19 @@ struct CountScanParams {
 };
 
 /**
- * Used by the count command.  Scans an index from a start key to an end key.  Does not create
- * any WorkingSetMember(s) for any of the data, instead returning ADVANCED to indicate to the
- * caller that another result should be counted.
+ * Used by the count command. Scans an index from a start key to an end key. Creates a
+ * WorkingSetMember for each matching index key in RID_AND_OBJ state. It has a null record id and an
+ * empty object with a null snapshot id rather than real data. Returning real data is unnecessary
+ * since all we need is the count.
  *
- * Only created through the getExecutorCount path, as count is the only operation that doesn't
+ * Only created through the getExecutorCount() path, as count is the only operation that doesn't
  * care about its data.
  */
 class CountScan final : public PlanStage {
 public:
     CountScan(OperationContext* txn, const CountScanParams& params, WorkingSet* workingSet);
 
-    StageState work(WorkingSetID* out) final;
+    StageState doWork(WorkingSetID* out) final;
     bool isEOF() final;
     void doSaveState() final;
     void doRestoreState() final;

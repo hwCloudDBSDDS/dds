@@ -30,11 +30,14 @@
 
 #include "mongo/db/pipeline/value.h"
 
+#include <boost/functional/hash.hpp>
 #include <cmath>
 #include <limits>
-#include <boost/functional/hash.hpp>
 
 #include "mongo/base/compare_numbers.h"
+#include "mongo/base/data_type_endian.h"
+#include "mongo/base/simple_string_data_comparator.h"
+#include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/platform/decimal128.h"
@@ -102,9 +105,10 @@ void ValueStorage::putString(StringData s) {
         shortStrSize = s.size();
         s.copyTo(shortStrStorage, false);  // no NUL
 
-        // All memory is zeroed before this is called.
-        // Note this may be past end of shortStrStorage and into nulTerminator
-        dassert(shortStrStorage[sizeNoNUL] == '\0');
+        // All memory is zeroed before this is called, so we know that
+        // the nulTerminator field will definitely contain a NUL byte.
+        dassert(((sizeNoNUL < sizeof(shortStrStorage)) && (shortStrStorage[sizeNoNUL] == '\0')) ||
+                (((shortStrStorage + sizeNoNUL) == &nulTerminator) && (nulTerminator == '\0')));
     } else {
         putRefCountable(RCString::create(s));
     }
@@ -178,8 +182,7 @@ Value::Value(const BSONElement& elem) : _storage(elem.type()) {
         }
 
         case jstOID:
-            static_assert(sizeof(_storage.oid) == OID::kOIDSize,
-                          "sizeof(_storage.oid) == OID::kOIDSize");
+            MONGO_STATIC_ASSERT(sizeof(_storage.oid) == OID::kOIDSize);
             memcpy(_storage.oid, elem.OID().view().view(), OID::kOIDSize);
             break;
 
@@ -239,6 +242,15 @@ Value::Value(const BSONArray& arr) : _storage(Array) {
     _storage.putVector(vec.get());
 }
 
+Value::Value(const vector<BSONObj>& arr) : _storage(Array) {
+    intrusive_ptr<RCVector> vec(new RCVector);
+    vec->vec.reserve(arr.size());
+    for (auto&& obj : arr) {
+        vec->vec.push_back(Value(obj));
+    }
+    _storage.putVector(vec.get());
+}
+
 Value Value::createIntOrLong(long long longValue) {
     int intValue = longValue;
     if (intValue != longValue) {
@@ -253,9 +265,9 @@ Value Value::createIntOrLong(long long longValue) {
 Decimal128 Value::getDecimal() const {
     BSONType type = getType();
     if (type == NumberInt)
-        return Decimal128(_storage.intValue);
+        return Decimal128(static_cast<int32_t>(_storage.intValue));
     if (type == NumberLong)
-        return Decimal128(_storage.longValue);
+        return Decimal128(static_cast<int64_t>(_storage.longValue));
     if (type == NumberDouble)
         return Decimal128(_storage.doubleValue);
     invariant(type == NumberDecimal);
@@ -479,10 +491,10 @@ Decimal128 Value::coerceToDecimal() const {
             return _storage.getDecimal();
 
         case NumberInt:
-            return Decimal128(_storage.intValue);
+            return Decimal128(static_cast<int32_t>(_storage.intValue));
 
         case NumberLong:
-            return Decimal128(_storage.longValue);
+            return Decimal128(static_cast<int64_t>(_storage.longValue));
 
         case NumberDouble:
             return Decimal128(_storage.doubleValue);
@@ -627,7 +639,9 @@ inline static int cmp(const T& left, const T& right) {
     }
 }
 
-int Value::compare(const Value& rL, const Value& rR) {
+int Value::compare(const Value& rL,
+                   const Value& rR,
+                   const StringData::ComparatorInterface* stringComparator) {
     // Note, this function needs to behave identically to BSON's compareElementValues().
     // Additionally, any changes here must be replicated in hash_combine().
     BSONType lType = rL.getType();
@@ -728,13 +742,20 @@ int Value::compare(const Value& rL, const Value& rR) {
         case jstOID:
             return memcmp(rL._storage.oid, rR._storage.oid, OID::kOIDSize);
 
+        case String: {
+            if (!stringComparator) {
+                return rL.getStringData().compare(rR.getStringData());
+            }
+
+            return stringComparator->compare(rL.getStringData(), rR.getStringData());
+        }
+
         case Code:
         case Symbol:
-        case String:
             return rL.getStringData().compare(rR.getStringData());
 
         case Object:
-            return Document::compare(rL.getDocument(), rR.getDocument());
+            return Document::compare(rL.getDocument(), rR.getDocument(), stringComparator);
 
         case Array: {
             const vector<Value>& lArr = rL.getArray();
@@ -743,7 +764,7 @@ int Value::compare(const Value& rL, const Value& rR) {
             const size_t elems = std::min(lArr.size(), rArr.size());
             for (size_t i = 0; i < elems; i++) {
                 // compare the two corresponding elements
-                ret = Value::compare(lArr[i], rArr[i]);
+                ret = Value::compare(lArr[i], rArr[i], stringComparator);
                 if (ret)
                     return ret;  // values are unequal
             }
@@ -792,7 +813,8 @@ int Value::compare(const Value& rL, const Value& rR) {
     verify(false);
 }
 
-void Value::hash_combine(size_t& seed) const {
+void Value::hash_combine(size_t& seed,
+                         const StringData::ComparatorInterface* stringComparator) const {
     BSONType type = getType();
 
     boost::hash_combine(seed, canonicalizeBSONType(type));
@@ -814,14 +836,15 @@ void Value::hash_combine(size_t& seed) const {
 
         case bsonTimestamp:
         case Date:
-            static_assert(sizeof(_storage.dateValue) == sizeof(_storage.timestampValue),
-                          "sizeof(_storage.dateValue) == sizeof(_storage.timestampValue)");
+            MONGO_STATIC_ASSERT(sizeof(_storage.dateValue) == sizeof(_storage.timestampValue));
             boost::hash_combine(seed, _storage.dateValue);
             break;
 
         case mongo::NumberDecimal: {
             const Decimal128 dcml = getDecimal();
-            if (dcml.toAbs().isGreater(Decimal128(std::numeric_limits<double>::max())) &&
+            if (dcml.toAbs().isGreater(Decimal128(std::numeric_limits<double>::max(),
+                                                  Decimal128::kRoundTo34Digits,
+                                                  Decimal128::kRoundTowardZero)) &&
                 !dcml.isInfinite() && !dcml.isNaN()) {
                 // Normalize our decimal to force equivalent decimals
                 // in the same cohort to hash to the same value
@@ -858,21 +881,30 @@ void Value::hash_combine(size_t& seed) const {
             break;
 
         case Code:
-        case Symbol:
-        case String: {
+        case Symbol: {
             StringData sd = getStringData();
             MurmurHash3_x86_32(sd.rawData(), sd.size(), seed, &seed);
             break;
         }
 
+        case String: {
+            StringData sd = getStringData();
+            if (stringComparator) {
+                stringComparator->hash_combine(seed, sd);
+            } else {
+                MurmurHash3_x86_32(sd.rawData(), sd.size(), seed, &seed);
+            }
+            break;
+        }
+
         case Object:
-            getDocument().hash_combine(seed);
+            getDocument().hash_combine(seed, stringComparator);
             break;
 
         case Array: {
             const vector<Value>& vec = getArray();
             for (size_t i = 0; i < vec.size(); i++)
-                vec[i].hash_combine(seed);
+                vec[i].hash_combine(seed, stringComparator);
             break;
         }
 
@@ -897,8 +929,8 @@ void Value::hash_combine(size_t& seed) const {
 
         case CodeWScope: {
             intrusive_ptr<const RCCodeWScope> cws = _storage.getCodeWScope();
-            boost::hash_combine(seed, StringData::Hasher()(cws->code));
-            boost::hash_combine(seed, BSONObj::Hasher()(cws->scope));
+            SimpleStringDataComparator::kInstance.hash_combine(seed, cws->code);
+            SimpleBSONObjComparator::kInstance.hash_combine(seed, cws->scope);
             break;
         }
     }
@@ -967,8 +999,6 @@ BSONType Value::getWidestNumeric(BSONType lType, BSONType rType) {
     return Undefined;
 }
 
-// TODO: Add Decimal128 support to Value::integral()
-// SERVER-19735
 bool Value::integral() const {
     switch (getType()) {
         case NumberInt:
@@ -980,6 +1010,13 @@ bool Value::integral() const {
             return (_storage.doubleValue <= numeric_limits<int>::max() &&
                     _storage.doubleValue >= numeric_limits<int>::min() &&
                     _storage.doubleValue == static_cast<int>(_storage.doubleValue));
+        case NumberDecimal: {
+            // If we are able to convert the decimal to an int32_t without an rounding errors,
+            // then it is integral.
+            uint32_t signalingFlags = Decimal128::kNoFlag;
+            (void)_storage.getDecimal().toIntExact(&signalingFlags);
+            return signalingFlags == Decimal128::kNoFlag;
+        }
         default:
             return false;
     }
@@ -1215,17 +1252,17 @@ Value Value::deserializeForSorter(BufReader& buf, const SorterDeserializeSetting
         case jstOID:
             return Value(OID::from(buf.skip(OID::kOIDSize)));
         case NumberInt:
-            return Value(buf.read<int>());
+            return Value(buf.read<LittleEndian<int>>().value);
         case NumberLong:
-            return Value(buf.read<long long>());
+            return Value(buf.read<LittleEndian<long long>>().value);
         case NumberDouble:
-            return Value(buf.read<double>());
+            return Value(buf.read<LittleEndian<double>>().value);
         case NumberDecimal:
-            return Value(buf.read<Decimal128>());
+            return Value(Decimal128(buf.read<LittleEndian<Decimal128::Value>>().value));
         case Bool:
             return Value(bool(buf.read<char>()));
         case Date:
-            return Value(Date_t::fromMillisSinceEpoch(buf.read<long long>()));
+            return Value(Date_t::fromMillisSinceEpoch(buf.read<LittleEndian<long long>>().value));
         case bsonTimestamp:
             return Value(buf.read<Timestamp>());
 
@@ -1233,14 +1270,14 @@ Value Value::deserializeForSorter(BufReader& buf, const SorterDeserializeSetting
         case String:
         case Symbol:
         case Code: {
-            int size = buf.read<int>();
+            int size = buf.read<LittleEndian<int>>();
             const char* str = static_cast<const char*>(buf.skip(size));
             return Value(ValueStorage(type, StringData(str, size)));
         }
 
         case BinData: {
-            BinDataType bdt = BinDataType(buf.read<char>());
-            int size = buf.read<int>();
+            BinDataType bdt = BinDataType(buf.read<unsigned char>());
+            int size = buf.read<LittleEndian<int>>();
             const void* data = buf.skip(size);
             return Value(BSONBinData(data, size, bdt));
         }
@@ -1262,14 +1299,14 @@ Value Value::deserializeForSorter(BufReader& buf, const SorterDeserializeSetting
         }
 
         case CodeWScope: {
-            int size = buf.read<int>();
+            int size = buf.read<LittleEndian<int>>();
             const char* str = static_cast<const char*>(buf.skip(size));
             BSONObj bson = BSONObj::deserializeForSorter(buf, BSONObj::SorterDeserializeSettings());
             return Value(BSONCodeWScope(StringData(str, size), bson));
         }
 
         case Array: {
-            const int numElems = buf.read<int>();
+            const int numElems = buf.read<LittleEndian<int>>();
             vector<Value> array;
             array.reserve(numElems);
             for (int i = 0; i < numElems; i++)

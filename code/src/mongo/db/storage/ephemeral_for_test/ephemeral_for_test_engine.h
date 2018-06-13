@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "mongo/db/storage/journal_listener.h"
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/stdx/mutex.h"
@@ -48,10 +50,10 @@ public:
                                      StringData ident,
                                      const CollectionOptions& options);
 
-    virtual RecordStore* getRecordStore(OperationContext* opCtx,
-                                        StringData ns,
-                                        StringData ident,
-                                        const CollectionOptions& options);
+    virtual std::unique_ptr<RecordStore> getRecordStore(OperationContext* opCtx,
+                                                        StringData ns,
+                                                        StringData ident,
+                                                        const CollectionOptions& options);
 
     virtual Status createSortedDataInterface(OperationContext* opCtx,
                                              StringData ident,
@@ -78,9 +80,13 @@ public:
     }
 
     /**
-     * This is sort of strange since "durable" has no meaning...
+     * Data stored in memory is not durable.
      */
     virtual bool isDurable() const {
+        return false;
+    }
+
+    virtual bool isEphemeral() const {
         return true;
     }
 

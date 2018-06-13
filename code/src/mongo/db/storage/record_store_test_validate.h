@@ -47,7 +47,7 @@ public:
 
     ~ValidateAdaptorSpy() {}
 
-    Status validate(const RecordData& recordData, size_t* dataSize) {
+    Status validate(const RecordId& recordId, const RecordData& recordData, size_t* dataSize) {
         std::string s(recordData.data());
         ASSERT(1 == _remain.erase(s));
 
@@ -68,7 +68,7 @@ public:
     ValidateTest()
         : _harnessHelper(newHarnessHelper()), _rs(_harnessHelper->newNonCappedRecordStore()) {}
 
-    std::unique_ptr<OperationContext> newOperationContext() {
+    ServiceContext::UniqueOperationContext newOperationContext() {
         return _harnessHelper->newOperationContext();
     }
 
@@ -82,13 +82,13 @@ public:
 
     void setUp() {
         {
-            std::unique_ptr<OperationContext> opCtx(newOperationContext());
+            ServiceContext::UniqueOperationContext opCtx(newOperationContext());
             ASSERT_EQUALS(0, _rs->numRecords(opCtx.get()));
         }
 
         int nToInsert = 10;
         for (int i = 0; i < nToInsert; i++) {
-            std::unique_ptr<OperationContext> opCtx(newOperationContext());
+            ServiceContext::UniqueOperationContext opCtx(newOperationContext());
             {
                 std::stringstream ss;
                 ss << "record " << i;
@@ -104,7 +104,7 @@ public:
         }
 
         {
-            std::unique_ptr<OperationContext> opCtx(newOperationContext());
+            ServiceContext::UniqueOperationContext opCtx(newOperationContext());
             ASSERT_EQUALS(nToInsert, _rs->numRecords(opCtx.get()));
         }
     }

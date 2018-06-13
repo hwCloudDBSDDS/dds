@@ -31,7 +31,6 @@
 
 #pragma once
 
-
 #include "mongo/db/namespace_string.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_connection.h"
@@ -46,20 +45,23 @@ class ParallelConnectionMetadata;
 
 class CommandInfo {
 public:
-    std::string versionedNS;
-    BSONObj cmdFilter;
-
     CommandInfo() {}
-    CommandInfo(const std::string& vns, const BSONObj& filter)
-        : versionedNS(vns), cmdFilter(filter) {}
+    CommandInfo(const std::string& vns, const BSONObj& filter, const BSONObj& collation)
+        : versionedNS(vns), cmdFilter(filter), cmdCollation(collation) {}
 
     bool isEmpty() {
         return versionedNS.size() == 0;
     }
 
     std::string toString() const {
-        return str::stream() << "CInfo " << BSON("v_ns" << versionedNS << "filter" << cmdFilter);
+        return str::stream() << "CInfo "
+                             << BSON("v_ns" << versionedNS << "filter" << cmdFilter << "collation"
+                                            << cmdCollation);
     }
+
+    std::string versionedNS;
+    BSONObj cmdFilter;
+    BSONObj cmdCollation;
 };
 
 class DBClientCursor;
@@ -71,11 +73,11 @@ public:
 
     // Please do not reorder. cursor destructor can use conn.
     // On a related note, never attempt to cleanup these pointers manually.
-    ShardConnectionPtr conn;
+    std::shared_ptr<ShardConnection> conn;
     DBClientCursorPtr cursor;
 
     // Version information
-    ChunkManagerPtr manager;
+    std::shared_ptr<ChunkManager> manager;
     std::shared_ptr<Shard> primary;
 
     // Cursor status information
@@ -191,7 +193,6 @@ private:
     std::map<std::string, int> _staleNSMap;
 
     int _totalTries;
-    bool _cmChangeAttempted;
 
     std::map<ShardId, PCMData> _cursorMap;
 
@@ -215,7 +216,7 @@ private:
                                       std::shared_ptr<Shard> primary /* in */,
                                       const NamespaceString& ns,
                                       const std::string& vinfo,
-                                      ChunkManagerPtr manager /* in */);
+                                      std::shared_ptr<ChunkManager> manager /* in */);
 
     // LEGACY init - Needed for map reduce
     void _oldInit();

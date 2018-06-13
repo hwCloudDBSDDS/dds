@@ -39,12 +39,14 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/client.h"
-#include "mongo/db/client_basic.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/catalog/catalog_cache.h"
-#include "mongo/s/catalog/catalog_manager.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/commands/sharded_command_processing.h"
 #include "mongo/s/config.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/set_shard_version_request.h"
@@ -70,15 +72,16 @@ public:
         return true;
     }
 
-    virtual bool isWriteCommandForConfigServer() const {
-        return false;
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return true;
     }
 
     virtual void help(std::stringstream& help) const {
         help << " example: { moveprimary : 'foo' , to : 'localhost:9999' }";
     }
 
-    virtual Status checkAuthForCommand(ClientBasic* client,
+    virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
                                        const BSONObj& cmdObj) {
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
@@ -127,18 +130,20 @@ public:
             return false;
         }
 
-        shared_ptr<Shard> toShard = grid.shardRegistry()->getShard(txn, to);
-        if (!toShard) {
+        auto toShardStatus = grid.shardRegistry()->getShard(txn, to);
+        if (!toShardStatus.isOK()) {
             string msg(str::stream() << "Could not move database '" << dbname << "' to shard '"
-                                     << to << "' because the shard does not exist");
+                                     << to
+                                     << "' because the shard does not exist");
             log() << msg;
             return appendCommandStatus(result, Status(ErrorCodes::ShardNotFound, msg));
         }
+        auto toShard = toShardStatus.getValue();
 
-        shared_ptr<Shard> fromShard = grid.shardRegistry()->getShard(txn, config->getPrimaryId());
-        invariant(fromShard);
+        auto fromShard =
+            uassertStatusOK(grid.shardRegistry()->getShard(txn, config->getPrimaryId()));
 
-        if (fromShard->getConnString().sameLogicalEndpoint(toShard->getConnString())) {
+        if (fromShard->getId() == toShard->getId()) {
             errmsg = "it is already the primary";
             return false;
         }
@@ -147,8 +152,8 @@ public:
               << " to: " << toShard->toString();
 
         string whyMessage(str::stream() << "Moving primary shard of " << dbname);
-        auto scopedDistLock =
-            grid.forwardingCatalogManager()->distLock(txn, dbname + "-movePrimary", whyMessage);
+        auto scopedDistLock = grid.catalogClient(txn)->getDistLockManager()->lock(
+            txn, dbname + "-movePrimary", whyMessage, DistLockManager::kDefaultLockTimeout);
 
         if (!scopedDistLock.isOK()) {
             return appendCommandStatus(result, scopedDistLock.getStatus());
@@ -161,10 +166,12 @@ public:
         BSONObj moveStartDetails =
             _buildMoveEntry(dbname, fromShard->toString(), toShard->toString(), shardedColls);
 
-        uassertStatusOK(scopedDistLock.getValue().checkForPendingCatalogChange());
-
-        auto catalogManager = grid.catalogManager(txn);
-        catalogManager->logChange(txn, "movePrimary.start", dbname, moveStartDetails);
+        auto catalogClient = grid.catalogClient(txn);
+        catalogClient->logChange(txn,
+                                 "movePrimary.start",
+                                 dbname,
+                                 moveStartDetails,
+                                 ShardingCatalogClient::kMajorityWriteConcern);
 
         BSONArrayBuilder barr;
         barr.append(shardedColls);
@@ -172,8 +179,7 @@ public:
         ScopedDbConnection toconn(toShard->getConnString());
 
         {
-            // Make sure the target node is sharding aware so that it can detect catalog manager
-            // swaps.
+            // Make sure the target node is sharding aware.
             auto ssvRequest = SetShardVersionRequest::makeForInitNoPersist(
                 grid.shardRegistry()->getConfigServerConnectionString(),
                 toShard->getId(),
@@ -188,21 +194,26 @@ public:
         // TODO ERH - we need a clone command which replays operations from clone start to now
         //            can just use local.oplog.$main
         BSONObj cloneRes;
-        bool worked = toconn->runCommand(dbname.c_str(),
-                                         BSON("clone" << fromShard->getConnString().toString()
-                                                      << "collsToIgnore" << barr.arr()
-                                                      << bypassDocumentValidationCommandOption()
-                                                      << true << "_checkForCatalogChange" << true),
-                                         cloneRes);
+        bool worked = toconn->runCommand(
+            dbname.c_str(),
+            BSON("clone" << fromShard->getConnString().toString() << "collsToIgnore" << barr.arr()
+                         << bypassDocumentValidationCommandOption()
+                         << true
+                         << "writeConcern"
+                         << txn->getWriteConcern().toBSON()),
+            cloneRes);
         toconn.done();
 
         if (!worked) {
-            log() << "clone failed" << cloneRes;
+            log() << "clone failed" << redact(cloneRes);
             errmsg = "clone failed";
             return false;
         }
-
-        uassertStatusOK(scopedDistLock.getValue().checkForPendingCatalogChange());
+        bool hasWCError = false;
+        if (auto wcErrorElem = cloneRes["writeConcernError"]) {
+            appendWriteConcernErrorToCmdResponse(toShard->getId(), wcErrorElem, result);
+            hasWCError = true;
+        }
 
         const string oldPrimary = fromShard->getConnString().toString();
 
@@ -217,10 +228,19 @@ public:
                   << ", no sharded collections in " << dbname;
 
             try {
-                fromconn->dropDatabase(dbname.c_str());
+                BSONObj dropDBInfo;
+                fromconn->dropDatabase(dbname.c_str(), txn->getWriteConcern(), &dropDBInfo);
+                if (!hasWCError) {
+                    if (auto wcErrorElem = dropDBInfo["writeConcernError"]) {
+                        appendWriteConcernErrorToCmdResponse(
+                            fromShard->getId(), wcErrorElem, result);
+                        hasWCError = true;
+                    }
+                }
             } catch (DBException& e) {
                 e.addContext(str::stream() << "movePrimary could not drop the database " << dbname
-                                           << " on " << oldPrimary);
+                                           << " on "
+                                           << oldPrimary);
                 throw;
             }
 
@@ -241,12 +261,23 @@ public:
                     try {
                         log() << "movePrimary dropping cloned collection " << el.String() << " on "
                               << oldPrimary;
-                        uassertStatusOK(scopedDistLock.getValue().checkForPendingCatalogChange());
-                        fromconn->dropCollection(el.String());
+                        BSONObj dropCollInfo;
+                        fromconn->dropCollection(
+                            el.String(), txn->getWriteConcern(), &dropCollInfo);
+                        if (!hasWCError) {
+                            if (auto wcErrorElem = dropCollInfo["writeConcernError"]) {
+                                appendWriteConcernErrorToCmdResponse(
+                                    fromShard->getId(), wcErrorElem, result);
+                                hasWCError = true;
+                            }
+                        }
+
                     } catch (DBException& e) {
                         e.addContext(str::stream()
                                      << "movePrimary could not drop the cloned collection "
-                                     << el.String() << " on " << oldPrimary);
+                                     << el.String()
+                                     << " on "
+                                     << oldPrimary);
                         throw;
                     }
                 }
@@ -261,7 +292,11 @@ public:
         BSONObj moveFinishDetails =
             _buildMoveEntry(dbname, oldPrimary, toShard->toString(), shardedColls);
 
-        catalogManager->logChange(txn, "movePrimary", dbname, moveFinishDetails);
+        catalogClient->logChange(txn,
+                                 "movePrimary",
+                                 dbname,
+                                 moveFinishDetails,
+                                 ShardingCatalogClient::kMajorityWriteConcern);
         return true;
     }
 

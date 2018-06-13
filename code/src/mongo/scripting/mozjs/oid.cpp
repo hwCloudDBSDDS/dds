@@ -41,8 +41,10 @@
 namespace mongo {
 namespace mozjs {
 
-const JSFunctionSpec OIDInfo::methods[2] = {
-    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(toString, OIDInfo), JS_FS_END,
+const JSFunctionSpec OIDInfo::methods[3] = {
+    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(toString, OIDInfo),
+    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(toJSON, OIDInfo),
+    JS_FS_END,
 };
 
 const char* const OIDInfo::className = "ObjectId";
@@ -61,6 +63,12 @@ void OIDInfo::Functions::toString::call(JSContext* cx, JS::CallArgs args) {
     std::string str = str::stream() << "ObjectId(\"" << oid->toString() << "\")";
 
     ValueReader(cx, args.rval()).fromStringData(str);
+}
+
+void OIDInfo::Functions::toJSON::call(JSContext* cx, JS::CallArgs args) {
+    auto oid = static_cast<OID*>(JS_GetPrivate(args.thisv().toObjectOrNull()));
+
+    ValueReader(cx, args.rval()).fromBSON(BSON("$oid" << oid->toString()), nullptr, false);
 }
 
 void OIDInfo::Functions::getter::call(JSContext* cx, JS::CallArgs args) {
@@ -117,7 +125,7 @@ void OIDInfo::postInstall(JSContext* cx, JS::HandleObject global, JS::HandleObje
                                proto,
                                getScope(cx)->getInternedStringId(InternedString::str),
                                undef,
-                               JSPROP_READONLY | JSPROP_ENUMERATE | JSPROP_SHARED,
+                               JSPROP_ENUMERATE | JSPROP_SHARED,
                                smUtils::wrapConstrainedMethod<Functions::getter, true, OIDInfo>,
                                nullptr)) {
         uasserted(ErrorCodes::JSInterpreterFailure, "Failed to JS_DefinePropertyById");

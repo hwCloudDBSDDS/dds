@@ -99,7 +99,7 @@
         statComp(stat_obj.size, stat_obj_scaled.size, scale);
         statComp(stat_obj.storageSize, stat_obj_scaled.storageSize, scale);
         statComp(stat_obj.totalIndexSize, stat_obj_scaled.totalIndexSize, scale);
-        statComp(stat_obj.avgObjSize, stat_obj_scaled.avgObjSize, scale);
+        statComp(stat_obj.avgObjSize, stat_obj_scaled.avgObjSize, 1);
         /* lastExtentSize doesn't exist in mongos level collection stats */
         if (!mongos) {
             statComp(stat_obj.lastExtentSize, stat_obj_scaled.lastExtentSize, scale);
@@ -192,9 +192,7 @@
         }
 
         // indexDetailsKey - show indexDetails results for this index key only.
-        var indexKey = {
-            a: 1
-        };
+        var indexKey = {a: 1};
         var indexName = getIndexName(indexKey);
         checkIndexDetails({indexDetails: true, indexDetailsKey: indexKey}, indexName);
 

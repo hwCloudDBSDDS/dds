@@ -30,8 +30,8 @@
 
 #include "mongo/rpc/metadata/server_selection_metadata.h"
 
-#include <utility>
 #include <tuple>
+#include <utility>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/util/bson_extract.h"
@@ -45,10 +45,6 @@ namespace rpc {
 
 
 namespace {
-
-// Symbolic constant for the "$secondaryOk" metadata field. This field should be of boolean or
-// numeric type, and is treated as a boolean.
-const char kSecondaryOkFieldName[] = "$secondaryOk";
 
 // Symbolic constant for the "$readPreference" metadata field. The field should be of Object type
 // when present.
@@ -141,6 +137,10 @@ Status extractUnwrappedReadPreference(const BSONObj& unwrappedCommand,
 
 }  // namespace
 
+// Symbolic constant for the "$secondaryOk" metadata field. This field should be of boolean or
+// numeric type, and is treated as a boolean.
+const char ServerSelectionMetadata::kSecondaryOkFieldName[] = "$secondaryOk";
+
 const OperationContext::Decoration<ServerSelectionMetadata> ServerSelectionMetadata::get =
     OperationContext::declareDecoration<ServerSelectionMetadata>();
 
@@ -160,7 +160,9 @@ StatusWith<ServerSelectionMetadata> ServerSelectionMetadata::readFromMetadata(
     } else if (metadataElem.type() != mongo::Object) {
         return {ErrorCodes::TypeMismatch,
                 str::stream() << "ServerSelectionMetadata element has incorrect type: expected"
-                              << mongo::Object << " but got " << metadataElem.type()};
+                              << mongo::Object
+                              << " but got "
+                              << metadataElem.type()};
     }
 
     bool secondaryOk = false;
@@ -174,7 +176,9 @@ StatusWith<ServerSelectionMetadata> ServerSelectionMetadata::readFromMetadata(
             if (ssmElem.type() != mongo::Object) {
                 return Status(ErrorCodes::TypeMismatch,
                               str::stream() << "ReadPreference has incorrect type: expected"
-                                            << mongo::Object << "but got" << metadataElem.type());
+                                            << mongo::Object
+                                            << "but got"
+                                            << metadataElem.type());
             }
             auto parsedRps = ReadPreferenceSetting::fromBSON(ssmElem.Obj());
             if (!parsedRps.isOK()) {
@@ -335,17 +339,6 @@ bool ServerSelectionMetadata::canRunOnSecondary() const {
     return _secondaryOk ||
         (_readPreference && (_readPreference->pref != ReadPreference::PrimaryOnly));
 }
-
-#if defined(_MSC_VER) && _MSC_VER < 1900
-ServerSelectionMetadata::ServerSelectionMetadata(ServerSelectionMetadata&& ssm)
-    : _secondaryOk(ssm._secondaryOk), _readPreference(std::move(ssm._readPreference)) {}
-
-ServerSelectionMetadata& ServerSelectionMetadata::operator=(ServerSelectionMetadata&& ssm) {
-    _secondaryOk = ssm._secondaryOk;
-    _readPreference = std::move(ssm._readPreference);
-    return *this;
-}
-#endif
 
 }  // rpc
 }  // mongo

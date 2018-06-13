@@ -32,9 +32,9 @@
 
 #include "mongo/db/exec/filter.h"
 #include "mongo/db/exec/index_scan.h"
-#include "mongo/db/exec/text_or.h"
-#include "mongo/db/exec/text_match.h"
 #include "mongo/db/exec/scoped_timer.h"
+#include "mongo/db/exec/text_match.h"
+#include "mongo/db/exec/text_or.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/fts/fts_index_format.h"
 #include "mongo/db/jsobj.h"
@@ -64,40 +64,19 @@ TextStage::TextStage(OperationContext* txn,
     _specificStats.indexPrefix = _params.indexPrefix;
     _specificStats.indexName = _params.index->indexName();
     _specificStats.parsedTextQuery = _params.query.toBSON();
+    _specificStats.textIndexVersion = _params.index->infoObj()["textIndexVersion"].numberInt();
 }
 
 bool TextStage::isEOF() {
     return child()->isEOF();
 }
 
-PlanStage::StageState TextStage::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState TextStage::doWork(WorkingSetID* out) {
     if (isEOF()) {
         return PlanStage::IS_EOF;
     }
 
-    PlanStage::StageState stageState = child()->work(out);
-
-    // Increment common stats counters that are specific to the return value of work().
-    switch (stageState) {
-        case PlanStage::ADVANCED:
-            ++_commonStats.advanced;
-            break;
-        case PlanStage::NEED_TIME:
-            ++_commonStats.needTime;
-            break;
-        case PlanStage::NEED_YIELD:
-            ++_commonStats.needYield;
-            break;
-        default:
-            break;
-    }
-
-    return stageState;
+    return child()->work(out);
 }
 
 unique_ptr<PlanStageStats> TextStage::getStats() {
@@ -126,7 +105,7 @@ unique_ptr<PlanStage> TextStage::buildTextTree(OperationContext* txn,
             MAX_WEIGHT, term, _params.indexPrefix, _params.spec.getTextIndexVersion());
         ixparams.bounds.endKey = FTSIndexFormat::getIndexKey(
             0, term, _params.indexPrefix, _params.spec.getTextIndexVersion());
-        ixparams.bounds.endKeyInclusive = true;
+        ixparams.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         ixparams.bounds.isSimpleRange = true;
         ixparams.descriptor = _params.index;
         ixparams.direction = -1;

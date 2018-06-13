@@ -183,6 +183,7 @@ assert(diff == "", "error test.0 files differ");
 
 log("check data matches done");
 
+Random.setRandomSeed();
 var nrows = 0;
 for (var i = 0; i < 5; ++i) {
     // durable version

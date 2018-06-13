@@ -40,14 +40,20 @@ const char kQueryField[] = "query";
 const char kLimitField[] = "limit";
 const char kSkipField[] = "skip";
 const char kHintField[] = "hint";
+const char kCollationField[] = "collation";
+const char kExplainField[] = "explain";
 
 }  // namespace
 
-CountRequest::CountRequest(const std::string& fullNs, BSONObj query)
-    : _nss(fullNs), _query(query.getOwned()) {}
+CountRequest::CountRequest(NamespaceString nss, BSONObj query)
+    : _nss(std::move(nss)), _query(query.getOwned()) {}
 
 void CountRequest::setHint(BSONObj hint) {
     _hint = hint.getOwned();
+}
+
+void CountRequest::setCollation(BSONObj collation) {
+    _collation = collation.getOwned();
 }
 
 BSONObj CountRequest::toBSON() const {
@@ -68,21 +74,26 @@ BSONObj CountRequest::toBSON() const {
         builder.append(kHintField, _hint.get());
     }
 
+    if (_collation) {
+        builder.append(kCollationField, _collation.get());
+    }
+
     return builder.obj();
 }
 
 StatusWith<CountRequest> CountRequest::parseFromBSON(const std::string& dbname,
-                                                     const BSONObj& cmdObj) {
+                                                     const BSONObj& cmdObj,
+                                                     bool isExplain) {
     BSONElement firstElt = cmdObj.firstElement();
     const std::string coll = (firstElt.type() == BSONType::String) ? firstElt.str() : "";
 
-    const std::string ns = str::stream() << dbname << "." << coll;
-    if (!nsIsFull(ns)) {
-        return Status(ErrorCodes::BadValue, "invalid collection name");
+    NamespaceString nss(dbname, coll);
+    if (!nss.isValid()) {
+        return Status(ErrorCodes::InvalidNamespace, "invalid collection name");
     }
 
     // We don't validate that "query" is a nested object due to SERVER-15456.
-    CountRequest request(ns, cmdObj.getObjectField(kQueryField));
+    CountRequest request(std::move(nss), cmdObj.getObjectField(kQueryField));
 
     // Limit
     if (cmdObj[kLimitField].isNumber()) {
@@ -118,7 +129,65 @@ StatusWith<CountRequest> CountRequest::parseFromBSON(const std::string& dbname,
         request.setHint(BSON("$hint" << hint));
     }
 
+    // Collation
+    if (Object == cmdObj[kCollationField].type()) {
+        request.setCollation(cmdObj[kCollationField].Obj());
+    } else if (cmdObj[kCollationField].ok()) {
+        return Status(ErrorCodes::BadValue, "collation value is not a document");
+    }
+
+    // Explain
+    request.setExplain(isExplain);
+
     return request;
 }
 
+StatusWith<BSONObj> CountRequest::asAggregationCommand() const {
+    // The 'hint' option is not supported in aggregation.
+    if (_hint) {
+        return {ErrorCodes::InvalidPipelineOperator,
+                str::stream() << "Option " << kHintField << " not supported in aggregation."};
+    }
+
+    BSONObjBuilder aggregationBuilder;
+    aggregationBuilder.append("aggregate", _nss.coll());
+
+    // Build an aggregation pipeline that performs the counting. We add stages that satisfy the
+    // query, skip and limit before finishing with the actual $count stage.
+    BSONArrayBuilder pipelineBuilder(aggregationBuilder.subarrayStart("pipeline"));
+    if (!_query.isEmpty()) {
+        BSONObjBuilder matchBuilder(pipelineBuilder.subobjStart());
+        matchBuilder.append("$match", _query);
+        matchBuilder.doneFast();
+    }
+    if (_skip) {
+        BSONObjBuilder skipBuilder(pipelineBuilder.subobjStart());
+        skipBuilder.append("$skip", *_skip);
+        skipBuilder.doneFast();
+    }
+    if (_limit) {
+        BSONObjBuilder limitBuilder(pipelineBuilder.subobjStart());
+        limitBuilder.append("$limit", *_limit);
+        limitBuilder.doneFast();
+    }
+
+    BSONObjBuilder countBuilder(pipelineBuilder.subobjStart());
+    countBuilder.append("$count", "count");
+    countBuilder.doneFast();
+    pipelineBuilder.doneFast();
+
+    // Complete the command by appending the other options to count.
+    if (_explain) {
+        aggregationBuilder.append(kExplainField, _explain);
+    }
+
+    if (_collation) {
+        aggregationBuilder.append(kCollationField, *_collation);
+    }
+
+    // The 'cursor' option is always specified so that aggregation uses the cursor interface.
+    aggregationBuilder.append("cursor", BSONObj());
+
+    return aggregationBuilder.obj();
+}
 }  // namespace mongo

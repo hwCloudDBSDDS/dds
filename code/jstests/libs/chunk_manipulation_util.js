@@ -28,9 +28,7 @@ function moveChunkParallel(staticMongod, mongosURL, findCriteria, bounds, ns, to
         assert((findCriteria || bounds) && !(findCriteria && bounds),
                'Specify either findCriteria or bounds, but not both.');
 
-        var mongos = new Mongo(mongosURL), admin = mongos.getDB('admin'), cmd = {
-            moveChunk: ns
-        };
+        var mongos = new Mongo(mongosURL), admin = mongos.getDB('admin'), cmd = {moveChunk: ns};
 
         if (findCriteria) {
             cmd.find = findCriteria;
@@ -59,8 +57,9 @@ var moveChunkStepNames = {
     gotDistLock: 2,
     startedMoveChunk: 3,    // called _recvChunkStart on recipient
     reachedSteadyState: 4,  // recipient reports state is "steady"
-    committed: 5,
-    done: 6
+    chunkDataCommitted: 5,  // called _recvChunkCommit on recipient
+    committed: 6,
+    done: 7
 };
 
 function numberToName(names, stepNumber) {
@@ -98,21 +97,27 @@ function proceedToMoveChunkStep(shardConnection, stepNumber) {
 }
 
 function configureMoveChunkFailPoint(shardConnection, stepNumber, mode) {
-    assert(stepNumber >= 1);
-    assert(stepNumber <= 6);
-    var admin = shardConnection.getDB('admin');
-    admin.runCommand({configureFailPoint: 'moveChunkHangAtStep' + stepNumber, mode: mode});
+    assert.between(migrateStepNames.copiedIndexes,
+                   stepNumber,
+                   migrateStepNames.done,
+                   "incorrect stepNumber",
+                   true);
+    assert.commandWorked(shardConnection.adminCommand(
+        {configureFailPoint: 'moveChunkHangAtStep' + stepNumber, mode: mode}));
 }
 
 //
-// Wait for moveChunk to reach a step (1 through 6). Assumes only one moveChunk
-// is in mongos's currentOp.
+// Wait for moveChunk to reach a step (1 through 6). Assumes only one active
+// moveChunk running in shardConnection.
 //
 function waitForMoveChunkStep(shardConnection, stepNumber) {
     var searchString = 'step ' + stepNumber, admin = shardConnection.getDB('admin');
 
-    assert(stepNumber >= 1);
-    assert(stepNumber <= 6);
+    assert.between(migrateStepNames.copiedIndexes,
+                   stepNumber,
+                   migrateStepNames.done,
+                   "incorrect stepNumber",
+                   true);
 
     var msg = ('moveChunk on ' + shardConnection.shardName + ' never reached step "' +
                numberToName(moveChunkStepNames, stepNumber) + '".');
@@ -122,7 +127,11 @@ function waitForMoveChunkStep(shardConnection, stepNumber) {
         for (var i = 0; i < in_progress.length; ++i) {
             var op = in_progress[i];
             if (op.query && op.query.moveChunk) {
-                return op.msg && op.msg.startsWith(searchString);
+                // Note: moveChunk in join mode will not have the "step" message. So keep on
+                // looking if searchString is not found.
+                if (op.msg && op.msg.startsWith(searchString)) {
+                    return true;
+                }
             }
         }
 
@@ -134,8 +143,9 @@ var migrateStepNames = {
     copiedIndexes: 1,
     deletedPriorDataInRange: 2,
     cloned: 3,
-    transferredMods: 4,  // About to enter steady state.
-    done: 5
+    catchup: 4,  // About to enter steady state.
+    steady: 5,
+    done: 6
 };
 
 //
@@ -163,10 +173,15 @@ function proceedToMigrateStep(shardConnection, stepNumber) {
 }
 
 function configureMigrateFailPoint(shardConnection, stepNumber, mode) {
-    assert(stepNumber >= 1);
-    assert(stepNumber <= 5);
+    assert.between(migrateStepNames.copiedIndexes,
+                   stepNumber,
+                   migrateStepNames.done,
+                   "incorrect stepNumber",
+                   true);
+
     var admin = shardConnection.getDB('admin');
-    admin.runCommand({configureFailPoint: 'migrateThreadHangAtStep' + stepNumber, mode: mode});
+    assert.commandWorked(
+        admin.runCommand({configureFailPoint: 'migrateThreadHangAtStep' + stepNumber, mode: mode}));
 }
 
 //
@@ -175,8 +190,11 @@ function configureMigrateFailPoint(shardConnection, stepNumber, mode) {
 function waitForMigrateStep(shardConnection, stepNumber) {
     var searchString = 'step ' + stepNumber, admin = shardConnection.getDB('admin');
 
-    assert(stepNumber >= 1);
-    assert(stepNumber <= 5);
+    assert.between(migrateStepNames.copiedIndexes,
+                   stepNumber,
+                   migrateStepNames.done,
+                   "incorrect stepNumber",
+                   true);
 
     var msg = ('Migrate thread on ' + shardConnection.shardName + ' never reached step "' +
                numberToName(migrateStepNames, stepNumber) + '".');

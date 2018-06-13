@@ -2,6 +2,15 @@
 
 Import("env")
 
+env.Library(
+    target=[
+        'max_log_size'
+    ],
+    source=[
+        'max_log_size.cpp',
+    ],
+)
+
 env.Library('parse_log_component_settings',
             ['parse_log_component_settings.cpp'],
             LIBDEPS=['$BUILD_DIR/mongo/base',])
@@ -11,8 +20,11 @@ env.Library('parse_log_component_settings',
 # output should be visually verified under Command Prompt or Power Shell
 env.Program('console_test', 'console_test.cpp',
                 LIBDEPS=['$BUILD_DIR/mongo/base',
-                         '$BUILD_DIR/mongo/unittest/unittest_crutch',
                          '$BUILD_DIR/mongo/unittest/unittest_main'])
+
+env.CppUnitTest('log_component_settings_test', 'log_component_settings_test.cpp',
+                LIBDEPS=['$BUILD_DIR/mongo/base',
+                         '$BUILD_DIR/mongo/unittest/concurrency'])
 
 env.CppUnitTest('log_test', 'log_test.cpp',
                 LIBDEPS=['$BUILD_DIR/mongo/base'])
@@ -27,3 +39,10 @@ env.CppUnitTest('rotatable_file_writer_test',
 env.CppUnitTest(target='parse_log_component_settings_test',
                 source='parse_log_component_settings_test.cpp',
                 LIBDEPS=['$BUILD_DIR/mongo/base', 'parse_log_component_settings'])
+
+env.CppUnitTest(target='redaction_test',
+                source='redaction_test.cpp',
+                LIBDEPS=[
+                    '$BUILD_DIR/mongo/base',
+                ]
+)

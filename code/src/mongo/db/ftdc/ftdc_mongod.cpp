@@ -28,6 +28,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/ftdc/ftdc_mongod.h"
+
 #include <boost/filesystem.hpp>
 #include <fstream>
 #include <memory>
@@ -35,11 +37,11 @@
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobjbuilder.h"
-
 #include "mongo/db/commands.h"
 #include "mongo/db/ftdc/collector.h"
 #include "mongo/db/ftdc/config.h"
 #include "mongo/db/ftdc/controller.h"
+#include "mongo/db/ftdc/ftdc_system_stats.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
@@ -250,20 +252,16 @@ public:
     FTDCSimpleInternalCommandCollector(StringData command,
                                        StringData name,
                                        StringData ns,
-                                       BSONObj param)
-        : _commandString(command.toString()),
-          _name(name.toString()),
-          _ns(ns.toString()),
-          _param(std::move(param)) {
-        _command = Command::findCommand(_commandString);
+                                       BSONObj cmdObj)
+        : _name(name.toString()), _ns(ns.toString()), _cmdObj(std::move(cmdObj)) {
+        _command = Command::findCommand(command);
         invariant(_command);
     }
 
     void collect(OperationContext* txn, BSONObjBuilder& builder) override {
-        BSONObj cmdObj;
         std::string errmsg;
 
-        bool ret = _command->run(txn, _ns, cmdObj, 0, errmsg, builder);
+        bool ret = _command->run(txn, _ns, _cmdObj, 0, errmsg, builder);
 
         // Some commands return errmsgs when they return false (collstats)
         // Some commands return bson objs when they return false (replGetStatus)
@@ -277,17 +275,15 @@ public:
     }
 
 private:
-    std::string _commandString;
     std::string _name;
     std::string _ns;
-    BSONObj _param;
+    BSONObj _cmdObj;
 
     // Not owned
     Command* _command;
 };
 
 }  // namespace
-
 
 // Register the FTDC system
 // Note: This must be run before the server parameters are parsed during startup
@@ -299,7 +295,7 @@ void startFTDC() {
 
 
     FTDCConfig config;
-    config.period = Milliseconds(localPeriodMillis);
+    config.period = Milliseconds(localPeriodMillis.load());
     config.enabled = localEnabledFlag;
     config.maxFileSizeBytes = localMaxFileSizeMB * 1024 * 1024;
     config.maxDirectorySizeBytes = localMaxDirectorySizeMB * 1024 * 1024;
@@ -310,37 +306,53 @@ void startFTDC() {
 
     // Install periodic collectors
     // These are collected on the period interval in FTDCConfig.
+    // NOTE: For each command here, there must be an equivalent privilege check in
+    // GetDiagnosticDataCommand
 
     // CmdServerStatus
+    // The "sharding" section is filtered out because at this time it only consists of strings in
+    // migration status. This section triggers too many schema changes in the serverStatus which
+    // hurt ftdc compression efficiency, because its output varies depending on the list of active
+    // migrations.
     controller->addPeriodicCollector(stdx::make_unique<FTDCSimpleInternalCommandCollector>(
-        "serverStatus", "serverStatus", "", BSON("tcMalloc" << true)));
+        "serverStatus",
+        "serverStatus",
+        "",
+        BSON("serverStatus" << 1 << "tcMalloc" << true << "sharding" << false)));
 
     // These metrics are only collected if replication is enabled
     if (repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
         repl::ReplicationCoordinator::modeNone) {
         // CmdReplSetGetStatus
         controller->addPeriodicCollector(stdx::make_unique<FTDCSimpleInternalCommandCollector>(
-            "replSetGetStatus", "replSetGetStatus", "", BSONObj()));
+            "replSetGetStatus", "replSetGetStatus", "", BSON("replSetGetStatus" << 1)));
 
         // CollectionStats
-        controller->addPeriodicCollector(stdx::make_unique<FTDCSimpleInternalCommandCollector>(
-            "collStats", "local.oplog.rs.stats", "local.oplog.rs", BSONObj()));
+        controller->addPeriodicCollector(
+            stdx::make_unique<FTDCSimpleInternalCommandCollector>("collStats",
+                                                                  "local.oplog.rs.stats",
+                                                                  "local",
+                                                                  BSON("collStats"
+                                                                       << "oplog.rs")));
     }
+
+    // Install System Metric Collector as a periodic collector
+    installSystemMetricsCollector(controller.get());
 
     // Install file rotation collectors
     // These are collected on each file rotation.
 
     // CmdBuildInfo
     controller->addOnRotateCollector(stdx::make_unique<FTDCSimpleInternalCommandCollector>(
-        "buildInfo", "buildInfo", "", BSONObj()));
+        "buildInfo", "buildInfo", "", BSON("buildInfo" << 1)));
 
     // CmdGetCmdLineOpts
     controller->addOnRotateCollector(stdx::make_unique<FTDCSimpleInternalCommandCollector>(
-        "getCmdLineOpts", "getCmdLineOpts", "", BSONObj()));
+        "getCmdLineOpts", "getCmdLineOpts", "", BSON("getCmdLineOpts" << 1)));
 
     // HostInfoCmd
     controller->addOnRotateCollector(stdx::make_unique<FTDCSimpleInternalCommandCollector>(
-        "hostInfo", "hostInfo", "", BSONObj()));
+        "hostInfo", "hostInfo", "", BSON("hostInfo" << 1)));
 
     // Install the new controller
     auto& staticFTDC = getFTDCController(getGlobalServiceContext());
@@ -356,6 +368,10 @@ void stopFTDC() {
     if (controller) {
         controller->stop();
     }
+}
+
+FTDCController* FTDCController::get(ServiceContext* serviceContext) {
+    return getFTDCController(serviceContext).get();
 }
 
 }  // namespace mongo

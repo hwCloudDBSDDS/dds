@@ -23,7 +23,7 @@
         ]
     });
 
-    replSet.waitForState(replSet.nodes[0], ReplSetTest.State.PRIMARY, 60 * 1000);
+    replSet.waitForState(replSet.nodes[0], ReplSetTest.State.PRIMARY);
 
     var secondary = replSet.getSecondary();
     jsTestLog('Disable replication on the SECONDARY ' + secondary.host);
@@ -38,11 +38,11 @@
 
     // do a write then ask the PRIMARY to stepdown
     jsTestLog("Initiating stepdown");
-    assert.writeOK(primary.getDB(name)
-                       .foo.insert({myDoc: true, x: 1}, {writeConcern: {w: 1, wtimeout: 60000}}));
+    assert.writeOK(primary.getDB(name).foo.insert({myDoc: true, x: 1},
+                                                  {writeConcern: {w: 1, wtimeout: 60000}}));
     var stepDownCmd = function() {
-        var res = db.getSiblingDB('admin')
-                      .runCommand({replSetStepDown: 60, secondaryCatchUpPeriodSecs: 60});
+        var res = db.getSiblingDB('admin').runCommand(
+            {replSetStepDown: 60, secondaryCatchUpPeriodSecs: 60});
         assert.commandFailedWithCode(res, 11601 /*interrupted*/);
     };
     var stepDowner = startParallelShell(stepDownCmd, primary.port);
@@ -100,4 +100,5 @@
     assert.writeOK(primary.getDB(name).foo.remove({}));
     exitCode = writer();
     assert.eq(0, exitCode);
+    secondary.getDB('admin').runCommand({configureFailPoint: 'rsSyncApplyStop', mode: 'off'});
 })();

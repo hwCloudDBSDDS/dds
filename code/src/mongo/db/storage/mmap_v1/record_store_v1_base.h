@@ -30,8 +30,8 @@
 
 #pragma once
 
-#include "mongo/util/concurrency/spin_lock.h"
 #include "mongo/platform/unordered_set.h"
+#include "mongo/util/concurrency/spin_lock.h"
 
 #include "mongo/db/storage/mmap_v1/diskloc.h"
 #include "mongo/db/storage/record_store.h"
@@ -39,7 +39,6 @@
 namespace mongo {
 
 class DeletedRecord;
-class DocWriter;
 class ExtentManager;
 class MmapV1RecordHeader;
 class OperationContext;
@@ -195,16 +194,17 @@ public:
                                       int len,
                                       bool enforceQuota);
 
-    StatusWith<RecordId> insertRecord(OperationContext* txn,
-                                      const DocWriter* doc,
-                                      bool enforceQuota);
+    Status insertRecordsWithDocWriter(OperationContext* txn,
+                                      const DocWriter* const* docs,
+                                      size_t nDocs,
+                                      RecordId* idsOut) final;
 
-    virtual StatusWith<RecordId> updateRecord(OperationContext* txn,
-                                              const RecordId& oldLocation,
-                                              const char* data,
-                                              int len,
-                                              bool enforceQuota,
-                                              UpdateNotifier* notifier);
+    virtual Status updateRecord(OperationContext* txn,
+                                const RecordId& oldLocation,
+                                const char* data,
+                                int len,
+                                bool enforceQuota,
+                                UpdateNotifier* notifier);
 
     virtual bool updateWithDamagesSupported() const;
 
@@ -219,8 +219,7 @@ public:
     void increaseStorageSize(OperationContext* txn, int size, bool enforceQuota);
 
     virtual Status validate(OperationContext* txn,
-                            bool full,
-                            bool scanData,
+                            ValidateCmdLevel level,
                             ValidateAdaptor* adaptor,
                             ValidateResults* results,
                             BSONObjBuilder* output);
@@ -255,6 +254,8 @@ public:
 
     /* return which "deleted bucket" for this size object */
     static int bucket(int size);
+
+    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* txn) const override {}
 
     virtual void updateStatsAfterRepair(OperationContext* txn,
                                         long long numRecords,

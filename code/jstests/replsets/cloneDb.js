@@ -16,6 +16,7 @@
         var replsetDBName = 'cloneDBreplset';
         var standaloneDBName = 'cloneDBstandalone';
         var testColName = 'foo';
+        var testViewName = 'view';
 
         jsTest.log("Create replica set");
         var replTest = new ReplSetTest({name: 'testSet', nodes: 3});
@@ -39,25 +40,34 @@
         }
         assert.writeOK(bulk.execute({w: 3}));
 
+        jsTest.log("Create view on replica set");
+        assert.commandWorked(masterDB.runCommand({create: testViewName, viewOn: testColName}));
+
         jsTest.log("Clone db from replica set to standalone server");
         standaloneDB.cloneDatabase(replTest.getURL());
         assert.eq(numDocs,
-                  standaloneDB[testColName].count(),
+                  standaloneDB[testColName].find().itcount(),
                   'cloneDatabase from replset to standalone failed (document counts do not match)');
+        assert.eq(numDocs,
+                  standaloneDB[testViewName].find().itcount(),
+                  'cloneDatabase from replset to standalone failed (count on view incorrect)');
 
         jsTest.log("Clone db from replica set PRIMARY to standalone server");
         standaloneDB.dropDatabase();
         standaloneDB.cloneDatabase(master.host);
         assert.eq(numDocs,
-                  standaloneDB[testColName].count(),
+                  standaloneDB[testColName].find().itcount(),
                   'cloneDatabase from PRIMARY to standalone failed (document counts do not match)');
+        assert.eq(numDocs,
+                  standaloneDB[testViewName].find().itcount(),
+                  'cloneDatabase from PRIMARY to standalone failed (count on view incorrect)');
 
         jsTest.log("Clone db from replica set SECONDARY to standalone server (should not copy)");
         standaloneDB.dropDatabase();
         standaloneDB.cloneDatabase(secondary.host);
         assert.eq(
             0,
-            standaloneDB[testColName].count(),
+            standaloneDB[testColName].find().itcount(),
             'cloneDatabase from SECONDARY to standalone copied documents without slaveOk: true');
 
         jsTest.log("Clone db from replica set SECONDARY to standalone server using slaveOk");
@@ -65,8 +75,11 @@
         standaloneDB.runCommand({clone: secondary.host, slaveOk: true});
         assert.eq(
             numDocs,
-            standaloneDB[testColName].count(),
+            standaloneDB[testColName].find().itcount(),
             'cloneDatabase from SECONDARY to standalone failed (document counts do not match)');
+        assert.eq(numDocs,
+                  standaloneDB[testViewName].find().itcount(),
+                  'cloneDatabase from SECONDARY to standalone failed (count on view incorrect)');
 
         jsTest.log("Switch db and insert data into standalone server");
         masterDB = master.getDB(standaloneDBName);
@@ -82,12 +95,17 @@
         }
         assert.writeOK(bulk.execute());
 
+        assert.commandWorked(standaloneDB.runCommand({create: testViewName, viewOn: testColName}));
+
         jsTest.log("Clone db from standalone server to replica set PRIMARY");
         masterDB.cloneDatabase(standalone.host);
         replTest.awaitReplication();
         assert.eq(numDocs,
-                  masterDB[testColName].count(),
+                  masterDB[testColName].find().itcount(),
                   'cloneDatabase from standalone to PRIMARY failed (document counts do not match)');
+        assert.eq(numDocs,
+                  masterDB[testViewName].find().itcount(),
+                  'cloneDatabase from standalone to PRIMARY failed (count on view incorrect)');
 
         jsTest.log("Clone db from standalone server to replica set SECONDARY");
         masterDB.dropDatabase();
@@ -95,7 +113,7 @@
         secondaryDB.cloneDatabase(standalone.host);
         assert.eq(
             0,
-            secondaryDB[testColName].count(),
+            secondaryDB[testColName].find().itcount(),
             'cloneDatabase from standalone to SECONDARY succeeded and should not accept writes');
 
         jsTest.log("Shut down replica set and standalone server");

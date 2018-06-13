@@ -26,11 +26,13 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/rpc/metadata/config_server_metadata.h"
 
 #include "mongo/bson/util/bson_check.h"
-#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/repl/bson_extract_optime.h"
 #include "mongo/rpc/metadata.h"
 
 namespace mongo {
@@ -61,7 +63,9 @@ StatusWith<ConfigServerMetadata> ConfigServerMetadata::readFromMetadata(
     } else if (metadataElem.type() != mongo::Object) {
         return {ErrorCodes::TypeMismatch,
                 str::stream() << "ConfigServerMetadata element has incorrect type: expected"
-                              << mongo::Object << " but got " << metadataElem.type()};
+                              << mongo::Object
+                              << " but got "
+                              << metadataElem.type()};
     }
 
     BSONObj configMetadataObj = metadataElem.Obj();

@@ -14,6 +14,8 @@ var baseName = "jstests_clone_copyauth";
  *
  * clusterType - type of cluster to start.  Options are "sharded", "repl", or "single".
  * startWithAuth - whether to start the cluster with authentication.
+ * startWithTransitionToAuth - whether to start the cluster with --transitionToAuth (startWithAuth
+ * must also be true).
  *
  * Member variables:
  *
@@ -26,18 +28,22 @@ var baseName = "jstests_clone_copyauth";
  *
  * stop() - stop and cleanup whatever nodes the helper spawned when it was created.
  */
-function ClusterSpawnHelper(clusterType, startWithAuth) {
+function ClusterSpawnHelper(clusterType, startWithAuth, startWithTransitionToAuth) {
+    var singleNodeConfig = {};
+    if (startWithAuth) {
+        singleNodeConfig.keyFile = "jstests/libs/key1";
+        if (startWithTransitionToAuth) {
+            singleNodeConfig.transitionToAuth = "";
+        }
+    }
     if (clusterType === "sharded") {
         var shardingTestConfig = {
             name: baseName + "_source",
-            mongos: 1,
-            shards: 1,
-            config: 1
+            keyFile: singleNodeConfig.keyFile,
+            mongos: [singleNodeConfig],
+            shards: [singleNodeConfig],
+            config: [singleNodeConfig]
         };
-        if (startWithAuth) {
-            shardingTestConfig.auth = "";
-            shardingTestConfig.keyFile = "jstests/libs/key1";
-        }
         var shardingTest = new ShardingTest(shardingTestConfig);
         this.conn = shardingTest.s;
         this.connString = this.conn.host;
@@ -45,31 +51,22 @@ function ClusterSpawnHelper(clusterType, startWithAuth) {
         var replSetTestConfig = {
             name: baseName + "_source",
             nodes: 3,
-            nodeOptions: {}
+            nodeOptions: singleNodeConfig
         };
-        if (startWithAuth) {
-            replSetTestConfig.nodeOptions.auth = "";
-            replSetTestConfig.nodeOptions.keyFile = "jstests/libs/key1";
-        }
         var replSetTest = new ReplSetTest(replSetTestConfig);
         replSetTest.startSet();
         replSetTest.initiate();
         if (startWithAuth) {
-            authutil.asCluster(replSetTest.nodes,
-                               replSetTestConfig.nodeOptions.keyFile,
-                               function() {
-                                   replSetTest.awaitReplication();
-                               });
+            authutil.asCluster(
+                replSetTest.nodes, replSetTestConfig.nodeOptions.keyFile, function() {
+                    replSetTest.awaitReplication();
+                });
         } else {
             replSetTest.awaitReplication();
         }
         this.conn = replSetTest.getPrimary();
         this.connString = replSetTest.getURL();
     } else {
-        var singleNodeConfig = {};
-        if (startWithAuth) {
-            singleNodeConfig.auth = "";
-        }
         this.conn = MongoRunner.runMongod(singleNodeConfig);
         this.connString = this.conn.host;
     }
@@ -102,8 +99,14 @@ function ClusterSpawnHelper(clusterType, startWithAuth) {
  */
 function copydbBetweenClustersTest(configObj) {
     // First sanity check the arguments in our configObj
-    var requiredKeys =
-        ['sourceClusterType', 'isSourceUsingAuth', 'targetClusterType', 'isTargetUsingAuth'];
+    var requiredKeys = [
+        'sourceClusterType',
+        'isSourceUsingAuth',
+        'targetClusterType',
+        'isTargetUsingAuth',
+        'isSourceUsingTransitionToAuth',
+        'isTargetUsingTransitionToAuth'
+    ];
 
     var i;
     for (i = 0; i < requiredKeys.length; i++) {
@@ -112,12 +115,14 @@ function copydbBetweenClustersTest(configObj) {
     }
 
     // 1. Get a connection to the source database, insert data and setup auth if applicable
-    source = new ClusterSpawnHelper(configObj.sourceClusterType, configObj.isSourceUsingAuth);
+    source = new ClusterSpawnHelper(configObj.sourceClusterType,
+                                    configObj.isSourceUsingAuth,
+                                    configObj.isSourceUsingTransitionToAuth);
 
     if (configObj.isSourceUsingAuth) {
         // Create a super user so we can create a regular user and not be locked out afterwards
-        source.conn.getDB("admin")
-            .createUser({user: "sourceSuperUser", pwd: "sourceSuperUser", roles: ["root"]});
+        source.conn.getDB("admin").createUser(
+            {user: "sourceSuperUser", pwd: "sourceSuperUser", roles: ["root"]});
         source.conn.getDB("admin").auth("sourceSuperUser", "sourceSuperUser");
 
         source.conn.getDB(baseName)[baseName].save({i: 1});
@@ -129,9 +134,16 @@ function copydbBetweenClustersTest(configObj) {
         source.conn.getDB(baseName).createUser({user: "foo", pwd: "bar", roles: ["dbOwner"]});
 
         source.conn.getDB("admin").logout();
-        assert.throws(function() {
+
+        var readWhenLoggedOut = function() {
             source.conn.getDB(baseName)[baseName].findOne();
-        });
+        };
+        if (configObj.isSourceUsingTransitionToAuth) {
+            // transitionToAuth does not turn on access control
+            assert.doesNotThrow(readWhenLoggedOut);
+        } else {
+            assert.throws(readWhenLoggedOut);
+        }
     } else {
         source.conn.getDB(baseName)[baseName].save({i: 1});
         assert.eq(1, source.conn.getDB(baseName)[baseName].count());
@@ -139,14 +151,24 @@ function copydbBetweenClustersTest(configObj) {
     }
 
     // 2. Get a connection to the target database, and set up auth if necessary
-    target = new ClusterSpawnHelper(configObj.targetClusterType, configObj.isTargetUsingAuth);
+    target = new ClusterSpawnHelper(configObj.targetClusterType,
+                                    configObj.isTargetUsingAuth,
+                                    configObj.isTargetUsingTransitionToAuth);
 
     if (configObj.isTargetUsingAuth) {
-        target.conn.getDB("admin")
-            .createUser({user: "targetSuperUser", pwd: "targetSuperUser", roles: ["root"]});
-        assert.throws(function() {
+        target.conn.getDB("admin").createUser(
+            {user: "targetSuperUser", pwd: "targetSuperUser", roles: ["root"]});
+
+        var readWhenLoggedOut = function() {
             target.conn.getDB(baseName)[baseName].findOne();
-        });
+        };
+        if (configObj.isTargetUsingTransitionToAuth) {
+            // transitionToAuth does not turn on access control
+            assert.doesNotThrow(readWhenLoggedOut);
+        } else {
+            assert.throws(readWhenLoggedOut);
+        }
+
         target.conn.getDB("admin").auth("targetSuperUser", "targetSuperUser");
     }
 
@@ -176,8 +198,10 @@ function copydbBetweenClustersTest(configObj) {
 
     var sourceClusterTypeValues = ["single", "repl", "sharded"];
     var isSourceUsingAuthValues = [true, false];
+    var isSourceUsingTransitionToAuthValues = [true, false];
     var targetClusterTypeValues = ["single", "repl", "sharded"];
     var isTargetUsingAuthValues = [true, false];
+    var isTargetUsingTransitionToAuthValues = [true, false];
     for (var i = 0; i < sourceClusterTypeValues.length; i++) {
         for (var j = 0; j < isSourceUsingAuthValues.length; j++) {
             for (var k = 0; k < targetClusterTypeValues.length; k++) {
@@ -200,19 +224,38 @@ function copydbBetweenClustersTest(configObj) {
                     if (sourceClusterTypeValues[i] === "repl" &&
                         isSourceUsingAuthValues[j] === false &&
                         targetClusterTypeValues[k] === "sharded" &&
-                        isTargetUsingAuthValues[l] == true) {
+                        isTargetUsingAuthValues[l] === true) {
                         // SERVER-18103
                         continue;
                     }
-                    var testCase = {
-                        'sourceClusterType': sourceClusterTypeValues[i],
-                        'isSourceUsingAuth': isSourceUsingAuthValues[j],
-                        'targetClusterType': targetClusterTypeValues[k],
-                        'isTargetUsingAuth': isTargetUsingAuthValues[l]
-                    };
-                    print("Running copydb with auth test:");
-                    printjson(testCase);
-                    copydbBetweenClustersTest(testCase);
+
+                    for (var m = 0; m < isSourceUsingTransitionToAuthValues.length; m++) {
+                        if (isSourceUsingTransitionToAuthValues[m] === true &&
+                            isSourceUsingAuthValues[j] === false) {
+                            // transitionToAuth requires auth parameters
+                            continue;
+                        }
+                        for (var n = 0; n < isTargetUsingTransitionToAuthValues.length; n++) {
+                            if (isTargetUsingTransitionToAuthValues[n] === true &&
+                                isTargetUsingAuthValues[l] === false) {
+                                // transitionToAuth requires auth parameters
+                                continue;
+                            }
+                            var testCase = {
+                                'sourceClusterType': sourceClusterTypeValues[i],
+                                'isSourceUsingAuth': isSourceUsingAuthValues[j],
+                                'targetClusterType': targetClusterTypeValues[k],
+                                'isTargetUsingAuth': isTargetUsingAuthValues[l],
+                                'isSourceUsingTransitionToAuth':
+                                    isSourceUsingTransitionToAuthValues[m],
+                                'isTargetUsingTransitionToAuth':
+                                    isTargetUsingTransitionToAuthValues[n]
+                            };
+                            print("Running copydb with auth test:");
+                            printjson(testCase);
+                            copydbBetweenClustersTest(testCase);
+                        }
+                    }
                 }
             }
         }

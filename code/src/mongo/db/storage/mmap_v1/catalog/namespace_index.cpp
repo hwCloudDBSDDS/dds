@@ -156,7 +156,7 @@ void NamespaceIndex::init(OperationContext* txn) {
     void* p = 0;
 
     if (boost::filesystem::exists(nsPath)) {
-        if (_f.open(pathString, true)) {
+        if (_f.open(pathString)) {
             len = _f.length();
 
             if (len % (1024 * 1024) != 0) {
@@ -171,6 +171,10 @@ void NamespaceIndex::init(OperationContext* txn) {
             p = _f.getView();
         }
     } else {
+        uassert(ErrorCodes::IllegalOperation,
+                "Cannot create a database in read-only mode.",
+                !storageGlobalParams.readOnly);
+
         // use mmapv1GlobalOptions.lenForNewNsFiles, we are making a new database
         massert(10343,
                 "bad mmapv1GlobalOptions.lenForNewNsFiles",
@@ -211,7 +215,7 @@ void NamespaceIndex::init(OperationContext* txn) {
             massert(18826, str::stream() << "failure writing file " << pathString, !file.bad());
         }
 
-        if (_f.create(pathString, l, true)) {
+        if (_f.create(pathString, l)) {
             // The writes done in this function must not be rolled back. This will leave the
             // file empty, but available for future use. That is why we go directly to the
             // global dur dirty list rather than going through the OperationContext.

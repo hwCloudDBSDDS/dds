@@ -30,8 +30,8 @@
 
 #include "mongo/rpc/legacy_request_builder.h"
 
-#include <utility>
 #include <tuple>
+#include <utility>
 
 #include "mongo/db/namespace_string.h"
 #include "mongo/rpc/metadata.h"
@@ -114,8 +114,7 @@ Message LegacyRequestBuilder::done() {
     MsgData::View msg = _builder.buf();
     msg.setLen(_builder.len());
     msg.setOperation(dbQuery);
-    _builder.decouple();                     // release ownership from BufBuilder
-    _message.setData(msg.view2ptr(), true);  // transfer ownership to Message
+    _message.setData(_builder.release());
     _state = State::kDone;
     return std::move(_message);
 }

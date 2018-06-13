@@ -22,8 +22,11 @@
     coll.ensureIndex({x: 1}, {unique: true});
     coll.insert({_id: 1, x: "init"});
 
-    var res =
-        db.runCommand({applyOps: [{op: "i", ns: coll.getFullName(), o: {_id: 2, x: "init"}}, ]});
+    var res = db.runCommand({
+        applyOps: [
+            {op: "i", ns: coll.getFullName(), o: {_id: 2, x: "init"}},
+        ]
+    });
 
     assert.eq(1, res.applied);
     assert(res.code);
@@ -49,6 +52,6 @@
     assert.eq(2, res.applied);
     assert(res.code);
     assert(res.errmsg);
-    assert.eq([true, false], res.results);
+    assert.eq([false, false], res.results);
     assert.eq(0, res.ok);
 })();

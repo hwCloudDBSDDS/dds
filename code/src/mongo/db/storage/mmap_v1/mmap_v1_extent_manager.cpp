@@ -37,17 +37,17 @@
 #include "mongo/base/counter.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/client.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/storage/mmap_v1/dur.h"
 #include "mongo/db/storage/mmap_v1/data_file.h"
-#include "mongo/db/storage/mmap_v1/record.h"
+#include "mongo/db/storage/mmap_v1/dur.h"
 #include "mongo/db/storage/mmap_v1/extent.h"
 #include "mongo/db/storage/mmap_v1/extent_manager.h"
 #include "mongo/db/storage/mmap_v1/mmap.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_engine.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
+#include "mongo/db/storage/mmap_v1/record.h"
 #include "mongo/db/storage/record_fetcher.h"
-#include "mongo/db/operation_context.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/file.h"
@@ -117,6 +117,13 @@ MmapV1ExtentManager::MmapV1ExtentManager(StringData dbname, StringData path, boo
     invariant(engine->isMmapV1());
     MMAPV1Engine* mmapEngine = static_cast<MMAPV1Engine*>(engine);
     _recordAccessTracker = &mmapEngine->getRecordAccessTracker();
+}
+
+std::unique_ptr<ExtentManager> MmapV1ExtentManager::Factory::create(StringData dbname,
+                                                                    StringData path,
+                                                                    bool directoryPerDB) {
+    return stdx::make_unique<MmapV1ExtentManager>(
+        std::move(dbname), std::move(path), directoryPerDB);
 }
 
 boost::filesystem::path MmapV1ExtentManager::_fileName(int n) const {
@@ -601,19 +608,6 @@ void MmapV1ExtentManager::freeListStats(OperationContext* txn,
     }
 }
 
-void MmapV1ExtentManager::printFreeList() const {
-    log() << "dump freelist " << _dbname << endl;
-
-    DiskLoc a = _getFreeListStart();
-    while (!a.isNull()) {
-        Extent* e = getExtent(a);
-        log() << "  extent " << a.toString() << " len:" << e->length
-              << " prev:" << e->xprev.toString() << endl;
-        a = e->xnext;
-    }
-
-    log() << "end freelist" << endl;
-}
 
 namespace {
 class CacheHintMadvise : public ExtentManager::CacheHint {

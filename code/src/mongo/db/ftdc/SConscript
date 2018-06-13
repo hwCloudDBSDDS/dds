@@ -26,27 +26,36 @@ ftdcEnv.Library(
         '$BUILD_DIR/third_party/s2/s2', # For VarInt
         '$BUILD_DIR/third_party/shim_zlib',
     ],
-    LIBDEPS_TAGS=[
-        # Needs 'mongo::Validator<mongo::BSONObj>::validateLoad(char const*, unsigned long)'
-        'incomplete',
-    ],
 )
+
+platform_libs = []
+
+if env.TargetOSIs('linux'):
+    platform_libs = [
+        '$BUILD_DIR/mongo/util/procparser'
+    ]
+elif env.TargetOSIs('windows'):
+    platform_libs = [
+        '$BUILD_DIR/mongo/util/perfctr_collect'
+    ]
 
 env.Library(
     target='ftdc_mongod',
     source=[
+        'ftdc_commands.cpp',
         'ftdc_mongod.cpp',
+        'ftdc_system_stats.cpp',
+        'ftdc_system_stats_${TARGET_OS}.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/commands',
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
         '$BUILD_DIR/mongo/db/server_parameters',
+        '$BUILD_DIR/mongo/db/storage/storage_options',
+        '$BUILD_DIR/mongo/util/processinfo',
         'ftdc'
-    ],
-    LIBDEPS_TAGS=[
-        # Needs 'mongo::storageGlobalParams' in storage_options.cpp which is in serveronly
-        # And this library is already part of serveronly
-        'incomplete',
-    ],
+    ] + platform_libs,
 )
 
 env.CppUnitTest(
@@ -61,6 +70,7 @@ env.CppUnitTest(
         'varint_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/util/clock_source_mock',
         'ftdc',
     ],
 )

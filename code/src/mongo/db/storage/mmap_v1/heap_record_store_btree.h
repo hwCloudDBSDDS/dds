@@ -60,9 +60,10 @@ public:
                                               int len,
                                               bool enforceQuota);
 
-    virtual StatusWith<RecordId> insertRecord(OperationContext* txn,
-                                              const DocWriter* doc,
-                                              bool enforceQuota);
+    virtual Status insertRecordsWithDocWriter(OperationContext* txn,
+                                              const DocWriter* const* docs,
+                                              size_t nDocs,
+                                              RecordId* idsOut);
 
     virtual long long numRecords(OperationContext* txn) const {
         return _records.size();
@@ -74,12 +75,12 @@ public:
 
     // ------------------------------
 
-    virtual StatusWith<RecordId> updateRecord(OperationContext* txn,
-                                              const RecordId& oldLocation,
-                                              const char* data,
-                                              int len,
-                                              bool enforceQuota,
-                                              UpdateNotifier* notifier) {
+    virtual Status updateRecord(OperationContext* txn,
+                                const RecordId& oldLocation,
+                                const char* data,
+                                int len,
+                                bool enforceQuota,
+                                UpdateNotifier* notifier) {
         invariant(false);
     }
 
@@ -114,8 +115,7 @@ public:
     }
 
     virtual Status validate(OperationContext* txn,
-                            bool full,
-                            bool scanData,
+                            ValidateCmdLevel level,
                             ValidateAdaptor* adaptor,
                             ValidateResults* results,
                             BSONObjBuilder* output) {
@@ -151,6 +151,10 @@ public:
     }
 
     virtual const char* name() const {
+        invariant(false);
+    }
+
+    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* txn) const override {
         invariant(false);
     }
 

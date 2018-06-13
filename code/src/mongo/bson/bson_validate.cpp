@@ -28,13 +28,14 @@
  */
 
 #include <cstring>
-#include <deque>
 #include <limits>
+#include <vector>
 
 #include "mongo/base/data_view.h"
 #include "mongo/bson/bson_validate.h"
 #include "mongo/bson/oid.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/server_parameters.h"
 #include "mongo/platform/decimal128.h"
 
 namespace mongo {
@@ -45,19 +46,20 @@ namespace {
  * Creates a status with InvalidBSON code and adds information about _id if available.
  * WARNING: only pass in a non-EOO idElem if it has been fully validated already!
  */
-Status makeError(std::string baseMsg, BSONElement idElem) {
+Status NOINLINE_DECL makeError(StringData baseMsg, BSONElement idElem) {
+    std::string msg = baseMsg.toString();
     if (idElem.eoo()) {
-        baseMsg += " in object with unknown _id";
+        msg += " in object with unknown _id";
     } else {
-        baseMsg += " in object with " + idElem.toString(/*field name=*/true, /*full=*/true);
+        msg += " in object with " + idElem.toString(/*field name=*/true, /*full=*/true);
     }
-    return Status(ErrorCodes::InvalidBSON, baseMsg);
+    return Status(ErrorCodes::InvalidBSON, msg);
 }
 
 class Buffer {
 public:
-    Buffer(const char* buffer, uint64_t maxLength)
-        : _buffer(buffer), _position(0), _maxLength(maxLength) {}
+    Buffer(const char* buffer, uint64_t maxLength, BSONVersion version)
+        : _buffer(buffer), _position(0), _maxLength(maxLength), _version(version) {}
 
     template <typename N>
     bool readNumber(N* out) {
@@ -125,6 +127,10 @@ public:
         return _buffer;
     }
 
+    BSONVersion version() const {
+        return _version;
+    }
+
     /**
      * WARNING: only pass in a non-EOO idElem if it has been fully validated already!
      */
@@ -137,6 +143,7 @@ private:
     uint64_t _position;
     uint64_t _maxLength;
     BSONElement _idElem;
+    BSONVersion _version;
 };
 
 struct ValidationState {
@@ -172,7 +179,10 @@ private:
 /**
  * WARNING: only pass in a non-EOO idElem if it has been fully validated already!
  */
-Status validateElementInfo(Buffer* buffer, ValidationState::State* nextState, BSONElement idElem) {
+Status validateElementInfo(Buffer* buffer,
+                           ValidationState::State* nextState,
+                           BSONElement idElem,
+                           StringData* elemName) {
     Status status = Status::OK();
 
     signed char type;
@@ -184,8 +194,7 @@ Status validateElementInfo(Buffer* buffer, ValidationState::State* nextState, BS
         return Status::OK();
     }
 
-    StringData name;
-    status = buffer->readCString(&name);
+    status = buffer->readCString(elemName);
     if (!status.isOK())
         return status;
 
@@ -223,21 +232,24 @@ Status validateElementInfo(Buffer* buffer, ValidationState::State* nextState, BS
             return Status::OK();
 
         case NumberDecimal:
-            if (Decimal128::enabled) {
+            if (buffer->version() != BSONVersion::kV1_0) {
                 if (!buffer->skip(sizeof(Decimal128::Value)))
                     return makeError("Invalid bson", idElem);
                 return Status::OK();
             } else {
                 return Status(ErrorCodes::InvalidBSON,
-                              "Attempt to use a decimal BSON type when experimental decimal "
-                              "server support is not currently enabled.");
+                              "Cannot use decimal BSON type when the featureCompatibilityVersion "
+                              "is 3.2. See "
+                              "http://dochub.mongodb.org/core/3.4-feature-compatibility.");
             }
 
         case DBRef:
             status = buffer->readUTF8String(NULL);
             if (!status.isOK())
                 return status;
-            buffer->skip(OID::kOIDSize);
+            if (!buffer->skip(OID::kOIDSize)) {
+                return makeError("invalid bson length", idElem);
+            }
             return Status::OK();
 
         case RegEx:
@@ -282,7 +294,8 @@ Status validateElementInfo(Buffer* buffer, ValidationState::State* nextState, BS
 }
 
 Status validateBSONIterative(Buffer* buffer) {
-    std::deque<ValidationObjectFrame> frames;
+    std::vector<ValidationObjectFrame> frames;
+    frames.reserve(16);
     ValidationObjectFrame* curr = NULL;
     ValidationState::State state = ValidationState::BeginObj;
 
@@ -312,14 +325,15 @@ Status validateBSONIterative(Buffer* buffer) {
 
                 const uint64_t elemStartPos = buffer->position();
                 ValidationState::State nextState = state;
-                Status status = validateElementInfo(buffer, &nextState, idElem);
+                StringData elemName;
+                Status status = validateElementInfo(buffer, &nextState, idElem, &elemName);
                 if (!status.isOK())
                     return status;
 
                 // we've already validated that fieldname is safe to access as long as we aren't
                 // at the end of the object, since EOO doesn't have a fieldname.
                 if (nextState != ValidationState::EndObj && idElem.eoo() && atTopLevel) {
-                    if (strcmp(buffer->getBasePtr() + elemStartPos + 1 /*type*/, "_id") == 0) {
+                    if (elemName == "_id") {
                         idElemStartPos = elemStartPos;
                     }
                 }
@@ -371,7 +385,7 @@ Status validateBSONIterative(Buffer* buffer) {
                 break;
             }
             case ValidationState::Done:
-                break;
+                MONGO_UNREACHABLE;
         }
     }
 
@@ -380,12 +394,12 @@ Status validateBSONIterative(Buffer* buffer) {
 
 }  // namespace
 
-Status validateBSON(const char* originalBuffer, uint64_t maxLength) {
+Status validateBSON(const char* originalBuffer, uint64_t maxLength, BSONVersion version) {
     if (maxLength < 5) {
         return Status(ErrorCodes::InvalidBSON, "bson data has to be at least 5 bytes");
     }
 
-    Buffer buf(originalBuffer, maxLength);
+    Buffer buf(originalBuffer, maxLength, version);
     return validateBSONIterative(&buf);
 }
 

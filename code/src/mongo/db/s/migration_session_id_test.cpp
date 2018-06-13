@@ -34,7 +34,6 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -55,25 +54,26 @@ TEST(MigrationSessionId, GenerateAndExtract) {
 }
 
 TEST(MigrationSessionId, Comparison) {
-    MigrationSessionId emptySessionId =
-        assertGet(MigrationSessionId::extractFromBSON(BSON("SomeField" << 1)));
-    MigrationSessionId nonEmptySessionId =
+    MigrationSessionId sessionId =
         assertGet(MigrationSessionId::extractFromBSON(BSON("SomeField" << 1 << "sessionId"
                                                                        << "TestSessionID")));
-
-    ASSERT(!emptySessionId.matches(nonEmptySessionId));
-    ASSERT(!nonEmptySessionId.matches(emptySessionId));
 
     MigrationSessionId sessionIdToCompare =
         assertGet(MigrationSessionId::extractFromBSON(BSON("SomeOtherField" << 1 << "sessionId"
                                                                             << "TestSessionID")));
-    ASSERT(nonEmptySessionId.matches(sessionIdToCompare));
-    ASSERT(sessionIdToCompare.matches(nonEmptySessionId));
+    ASSERT(sessionId.matches(sessionIdToCompare));
+    ASSERT(sessionIdToCompare.matches(sessionId));
 }
 
-TEST(MigrationSessionId, ErrorWhenTypeIsNotString) {
-    ASSERT_NOT_OK(MigrationSessionId::extractFromBSON(
-                      BSON("SomeField" << 1 << "sessionId" << Date_t::now())).getStatus());
+TEST(MigrationSessionId, ErrorNoSuchKeyWhenSessionIdIsMissing) {
+    ASSERT_EQ(ErrorCodes::NoSuchKey,
+              MigrationSessionId::extractFromBSON(BSON("SomeField" << 1)).getStatus().code());
+}
+
+TEST(MigrationSessionId, ErrorWhenSessionIdTypeIsNotString) {
+    ASSERT_NOT_OK(
+        MigrationSessionId::extractFromBSON(BSON("SomeField" << 1 << "sessionId" << Date_t::now()))
+            .getStatus());
     ASSERT_NOT_OK(MigrationSessionId::extractFromBSON(BSON("SomeField" << 1 << "sessionId" << 2))
                       .getStatus());
 }

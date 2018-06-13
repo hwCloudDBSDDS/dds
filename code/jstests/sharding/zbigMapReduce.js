@@ -9,13 +9,12 @@ function setupTest() {
             numReplicas: 2,
             chunkSize: 1,
             rsOptions: {oplogSize: 50},
-            enableBalancer: 1
+            enableBalancer: true
         }
     });
 
     // Reduce chunk size to split
     var config = s.getDB("config");
-    config.settings.save({_id: "chunksize", value: 1});
 
     assert.commandWorked(s.s0.adminCommand({enablesharding: "test"}));
     s.ensurePrimaryShard('test', 'test-rs0');
@@ -221,7 +220,7 @@ function runTest(s) {
     // Stop the balancer to prevent new writes from happening and make sure
     // that replication can keep up even on slow machines.
     s.stopBalancer();
-    s._rs[0].test.awaitReplication(300 * 1000);
+    s._rs[0].test.awaitReplication();
     assert.eq(51200, primary.getDB("test")[outcol].count(), "Wrong count");
     for (var i = 0; i < secondaries.length; ++i) {
         assert.eq(51200, secondaries[i].getDB("test")[outcol].count(), "Wrong count");

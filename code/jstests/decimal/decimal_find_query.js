@@ -14,7 +14,7 @@
         {'decimal': NumberDecimal('1.0')},
         {'decimal': NumberDecimal('1.00')},
         {'decimal': NumberDecimal('2.00')},
-        {'decimal': NumberDecimal('1234567890123456789012.12345678901234')},
+        {'decimal': NumberDecimal('12345678901234.56789012345678901234')},
         {'decimal': NumberDecimal('NaN')},
         {'decimal': NumberDecimal('-NaN')},
         {'decimal': NumberDecimal('Infinity')},
@@ -29,11 +29,10 @@
     assert.eq(col.find({'decimal': {$gte: NumberDecimal('2.000')}}).count(), 3);
     assert.eq(col.find({'decimal': {$lte: NumberDecimal('0.9999999999999999')}}).count(), 4);
 
-    assert.eq(
-        col.find({'decimal': {$nin: [NumberDecimal('Infinity'), NumberDecimal('-Infinity')]}})
-            .count(),
-        9,
-        'Infinity count incorrect');
+    assert.eq(col.find({'decimal': {$nin: [NumberDecimal('Infinity'), NumberDecimal('-Infinity')]}})
+                  .count(),
+              9,
+              'Infinity count incorrect');
 
     // Test $mod
     col.drop();

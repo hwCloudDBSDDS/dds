@@ -48,6 +48,10 @@ public:
         out->push_back(Privilege(ResourcePattern::forDatabaseName(dbname), actions));
     }
 
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
+    }
+
     virtual void aggregateResults(const vector<ShardAndReply>& results, BSONObjBuilder& output) {
         long long objects = 0;
         long long unscaledDataSize = 0;
@@ -79,8 +83,7 @@ public:
             }
         }
 
-        // TODO: need to find a good way to get this
-        // result.appendNumber( "collections" , ncollections );
+        // TODO SERVER-26110: Add aggregated 'collections' and 'views' metrics.
         output.appendNumber("objects", objects);
 
         // avgObjSize on mongod is not scaled based on the argument to db.stats(), so we use

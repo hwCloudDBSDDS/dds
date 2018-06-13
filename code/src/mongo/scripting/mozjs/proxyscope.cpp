@@ -35,6 +35,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/platform/decimal128.h"
 #include "mongo/scripting/mozjs/implscope.h"
+#include "mongo/util/destructor_guard.h"
 #include "mongo/util/quick_exit.h"
 
 namespace mongo {
@@ -244,6 +245,10 @@ void MozJSProxyScope::kill() {
     _implScope->kill();
 }
 
+void MozJSProxyScope::interrupt() {
+    _implScope->interrupt();
+}
+
 /**
  * Invokes a function on the implementation thread
  *
@@ -335,11 +340,9 @@ void MozJSProxyScope::implThread(void* arg) {
 
     while (true) {
         stdx::unique_lock<stdx::mutex> lk(proxy->_mutex);
-        proxy->_condvar.wait(lk,
-                             [proxy] {
-                                 return proxy->_state == State::ProxyRequest ||
-                                     proxy->_state == State::Shutdown;
-                             });
+        proxy->_condvar.wait(lk, [proxy] {
+            return proxy->_state == State::ProxyRequest || proxy->_state == State::Shutdown;
+        });
 
         if (proxy->_state == State::Shutdown)
             break;

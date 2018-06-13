@@ -41,10 +41,10 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/rpc/metadata/client_metadata.h"
+#include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
-//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-#include "mongo/db/initialize_server_global_state.h"
 
 namespace mongo {
 
@@ -97,6 +97,15 @@ void profile(OperationContext* txn, NetworkOp op) {
     b.appendDate("ts", jsTime());
     b.append("client", txn->getClient()->clientAddress());
 
+    const auto& clientMetadata =
+        ClientMetadataIsMasterState::get(txn->getClient()).getClientMetadata();
+    if (clientMetadata) {
+        auto appName = clientMetadata.get().getApplicationName();
+        if (!appName.empty()) {
+            b.append("appName", appName);
+        }
+    }
+
     AuthorizationSession* authSession = AuthorizationSession::get(txn->getClient());
     _appendUserInfo(*CurOp::get(txn), b, authSession);
 
@@ -134,7 +143,8 @@ void profile(OperationContext* txn, NetworkOp op) {
             Collection* const coll = db->getCollection(db->getProfilingNS());
             if (coll) {
                 WriteUnitOfWork wuow(txn);
-                coll->insertDocument(txn, p, false);
+                OpDebug* const nullOpDebug = nullptr;
+                coll->insertDocument(txn, p, nullOpDebug, false);
                 wuow.commit();
 
                 break;
@@ -151,8 +161,7 @@ void profile(OperationContext* txn, NetworkOp op) {
         }
     } catch (const AssertionException& assertionEx) {
         warning() << "Caught Assertion while trying to profile " << networkOpToString(op)
-                  << " against " << CurOp::get(txn)->getNS() << ": " << assertionEx.toString()
-                  << endl;
+                  << " against " << CurOp::get(txn)->getNS() << ": " << redact(assertionEx);
     }
 }
 
@@ -173,12 +182,11 @@ Status createProfileCollection(OperationContext* txn, Database* db) {
     }
 
     // system.profile namespace doesn't exist; create it
-    log() << "Creating profile collection: " << dbProfilingNS << endl;
+    log() << "Creating profile collection: " << dbProfilingNS;
 
-    CollectionOptions collectionOptions; 
+    CollectionOptions collectionOptions;
     collectionOptions.capped = true;
-	//Changed by Huawei Technologies Co., Ltd. on 10/12/2016
-    collectionOptions.cappedSize = serverGlobalParams.profileSizeMB * 1024 * 1024;
+    collectionOptions.cappedSize = 1024 * 1024;
 
     WriteUnitOfWork wunit(txn);
     bool shouldReplicateWrites = txn->writesAreReplicated();

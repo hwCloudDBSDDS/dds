@@ -8,7 +8,9 @@
  *  - whether to $set or $unset its field
  *  - what value to $set the field to
  */
-load('jstests/concurrency/fsm_workload_helpers/server_types.js');  // for isMongod and isMMAPv1
+
+// For isMongod and supportsDocumentLevelConcurrency.
+load('jstests/concurrency/fsm_workload_helpers/server_types.js');
 
 var $config = (function() {
 
@@ -22,10 +24,7 @@ var $config = (function() {
         }
     };
 
-    var transitions = {
-        set: {set: 0.5, unset: 0.5},
-        unset: {set: 0.5, unset: 0.5}
-    };
+    var transitions = {set: {set: 0.5, unset: 0.5}, unset: {set: 0.5, unset: 0.5}};
 
     function setup(db, collName, cluster) {
         // index on 'value', the field being updated
@@ -55,13 +54,16 @@ var $config = (function() {
             assertResult: function assertResult(db, res) {
                 assertAlways.eq(0, res.nUpserted, tojson(res));
 
-                if (isMongod(db) && !isMMAPv1(db)) {
-                    // For non-mmap storage engines we can have a strong assertion that exactly one
-                    // doc will be modified.
+                if (isMongod(db) && supportsDocumentLevelConcurrency(db)) {
+                    // Storage engines which support document-level concurrency will automatically
+                    // retry any operations when there are conflicts, so we should always see a
+                    // matching document.
                     assertWhenOwnColl.eq(res.nMatched, 1, tojson(res));
                 } else {
-                    // Zero matches are possible for MMAP v1 because the update will skip a document
-                    // that was invalidated during a yield.
+                    // On storage engines that do not support document-level concurrency, it is
+                    // possible that the query will not find the document. This can happen if
+                    // another thread updated the target document during a yield, triggering an
+                    // invalidation.
                     assertWhenOwnColl.contains(res.nMatched, [0, 1], tojson(res));
                 }
 
@@ -78,13 +80,9 @@ var $config = (function() {
                 var value = Random.randInt(5);
 
                 var updater = {};
-                updater[set ? '$set' : '$unset'] = {
-                    value: value
-                };
+                updater[set ? '$set' : '$unset'] = {value: value};
 
-                var query = {
-                    _id: docIndex
-                };
+                var query = {_id: docIndex};
                 var res = this.doUpdate(db, collName, query, updater);
                 this.assertResult(db, res);
             },

@@ -30,14 +30,14 @@
 
 #include "mongo/db/exec/collection_scan.h"
 
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/collection_scan_common.h"
 #include "mongo/db/exec/filter.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/exec/working_set_common.h"
-#include "mongo/db/concurrency/write_conflict_exception.h"
-#include "mongo/db/catalog/collection.h"
 #include "mongo/db/storage/record_fetcher.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
@@ -68,18 +68,14 @@ CollectionScan::CollectionScan(OperationContext* txn,
     _specificStats.direction = params.direction;
 }
 
-PlanStage::StageState CollectionScan::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState CollectionScan::doWork(WorkingSetID* out) {
     if (_isDead) {
         Status status(
             ErrorCodes::CappedPositionLost,
             str::stream()
                 << "CollectionScan died due to position in capped collection being deleted. "
-                << "Last seen record id: " << _lastSeenId);
+                << "Last seen record id: "
+                << _lastSeenId);
         *out = WorkingSetCommon::allocateStatusMember(_workingSet, status);
         return PlanStage::DEAD;
     }
@@ -97,6 +93,20 @@ PlanStage::StageState CollectionScan::work(WorkingSetID* out) {
     try {
         if (needToMakeCursor) {
             const bool forward = _params.direction == CollectionScanParams::FORWARD;
+
+            if (forward && !_params.tailable && _params.collection->ns().isOplog()) {
+                // Forward, non-tailable scans from the oplog need to wait until all oplog entries
+                // before the read begins to be visible. This isn't needed for reverse scans because
+                // we only hide oplog entries from forward scans, and it isn't necessary for tailing
+                // cursors because they ignore EOF and will eventually see all writes. Forward,
+                // non-tailable scans are the only case where a meaningful EOF will be seen that
+                // might not include writes that finished before the read started. This also must be
+                // done before we create the cursor as that is when we establish the endpoint for
+                // the cursor.
+                _params.collection->getRecordStore()->waitForAllEarlierOplogWritesToBeVisible(
+                    getOpCtx());
+            }
+
             _cursor = _params.collection->getCursor(getOpCtx(), forward);
 
             if (!_lastSeenId.isNull()) {
@@ -112,13 +122,13 @@ PlanStage::StageState CollectionScan::work(WorkingSetID* out) {
                     Status status(ErrorCodes::CappedPositionLost,
                                   str::stream() << "CollectionScan died due to failure to restore "
                                                 << "tailable cursor position. "
-                                                << "Last seen record id: " << _lastSeenId);
+                                                << "Last seen record id: "
+                                                << _lastSeenId);
                     *out = WorkingSetCommon::allocateStatusMember(_workingSet, status);
                     return PlanStage::DEAD;
                 }
             }
 
-            _commonStats.needTime++;
             return PlanStage::NEED_TIME;
         }
 
@@ -132,7 +142,6 @@ PlanStage::StageState CollectionScan::work(WorkingSetID* out) {
                 WorkingSetMember* member = _workingSet->get(_wsidForFetch);
                 member->setFetcher(fetcher.release());
                 *out = _wsidForFetch;
-                _commonStats.needYield++;
                 return PlanStage::NEED_YIELD;
             }
 
@@ -163,9 +172,9 @@ PlanStage::StageState CollectionScan::work(WorkingSetID* out) {
 
     WorkingSetID id = _workingSet->allocate();
     WorkingSetMember* member = _workingSet->get(id);
-    member->loc = record->id;
+    member->recordId = record->id;
     member->obj = {getOpCtx()->recoveryUnit()->getSnapshotId(), record->data.releaseToBson()};
-    _workingSet->transitionToLocAndObj(id);
+    _workingSet->transitionToRecordIdAndObj(id);
 
     return returnIfMatches(member, id, out);
 }
@@ -176,12 +185,13 @@ PlanStage::StageState CollectionScan::returnIfMatches(WorkingSetMember* member,
     ++_specificStats.docsTested;
 
     if (Filter::passes(member, _filter)) {
+        if (_params.stopApplyingFilterAfterFirstMatch) {
+            _filter = nullptr;
+        }
         *out = memberID;
-        ++_commonStats.advanced;
         return PlanStage::ADVANCED;
     } else {
         _workingSet->free(memberID);
-        ++_commonStats.needTime;
         return PlanStage::NEED_TIME;
     }
 }
@@ -222,8 +232,6 @@ void CollectionScan::doSaveState() {
 void CollectionScan::doRestoreState() {
     if (_cursor) {
         if (!_cursor->restore()) {
-            warning() << "Could not restore RecordCursor for CollectionScan: "
-                      << getOpCtx()->getNS();
             _isDead = true;
         }
     }
@@ -243,7 +251,7 @@ unique_ptr<PlanStageStats> CollectionScan::getStats() {
     // Add a BSON representation of the filter to the stats tree, if there is one.
     if (NULL != _filter) {
         BSONObjBuilder bob;
-        _filter->toBSON(&bob);
+        _filter->serialize(&bob);
         _commonStats.filter = bob.obj();
     }
 

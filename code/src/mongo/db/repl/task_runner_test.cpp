@@ -47,14 +47,8 @@ using Task = TaskRunner::Task;
 
 TEST_F(TaskRunnerTest, InvalidConstruction) {
     // Null thread pool.
-    ASSERT_THROWS_CODE(TaskRunner(nullptr, []() -> OperationContext* { return nullptr; }),
-                       UserException,
-                       ErrorCodes::BadValue);
-
-    // Null function for creating operation contexts.
-    ASSERT_THROWS_CODE(TaskRunner(&getThreadPool(), TaskRunner::CreateOperationContextFn()),
-                       UserException,
-                       ErrorCodes::BadValue);
+    ASSERT_THROWS_CODE_AND_WHAT(
+        TaskRunner(nullptr), UserException, ErrorCodes::BadValue, "null thread pool");
 }
 
 TEST_F(TaskRunnerTest, GetDiagnosticString) {
@@ -83,48 +77,24 @@ TEST_F(TaskRunnerTest, CallbackValues) {
     ASSERT_OK(status);
 }
 
-TEST_F(TaskRunnerTest, OperationContextFactoryReturnsNull) {
-    resetTaskRunner(
-        new TaskRunner(&getThreadPool(), []() -> OperationContext* { return nullptr; }));
-    stdx::mutex mutex;
-    bool called = false;
-    OperationContextNoop opCtxNoop;
-    OperationContext* txn = &opCtxNoop;
-    Status status = getDetectableErrorStatus();
-    auto task = [&](OperationContext* theTxn, const Status& theStatus) {
-        stdx::lock_guard<stdx::mutex> lk(mutex);
-        called = true;
-        txn = theTxn;
-        status = theStatus;
-        return TaskRunner::NextAction::kCancel;
-    };
-    getTaskRunner().schedule(task);
-    getThreadPool().join();
-    ASSERT_FALSE(getTaskRunner().isActive());
+using OpIdVector = std::vector<unsigned int>;
 
-    stdx::lock_guard<stdx::mutex> lk(mutex);
-    ASSERT_TRUE(called);
-    ASSERT_FALSE(txn);
-    ASSERT_OK(status);
-}
-
-std::vector<int> _testRunTaskTwice(TaskRunnerTest& test,
-                                   TaskRunner::NextAction nextAction,
-                                   stdx::function<void(const Task& task)> schedule) {
+OpIdVector _testRunTaskTwice(TaskRunnerTest& test,
+                             TaskRunner::NextAction nextAction,
+                             stdx::function<void(const Task& task)> schedule) {
     unittest::Barrier barrier(2U);
     stdx::mutex mutex;
-    int i = 0;
-    OperationContext* txn[2] = {nullptr, nullptr};
-    int txnId[2] = {-100, -100};
+    std::vector<OperationContext*> txns;
+    OpIdVector txnIds;
     auto task = [&](OperationContext* theTxn, const Status& theStatus) {
         stdx::lock_guard<stdx::mutex> lk(mutex);
-        int j = i++;
-        if (j >= 2) {
+        if (txns.size() >= 2U) {
             return TaskRunner::NextAction::kInvalid;
         }
-        txn[j] = theTxn;
-        txnId[j] = TaskRunnerTest::getOperationContextId(txn[j]);
-        TaskRunner::NextAction result = j == 0 ? nextAction : TaskRunner::NextAction::kCancel;
+        TaskRunner::NextAction result =
+            txns.size() == 0 ? nextAction : TaskRunner::NextAction::kCancel;
+        txns.push_back(theTxn);
+        txnIds.push_back(theTxn->getOpID());
         barrier.countDownAndWait();
         return result;
     };
@@ -141,22 +111,20 @@ std::vector<int> _testRunTaskTwice(TaskRunnerTest& test,
     ASSERT_FALSE(test.getTaskRunner().isActive());
 
     stdx::lock_guard<stdx::mutex> lk(mutex);
-    ASSERT_EQUALS(2, i);
-    ASSERT(txn[0]);
-    ASSERT(txn[1]);
-    ASSERT_NOT_LESS_THAN(txnId[0], 0);
-    ASSERT_NOT_LESS_THAN(txnId[1], 0);
-    return {txnId[0], txnId[1]};
+    ASSERT_EQUALS(2U, txns.size());
+    ASSERT(txns[0]);
+    ASSERT(txns[1]);
+    return txnIds;
 }
 
-std::vector<int> _testRunTaskTwice(TaskRunnerTest& test, TaskRunner::NextAction nextAction) {
+std::vector<unsigned int> _testRunTaskTwice(TaskRunnerTest& test,
+                                            TaskRunner::NextAction nextAction) {
     auto schedule = [&](const Task& task) { test.getTaskRunner().schedule(task); };
     return _testRunTaskTwice(test, nextAction, schedule);
 }
 
 TEST_F(TaskRunnerTest, RunTaskTwiceDisposeOperationContext) {
-    std::vector<int> txnId =
-        _testRunTaskTwice(*this, TaskRunner::NextAction::kDisposeOperationContext);
+    auto txnId = _testRunTaskTwice(*this, TaskRunner::NextAction::kDisposeOperationContext);
     ASSERT_NOT_EQUALS(txnId[0], txnId[1]);
 }
 
@@ -168,14 +136,13 @@ TEST_F(TaskRunnerTest, RunTaskTwiceDisposeOperationContextJoinThreadPoolBeforeSc
         getThreadPool().join();
         getTaskRunner().schedule(task);
     };
-    std::vector<int> txnId =
+    auto txnId =
         _testRunTaskTwice(*this, TaskRunner::NextAction::kDisposeOperationContext, schedule);
     ASSERT_NOT_EQUALS(txnId[0], txnId[1]);
 }
 
 TEST_F(TaskRunnerTest, RunTaskTwiceKeepOperationContext) {
-    std::vector<int> txnId =
-        _testRunTaskTwice(*this, TaskRunner::NextAction::kKeepOperationContext);
+    auto txnId = _testRunTaskTwice(*this, TaskRunner::NextAction::kKeepOperationContext);
     ASSERT_EQUALS(txnId[0], txnId[1]);
 }
 
@@ -310,6 +277,45 @@ TEST_F(TaskRunnerTest, Cancel) {
     // before scheduling the task results in the task being canceled.
     stdx::lock_guard<stdx::mutex> lk(mutex);
     ASSERT_OK(status);
+}
+
+TEST_F(TaskRunnerTest, JoinShouldWaitForTasksToComplete) {
+    unittest::Barrier barrier(2U);
+    stdx::mutex mutex;
+    Status status1 = getDetectableErrorStatus();
+    Status status2 = getDetectableErrorStatus();
+
+    // "task1" should start running before we invoke join() the task runner.
+    // Upon completion, "task1" requests the task runner to retain the operation context. This has
+    // effect of keeping the task runner active.
+    auto task1 = [&](OperationContext* theTxn, const Status& theStatus) {
+        stdx::lock_guard<stdx::mutex> lk(mutex);
+        barrier.countDownAndWait();
+        status1 = theStatus;
+        return TaskRunner::NextAction::kKeepOperationContext;
+    };
+
+    // "task2" should start running after we invoke join() the task runner.
+    // Upon completion, "task2" requests the task runner to dispose the operation context. After the
+    // operation context is destroyed, the task runner will go into an inactive state.
+    auto task2 = [&](OperationContext* theTxn, const Status& theStatus) {
+        stdx::lock_guard<stdx::mutex> lk(mutex);
+        status2 = theStatus;
+        return TaskRunner::NextAction::kDisposeOperationContext;
+    };
+
+    getTaskRunner().schedule(task1);
+    getTaskRunner().schedule(task2);
+    barrier.countDownAndWait();
+
+    // join() waits for "task1" and "task2" to complete execution.
+    getTaskRunner().join();
+
+    // This status should be OK because we ensured that the task
+    // was scheduled and invoked before we called cancel().
+    stdx::lock_guard<stdx::mutex> lk(mutex);
+    ASSERT_OK(status1);
+    ASSERT_OK(status2);
 }
 
 TEST_F(TaskRunnerTest, DestroyShouldWaitForTasksToComplete) {

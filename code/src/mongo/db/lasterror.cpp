@@ -54,16 +54,14 @@ void LastError::setLastError(int code, std::string msg) {
     _msg = std::move(msg);
 }
 
-void LastError::recordInsert(long long nObjects) {
-    reset(true);
-    _nObjects = nObjects;
-}
-
 void LastError::recordUpdate(bool updateObjects, long long nObjects, BSONObj upsertedId) {
     reset(true);
     _nObjects = nObjects;
     _updatedExisting = updateObjects ? True : False;
-    if (upsertedId.valid() && upsertedId.hasField(kUpsertedFieldName))
+
+    // Use the latest BSON validation version. We record updates containing decimal data even if
+    // decimal is disabled.
+    if (upsertedId.valid(BSONVersion::kLatest) && upsertedId.hasField(kUpsertedFieldName))
         _upsertedId = upsertedId;
 }
 
@@ -88,8 +86,10 @@ bool LastError::appendSelf(BSONObjBuilder& b, bool blankErr) const {
         b.append("err", _msg);
     }
 
-    if (_code)
+    if (_code) {
         b.append("code", _code);
+        b.append("codeName", ErrorCodes::errorString(ErrorCodes::fromInt(_code)));
+    }
     if (_updatedExisting != NotUpdate)
         b.appendBool("updatedExisting", _updatedExisting == True);
     if (!_upsertedId.isEmpty()) {

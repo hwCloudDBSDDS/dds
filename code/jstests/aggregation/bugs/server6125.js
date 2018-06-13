@@ -10,9 +10,7 @@
 // to make results array nested (problem 2)
 function nestArray(nstArray) {
     for (x = 0; x < nstArray.length; x++) {
-        nstArray[x].a = {
-            b: nstArray[x].a
-        };
+        nstArray[x].a = {b: nstArray[x].a};
     }
 }
 
@@ -80,6 +78,8 @@ function setupArray() {
 //***
 // Begin testing for SERVER-6125
 //***
+Random.setRandomSeed();
+
 // problem 1, does aggregate $sort work with all types
 runSort({a: 1}, false, "p1");
 

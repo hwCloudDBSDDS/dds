@@ -38,8 +38,8 @@
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
-
 namespace {
+
 Status kBadRetValue(ErrorCodes::InternalError, "no return value");
 StatusWith<LocksType> kLocksTypeBadRetValue(kBadRetValue);
 StatusWith<LockpingsType> kLockpingsTypeBadRetValue(kBadRetValue);
@@ -52,8 +52,14 @@ void noGrabLockFuncSet(StringData lockID,
                        Date_t time,
                        StringData why) {
     FAIL(str::stream() << "grabLock not expected to be called. "
-                       << "lockID: " << lockID << ", who: " << who << ", processId: " << processId
-                       << ", why: " << why);
+                       << "lockID: "
+                       << lockID
+                       << ", who: "
+                       << who
+                       << ", processId: "
+                       << processId
+                       << ", why: "
+                       << why);
 }
 
 void noOvertakeLockFuncSet(StringData lockID,
@@ -64,13 +70,22 @@ void noOvertakeLockFuncSet(StringData lockID,
                            Date_t time,
                            StringData why) {
     FAIL(str::stream() << "overtakeLock not expected to be called. "
-                       << "lockID: " << lockID << ", currentHolderTS: " << currentHolderTS
-                       << ", who: " << who << ", processId: " << processId << ", why: " << why);
+                       << "lockID: "
+                       << lockID
+                       << ", currentHolderTS: "
+                       << currentHolderTS
+                       << ", who: "
+                       << who
+                       << ", processId: "
+                       << processId
+                       << ", why: "
+                       << why);
 }
 
 void noUnLockFuncSet(const OID& lockSessionID) {
     FAIL(str::stream() << "unlock not expected to be called. "
-                       << "lockSessionID: " << lockSessionID);
+                       << "lockSessionID: "
+                       << lockSessionID);
 }
 
 void noPingFuncSet(StringData processID, Date_t ping) {
@@ -79,29 +94,33 @@ void noPingFuncSet(StringData processID, Date_t ping) {
 
 void noStopPingFuncSet(StringData processID) {
     FAIL(str::stream() << "stopPing not expected to be called. "
-                       << "processID: " << processID);
+                       << "processID: "
+                       << processID);
 }
 
 void noGetLockByTSSet(const OID& lockSessionID) {
     FAIL(str::stream() << "getLockByTS not expected to be called. "
-                       << "lockSessionID: " << lockSessionID);
+                       << "lockSessionID: "
+                       << lockSessionID);
 }
 
 void noGetLockByNameSet(StringData name) {
     FAIL(str::stream() << "getLockByName not expected to be called. "
-                       << "lockName: " << name);
+                       << "lockName: "
+                       << name);
 }
 
 void noGetPingSet(StringData processId) {
     FAIL(str::stream() << "getPing not expected to be called. "
-                       << "lockName: " << processId);
+                       << "lockName: "
+                       << processId);
 }
 
 void noGetServerInfoSet() {
     FAIL("getServerInfo not expected to be called");
 }
 
-}  // unnamed namespace
+}  // namespace
 
 DistLockCatalogMock::DistLockCatalogMock()
     : _grabLockChecker(noGrabLockFuncSet),
@@ -160,7 +179,8 @@ StatusWith<LocksType> DistLockCatalogMock::grabLock(OperationContext* txn,
                                                     StringData who,
                                                     StringData processId,
                                                     Date_t time,
-                                                    StringData why) {
+                                                    StringData why,
+                                                    const WriteConcernOptions& writeConcern) {
     auto ret = kLocksTypeBadRetValue;
     GrabLockFunc checkerFunc = noGrabLockFuncSet;
 
@@ -206,6 +226,23 @@ Status DistLockCatalogMock::unlock(OperationContext* txn, const OID& lockSession
     }
 
     checkerFunc(lockSessionID);
+    return ret;
+}
+
+Status DistLockCatalogMock::unlock(OperationContext* txn,
+                                   const OID& lockSessionID,
+                                   StringData name) {
+    auto ret = kBadRetValue;
+    UnlockFunc checkerFunc = noUnLockFuncSet;
+
+    {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        ret = _unlockReturnValue;
+        checkerFunc = _unlockChecker;
+    }
+
+    checkerFunc(lockSessionID);
+
     return ret;
 }
 
@@ -337,4 +374,5 @@ Status DistLockCatalogMock::unlockAll(OperationContext* txn, const std::string& 
     return Status(ErrorCodes::IllegalOperation,
                   str::stream() << "unlockAll not expected to be called; processID: " << processID);
 }
-}
+
+}  // namespace mongo

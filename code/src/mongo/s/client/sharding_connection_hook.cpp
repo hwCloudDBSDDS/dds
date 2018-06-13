@@ -41,83 +41,26 @@
 #include "mongo/db/auth/internal_user_auth.h"
 #include "mongo/db/client.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/rpc/metadata/audit_metadata.h"
-#include "mongo/rpc/metadata/config_server_metadata.h"
-#include "mongo/s/client/scc_fast_query_handler.h"
-#include "mongo/s/client/shard_registry.h"
-#include "mongo/s/cluster_last_error_info.h"
-#include "mongo/s/grid.h"
-#include "mongo/s/version_manager.h"
+#include "mongo/s/client/version_manager.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
 
 using std::string;
 
-namespace {
-
-// A hook that parses the reply metadata from every response to a command sent from a DBClient
-// created by mongos or a sharding aware mongod and being used for sharded operations.
-// Used by mongos to capture the GLE stats so that we can target the correct node when subsequent
-// getLastError calls are made, as well as by both mongod and mongos to update the stored config
-// server optime.
-Status _shardingReplyMetadataReader(const BSONObj& metadataObj, StringData hostString) {
-    saveGLEStats(metadataObj, hostString);
-
-    auto shard = grid.shardRegistry()->getShardNoReload(hostString.toString());
-    if (!shard) {
-        return Status::OK();
-    }
-    // If this host is a known shard of ours, look for a config server optime in the response
-    // metadata to use to update our notion of the current config server optime.
-    auto responseStatus = rpc::ConfigServerMetadata::readFromMetadata(metadataObj);
-    if (!responseStatus.isOK()) {
-        return responseStatus.getStatus();
-    }
-    auto opTime = responseStatus.getValue().getOpTime();
-    if (opTime.is_initialized()) {
-        grid.shardRegistry()->advanceConfigOpTime(opTime.get());
-    }
-    return Status::OK();
-}
-
-// A hook that will append impersonated users to the metadata of every runCommand run by a DBClient
-// created by mongos or a sharding aware mongod.  mongos uses this information to send information
-// to mongod so that the mongod can produce auditing records attributed to the proper authenticated
-// user(s).
-// Additionally, if the connection is sharding-aware, also appends the stored config server optime.
-Status _shardingRequestMetadataWriter(bool shardedConn,
-                                      BSONObjBuilder* metadataBob,
-                                      StringData hostStringData) {
-    audit::writeImpersonatedUsersToMetadata(metadataBob);
-    if (!shardedConn) {
-        return Status::OK();
-    }
-
-    // Add config server optime to metadata sent to shards.
-    std::string hostString = hostStringData.toString();
-    auto shard = grid.shardRegistry()->getShardNoReload(hostString);
-    if (!shard) {
-        return Status(ErrorCodes::ShardNotFound,
-                      str::stream() << "Shard not found for server: " << hostString);
-    }
-    if (shard->isConfig()) {
-        return Status::OK();
-    }
-    rpc::ConfigServerMetadata(grid.shardRegistry()->getConfigOpTime()).writeToMetadata(metadataBob);
-
-    return Status::OK();
-}
-
-}  // namespace
-
-ShardingConnectionHook::ShardingConnectionHook(bool shardedConnections)
-    : _shardedConnections(shardedConnections) {}
+ShardingConnectionHook::ShardingConnectionHook(
+    bool shardedConnections, std::unique_ptr<rpc::ShardingEgressMetadataHook> egressHook)
+    : _shardedConnections(shardedConnections), _egressHook(std::move(egressHook)) {}
 
 void ShardingConnectionHook::onCreate(DBClientBase* conn) {
+    if (conn->type() == ConnectionString::INVALID) {
+        throw UserException(ErrorCodes::BadValue,
+                            str::stream() << "Unrecognized connection string.");
+    }
+
     // Authenticate as the first thing we do
     // NOTE: Replica set authentication allows authentication against *any* online host
-    if (getGlobalAuthorizationManager()->isAuthEnabled()) {
+    if (isInternalAuthSet()) {
         LOG(2) << "calling onCreate auth for " << conn->toString();
 
         bool result = conn->authenticateInternalUser();
@@ -127,23 +70,21 @@ void ShardingConnectionHook::onCreate(DBClientBase* conn) {
                 result);
     }
 
+    // Delegate the metadata hook logic to the egress hook; use lambdas to pass the arguments in
+    // the order expected by the egress hook.
     if (_shardedConnections) {
-        conn->setReplyMetadataReader(_shardingReplyMetadataReader);
+        conn->setReplyMetadataReader([this](const BSONObj& metadataObj, StringData target) {
+            return _egressHook->readReplyMetadata(target, metadataObj);
+        });
     }
-
     conn->setRequestMetadataWriter(
-        [this](BSONObjBuilder* metadataBob, StringData hostStringData) -> Status {
-            return _shardingRequestMetadataWriter(_shardedConnections, metadataBob, hostStringData);
+        [this](OperationContext* txn, BSONObjBuilder* metadataBob, StringData hostStringData) {
+            return _egressHook->writeRequestMetadata(
+                _shardedConnections, txn, hostStringData, metadataBob);
         });
 
-    // For every SCC created, add a hook that will allow fastest-config-first config reads if
-    // the appropriate server options are set.
-    if (conn->type() == ConnectionString::SYNC) {
-        SyncClusterConnection* scc = dynamic_cast<SyncClusterConnection*>(conn);
-        if (scc) {
-            scc->attachQueryHandler(new SCCFastQueryHandler);
-        }
-    } else if (conn->type() == ConnectionString::MASTER) {
+
+    if (conn->type() == ConnectionString::MASTER) {
         BSONObj isMasterResponse;
         if (!conn->runCommand("admin", BSON("ismaster" << 1), isMasterResponse)) {
             uassertStatusOK(getStatusFromCommandResult(isMasterResponse));
@@ -158,27 +99,18 @@ void ShardingConnectionHook::onCreate(DBClientBase* conn) {
             return;
         }
 
+        const long long minKnownConfigServerMode = 1;
+        const long long maxKnownConfigServerMode = 2;
         uassert(28785,
-                str::stream() << "Unrecognized configsvr version number: " << configServerModeNumber
-                              << ". Expected either 0 or 1",
-                configServerModeNumber == 0 || configServerModeNumber == 1);
-        auto configServerMode = configServerModeNumber == 0
-            ? CatalogManager::ConfigServerMode::SCCC
-            : CatalogManager::ConfigServerMode::CSRS;
+                str::stream() << "Unrecognized configsvr mode number: " << configServerModeNumber
+                              << ". Range of known configsvr mode numbers is: ["
+                              << minKnownConfigServerMode
+                              << ", "
+                              << maxKnownConfigServerMode
+                              << "]",
+                configServerModeNumber >= minKnownConfigServerMode &&
+                    configServerModeNumber <= maxKnownConfigServerMode);
 
-        // We still want to call scheduleReplaceCatalogManagerIfNeeded when configServerMode
-        // is SCCC to catch illegal downgrade attempts and return a useful error message.
-        // To enable that we use the default (invalid) ConnectionString when configServerMode
-        // is SCCC.
-        ConnectionString configConnString;
-        if (configServerMode == CatalogManager::ConfigServerMode::CSRS) {
-            configConnString = ConnectionString::forReplicaSet(
-                isMasterResponse["setName"].valueStringData(),
-                {static_cast<DBClientConnection*>(conn)->getServerHostAndPort()});
-        }
-
-        status = grid.forwardingCatalogManager()->scheduleReplaceCatalogManagerIfNeeded(
-            configServerMode, configConnString);
         uassertStatusOK(status);
     }
 }

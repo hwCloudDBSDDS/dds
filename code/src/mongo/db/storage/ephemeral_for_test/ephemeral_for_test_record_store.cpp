@@ -398,44 +398,50 @@ StatusWith<RecordId> EphemeralForTestRecordStore::insertRecord(OperationContext*
     return StatusWith<RecordId>(loc);
 }
 
-StatusWith<RecordId> EphemeralForTestRecordStore::insertRecord(OperationContext* txn,
-                                                               const DocWriter* doc,
-                                                               bool enforceQuota) {
-    const int len = doc->documentSize();
-    if (_isCapped && len > _cappedMaxSize) {
-        // We use dataSize for capped rollover and we don't want to delete everything if we know
-        // this won't fit.
-        return StatusWith<RecordId>(ErrorCodes::BadValue, "object to insert exceeds cappedMaxSize");
+Status EphemeralForTestRecordStore::insertRecordsWithDocWriter(OperationContext* txn,
+                                                               const DocWriter* const* docs,
+                                                               size_t nDocs,
+                                                               RecordId* idsOut) {
+    for (size_t i = 0; i < nDocs; i++) {
+        const int len = docs[i]->documentSize();
+        if (_isCapped && len > _cappedMaxSize) {
+            // We use dataSize for capped rollover and we don't want to delete everything if we know
+            // this won't fit.
+            return Status(ErrorCodes::BadValue, "object to insert exceeds cappedMaxSize");
+        }
+
+        EphemeralForTestRecord rec(len);
+        docs[i]->writeDocument(rec.data.get());
+
+        RecordId loc;
+        if (_data->isOplog) {
+            StatusWith<RecordId> status = extractAndCheckLocForOplog(rec.data.get(), len);
+            if (!status.isOK())
+                return status.getStatus();
+            loc = status.getValue();
+        } else {
+            loc = allocateLoc();
+        }
+
+        txn->recoveryUnit()->registerChange(new InsertChange(_data, loc));
+        _data->dataSize += len;
+        _data->records[loc] = rec;
+
+        cappedDeleteAsNeeded(txn);
+
+        if (idsOut)
+            idsOut[i] = loc;
     }
 
-    EphemeralForTestRecord rec(len);
-    doc->writeDocument(rec.data.get());
-
-    RecordId loc;
-    if (_data->isOplog) {
-        StatusWith<RecordId> status = extractAndCheckLocForOplog(rec.data.get(), len);
-        if (!status.isOK())
-            return status;
-        loc = status.getValue();
-    } else {
-        loc = allocateLoc();
-    }
-
-    txn->recoveryUnit()->registerChange(new InsertChange(_data, loc));
-    _data->dataSize += len;
-    _data->records[loc] = rec;
-
-    cappedDeleteAsNeeded(txn);
-
-    return StatusWith<RecordId>(loc);
+    return Status::OK();
 }
 
-StatusWith<RecordId> EphemeralForTestRecordStore::updateRecord(OperationContext* txn,
-                                                               const RecordId& loc,
-                                                               const char* data,
-                                                               int len,
-                                                               bool enforceQuota,
-                                                               UpdateNotifier* notifier) {
+Status EphemeralForTestRecordStore::updateRecord(OperationContext* txn,
+                                                 const RecordId& loc,
+                                                 const char* data,
+                                                 int len,
+                                                 bool enforceQuota,
+                                                 UpdateNotifier* notifier) {
     EphemeralForTestRecord* oldRecord = recordFor(loc);
     int oldLen = oldRecord->size;
 
@@ -447,7 +453,7 @@ StatusWith<RecordId> EphemeralForTestRecordStore::updateRecord(OperationContext*
         // doc-locking), and therefore must notify that it is updating a document.
         Status callbackStatus = notifier->recordStoreGoingToUpdateInPlace(txn, loc);
         if (!callbackStatus.isOK()) {
-            return StatusWith<RecordId>(callbackStatus);
+            return callbackStatus;
         }
     }
 
@@ -460,7 +466,7 @@ StatusWith<RecordId> EphemeralForTestRecordStore::updateRecord(OperationContext*
 
     cappedDeleteAsNeeded(txn);
 
-    return StatusWith<RecordId>(loc);
+    return Status::OK();
 }
 
 bool EphemeralForTestRecordStore::updateWithDamagesSupported() const {
@@ -525,21 +531,23 @@ void EphemeralForTestRecordStore::temp_cappedTruncateAfter(OperationContext* txn
 }
 
 Status EphemeralForTestRecordStore::validate(OperationContext* txn,
-                                             bool full,
-                                             bool scanData,
+                                             ValidateCmdLevel level,
                                              ValidateAdaptor* adaptor,
                                              ValidateResults* results,
                                              BSONObjBuilder* output) {
     results->valid = true;
-    if (scanData && full) {
+    if (level == kValidateFull) {
         for (Records::const_iterator it = _data->records.begin(); it != _data->records.end();
              ++it) {
             const EphemeralForTestRecord& rec = it->second;
             size_t dataSize;
-            const Status status = adaptor->validate(rec.toRecordData(), &dataSize);
+            const Status status = adaptor->validate(it->first, rec.toRecordData(), &dataSize);
             if (!status.isOK()) {
+                if (results->valid) {
+                    // Only log once.
+                    results->errors.push_back("detected one or more invalid documents (see logs)");
+                }
                 results->valid = false;
-                results->errors.push_back("invalid object detected (see logs)");
                 log() << "Invalid object detected in " << _ns << ": " << status.reason();
             }
         }

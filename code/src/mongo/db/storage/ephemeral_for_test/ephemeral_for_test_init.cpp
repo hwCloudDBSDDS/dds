@@ -29,6 +29,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/base/init.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/ephemeral_for_test/ephemeral_for_test_engine.h"
@@ -43,7 +45,7 @@ class EphemeralForTestFactory : public StorageEngine::Factory {
 public:
     virtual ~EphemeralForTestFactory() {}
     virtual StorageEngine* create(const StorageGlobalParams& params,
-                                  const StorageEngineLockFile& lockFile) const {
+                                  const StorageEngineLockFile* lockFile) const {
         KVStorageEngineOptions options;
         options.directoryPerDB = params.directoryperdb;
         options.forRepair = params.repair;

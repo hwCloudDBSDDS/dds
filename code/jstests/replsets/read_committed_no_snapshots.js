@@ -1,13 +1,11 @@
 /**
- * @tags: [requires_journaling]
- *
  * Test basic read committed maxTimeMS timeout while waiting for a committed snapshot:
  *  - Reads with an 'afterOpTime' snapshot >= current time should be able to see things that
  *    happened before or at that opTime.
  *  - Reads should time out if there are no snapshots available on secondary.
  */
 
-load("jstests/replsets/rslib.js");
+load("jstests/replsets/rslib.js");  // For reconfig and startSetIfSupportsReadMajority.
 
 (function() {
     "use strict";
@@ -16,21 +14,14 @@ load("jstests/replsets/rslib.js");
     var name = "read_committed_no_snapshots";
     var replTest =
         new ReplSetTest({name: name, nodes: 3, nodeOptions: {enableMajorityReadConcern: ''}});
-    var nodes = replTest.nodeList();
 
-    try {
-        replTest.startSet();
-    } catch (e) {
-        var conn = MongoRunner.runMongod();
-        if (!conn.getDB('admin').serverStatus().storageEngine.supportsCommittedReads) {
-            jsTest.log("skipping test since storage engine doesn't support committed reads");
-            MongoRunner.stopMongod(conn);
-            return;
-        }
-        throw e;
+    if (!startSetIfSupportsReadMajority(replTest)) {
+        jsTest.log("skipping test since storage engine doesn't support committed reads");
+        return;
     }
 
-    replTest.initiate({
+    var nodes = replTest.nodeList();
+    var config = {
         "_id": name,
         "members": [
             {"_id": 0, "host": nodes[0]},
@@ -38,7 +29,9 @@ load("jstests/replsets/rslib.js");
             {"_id": 2, "host": nodes[2], arbiterOnly: true}
         ],
         "protocolVersion": 1
-    });
+    };
+    updateConfigIfNotDurable(config);
+    replTest.initiate(config);
 
     // Get connections and collection.
     var primary = replTest.getPrimary();
@@ -87,4 +80,4 @@ load("jstests/replsets/rslib.js");
     // Ensure maxTimeMS times out while waiting for this snapshot
     assert.commandFailed(primary.getSiblingDB(name).foo.runCommand(
         'find', {"readConcern": {"level": "majority"}, "maxTimeMS": 1000}));
-}());
+})();

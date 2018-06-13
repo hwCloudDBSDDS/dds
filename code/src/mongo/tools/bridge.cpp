@@ -51,17 +51,18 @@
 #include "mongo/tools/bridge_commands.h"
 #include "mongo/tools/mongobridge_options.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/net/abstract_message_port.h"
 #include "mongo/util/net/listen.h"
 #include "mongo/util/net/message.h"
-#include "mongo/util/exit_code.h"
 #include "mongo/util/quick_exit.h"
-#include "mongo/util/static_observer.h"
 #include "mongo/util/signal_handlers.h"
+#include "mongo/util/static_observer.h"
 #include "mongo/util/text.h"
-#include "mongo/util/timer.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/timer.h"
 
 namespace mongo {
 
@@ -86,7 +87,7 @@ boost::optional<HostAndPort> extractHostInfo(const rpc::RequestInterface& reques
 
 class Forwarder {
 public:
-    Forwarder(MessagingPort* mp,
+    Forwarder(AbstractMessagingPort* mp,
               stdx::mutex* settingsMutex,
               HostSettingsMap* settings,
               int64_t seed)
@@ -114,7 +115,7 @@ public:
                     warning() << "Unable to establish connection to "
                               << mongoBridgeGlobalParams.destUri << " after " << elapsed
                               << " seconds: " << status;
-                    log() << "end connection " << _mp->psock->remoteString();
+                    log() << "end connection " << _mp->remote().toString();
                     _mp->shutdown();
                     return;
                 }
@@ -127,14 +128,25 @@ public:
 
         Message request;
         Message response;
+        MessageCompressorManager compressorManager;
 
         while (true) {
             try {
                 request.reset();
                 if (!_mp->recv(request)) {
-                    log() << "end connection " << _mp->psock->remoteString();
+                    log() << "end connection " << _mp->remote().toString();
                     _mp->shutdown();
                     break;
+                }
+
+                if (request.operation() == dbCompressed) {
+                    auto swm = compressorManager.decompressMessage(request);
+                    if (!swm.isOK()) {
+                        error() << "Error decompressing message: " << swm.getStatus();
+                        _mp->shutdown();
+                        return;
+                    }
+                    request = std::move(swm.getValue());
                 }
 
                 std::unique_ptr<rpc::RequestInterface> cmdRequest;
@@ -183,7 +195,7 @@ public:
                     // Close the connection to 'dest'.
                     case HostSettings::State::kHangUp:
                         log() << "Rejecting connection from " << host->toString()
-                              << ", end connection " << _mp->psock->remoteString();
+                              << ", end connection " << _mp->remote().toString();
                         _mp->shutdown();
                         return;
                     // Forward the message to 'dest' with probability '1 - hostSettings.loss'.
@@ -214,7 +226,7 @@ public:
                     // If there's nothing to respond back to '_mp' with, then close the connection.
                     if (response.empty()) {
                         log() << "Received an empty response, end connection "
-                              << _mp->psock->remoteString();
+                              << _mp->remote().toString();
                         _mp->shutdown();
                         break;
                     }
@@ -228,7 +240,7 @@ public:
                     // connections from 'host', then do so now.
                     if (hostSettings.state == HostSettings::State::kHangUp) {
                         log() << "Closing connection from " << host->toString()
-                              << ", end connection " << _mp->psock->remoteString();
+                              << ", end connection " << _mp->remote().toString();
                         _mp->shutdown();
                         break;
                     }
@@ -244,6 +256,16 @@ public:
                         exhaust = q.queryOptions & QueryOption_Exhaust;
                     }
                     while (exhaust) {
+                        if (response.operation() == dbCompressed) {
+                            auto swm = compressorManager.decompressMessage(response);
+                            if (!swm.isOK()) {
+                                error() << "Error decompressing message: " << swm.getStatus();
+                                _mp->shutdown();
+                                return;
+                            }
+                            response = std::move(swm.getValue());
+                        }
+
                         MsgData::View header = response.header();
                         QueryResult::View qr = header.view2ptr();
                         if (qr.getCursorId()) {
@@ -259,7 +281,7 @@ public:
                 }
             } catch (const DBException& ex) {
                 error() << "Caught DBException in Forwarder: " << ex << ", end connection "
-                        << _mp->psock->remoteString();
+                        << _mp->remote().toString();
                 _mp->shutdown();
                 break;
             } catch (...) {
@@ -303,7 +325,7 @@ private:
         return {};
     }
 
-    MessagingPort* _mp;
+    AbstractMessagingPort* _mp;
 
     stdx::mutex* _settingsMutex;
     HostSettingsMap* _settings;
@@ -314,33 +336,27 @@ private:
 class BridgeListener final : public Listener {
 public:
     BridgeListener()
-        : Listener("bridge", "", mongoBridgeGlobalParams.port),
+        : Listener("bridge", "", mongoBridgeGlobalParams.port, getGlobalServiceContext(), false),
           _seedSource(mongoBridgeGlobalParams.seed) {
         log() << "Setting random seed: " << mongoBridgeGlobalParams.seed;
     }
 
-    void acceptedMP(MessagingPort* mp) final {
+    void accepted(std::unique_ptr<AbstractMessagingPort> mp) override final {
         {
             stdx::lock_guard<stdx::mutex> lk(_portsMutex);
             if (_inShutdown.load()) {
                 mp->shutdown();
                 return;
             }
-            _ports.insert(mp);
+            _ports.insert(mp.get());
         }
 
-        Forwarder f(mp, &_settingsMutex, &_settings, _seedSource.nextInt64());
+        Forwarder f(mp.release(), &_settingsMutex, &_settings, _seedSource.nextInt64());
         stdx::thread t(f);
         t.detach();
     }
 
-    bool inShutdown() {
-        return _inShutdown.load();
-    }
-
     void shutdownAll() {
-        _inShutdown.store(true);
-
         stdx::lock_guard<stdx::mutex> lk(_portsMutex);
         for (auto mp : _ports) {
             mp->shutdown();
@@ -349,7 +365,7 @@ public:
 
 private:
     stdx::mutex _portsMutex;
-    std::set<MessagingPort*> _ports;
+    std::set<AbstractMessagingPort*> _ports;
     AtomicWord<bool> _inShutdown{false};
 
     stdx::mutex _settingsMutex;
@@ -367,20 +383,19 @@ MONGO_INITIALIZER(SetGlobalEnvironment)(InitializerContext* context) {
 
 }  // namespace
 
-bool inShutdown() {
-    return listener->inShutdown();
-}
-
 void logProcessDetailsForLogRotate() {}
-
-void exitCleanly(ExitCode code) {
-    ListeningSockets::get()->closeAll();
-    listener->shutdownAll();
-    quickExit(code);
-}
 
 int bridgeMain(int argc, char** argv, char** envp) {
     static StaticObserver staticObserver;
+
+    registerShutdownTask([&] {
+        // NOTE: This function may be called at any time. It must not
+        // depend on the prior execution of mongo initializers or the
+        // existence of threads.
+        ListeningSockets::get()->closeAll();
+        listener->shutdownAll();
+    });
+
     setupSignalHandlers();
     runGlobalInitializersOrDie(argc, argv, envp);
     startSignalProcessingThread();

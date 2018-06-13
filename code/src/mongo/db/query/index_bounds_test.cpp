@@ -30,13 +30,15 @@
  * This file contains tests for mongo/db/query/index_bounds.cpp
  */
 
-#include "mongo/db/query/index_bounds.h"
-#include "mongo/db/json.h"
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/jsobj.h"
+#include "mongo/db/json.h"
+#include "mongo/db/query/index_bounds.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/text.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/text.h"
 
 using namespace mongo;
 
@@ -296,13 +298,13 @@ TEST(IndexBoundsTest, SimpleRangeBoundsEqual) {
     bounds1.isSimpleRange = true;
     bounds1.startKey = BSON("" << 1 << "" << 3);
     bounds1.endKey = BSON("" << 2 << "" << 4);
-    bounds1.endKeyInclusive = false;
+    bounds1.boundInclusion = BoundInclusion::kIncludeStartKeyOnly;
 
     IndexBounds bounds2;
     bounds2.isSimpleRange = true;
     bounds2.startKey = BSON("" << 1 << "" << 3);
     bounds2.endKey = BSON("" << 2 << "" << 4);
-    bounds2.endKeyInclusive = false;
+    bounds2.boundInclusion = BoundInclusion::kIncludeStartKeyOnly;
 
     ASSERT_TRUE(bounds1 == bounds2);
     ASSERT_FALSE(bounds1 != bounds2);
@@ -455,7 +457,7 @@ TEST(IndexBoundsTest, SimpleRangeBoundsNotEqualToRegularBounds) {
     bounds1.isSimpleRange = true;
     bounds1.startKey = BSON("" << 1 << "" << 3);
     bounds1.endKey = BSON("" << 2 << "" << 4);
-    bounds1.endKeyInclusive = false;
+    bounds1.boundInclusion = BoundInclusion::kIncludeStartKeyOnly;
 
     IndexBounds bounds2;
     OrderedIntervalList oil;
@@ -471,13 +473,13 @@ TEST(IndexBoundsTest, SimpleRangeBoundsNotEqualDifferentStartKey) {
     bounds1.isSimpleRange = true;
     bounds1.startKey = BSON("" << 1 << "" << 3);
     bounds1.endKey = BSON("" << 2 << "" << 4);
-    bounds1.endKeyInclusive = false;
+    bounds1.boundInclusion = BoundInclusion::kIncludeStartKeyOnly;
 
     IndexBounds bounds2;
     bounds1.isSimpleRange = true;
     bounds1.startKey = BSON("" << 1 << "" << 1);
     bounds1.endKey = BSON("" << 2 << "" << 4);
-    bounds1.endKeyInclusive = false;
+    bounds1.boundInclusion = BoundInclusion::kIncludeStartKeyOnly;
 
     ASSERT_FALSE(bounds1 == bounds2);
     ASSERT_TRUE(bounds1 != bounds2);
@@ -488,13 +490,13 @@ TEST(IndexBoundsTest, SimpleRangeBoundsNotEqualDifferentEndKey) {
     bounds1.isSimpleRange = true;
     bounds1.startKey = BSON("" << 1 << "" << 3);
     bounds1.endKey = BSON("" << 2 << "" << 4);
-    bounds1.endKeyInclusive = false;
+    bounds1.boundInclusion = BoundInclusion::kIncludeStartKeyOnly;
 
     IndexBounds bounds2;
     bounds1.isSimpleRange = true;
     bounds1.startKey = BSON("" << 1 << "" << 3);
     bounds1.endKey = BSON("" << 2 << "" << 99);
-    bounds1.endKeyInclusive = false;
+    bounds1.boundInclusion = BoundInclusion::kIncludeStartKeyOnly;
 
     ASSERT_FALSE(bounds1 == bounds2);
     ASSERT_TRUE(bounds1 != bounds2);
@@ -505,13 +507,13 @@ TEST(IndexBoundsTest, SimpleRangeBoundsNotEqualDifferentEndKeyInclusive) {
     bounds1.isSimpleRange = true;
     bounds1.startKey = BSON("" << 1 << "" << 3);
     bounds1.endKey = BSON("" << 2 << "" << 4);
-    bounds1.endKeyInclusive = false;
+    bounds1.boundInclusion = BoundInclusion::kIncludeStartKeyOnly;
 
     IndexBounds bounds2;
     bounds1.isSimpleRange = true;
     bounds1.startKey = BSON("" << 1 << "" << 3);
     bounds1.endKey = BSON("" << 2 << "" << 4);
-    bounds1.endKeyInclusive = true;
+    bounds1.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
 
     ASSERT_FALSE(bounds1 == bounds2);
     ASSERT_TRUE(bounds1 != bounds2);

@@ -31,6 +31,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 
 #include "mongo/base/error_codes.h"
@@ -44,8 +46,27 @@
 
 namespace mongo {
 
-WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn, int epoch)
-    : _epoch(epoch), _session(NULL), _cursorGen(0), _cursorsCached(0), _cursorsOut(0) {
+WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn, uint64_t epoch, uint64_t cursorEpoch)
+    : _epoch(epoch),
+      _cursorEpoch(cursorEpoch),
+      _session(NULL),
+      _cursorGen(0),
+      _cursorsCached(0),
+      _cursorsOut(0) {
+    invariantWTOK(conn->open_session(conn, NULL, "isolation=snapshot", &_session));
+}
+
+WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn,
+                                     WiredTigerSessionCache* cache,
+                                     uint64_t epoch,
+                                     uint64_t cursorEpoch)
+    : _epoch(epoch),
+      _cursorEpoch(cursorEpoch),
+      _cache(cache),
+      _session(NULL),
+      _cursorGen(0),
+      _cursorsCached(0),
+      _cursorsOut(0) {
     invariantWTOK(conn->open_session(conn, NULL, "isolation=snapshot", &_session));
 }
 
@@ -110,6 +131,7 @@ void WiredTigerSession::closeAllCursors() {
         }
     }
     _cursors.clear();
+    _cursorEpoch = _cache->getCursorEpoch();
 }
 
 namespace {
@@ -154,6 +176,12 @@ void WiredTigerSessionCache::shuttingDown() {
 }
 
 void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint) {
+    // For inMemory storage engines, the data is "as durable as it's going to get".
+    // That is, a restart is equivalent to a complete node failure.
+    if (isEphemeral()) {
+        return;
+    }
+
     const int shuttingDown = _shuttingDown.fetchAndAdd(1);
     ON_BLOCK_EXIT([this] { _shuttingDown.fetchAndSubtract(1); });
 
@@ -164,8 +192,7 @@ void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint) {
     // When forcing a checkpoint with journaling enabled, don't synchronize with other
     // waiters, as a log flush is much cheaper than a full checkpoint.
     if (forceCheckpoint && _engine->isDurable()) {
-        WiredTigerSession* session = getSession();
-        ON_BLOCK_EXIT([this, session] { releaseSession(session); });
+        UniqueWiredTigerSession session = getSession();
         WT_SESSION* s = session->getSession();
         {
             stdx::unique_lock<stdx::mutex> lk(_journalListenerMutex);
@@ -189,8 +216,7 @@ void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint) {
     _lastSyncTime.store(current + 1);
 
     // Nobody has synched yet, so we have to sync ourselves.
-    WiredTigerSession* session = getSession();
-    ON_BLOCK_EXIT([this, session] { releaseSession(session); });
+    auto session = getSession();
     WT_SESSION* s = session->getSession();
 
     // This gets the token (OpTime) from the last write, before flushing (either the journal, or a
@@ -199,7 +225,7 @@ void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint) {
     JournalListener::Token token = _journalListener->getToken();
 
     // Use the journal when available, or a checkpoint otherwise.
-    if (_engine->isDurable()) {
+    if (_engine && _engine->isDurable()) {
         invariantWTOK(s->log_flush(s, "sync=on"));
         LOG(4) << "flushed journal";
     } else {
@@ -209,8 +235,18 @@ void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint) {
     _journalListener->onDurable(token);
 }
 
+void WiredTigerSessionCache::closeAllCursors() {
+    // Increment the cursor epoch so that all cursors from this epoch are closed.
+    _cursorEpoch.fetchAndAdd(1);
+
+    stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+    for (SessionCache::iterator i = _sessions.begin(); i != _sessions.end(); i++) {
+        (*i)->closeAllCursors();
+    }
+}
+
 void WiredTigerSessionCache::closeAll() {
-    // Increment the epoch as we are now closing all sessions with this epoch
+    // Increment the epoch as we are now closing all sessions with this epoch.
     SessionCache swap;
 
     {
@@ -228,7 +264,7 @@ bool WiredTigerSessionCache::isEphemeral() {
     return _engine && _engine->isEphemeral();
 }
 
-WiredTigerSession* WiredTigerSessionCache::getSession() {
+UniqueWiredTigerSession WiredTigerSessionCache::getSession() {
     // We should never be able to get here after _shuttingDown is set, because no new
     // operations should be allowed to start.
     invariant(!(_shuttingDown.loadRelaxed() & kShuttingDownMask));
@@ -240,12 +276,13 @@ WiredTigerSession* WiredTigerSessionCache::getSession() {
             // discarding older ones
             WiredTigerSession* cachedSession = _sessions.back();
             _sessions.pop_back();
-            return cachedSession;
+            return UniqueWiredTigerSession(cachedSession);
         }
     }
 
     // Outside of the cache partition lock, but on release will be put back on the cache
-    return new WiredTigerSession(_conn, _epoch.load());
+    return UniqueWiredTigerSession(
+        new WiredTigerSession(_conn, this, _epoch.load(), _cursorEpoch.load()));
 }
 
 void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
@@ -256,21 +293,32 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
     ON_BLOCK_EXIT([this] { _shuttingDown.fetchAndSubtract(1); });
 
     if (shuttingDown & kShuttingDownMask) {
-        // Leak the session in order to avoid race condition with clean shutdown, where the
-        // storage engine is ripped from underneath transactions, which are not "active"
-        // (i.e., do not have any locks), but are just about to delete the recovery unit.
-        // See SERVER-16031 for more information.
+        // There is a race condition with clean shutdown, where the storage engine is ripped from
+        // underneath OperationContexts, which are not "active" (i.e., do not have any locks), but
+        // are just about to delete the recovery unit. See SERVER-16031 for more information. Since
+        // shutting down the WT_CONNECTION will close all WT_SESSIONS, we shouldn't also try to
+        // directly close this session.
+        session->_session = nullptr;  // Prevents calling _session->close() in destructor.
+        delete session;
         return;
     }
 
-    // This checks that we are only caching idle sessions and not something which might hold
-    // locks or otherwise prevent truncation.
     {
         WT_SESSION* ss = session->getSession();
         uint64_t range;
+        // This checks that we are only caching idle sessions and not something which might hold
+        // locks or otherwise prevent truncation.
         invariantWTOK(ss->transaction_pinned_range(ss, &range));
         invariant(range == 0);
+
+        // Release resources in the session we're about to cache.
+        invariantWTOK(ss->reset(ss));
     }
+
+    // If the cursor epoch has moved on, close all cursors in the session.
+    uint64_t cursorEpoch = _cursorEpoch.load();
+    if (session->_getCursorEpoch() != cursorEpoch)
+        session->closeAllCursors();
 
     bool returnedToCache = false;
     uint64_t currentEpoch = _epoch.load();
@@ -288,11 +336,17 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
         delete session;
 
     if (_engine && _engine->haveDropsQueued())
-        _engine->dropAllQueued();
+        _engine->dropSomeQueuedIdents();
 }
+
 
 void WiredTigerSessionCache::setJournalListener(JournalListener* jl) {
     stdx::unique_lock<stdx::mutex> lk(_journalListenerMutex);
     _journalListener = jl;
 }
+
+void WiredTigerSessionCache::WiredTigerSessionDeleter::operator()(
+    WiredTigerSession* session) const {
+    session->_cache->releaseSession(session);
 }
+}  // namespace mongo

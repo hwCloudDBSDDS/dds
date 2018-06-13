@@ -30,8 +30,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include <vector>
 #include <tuple>
+#include <vector>
 
 #include "mongo/client/connpool.h"
 #include "mongo/db/auth/action_type.h"
@@ -39,7 +39,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/s/commands/run_on_all_shards_cmd.h"
-#include "mongo/s/strategy.h"
+#include "mongo/s/commands/strategy.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -62,13 +62,17 @@ public:
         return true;
     }
 
-    Status checkAuthForCommand(ClientBasic* client,
+    Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
                                const BSONObj& cmdObj) final {
         bool isAuthorized = AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
             ResourcePattern::forClusterResource(), ActionType::inprog);
 
         return isAuthorized ? Status::OK() : Status(ErrorCodes::Unauthorized, "Unauthorized");
+    }
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
     }
 
     void aggregateResults(const std::vector<ShardAndReply>& results, BSONObjBuilder& output) final {
@@ -104,7 +108,7 @@ public:
             // legacy behavior
             if (!shardOps.isABSONObj()) {
                 warning() << "invalid currentOp response from shard " << shardName
-                          << ", got: " << shardOps;
+                          << ", got: " << redact(shardOps);
                 continue;
             }
 
@@ -115,7 +119,7 @@ public:
                 // but log it first
                 if (!shardOp.isABSONObj()) {
                     warning() << "invalid currentOp response from shard " << shardName
-                              << ", got: " << shardOp;
+                              << ", got: " << redact(shardOp);
                     continue;
                 }
 
@@ -124,8 +128,10 @@ public:
                     if (fieldName == kOpIdFieldName) {
                         uassert(28630,
                                 str::stream() << "expected numeric opid from currentOp response"
-                                              << " from shard " << shardName
-                                              << ", got: " << shardOpElement,
+                                              << " from shard "
+                                              << shardName
+                                              << ", got: "
+                                              << shardOpElement,
                                 shardOpElement.isNumber());
 
                         modifiedShardOpBob.append(kOpIdFieldName,

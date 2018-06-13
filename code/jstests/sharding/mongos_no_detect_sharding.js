@@ -11,7 +11,7 @@
     var mongos2 = st._mongos[1];
 
     var coll = mongos2.getCollection("test.foo");
-    coll.insert({i: 0});
+    assert.writeOK(coll.insert({i: 0}));
 
     print("Sharding collection...");
 
@@ -32,7 +32,7 @@
     }
     assert.writeOK(bulk.execute());
 
-    config.printShardingStatus(true);
+    st.printShardingStatus(true);
 
     assert.eq(coll.getShardVersion().ok, 1);
     assert.eq(101, coll.find().itcount());

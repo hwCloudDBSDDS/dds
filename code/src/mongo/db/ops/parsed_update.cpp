@@ -33,7 +33,9 @@
 #include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/ops/update_request.h"
 #include "mongo/db/query/canonical_query.h"
+#include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/query/query_planner_common.h"
+#include "mongo/db/server_options.h"
 
 namespace mongo {
 
@@ -48,6 +50,22 @@ Status ParsedUpdate::parseRequest() {
     // It is invalid to request that a ProjectionStage be applied to the UpdateStage if the
     // UpdateStage would not return any document.
     invariant(_request->getProj().isEmpty() || _request->shouldReturnAnyDocs());
+
+    if (!_request->getCollation().isEmpty()) {
+        if (serverGlobalParams.featureCompatibility.version.load() ==
+            ServerGlobalParams::FeatureCompatibility::Version::k32) {
+            return Status(ErrorCodes::InvalidOptions,
+                          "The featureCompatibilityVersion must be 3.4 to use collation. See "
+                          "http://dochub.mongodb.org/core/3.4-feature-compatibility.");
+        }
+
+        auto collator = CollatorFactoryInterface::get(_txn->getServiceContext())
+                            ->makeFromBSON(_request->getCollation());
+        if (!collator.isOK()) {
+            return collator.getStatus();
+        }
+        _collator = std::move(collator.getValue());
+    }
 
     // We parse the update portion before the query portion because the dispostion of the update
     // may determine whether or not we need to produce a CanonicalQuery at all.  For example, if
@@ -77,29 +95,25 @@ Status ParsedUpdate::parseQueryToCQ() {
 
     const ExtensionsCallbackReal extensionsCallback(_txn, &_request->getNamespaceString());
 
+    // The projection needs to be applied after the update operation, so we do not specify a
+    // projection during canonicalization.
+    auto qr = stdx::make_unique<QueryRequest>(_request->getNamespaceString());
+    qr->setFilter(_request->getQuery());
+    qr->setSort(_request->getSort());
+    qr->setCollation(_request->getCollation());
+    qr->setExplain(_request->isExplain());
+
     // Limit should only used for the findAndModify command when a sort is specified. If a sort
     // is requested, we want to use a top-k sort for efficiency reasons, so should pass the
     // limit through. Generally, a update stage expects to be able to skip documents that were
     // deleted/modified under it, but a limit could inhibit that and give an EOF when the update
     // has not actually updated a document. This behavior is fine for findAndModify, but should
     // not apply to update in general.
-    long long limit = (!_request->isMulti() && !_request->getSort().isEmpty()) ? -1 : 0;
+    if (!_request->isMulti() && !_request->getSort().isEmpty()) {
+        qr->setLimit(1);
+    }
 
-    // The projection needs to be applied after the update operation, so we specify an empty
-    // BSONObj as the projection during canonicalization.
-    const BSONObj emptyObj;
-    auto statusWithCQ = CanonicalQuery::canonicalize(_request->getNamespaceString(),
-                                                     _request->getQuery(),
-                                                     _request->getSort(),
-                                                     emptyObj,  // projection
-                                                     0,         // skip
-                                                     limit,
-                                                     emptyObj,  // hint
-                                                     emptyObj,  // min
-                                                     emptyObj,  // max
-                                                     false,     // snapshot
-                                                     _request->isExplain(),
-                                                     extensionsCallback);
+    auto statusWithCQ = CanonicalQuery::canonicalize(_txn, std::move(qr), extensionsCallback);
     if (statusWithCQ.isOK()) {
         _canonicalQuery = std::move(statusWithCQ.getValue());
     }
@@ -118,20 +132,25 @@ Status ParsedUpdate::parseUpdate() {
         !(!_txn->writesAreReplicated() || ns.isConfigDB() || _request->isFromMigration());
 
     _driver.setLogOp(true);
-    _driver.setModOptions(ModifierInterface::Options(!_txn->writesAreReplicated(), shouldValidate));
+    _driver.setModOptions(
+        ModifierInterface::Options(!_txn->writesAreReplicated(), shouldValidate, _collator.get()));
 
     return _driver.parse(_request->getUpdates(), _request->isMulti());
 }
 
-bool ParsedUpdate::canYield() const {
-    return !_request->isGod() && PlanExecutor::YIELD_AUTO == _request->getYieldPolicy() &&
-        !isIsolated();
+PlanExecutor::YieldPolicy ParsedUpdate::yieldPolicy() const {
+    if (_request->isGod()) {
+        return PlanExecutor::YIELD_MANUAL;
+    }
+    if (_request->getYieldPolicy() == PlanExecutor::YIELD_AUTO && isIsolated()) {
+        return PlanExecutor::WRITE_CONFLICT_RETRY_ONLY;  // Don't yield locks.
+    }
+    return _request->getYieldPolicy();
 }
 
 bool ParsedUpdate::isIsolated() const {
-    return _canonicalQuery.get()
-        ? QueryPlannerCommon::hasNode(_canonicalQuery->root(), MatchExpression::ATOMIC)
-        : LiteParsedQuery::isQueryIsolated(_request->getQuery());
+    return _canonicalQuery.get() ? _canonicalQuery->isIsolated()
+                                 : QueryRequest::isQueryIsolated(_request->getQuery());
 }
 
 bool ParsedUpdate::hasParsedQuery() const {
@@ -149,6 +168,12 @@ const UpdateRequest* ParsedUpdate::getRequest() const {
 
 UpdateDriver* ParsedUpdate::getDriver() {
     return &_driver;
+}
+
+void ParsedUpdate::setCollator(std::unique_ptr<CollatorInterface> collator) {
+    _collator = std::move(collator);
+
+    _driver.setCollator(_collator.get());
 }
 
 }  // namespace mongo

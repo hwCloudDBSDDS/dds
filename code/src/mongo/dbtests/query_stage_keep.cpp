@@ -30,10 +30,12 @@
  * This file tests db/exec/keep_mutations.cpp.
  */
 
+#include "mongo/platform/basic.h"
 
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/exec/collection_scan.h"
@@ -43,12 +45,11 @@
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/json.h"
 #include "mongo/db/matcher/expression_parser.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/dbtests/dbtests.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/fail_point_registry.h"
 #include "mongo/util/fail_point_service.h"
-#include "mongo/stdx/memory.h"
 
 namespace QueryStageKeep {
 
@@ -96,7 +97,8 @@ public:
     }
 
 protected:
-    OperationContextImpl _txn;
+    const ServiceContext::UniqueOperationContext _txnPtr = cc().makeOperationContext();
+    OperationContext& _txn = *_txnPtr;
     DBDirectClient _client;
 };
 
@@ -215,7 +217,7 @@ public:
         // This condition triggers SERVER-15580 (the new flagging causes a rehash of the
         // unordered_set "WorkingSet::_flagged", which invalidates all iterators, which were
         // previously being dereferenced in KeepMutationsStage::work()).
-        // Note that std::unordered_set<>::insert() triggers a rehash if the new number of
+        // Note that stdx::unordered_set<>::insert() triggers a rehash if the new number of
         // elements is greater than or equal to max_load_factor()*bucket_count().
         size_t rehashSize =
             static_cast<size_t>(ws.getFlagged().max_load_factor() * ws.getFlagged().bucket_count());

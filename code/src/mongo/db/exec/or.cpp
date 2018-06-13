@@ -54,12 +54,7 @@ bool OrStage::isEOF() {
     return _currentChild >= _children.size();
 }
 
-PlanStage::StageState OrStage::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState OrStage::doWork(WorkingSetID* out) {
     if (isEOF()) {
         return PlanStage::IS_EOF;
     }
@@ -71,31 +66,28 @@ PlanStage::StageState OrStage::work(WorkingSetID* out) {
         WorkingSetMember* member = _ws->get(id);
 
         // If we're deduping (and there's something to dedup by)
-        if (_dedup && member->hasLoc()) {
+        if (_dedup && member->hasRecordId()) {
             ++_specificStats.dupsTested;
 
             // ...and we've seen the RecordId before
-            if (_seen.end() != _seen.find(member->loc)) {
+            if (_seen.end() != _seen.find(member->recordId)) {
                 // ...drop it.
                 ++_specificStats.dupsDropped;
                 _ws->free(id);
-                ++_commonStats.needTime;
                 return PlanStage::NEED_TIME;
             } else {
                 // Otherwise, note that we've seen it.
-                _seen.insert(member->loc);
+                _seen.insert(member->recordId);
             }
         }
 
         if (Filter::passes(member, _filter)) {
             // Match!  return it.
             *out = id;
-            ++_commonStats.advanced;
             return PlanStage::ADVANCED;
         } else {
             // Does not match, try again.
             _ws->free(id);
-            ++_commonStats.needTime;
             return PlanStage::NEED_TIME;
         }
     } else if (PlanStage::IS_EOF == childStatus) {
@@ -106,7 +98,6 @@ PlanStage::StageState OrStage::work(WorkingSetID* out) {
         if (isEOF()) {
             return PlanStage::IS_EOF;
         } else {
-            ++_commonStats.needTime;
             return PlanStage::NEED_TIME;
         }
     } else if (PlanStage::FAILURE == childStatus || PlanStage::DEAD == childStatus) {
@@ -121,10 +112,7 @@ PlanStage::StageState OrStage::work(WorkingSetID* out) {
             *out = WorkingSetCommon::allocateStatusMember(_ws, status);
         }
         return childStatus;
-    } else if (PlanStage::NEED_TIME == childStatus) {
-        ++_commonStats.needTime;
     } else if (PlanStage::NEED_YIELD == childStatus) {
-        ++_commonStats.needYield;
         *out = id;
     }
 
@@ -143,7 +131,7 @@ void OrStage::doInvalidate(OperationContext* txn, const RecordId& dl, Invalidati
     if (_dedup && INVALIDATION_DELETION == type) {
         unordered_set<RecordId, RecordId::Hasher>::iterator it = _seen.find(dl);
         if (_seen.end() != it) {
-            ++_specificStats.locsForgotten;
+            ++_specificStats.recordIdsForgotten;
             _seen.erase(dl);
         }
     }
@@ -155,7 +143,7 @@ unique_ptr<PlanStageStats> OrStage::getStats() {
     // Add a BSON representation of the filter to the stats tree, if there is one.
     if (NULL != _filter) {
         BSONObjBuilder bob;
-        _filter->toBSON(&bob);
+        _filter->serialize(&bob);
         _commonStats.filter = bob.obj();
     }
 

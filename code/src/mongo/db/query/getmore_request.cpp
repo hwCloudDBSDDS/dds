@@ -34,8 +34,8 @@
 
 #include <boost/optional.hpp>
 
-#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/repl/bson_extract_optime.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/stringutils.h"
 
@@ -81,7 +81,8 @@ Status GetMoreRequest::isValid() const {
     if (batchSize && *batchSize <= 0) {
         return Status(ErrorCodes::BadValue,
                       str::stream() << "Batch size for getMore must be positive, "
-                                    << "but received: " << *batchSize);
+                                    << "but received: "
+                                    << *batchSize);
     }
 
     return Status::OK();
@@ -122,8 +123,8 @@ StatusWith<GetMoreRequest> GetMoreRequest::parseFromBSON(const std::string& dbna
         } else if (str::equals(fieldName, kCollectionField)) {
             if (el.type() != BSONType::String) {
                 return {ErrorCodes::TypeMismatch,
-                        str::stream()
-                            << "Field 'collection' must be of type string in: " << cmdObj};
+                        str::stream() << "Field 'collection' must be of type string in: "
+                                      << cmdObj};
             }
 
             fullns = parseNs(dbname, cmdObj);
@@ -135,7 +136,7 @@ StatusWith<GetMoreRequest> GetMoreRequest::parseFromBSON(const std::string& dbna
 
             batchSize = el.numberLong();
         } else if (str::equals(fieldName, kAwaitDataTimeoutField)) {
-            auto maxAwaitDataTime = LiteParsedQuery::parseMaxTimeMS(el);
+            auto maxAwaitDataTime = QueryRequest::parseMaxTimeMS(el);
             if (!maxAwaitDataTime.isOK()) {
                 return maxAwaitDataTime.getStatus();
             }
@@ -159,7 +160,9 @@ StatusWith<GetMoreRequest> GetMoreRequest::parseFromBSON(const std::string& dbna
         } else if (!str::startsWith(fieldName, "$")) {
             return {ErrorCodes::FailedToParse,
                     str::stream() << "Failed to parse: " << cmdObj << ". "
-                                  << "Unrecognized field '" << fieldName << "'."};
+                                  << "Unrecognized field '"
+                                  << fieldName
+                                  << "'."};
         }
     }
 

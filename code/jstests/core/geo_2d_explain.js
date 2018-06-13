@@ -1,5 +1,7 @@
 var t = db.geo_2d_explain;
 
+load("jstests/libs/analyze_plan.js");
+
 t.drop();
 
 var n = 1000;
@@ -22,9 +24,15 @@ for (var i = 0; i < n; i++) {
 
 var explain = t.find({loc: {$near: [40, 40]}, _id: {$lt: 50}}).explain("executionStats");
 
-print('explain = ' + tojson(explain));
-
 var stats = explain.executionStats;
 assert.eq(stats.nReturned, 50);
 assert.lte(stats.nReturned, stats.totalDocsExamined);
 assert.eq(stats.executionSuccess, true);
+
+// Check for the existence of a indexVersion field in explain output.
+var indexStages = getPlanStages(explain.queryPlanner.winningPlan, "GEO_NEAR_2D");
+print(tojson(indexStages));
+assert.gt(indexStages.length, 0);
+for (var i = 0; i < indexStages.length; i++) {
+    assert.gte(indexStages[i].indexVersion, 1);
+}

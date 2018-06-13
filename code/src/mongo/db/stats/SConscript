@@ -9,7 +9,6 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/util/foundation',
         '$BUILD_DIR/mongo/util/concurrency/spin_lock',
     ],
 )
@@ -28,6 +27,7 @@ env.Library(
     target='top',
     source=[
         'top.cpp',
+        'operation_latency_histogram.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/service_context',
@@ -44,6 +44,16 @@ env.CppUnitTest(
     ],
 )
 
+env.CppUnitTest(
+    target='operation_latency_histogram_test',
+    source=[
+        'operation_latency_histogram_test.cpp'
+        ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/stats/top',
+        ])
+
 env.Library(
     target='counters',
     source=[
@@ -52,5 +62,27 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/concurrency/spin_lock',
+    ],
+)
+
+env.Library(
+    target='serveronly',
+    source=[
+        "fill_locker_info.cpp",
+        "latency_server_status_section.cpp",
+        "lock_server_status_section.cpp",
+        "range_deleter_server_status.cpp",
+        "snapshots.cpp",
+        'storage_stats.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/commands/core',
+        '$BUILD_DIR/mongo/db/range_deleter',
+        'top',
+    ],
+    LIBDEPS_TAGS=[
+        # Depends on mongo::getDeleter from db/serveronly
+        'incomplete',
     ],
 )

@@ -28,22 +28,16 @@
     }
 
     function assertSuccess(configDb, outputDb) {
-        adminDb.printShardingStatus();
         assert.eq(outputDb.numbers_out.count(), 50, "map/reduce failed");
         assert(!configDb.collections.findOne().dropped, "no sharded collections");
     }
 
     function assertFailure(configDb, outputDb) {
-        adminDb.printShardingStatus();
         assert.eq(outputDb.numbers_out.count(), 0, "map/reduce should not have succeeded");
     }
 
-    var st = new ShardingTest({
-        name: "mrShardedOutputAuth",
-        shards: 1,
-        mongos: 1,
-        other: {extraOptions: {"keyFile": "jstests/libs/key1"}}
-    });
+    var st = new ShardingTest(
+        {name: "mrShardedOutputAuth", shards: 1, mongos: 1, other: {keyFile: 'jstests/libs/key1'}});
 
     // Setup the users to the input, output and admin databases
     var mongos = st.s;

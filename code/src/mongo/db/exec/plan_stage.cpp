@@ -32,7 +32,29 @@
 
 #include "mongo/db/exec/plan_stage.h"
 
+#include "mongo/db/exec/scoped_timer.h"
+#include "mongo/db/operation_context.h"
+#include "mongo/db/service_context.h"
+
 namespace mongo {
+
+PlanStage::StageState PlanStage::work(WorkingSetID* out) {
+    invariant(_opCtx);
+    ScopedTimer timer(getClock(), &_commonStats.executionTimeMillis);
+    ++_commonStats.works;
+
+    StageState workResult = doWork(out);
+
+    if (StageState::ADVANCED == workResult) {
+        ++_commonStats.advanced;
+    } else if (StageState::NEED_TIME == workResult) {
+        ++_commonStats.needTime;
+    } else if (StageState::NEED_YIELD == workResult) {
+        ++_commonStats.needYield;
+    }
+
+    return workResult;
+}
 
 void PlanStage::saveState() {
     ++_commonStats.yields;
@@ -81,6 +103,10 @@ void PlanStage::reattachToOperationContext(OperationContext* opCtx) {
     }
 
     doReattachToOperationContext();
+}
+
+ClockSource* PlanStage::getClock() const {
+    return _opCtx->getServiceContext()->getFastClockSource();
 }
 
 }  // namespace mongo

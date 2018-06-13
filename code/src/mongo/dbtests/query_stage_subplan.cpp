@@ -32,13 +32,14 @@
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/exec/subplan.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
+#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/dbtests/dbtests.h"
@@ -64,6 +65,10 @@ public:
         _client.insert(nss.ns(), doc);
     }
 
+    OperationContext* txn() {
+        return &_txn;
+    }
+
 protected:
     /**
      * Parses the json string 'findCmd', specifying a find command, to a CanonicalQuery.
@@ -72,15 +77,16 @@ protected:
         BSONObj cmdObj = fromjson(findCmd);
 
         bool isExplain = false;
-        auto lpq =
-            unittest::assertGet(LiteParsedQuery::makeFromFindCommand(nss, cmdObj, isExplain));
+        auto qr = unittest::assertGet(QueryRequest::makeFromFindCommand(nss, cmdObj, isExplain));
 
         auto cq = unittest::assertGet(
-            CanonicalQuery::canonicalize(lpq.release(), ExtensionsCallbackNoop()));
+            CanonicalQuery::canonicalize(txn(), std::move(qr), ExtensionsCallbackNoop()));
         return cq;
     }
 
-    OperationContextImpl _txn;
+    const ServiceContext::UniqueOperationContext _txnPtr = cc().makeOperationContext();
+    OperationContext& _txn = *_txnPtr;
+    ClockSource* _clock = _txn.getServiceContext()->getFastClockSource();
 
 private:
     DBDirectClient _client;
@@ -98,7 +104,8 @@ public:
         OldClientWriteContext ctx(&_txn, nss.ns());
         addIndex(BSON("a"
                       << "2d"
-                      << "b" << 1));
+                      << "b"
+                      << 1));
         addIndex(BSON("a"
                       << "2d"));
 
@@ -106,7 +113,10 @@ public:
             "{$or: [{a: {$geoWithin: {$centerSphere: [[0,0],10]}}},"
             "{a: {$geoWithin: {$centerSphere: [[1,1],10]}}}]}");
 
-        auto statusWithCQ = CanonicalQuery::canonicalize(nss, query);
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        qr->setFilter(query);
+        auto statusWithCQ = CanonicalQuery::canonicalize(
+            txn(), std::move(qr), ExtensionsCallbackDisallowExtensions());
         ASSERT_OK(statusWithCQ.getStatus());
         std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
@@ -121,7 +131,7 @@ public:
             new SubplanStage(&_txn, collection, &ws, plannerParams, cq.get()));
 
         // Plan selection should succeed due to falling back on regular planning.
-        PlanYieldPolicy yieldPolicy(NULL, PlanExecutor::YIELD_MANUAL);
+        PlanYieldPolicy yieldPolicy(PlanExecutor::YIELD_MANUAL, _clock);
         ASSERT_OK(subplan->pickBestPlan(&yieldPolicy));
     }
 };
@@ -149,7 +159,10 @@ public:
 
         Collection* collection = ctx.getCollection();
 
-        auto statusWithCQ = CanonicalQuery::canonicalize(nss, query);
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        qr->setFilter(query);
+        auto statusWithCQ = CanonicalQuery::canonicalize(
+            txn(), std::move(qr), ExtensionsCallbackDisallowExtensions());
         ASSERT_OK(statusWithCQ.getStatus());
         std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
@@ -161,7 +174,7 @@ public:
         std::unique_ptr<SubplanStage> subplan(
             new SubplanStage(&_txn, collection, &ws, plannerParams, cq.get()));
 
-        PlanYieldPolicy yieldPolicy(NULL, PlanExecutor::YIELD_MANUAL);
+        PlanYieldPolicy yieldPolicy(PlanExecutor::YIELD_MANUAL, _clock);
         ASSERT_OK(subplan->pickBestPlan(&yieldPolicy));
 
         // Nothing is in the cache yet, so neither branch should have been planned from
@@ -204,7 +217,10 @@ public:
 
         Collection* collection = ctx.getCollection();
 
-        auto statusWithCQ = CanonicalQuery::canonicalize(nss, query);
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        qr->setFilter(query);
+        auto statusWithCQ = CanonicalQuery::canonicalize(
+            txn(), std::move(qr), ExtensionsCallbackDisallowExtensions());
         ASSERT_OK(statusWithCQ.getStatus());
         std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
@@ -216,7 +232,7 @@ public:
         std::unique_ptr<SubplanStage> subplan(
             new SubplanStage(&_txn, collection, &ws, plannerParams, cq.get()));
 
-        PlanYieldPolicy yieldPolicy(nullptr, PlanExecutor::YIELD_MANUAL);
+        PlanYieldPolicy yieldPolicy(PlanExecutor::YIELD_MANUAL, _clock);
         ASSERT_OK(subplan->pickBestPlan(&yieldPolicy));
 
         // Nothing is in the cache yet, so neither branch should have been planned from
@@ -260,7 +276,10 @@ public:
 
         Collection* collection = ctx.getCollection();
 
-        auto statusWithCQ = CanonicalQuery::canonicalize(nss, query);
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        qr->setFilter(query);
+        auto statusWithCQ = CanonicalQuery::canonicalize(
+            txn(), std::move(qr), ExtensionsCallbackDisallowExtensions());
         ASSERT_OK(statusWithCQ.getStatus());
         std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
@@ -272,7 +291,7 @@ public:
         std::unique_ptr<SubplanStage> subplan(
             new SubplanStage(&_txn, collection, &ws, plannerParams, cq.get()));
 
-        PlanYieldPolicy yieldPolicy(nullptr, PlanExecutor::YIELD_MANUAL);
+        PlanYieldPolicy yieldPolicy(PlanExecutor::YIELD_MANUAL, _clock);
         ASSERT_OK(subplan->pickBestPlan(&yieldPolicy));
 
         // Nothing is in the cache yet, so neither branch should have been planned from
@@ -441,7 +460,9 @@ public:
         // Rewrite (AND (OR a b) e) => (OR (AND a e) (AND b e))
         {
             BSONObj queryObj = fromjson("{$or:[{a:1}, {b:1}], e:1}");
-            StatusWithMatchExpression expr = MatchExpressionParser::parse(queryObj);
+            const CollatorInterface* collator = nullptr;
+            StatusWithMatchExpression expr = MatchExpressionParser::parse(
+                queryObj, ExtensionsCallbackDisallowExtensions(), collator);
             ASSERT_OK(expr.getStatus());
             std::unique_ptr<MatchExpression> rewrittenExpr =
                 SubplanStage::rewriteToRootedOr(std::move(expr.getValue()));
@@ -457,7 +478,9 @@ public:
         // Rewrite (AND (OR a b) e f) => (OR (AND a e f) (AND b e f))
         {
             BSONObj queryObj = fromjson("{$or:[{a:1}, {b:1}], e:1, f:1}");
-            StatusWithMatchExpression expr = MatchExpressionParser::parse(queryObj);
+            const CollatorInterface* collator = nullptr;
+            StatusWithMatchExpression expr = MatchExpressionParser::parse(
+                queryObj, ExtensionsCallbackDisallowExtensions(), collator);
             ASSERT_OK(expr.getStatus());
             std::unique_ptr<MatchExpression> rewrittenExpr =
                 SubplanStage::rewriteToRootedOr(std::move(expr.getValue()));
@@ -473,7 +496,9 @@ public:
         // Rewrite (AND (OR (AND a b) (AND c d) e f) => (OR (AND a b e f) (AND c d e f))
         {
             BSONObj queryObj = fromjson("{$or:[{a:1,b:1}, {c:1,d:1}], e:1,f:1}");
-            StatusWithMatchExpression expr = MatchExpressionParser::parse(queryObj);
+            const CollatorInterface* collator = nullptr;
+            StatusWithMatchExpression expr = MatchExpressionParser::parse(
+                queryObj, ExtensionsCallbackDisallowExtensions(), collator);
             ASSERT_OK(expr.getStatus());
             std::unique_ptr<MatchExpression> rewrittenExpr =
                 SubplanStage::rewriteToRootedOr(std::move(expr.getValue()));
@@ -507,7 +532,10 @@ public:
         insert(BSON("_id" << 3 << "a" << 1 << "c" << 3));
         insert(BSON("_id" << 4 << "a" << 1 << "c" << 4));
 
-        auto cq = unittest::assertGet(CanonicalQuery::canonicalize(nss, query));
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        qr->setFilter(query);
+        auto cq = unittest::assertGet(CanonicalQuery::canonicalize(
+            txn(), std::move(qr), ExtensionsCallbackDisallowExtensions()));
 
         Collection* collection = ctx.getCollection();
 
@@ -520,7 +548,7 @@ public:
             new SubplanStage(&_txn, collection, &ws, plannerParams, cq.get()));
 
         // Plan selection should succeed due to falling back on regular planning.
-        PlanYieldPolicy yieldPolicy(nullptr, PlanExecutor::YIELD_MANUAL);
+        PlanYieldPolicy yieldPolicy(PlanExecutor::YIELD_MANUAL, _clock);
         ASSERT_OK(subplan->pickBestPlan(&yieldPolicy));
 
         // Work the stage until it produces all results.
@@ -536,8 +564,10 @@ public:
                 ++numResults;
                 WorkingSetMember* member = ws.get(id);
                 ASSERT(member->hasObj());
-                ASSERT(member->obj.value() == BSON("_id" << 1 << "a" << 1 << "b" << 2) ||
-                       member->obj.value() == BSON("_id" << 3 << "a" << 1 << "c" << 3));
+                ASSERT(SimpleBSONObjComparator::kInstance.evaluate(
+                           member->obj.value() == BSON("_id" << 1 << "a" << 1 << "b" << 2)) ||
+                       SimpleBSONObjComparator::kInstance.evaluate(
+                           member->obj.value() == BSON("_id" << 3 << "a" << 1 << "c" << 3)));
             }
         }
 
@@ -563,10 +593,11 @@ public:
         insert(BSON("_id" << 3 << "a" << 3));
         insert(BSON("_id" << 4));
 
-        BSONObj query = fromjson("{$or: [{a: 1}, {a: {$ne:1}}]}");
-        BSONObj sort = BSON("d" << 1);
-        BSONObj projection;
-        auto cq = unittest::assertGet(CanonicalQuery::canonicalize(nss, query, sort, projection));
+        auto qr = stdx::make_unique<QueryRequest>(nss);
+        qr->setFilter(fromjson("{$or: [{a: 1}, {a: {$ne:1}}]}"));
+        qr->setSort(BSON("d" << 1));
+        auto cq = unittest::assertGet(CanonicalQuery::canonicalize(
+            txn(), std::move(qr), ExtensionsCallbackDisallowExtensions()));
 
         Collection* collection = ctx.getCollection();
 
@@ -577,7 +608,7 @@ public:
         std::unique_ptr<SubplanStage> subplan(
             new SubplanStage(&_txn, collection, &ws, plannerParams, cq.get()));
 
-        PlanYieldPolicy yieldPolicy(nullptr, PlanExecutor::YIELD_MANUAL);
+        PlanYieldPolicy yieldPolicy(PlanExecutor::YIELD_MANUAL, _clock);
         ASSERT_OK(subplan->pickBestPlan(&yieldPolicy));
 
         size_t numResults = 0;

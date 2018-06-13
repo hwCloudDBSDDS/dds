@@ -32,6 +32,7 @@
 
 #include "mongo/db/storage/ephemeral_for_test/ephemeral_for_test_recovery_unit.h"
 
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/util/log.h"
 
@@ -65,5 +66,9 @@ void EphemeralForTestRecoveryUnit::abortUnitOfWork() {
     } catch (...) {
         std::terminate();
     }
+}
+
+Status EphemeralForTestRecoveryUnit::setReadFromMajorityCommittedSnapshot() {
+    return Status::OK();
 }
 }

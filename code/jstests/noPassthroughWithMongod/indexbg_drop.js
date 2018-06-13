@@ -39,14 +39,12 @@ var secondId = replTest.getNodeId(second);
 var masterDB = master.getDB(dbname);
 var secondDB = second.getDB(dbname);
 
-var dc = {
-    dropIndexes: collection,
-    index: "i_1"
-};
+var dc = {dropIndexes: collection, index: "i_1"};
 
 // set up collections
 masterDB.dropDatabase();
 jsTest.log("creating test data " + size + " documents");
+Random.setRandomSeed();
 var bulk = masterDB.getCollection(collection).initializeUnorderedBulkOp();
 for (i = 0; i < size; ++i) {
     bulk.insert({i: Random.rand()});
@@ -86,7 +84,7 @@ assert.soon(function() {
 jsTest.log("dropping index");
 masterDB.runCommand({dropIndexes: collection, index: "*"});
 jsTest.log("Waiting on replication");
-replTest.awaitReplication(60000);
+replTest.awaitReplication();
 
 print("index list on master:");
 masterDB.getCollection(collection).getIndexes().forEach(printjson);

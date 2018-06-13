@@ -34,14 +34,14 @@
 
 #include "mongo/shell/bench.h"
 
-#include <pcrecpp.h>
 #include <iostream>
+#include <pcrecpp.h>
 
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/getmore_request.h"
-#include "mongo/db/query/lite_parsed_query.h"
+#include "mongo/db/query/query_request.h"
 #include "mongo/scripting/bson_template_evaluator.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/stdx/thread.h"
@@ -77,7 +77,6 @@ namespace mongo {
 
 using std::unique_ptr;
 using std::cout;
-using std::endl;
 using std::map;
 
 const std::map<OpType, std::string> opTypeName{{OpType::NONE, "none"},
@@ -198,7 +197,7 @@ BenchRunOp opFromBson(const BSONObj& op) {
             myOp.useCheck = true;
             myOp.check = arg;
             uassert(
-                34403,
+                34420,
                 str::stream()
                     << "Check field requires type CodeWScoe, Code, or String, instead its type is: "
                     << typeName(myOp.check.type()),
@@ -322,7 +321,8 @@ BenchRunOp opFromBson(const BSONObj& op) {
         } else if (name == "query") {
             uassert(34389,
                     str::stream() << "Field 'query' is only valid for findOne, find, update, and "
-                                     "remove types. Type is " << opType,
+                                     "remove types. Type is "
+                                  << opType,
                     (opType == "findOne") || (opType == "query") ||
                         (opType == "find" || (opType == "update") || (opType == "delete") ||
                          (opType == "remove")));
@@ -485,7 +485,7 @@ DBClientBase* BenchRunConfig::createConnection() const {
     const ConnectionString connectionString = uassertStatusOK(ConnectionString::parse(host));
 
     std::string errorMessage;
-    DBClientBase* connection = connectionString.connect(errorMessage);
+    DBClientBase* connection = connectionString.connect("BenchRun", errorMessage);
     uassert(16158, errorMessage, connection != NULL);
 
     return connection;
@@ -614,22 +614,22 @@ bool BenchRunWorker::shouldCollectStats() const {
 void doNothing(const BSONObj&) {}
 
 /**
- * Issues the query 'lpq' against 'conn' using read commands. Returns the size of the result set
+ * Issues the query 'qr' against 'conn' using read commands. Returns the size of the result set
  * returned by the query.
  *
- * If 'lpq' has the 'wantMore' flag set to false and the 'limit' option set to 1LL, then the caller
+ * If 'qr' has the 'wantMore' flag set to false and the 'limit' option set to 1LL, then the caller
  * may optionally specify a pointer to an object in 'objOut', which will be filled in with the
  * single object in the query result set (or the empty object, if the result set is empty).
- * If 'lpq' doesn't have these options set, then nullptr must be passed for 'objOut'.
+ * If 'qr' doesn't have these options set, then nullptr must be passed for 'objOut'.
  *
  * On error, throws a UserException.
  */
 int runQueryWithReadCommands(DBClientBase* conn,
-                             unique_ptr<LiteParsedQuery> lpq,
+                             unique_ptr<QueryRequest> qr,
                              BSONObj* objOut = nullptr) {
-    std::string dbName = lpq->nss().db().toString();
+    std::string dbName = qr->nss().db().toString();
     BSONObj findCommandResult;
-    bool res = conn->runCommand(dbName, lpq->asFindCommand(), findCommandResult);
+    bool res = conn->runCommand(dbName, qr->asFindCommand(), findCommandResult);
     uassert(ErrorCodes::CommandFailed,
             str::stream() << "find command failed; reply was: " << findCommandResult,
             res);
@@ -639,7 +639,7 @@ int runQueryWithReadCommands(DBClientBase* conn,
     int count = cursorResponse.getBatch().size();
 
     if (objOut) {
-        invariant(lpq->getLimit() && *lpq->getLimit() == 1 && !lpq->wantMore());
+        invariant(qr->getLimit() && *qr->getLimit() == 1 && !qr->wantMore());
         // Since this is a "single batch" query, we can simply grab the first item in the result set
         // and return here.
         *objOut = (count > 0) ? cursorResponse.getBatch()[0] : BSONObj();
@@ -647,9 +647,9 @@ int runQueryWithReadCommands(DBClientBase* conn,
     }
 
     while (cursorResponse.getCursorId() != 0) {
-        GetMoreRequest getMoreRequest(lpq->nss(),
+        GetMoreRequest getMoreRequest(qr->nss(),
                                       cursorResponse.getCursorId(),
-                                      lpq->getBatchSize(),
+                                      qr->getBatchSize(),
                                       boost::none,   // maxTimeMS
                                       boost::none,   // term
                                       boost::none);  // lastKnownCommittedOpTime
@@ -680,19 +680,19 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
         }
     }
 
+    unique_ptr<Scope> scope{getGlobalScriptEngine()->newScopeForCurrentThread()};
+    verify(scope.get());
+
     while (!shouldStop()) {
-        for (auto op : _config->ops) {
+        for (const auto& op : _config->ops) {
             if (shouldStop())
                 break;
             auto& stats = shouldCollectStats() ? _stats : _statsBlackHole;
 
-            unique_ptr<Scope> scope;
             ScriptingFunction scopeFunc = 0;
             BSONObj scopeObj;
             if (op.useCheck) {
                 auto check = op.check;
-                scope = globalScriptEngine->getPooledScope(NULL, op.ns, "benchrun");
-                verify(scope.get());
 
                 if (check.type() == CodeWScope) {
                     scopeFunc = scope->createFunction(check.codeWScopeCode());
@@ -713,20 +713,15 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                         BSONObj fixedQuery = fixQuery(op.query, bsonTemplateEvaluator);
                         BSONObj result;
                         if (op.useReadCmd) {
-                            unique_ptr<LiteParsedQuery> lpq =
-                                LiteParsedQuery::makeAsFindCmd(NamespaceString(op.ns),
-                                                               fixedQuery,
-                                                               op.projection,  // projection
-                                                               BSONObj(),      // sort
-                                                               BSONObj(),      // hint
-                                                               BSONObj(),      // readConcern
-                                                               boost::none,    // skip
-                                                               1LL,            // limit
-                                                               boost::none,    // batchSize
-                                                               boost::none,    // ntoreturn
-                                                               false);         // wantMore
+                            auto qr = stdx::make_unique<QueryRequest>(NamespaceString(op.ns));
+                            qr->setFilter(fixedQuery);
+                            qr->setProj(op.projection);
+                            qr->setLimit(1LL);
+                            qr->setWantMore(false);
+                            invariantOK(qr->validate());
+
                             BenchRunEventTrace _bret(&stats.findOneCounter);
-                            runQueryWithReadCommands(conn, std::move(lpq), &result);
+                            runQueryWithReadCommands(conn, std::move(qr), &result);
                         } else {
                             BenchRunEventTrace _bret(&stats.findOneCounter);
                             result = conn->findOne(op.ns, fixedQuery);
@@ -736,7 +731,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                             int err = scope->invoke(scopeFunc, 0, &result, 1000 * 60, false);
                             if (err) {
                                 log() << "Error checking in benchRun thread [findOne]"
-                                      << causedBy(scope->getError()) << endl;
+                                      << causedBy(scope->getError());
 
                                 stats.errCount++;
 
@@ -745,7 +740,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                         }
 
                         if (!_config->hideResults || op.showResult)
-                            log() << "Result from benchRun thread [findOne] : " << result << endl;
+                            log() << "Result from benchRun thread [findOne] : " << result;
                     } break;
                     case OpType::COMMAND: {
                         bool ok;
@@ -793,11 +788,11 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                             int err = scope->invoke(scopeFunc, 0, &result, 1000 * 60, false);
                             if (err) {
                                 log() << "Error checking in benchRun thread [command]"
-                                      << causedBy(scope->getError()) << endl;
+                                      << causedBy(scope->getError());
                                 int err = scope->invoke(scopeFunc, 0, &result, 1000 * 60, false);
                                 if (err) {
                                     log() << "Error checking in benchRun thread [command]"
-                                          << causedBy(scope->getError()) << endl;
+                                          << causedBy(scope->getError());
 
                                     stats.errCount++;
 
@@ -806,8 +801,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                             }
 
                             if (!_config->hideResults || op.showResult)
-                                log() << "Result from benchRun thread [command] : " << result
-                                      << endl;
+                                log() << "Result from benchRun thread [command] : " << result;
                         }
                     } break;
                     case OpType::FIND: {
@@ -819,19 +813,23 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                             uassert(28824,
                                     "cannot use 'options' in combination with read commands",
                                     !op.options);
-                            unique_ptr<LiteParsedQuery> lpq = LiteParsedQuery::makeAsFindCmd(
-                                NamespaceString(op.ns),
-                                fixedQuery,
-                                op.projection,
-                                BSONObj(),  // sort
-                                BSONObj(),  // hint
-                                BSONObj(),  // readConcern
-                                op.skip ? boost::optional<long long>(op.skip) : boost::none,
-                                op.limit ? boost::optional<long long>(op.limit) : boost::none,
-                                op.batchSize ? boost::optional<long long>(op.batchSize)
-                                             : boost::none);
+
+                            auto qr = stdx::make_unique<QueryRequest>(NamespaceString(op.ns));
+                            qr->setFilter(fixedQuery);
+                            qr->setProj(op.projection);
+                            if (op.skip) {
+                                qr->setSkip(op.skip);
+                            }
+                            if (op.limit) {
+                                qr->setLimit(op.limit);
+                            }
+                            if (op.batchSize) {
+                                qr->setBatchSize(op.batchSize);
+                            }
+                            invariantOK(qr->validate());
+
                             BenchRunEventTrace _bret(&stats.queryCounter);
-                            count = runQueryWithReadCommands(conn, std::move(lpq));
+                            count = runQueryWithReadCommands(conn, std::move(qr));
                         } else {
                             // Use special query function for exhaust query option.
                             if (op.options & QueryOption_Exhaust) {
@@ -854,8 +852,8 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                         }
 
                         if (op.expected >= 0 && count != op.expected) {
-                            cout << "bench query on: " << op.ns << " expected: " << op.expected
-                                 << " got: " << count << endl;
+                            log() << "bench query on: " << op.ns << " expected: " << op.expected
+                                  << " got: " << count;
                             verify(false);
                         }
 
@@ -864,7 +862,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                             int err = scope->invoke(scopeFunc, 0, &thisValue, 1000 * 60, false);
                             if (err) {
                                 log() << "Error checking in benchRun thread [find]"
-                                      << causedBy(scope->getError()) << endl;
+                                      << causedBy(scope->getError());
 
                                 stats.errCount++;
 
@@ -873,7 +871,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                         }
 
                         if (!_config->hideResults || op.showResult)
-                            log() << "Result from benchRun thread [query] : " << count << endl;
+                            log() << "Result from benchRun thread [query] : " << count;
                     } break;
                     case OpType::UPDATE: {
                         BSONObj result;
@@ -887,8 +885,9 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                                 BSONObjBuilder builder;
                                 builder.append("update", nsToCollectionSubstring(op.ns));
                                 BSONArrayBuilder docBuilder(builder.subarrayStart("updates"));
-                                docBuilder.append(BSON("q" << query << "u" << update << "multi"
-                                                           << op.multi << "upsert" << op.upsert));
+                                docBuilder.append(BSON(
+                                    "q" << query << "u" << update << "multi" << op.multi << "upsert"
+                                        << op.upsert));
                                 docBuilder.done();
                                 builder.append("writeConcern", op.writeConcern);
                                 conn->runCommand(nsToDatabaseSubstring(op.ns).toString(),
@@ -906,7 +905,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                                 int err = scope->invoke(scopeFunc, 0, &result, 1000 * 60, false);
                                 if (err) {
                                     log() << "Error checking in benchRun thread [update]"
-                                          << causedBy(scope->getError()) << endl;
+                                          << causedBy(scope->getError());
 
                                     stats.errCount++;
 
@@ -915,8 +914,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                             }
 
                             if (!_config->hideResults || op.showResult)
-                                log() << "Result from benchRun thread [safe update] : " << result
-                                      << endl;
+                                log() << "Result from benchRun thread [safe update] : " << result;
 
                             if (!result["err"].eoo() && result["err"].type() == String &&
                                 (_config->throwGLE || op.throwGLE))
@@ -973,7 +971,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                                 int err = scope->invoke(scopeFunc, 0, &result, 1000 * 60, false);
                                 if (err) {
                                     log() << "Error checking in benchRun thread [insert]"
-                                          << causedBy(scope->getError()) << endl;
+                                          << causedBy(scope->getError());
 
                                     stats.errCount++;
 
@@ -982,8 +980,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                             }
 
                             if (!_config->hideResults || op.showResult)
-                                log() << "Result from benchRun thread [safe insert] : " << result
-                                      << endl;
+                                log() << "Result from benchRun thread [safe insert] : " << result;
 
                             if (!result["err"].eoo() && result["err"].type() == String &&
                                 (_config->throwGLE || op.throwGLE))
@@ -1021,7 +1018,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                                 int err = scope->invoke(scopeFunc, 0, &result, 1000 * 60, false);
                                 if (err) {
                                     log() << "Error checking in benchRun thread [delete]"
-                                          << causedBy(scope->getError()) << endl;
+                                          << causedBy(scope->getError());
 
                                     stats.errCount++;
 
@@ -1030,8 +1027,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                             }
 
                             if (!_config->hideResults || op.showResult)
-                                log() << "Result from benchRun thread [safe remove] : " << result
-                                      << endl;
+                                log() << "Result from benchRun thread [safe remove] : " << result;
 
                             if (!result["err"].eoo() && result["err"].type() == String &&
                                 (_config->throwGLE || op.throwGLE))
@@ -1041,7 +1037,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                         }
                     } break;
                     case OpType::CREATEINDEX:
-                        conn->ensureIndex(op.ns, op.key, false, "", false);
+                        conn->createIndex(op.ns, op.key);
                         break;
                     case OpType::DROPINDEX:
                         conn->dropIndex(op.ns, op.key);
@@ -1070,7 +1066,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                          yesWatch) ||  // If we're just watching things
                         (_config->watchPattern && _config->noWatchPattern && yesWatch && !noWatch))
                         log() << "Error in benchRun thread for op "
-                              << opTypeName.find(op.op)->second << causedBy(ex) << endl;
+                              << opTypeName.find(op.op)->second << causedBy(ex);
                 }
 
                 bool yesTrap = (_config->trapPattern && _config->trapPattern->FullMatch(ex.what()));
@@ -1083,7 +1079,8 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                     {
                         stats.trappedErrors.push_back(BSON("error" << ex.what() << "op"
                                                                    << opTypeName.find(op.op)->second
-                                                                   << "count" << count));
+                                                                   << "count"
+                                                                   << count));
                     }
                     if (_config->breakOnTrap)
                         return;
@@ -1095,7 +1092,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
             } catch (...) {
                 if (!_config->hideErrors || op.showError)
                     log() << "Error in benchRun thread caused by unknown error for op "
-                          << opTypeName.find(op.op)->second << endl;
+                          << opTypeName.find(op.op)->second;
                 if (!_config->handleErrors && !op.handleError)
                     return;
 
@@ -1144,11 +1141,11 @@ void BenchRunWorker::run() {
         BenchRunWorkerStateGuard _workerStateGuard(_brState);
         generateLoadOnConnection(conn.get());
     } catch (DBException& e) {
-        error() << "DBException not handled in benchRun thread" << causedBy(e) << endl;
+        error() << "DBException not handled in benchRun thread" << causedBy(e);
     } catch (std::exception& e) {
-        error() << "std::exception not handled in benchRun thread" << causedBy(e) << endl;
+        error() << "std::exception not handled in benchRun thread" << causedBy(e);
     } catch (...) {
-        error() << "Unknown exception not handled in benchRun thread." << endl;
+        error() << "Unknown exception not handled in benchRun thread.";
     }
 }
 
@@ -1170,11 +1167,11 @@ void BenchRunner::start() {
         if (_config->username != "") {
             string errmsg;
             if (!conn->auth("admin", _config->username, _config->password, errmsg)) {
-                uasserted(16704,
-                          str::stream()
-                              << "User " << _config->username
-                              << " could not authenticate to admin db; admin db access is "
-                                 "required to use benchRun with auth enabled");
+                uasserted(
+                    16704,
+                    str::stream() << "User " << _config->username
+                                  << " could not authenticate to admin db; admin db access is "
+                                     "required to use benchRun with auth enabled");
             }
         }
 
@@ -1207,11 +1204,11 @@ void BenchRunner::stop() {
             string errmsg;
             // this can only fail if admin access was revoked since start of run
             if (!conn->auth("admin", _config->username, _config->password, errmsg)) {
-                uasserted(16705,
-                          str::stream()
-                              << "User " << _config->username
-                              << " could not authenticate to admin db; admin db access is "
-                                 "still required to use benchRun with auth enabled");
+                uasserted(
+                    16705,
+                    str::stream() << "User " << _config->username
+                                  << " could not authenticate to admin db; admin db access is "
+                                     "still required to use benchRun with auth enabled");
             }
         }
     }

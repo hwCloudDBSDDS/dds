@@ -45,11 +45,11 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/storage/mmap_v1/dur.h"
+#include "mongo/db/storage/mmap_v1/file_allocator.h"
 #include "mongo/db/storage/mmap_v1/mmap.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_database_catalog_entry.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/util/file.h"
-#include "mongo/db/storage/mmap_v1/file_allocator.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
@@ -95,8 +95,7 @@ void _deleteDataFiles(const std::string& database) {
         virtual const char* op() const {
             return "remove";
         }
-    }
-    deleter;
+    } deleter;
     _applyOpToDataFiles(database, deleter, true);
 }
 
@@ -258,7 +257,7 @@ public:
 
             MONGO_ASSERT_ON_EXCEPTION(boost::filesystem::remove_all(_path));
         } catch (DBException& e) {
-            error() << "RepairFileDeleter failed to cleanup: " << e;
+            error() << "RepairFileDeleter failed to cleanup: " << redact(e);
             error() << "aborting";
             fassertFailed(17402);
         }
@@ -290,9 +289,11 @@ Status MMAPV1Engine::repairDatabase(OperationContext* txn,
 
     if (freeSize > -1 && freeSize < totalSize) {
         return Status(ErrorCodes::OutOfDiskSpace,
-                      str::stream()
-                          << "Cannot repair database " << dbName << " having size: " << totalSize
-                          << " (bytes) because free disk space is: " << freeSize << " (bytes)");
+                      str::stream() << "Cannot repair database " << dbName << " having size: "
+                                    << totalSize
+                                    << " (bytes) because free disk space is: "
+                                    << freeSize
+                                    << " (bytes)");
     }
 
     txn->checkForInterrupt();
@@ -322,7 +323,13 @@ Status MMAPV1Engine::repairDatabase(OperationContext* txn,
 
         {
             dbEntry.reset(new MMAPV1DatabaseCatalogEntry(
-                txn, dbName, reservedPathString, storageGlobalParams.directoryperdb, true));
+                txn,
+                dbName,
+                reservedPathString,
+                storageGlobalParams.directoryperdb,
+                true,
+                _extentManagerFactory->create(
+                    dbName, reservedPathString, storageGlobalParams.directoryperdb)));
             tempDatabase.reset(new Database(txn, dbName, dbEntry.get()));
         }
 
@@ -390,18 +397,19 @@ Status MMAPV1Engine::repairDatabase(OperationContext* txn,
                     indexes.push_back(desc->infoObj());
                 }
 
-                Status status = indexer.init(indexes);
+                Status status = indexer.init(indexes).getStatus();
                 if (!status.isOK()) {
                     return status;
                 }
             }
 
+            std::vector<MultiIndexBlock*> indexers{&indexer};
             auto cursor = originalCollection->getCursor(txn);
             while (auto record = cursor->next()) {
                 BSONObj doc = record->data.releaseToBson();
 
                 WriteUnitOfWork wunit(txn);
-                Status status = tempCollection->insertDocument(txn, doc, &indexer, false);
+                Status status = tempCollection->insertDocument(txn, doc, indexers, false);
                 if (!status.isOK())
                     return status;
 

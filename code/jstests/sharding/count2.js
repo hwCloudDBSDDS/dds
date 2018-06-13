@@ -29,7 +29,7 @@
     s1.adminCommand({
         movechunk: "test.foo",
         find: {name: "aaa"},
-        to: s1.getOther(s1.getServer("test")).name,
+        to: s1.getOther(s1.getPrimaryShard("test")).name,
         _waitForDelete: true
     });
 

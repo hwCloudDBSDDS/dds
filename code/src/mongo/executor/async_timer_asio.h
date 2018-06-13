@@ -29,6 +29,7 @@
 #pragma once
 
 #include <asio.hpp>
+#include <asio/system_timer.hpp>
 
 #include "mongo/executor/async_timer_interface.h"
 
@@ -45,7 +46,7 @@ public:
 
 private:
     asio::io_service::strand* const _strand;
-    asio::steady_timer _timer;
+    asio::system_timer _timer;
 };
 
 class AsyncTimerFactoryASIO final : public AsyncTimerFactoryInterface {
@@ -54,6 +55,8 @@ public:
 
     std::unique_ptr<AsyncTimerInterface> make(asio::io_service::strand* strand,
                                               Milliseconds expiration) override;
+
+    Date_t now() override;
 };
 
 }  // namespace executor

@@ -32,6 +32,7 @@
 
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"
+#include "mongo/base/string_data.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/plan_cache.h"
@@ -75,7 +76,7 @@ public:
     static bool canUseSubplanning(const CanonicalQuery& query);
 
     bool isEOF() final;
-    StageState work(WorkingSetID* out) final;
+    StageState doWork(WorkingSetID* out) final;
 
     StageType stageType() const final {
         return STAGE_SUBPLAN;
@@ -98,7 +99,8 @@ public:
      * works of the candidate plans. By default, 'yieldPolicy' is NULL and no yielding will
      * take place.
      *
-     * Returns a non-OK status if the plan was killed during yield or if planning fails.
+     * Returns a non-OK status if query planning fails. In particular, this function returns
+     * ErrorCodes::QueryPlanKilled if the query plan was killed during a yield.
      */
     Status pickBestPlan(PlanYieldPolicy* yieldPolicy);
 
@@ -124,6 +126,14 @@ public:
      * otherwise returns false.
      */
     bool branchPlannedFromCache(size_t i) const;
+
+    /**
+     * Provide access to the query solution for our composite solution. Does not relinquish
+     * ownership.
+     */
+    QuerySolution* compositeSolution() const {
+        return _compositeSolution.get();
+    }
 
 private:
     /**
@@ -196,7 +206,7 @@ private:
     OwnedPointerVector<BranchPlanningResult> _branchResults;
 
     // We need this to extract cache-friendly index data from the index assignments.
-    std::map<BSONObj, size_t> _indexMap;
+    std::map<StringData, size_t> _indexMap;
 };
 
 }  // namespace mongo

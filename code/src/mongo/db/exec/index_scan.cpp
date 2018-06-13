@@ -71,16 +71,22 @@ IndexScan::IndexScan(OperationContext* txn,
       _shouldDedup(true),
       _forward(params.direction == 1),
       _params(params),
-      _endKeyInclusive(false) {
+      _startKeyInclusive(IndexBounds::isStartIncludedInBound(params.bounds.boundInclusion)),
+      _endKeyInclusive(IndexBounds::isEndIncludedInBound(params.bounds.boundInclusion)) {
     // We can't always access the descriptor in the call to getStats() so we pull
     // any info we need for stats reporting out here.
     _specificStats.keyPattern = _keyPattern;
+    if (BSONElement collationElement = _params.descriptor->getInfoElement("collation")) {
+        invariant(collationElement.isABSONObj());
+        _specificStats.collation = collationElement.Obj().getOwned();
+    }
     _specificStats.indexName = _params.descriptor->indexName();
     _specificStats.isMultiKey = _params.descriptor->isMultikey(getOpCtx());
+    _specificStats.multiKeyPaths = _params.descriptor->getMultikeyPaths(getOpCtx());
     _specificStats.isUnique = _params.descriptor->unique();
     _specificStats.isSparse = _params.descriptor->isSparse();
     _specificStats.isPartial = _params.descriptor->isPartial();
-    _specificStats.indexVersion = _params.descriptor->version();
+    _specificStats.indexVersion = static_cast<int>(_params.descriptor->version());
 }
 
 boost::optional<IndexKeyEntry> IndexScan::initIndexScan() {
@@ -94,22 +100,23 @@ boost::optional<IndexKeyEntry> IndexScan::initIndexScan() {
     // Perform the possibly heavy-duty initialization of the underlying index cursor.
     _indexCursor = _iam->newCursor(getOpCtx(), _forward);
 
+    // We always seek once to establish the cursor position.
+    ++_specificStats.seeks;
+
     if (_params.bounds.isSimpleRange) {
         // Start at one key, end at another.
+        _startKey = _params.bounds.startKey;
         _endKey = _params.bounds.endKey;
-        _endKeyInclusive = _params.bounds.endKeyInclusive;
         _indexCursor->setEndPosition(_endKey, _endKeyInclusive);
-        return _indexCursor->seek(_params.bounds.startKey, /*inclusive*/ true);
+        return _indexCursor->seek(_startKey, _startKeyInclusive);
     } else {
         // For single intervals, we can use an optimized scan which checks against the position
         // of an end cursor.  For all other index scans, we fall back on using
         // IndexBoundsChecker to determine when we've finished the scan.
-        BSONObj startKey;
-        bool startKeyInclusive;
         if (IndexBoundsBuilder::isSingleInterval(
-                _params.bounds, &startKey, &startKeyInclusive, &_endKey, &_endKeyInclusive)) {
+                _params.bounds, &_startKey, &_startKeyInclusive, &_endKey, &_endKeyInclusive)) {
             _indexCursor->setEndPosition(_endKey, _endKeyInclusive);
-            return _indexCursor->seek(startKey, startKeyInclusive);
+            return _indexCursor->seek(_startKey, _startKeyInclusive);
         } else {
             _checker.reset(new IndexBoundsChecker(&_params.bounds, _keyPattern, _params.direction));
 
@@ -121,12 +128,7 @@ boost::optional<IndexKeyEntry> IndexScan::initIndexScan() {
     }
 }
 
-PlanStage::StageState IndexScan::work(WorkingSetID* out) {
-    ++_commonStats.works;
-
-    // Adds the amount of time taken by work() to executionTimeMillis.
-    ScopedTimer timer(&_commonStats.executionTimeMillis);
-
+PlanStage::StageState IndexScan::doWork(WorkingSetID* out) {
     // Get the next kv pair from the index, if any.
     boost::optional<IndexKeyEntry> kv;
     try {
@@ -138,6 +140,7 @@ PlanStage::StageState IndexScan::work(WorkingSetID* out) {
                 kv = _indexCursor->next();
                 break;
             case NEED_SEEK:
+                ++_specificStats.seeks;
                 kv = _indexCursor->seek(_seekPoint);
                 break;
             case HIT_END:
@@ -150,6 +153,15 @@ PlanStage::StageState IndexScan::work(WorkingSetID* out) {
 
     if (kv) {
         // In debug mode, check that the cursor isn't lying to us.
+        if (kDebugBuild && !_startKey.isEmpty()) {
+            int cmp = kv->key.woCompare(_startKey,
+                                        Ordering::make(_params.descriptor->keyPattern()),
+                                        /*compareFieldNames*/ false);
+            if (cmp == 0)
+                dassert(_startKeyInclusive);
+            dassert(_forward ? cmp >= 0 : cmp <= 0);
+        }
+
         if (kDebugBuild && !_endKey.isEmpty()) {
             int cmp = kv->key.woCompare(_endKey,
                                         Ordering::make(_params.descriptor->keyPattern()),
@@ -176,7 +188,6 @@ PlanStage::StageState IndexScan::work(WorkingSetID* out) {
 
             case IndexBoundsChecker::MUST_ADVANCE:
                 _scanState = NEED_SEEK;
-                _commonStats.needTime++;
                 return PlanStage::NEED_TIME;
         }
     }
@@ -195,14 +206,12 @@ PlanStage::StageState IndexScan::work(WorkingSetID* out) {
         if (!_returned.insert(kv->loc).second) {
             // We've seen this RecordId before. Skip it this time.
             ++_specificStats.dupsDropped;
-            ++_commonStats.needTime;
             return PlanStage::NEED_TIME;
         }
     }
 
     if (_filter) {
         if (!Filter::passes(kv->key, _keyPattern, _filter)) {
-            ++_commonStats.needTime;
             return PlanStage::NEED_TIME;
         }
     }
@@ -213,9 +222,9 @@ PlanStage::StageState IndexScan::work(WorkingSetID* out) {
     // We found something to return, so fill out the WSM.
     WorkingSetID id = _workingSet->allocate();
     WorkingSetMember* member = _workingSet->get(id);
-    member->loc = kv->loc;
+    member->recordId = kv->loc;
     member->keyData.push_back(IndexKeyDatum(_keyPattern, kv->key, _iam));
-    _workingSet->transitionToLocAndIdx(id);
+    _workingSet->transitionToRecordIdAndIdx(id);
 
     if (_params.addKeyMetadata) {
         BSONObjBuilder bob;
@@ -224,7 +233,6 @@ PlanStage::StageState IndexScan::work(WorkingSetID* out) {
     }
 
     *out = id;
-    ++_commonStats.advanced;
     return PlanStage::ADVANCED;
 }
 
@@ -282,7 +290,7 @@ std::unique_ptr<PlanStageStats> IndexScan::getStats() {
     // Add a BSON representation of the filter to the stats tree, if there is one.
     if (NULL != _filter) {
         BSONObjBuilder bob;
-        _filter->toBSON(&bob);
+        _filter->serialize(&bob);
         _commonStats.filter = bob.obj();
     }
 

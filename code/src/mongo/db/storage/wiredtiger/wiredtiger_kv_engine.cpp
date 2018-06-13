@@ -31,9 +31,13 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
+#include "mongo/platform/basic.h"
+
 #ifdef _WIN32
 #define NVALGRIND
 #endif
+
+#include <memory>
 
 #include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
 
@@ -43,16 +47,19 @@
 
 #include "mongo/base/error_codes.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/client.h"
+#include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
-#include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/journal_listener.h"
+#include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_customization_hooks.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_extensions.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_global_options.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_index.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
@@ -60,11 +67,11 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_size_storer.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
-#include "mongo/db/storage/storage_options.h"
-#include "mongo/util/log.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/background.h"
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/util/exit.h"
+#include "mongo/util/log.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/time_support.h"
@@ -77,6 +84,8 @@ namespace mongo {
 
 using std::set;
 using std::string;
+
+namespace dps = ::mongo::dotted_path_support;
 
 class WiredTigerKVEngine::WiredTigerJournalFlusher : public BackgroundJob {
 public:
@@ -170,17 +179,20 @@ TicketServerParameter openReadTransactionParam(&openReadTransaction,
 
 WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
                                        const std::string& path,
+                                       ClockSource* cs,
                                        const std::string& extraOpenOptions,
-                                       size_t cacheSizeGB,
+                                       size_t cacheSizeMB,
                                        bool durable,
                                        bool ephemeral,
-                                       bool repair)
+                                       bool repair,
+                                       bool readOnly)
     : _eventHandler(WiredTigerUtil::defaultEventHandlers()),
       _canonicalName(canonicalName),
       _path(path),
-      _sizeStorerSyncTracker(100000, 60 * 1000),
+      _sizeStorerSyncTracker(cs, 100000, Seconds(60)),
       _durable(durable),
-      _ephemeral(ephemeral) {
+      _ephemeral(ephemeral),
+      _readOnly(readOnly) {
     boost::filesystem::path journalPath = path;
     journalPath /= "journal";
     if (_durable) {
@@ -198,7 +210,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
 
     std::stringstream ss;
     ss << "create,";
-    ss << "cache_size=" << cacheSizeGB << "G,";
+    ss << "cache_size=" << cacheSizeMB << "M,";
     ss << "session_max=20000,";
     ss << "eviction=(threads_max=4),";
     ss << "config_base=false,";
@@ -206,15 +218,24 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
     // The setting may have a later setting override it if not using the journal.  We make it
     // unconditional here because even nojournal may need this setting if it is a transition
     // from using the journal.
-    ss << "log=(enabled=true,archive=true,path=journal,compressor=";
-    ss << wiredTigerGlobalOptions.journalCompressor << "),";
-    ss << "file_manager=(close_idle_time=100000),";  //~28 hours, will put better fix in 3.1.x
-    ss << "checkpoint=(wait=" << wiredTigerGlobalOptions.checkpointDelaySecs;
-    ss << ",log_size=2GB),";
-    ss << "statistics_log=(wait=" << wiredTigerGlobalOptions.statisticsLogDelaySecs << "),";
-    ss << WiredTigerCustomizationHooks::get(getGlobalServiceContext())->getOpenConfig("system");
+    if (!_readOnly) {
+        // If we're readOnly skip all WAL-related settings.
+        ss << "log=(enabled=true,archive=true,path=journal,compressor=";
+        ss << wiredTigerGlobalOptions.journalCompressor << "),";
+        ss << "file_manager=(close_idle_time=100000),";  //~28 hours, will put better fix in 3.1.x
+        ss << "checkpoint=(wait=" << wiredTigerGlobalOptions.checkpointDelaySecs;
+        ss << ",log_size=2GB),";
+        ss << "statistics_log=(wait=" << wiredTigerGlobalOptions.statisticsLogDelaySecs << "),";
+    }
+    ss << WiredTigerCustomizationHooks::get(getGlobalServiceContext())
+              ->getTableCreateConfig("system");
+    ss << WiredTigerExtensions::get(getGlobalServiceContext())->getOpenExtensionsConfig();
     ss << extraOpenOptions;
-    if (!_durable) {
+    if (_readOnly) {
+        invariant(!_durable);
+        ss << "readonly=true,";
+    }
+    if (!_durable && !_readOnly) {
         // If we started without the journal, but previously used the journal then open with the
         // WT log enabled to perform any unclean shutdown recovery and then close and reopen in
         // the normal path without the journal.
@@ -248,21 +269,19 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
 
     _sessionCache.reset(new WiredTigerSessionCache(this));
 
-    if (_durable) {
+    if (_durable && !_ephemeral) {
         _journalFlusher = stdx::make_unique<WiredTigerJournalFlusher>(_sessionCache.get());
         _journalFlusher->go();
     }
 
     _sizeStorerUri = "table:sizeStorer";
-    {
-        WiredTigerSession session(_conn);
-        if (repair && _hasUri(session.getSession(), _sizeStorerUri)) {
-            log() << "Repairing size cache";
-            fassertNoTrace(28577, _salvageIfNeeded(_sizeStorerUri.c_str()));
-        }
-        _sizeStorer.reset(new WiredTigerSizeStorer(_conn, _sizeStorerUri));
-        _sizeStorer->fillCache();
+    WiredTigerSession session(_conn);
+    if (!_readOnly && repair && _hasUri(session.getSession(), _sizeStorerUri)) {
+        log() << "Repairing size cache";
+        fassertNoTrace(28577, _salvageIfNeeded(_sizeStorerUri.c_str()));
     }
+    _sizeStorer.reset(new WiredTigerSizeStorer(_conn, _sizeStorerUri));
+    _sizeStorer->fillCache();
 
     Locker::setGlobalThrottling(&openReadTransaction, &openWriteTransaction);
 }
@@ -297,7 +316,8 @@ void WiredTigerKVEngine::appendGlobalStats(BSONObjBuilder& b) {
 
 void WiredTigerKVEngine::cleanShutdown() {
     log() << "WiredTigerKVEngine shutting down";
-    syncSizeInfo(true);
+    if (!_readOnly)
+        syncSizeInfo(true);
     if (_conn) {
         // these must be the last things we do before _conn->close();
         if (_journalFlusher)
@@ -379,6 +399,9 @@ Status WiredTigerKVEngine::_salvageIfNeeded(const char* uri) {
 
 int WiredTigerKVEngine::flushAllFiles(bool sync) {
     LOG(1) << "WiredTigerKVEngine::flushAllFiles";
+    if (_ephemeral) {
+        return 0;
+    }
     syncSizeInfo(true);
     _sessionCache->waitUntilDurable(true);
 
@@ -447,32 +470,33 @@ Status WiredTigerKVEngine::createRecordStore(OperationContext* opCtx,
     return wtRCToStatus(s->create(s, uri.c_str(), config.c_str()));
 }
 
-RecordStore* WiredTigerKVEngine::getRecordStore(OperationContext* opCtx,
-                                                StringData ns,
-                                                StringData ident,
-                                                const CollectionOptions& options) {
+std::unique_ptr<RecordStore> WiredTigerKVEngine::getRecordStore(OperationContext* opCtx,
+                                                                StringData ns,
+                                                                StringData ident,
+                                                                const CollectionOptions& options) {
     if (options.capped) {
-        return new WiredTigerRecordStore(opCtx,
-                                         ns,
-                                         _uri(ident),
-                                         _canonicalName,
-                                         options.capped,
-                                         _ephemeral,
-                                         options.cappedSize ? options.cappedSize : 4096,
-                                         options.cappedMaxDocs ? options.cappedMaxDocs : -1,
-                                         NULL,
-                                         _sizeStorer.get());
+        return stdx::make_unique<WiredTigerRecordStore>(
+            opCtx,
+            ns,
+            _uri(ident),
+            _canonicalName,
+            options.capped,
+            _ephemeral,
+            options.cappedSize ? options.cappedSize : 4096,
+            options.cappedMaxDocs ? options.cappedMaxDocs : -1,
+            nullptr,
+            _sizeStorer.get());
     } else {
-        return new WiredTigerRecordStore(opCtx,
-                                         ns,
-                                         _uri(ident),
-                                         _canonicalName,
-                                         false,
-                                         _ephemeral,
-                                         -1,
-                                         -1,
-                                         NULL,
-                                         _sizeStorer.get());
+        return stdx::make_unique<WiredTigerRecordStore>(opCtx,
+                                                        ns,
+                                                        _uri(ident),
+                                                        _canonicalName,
+                                                        false,
+                                                        _ephemeral,
+                                                        -1,
+                                                        -1,
+                                                        nullptr,
+                                                        _sizeStorer.get());
     }
 }
 
@@ -496,8 +520,9 @@ Status WiredTigerKVEngine::createSortedDataInterface(OperationContext* opCtx,
 
         if (!collOptions.indexOptionDefaults["storageEngine"].eoo()) {
             BSONObj storageEngineOptions = collOptions.indexOptionDefaults["storageEngine"].Obj();
-            collIndexOptions = storageEngineOptions.getFieldDotted(_canonicalName + ".configString")
-                                   .valuestrsafe();
+            collIndexOptions =
+                dps::extractElementAtPath(storageEngineOptions, _canonicalName + ".configString")
+                    .valuestrsafe();
         }
     }
 
@@ -532,8 +557,8 @@ bool WiredTigerKVEngine::_drop(StringData ident) {
 
     WiredTigerSession session(_conn);
 
-    int ret =
-        session.getSession()->drop(session.getSession(), uri.c_str(), "force,lock_wait=false");
+    int ret = session.getSession()->drop(
+        session.getSession(), uri.c_str(), "force,checkpoint_wait=false");
     LOG(1) << "WT drop of  " << uri << " res " << ret;
 
     if (ret == 0) {
@@ -545,9 +570,9 @@ bool WiredTigerKVEngine::_drop(StringData ident) {
         // this is expected, queue it up
         {
             stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
-            _identToDrop.insert(uri);
+            _identToDrop.push(uri);
         }
-        _sessionCache->closeAll();
+        _sessionCache->closeAllCursors();
         return false;
     }
 
@@ -559,13 +584,13 @@ bool WiredTigerKVEngine::haveDropsQueued() const {
     Date_t now = Date_t::now();
     Milliseconds delta = now - _previousCheckedDropsQueued;
 
-    if (_sizeStorerSyncTracker.intervalHasElapsed()) {
+    if (!_readOnly && _sizeStorerSyncTracker.intervalHasElapsed()) {
         _sizeStorerSyncTracker.resetLastTime();
         syncSizeInfo(false);
     }
 
     // We only want to check the queue max once per second or we'll thrash
-    // This is done in haveDropsQueued, not dropAllQueued so we skip the mutex
+    // This is done in haveDropsQueued, not dropSomeQueuedIdents so we skip the mutex
     if (delta < Milliseconds(1000))
         return false;
 
@@ -574,41 +599,40 @@ bool WiredTigerKVEngine::haveDropsQueued() const {
     return !_identToDrop.empty();
 }
 
-void WiredTigerKVEngine::dropAllQueued() {
-    set<string> mine;
+void WiredTigerKVEngine::dropSomeQueuedIdents() {
+    int numInQueue;
+
+    WiredTigerSession session(_conn);
+
     {
         stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
-        mine = _identToDrop;
+        numInQueue = _identToDrop.size();
     }
 
-    set<string> deleted;
+    int numToDelete = 10;
+    int tenPercentQueue = numInQueue * 0.1;
+    if (tenPercentQueue > 10)
+        numToDelete = tenPercentQueue;
 
-    {
-        WiredTigerSession session(_conn);
-        for (set<string>::const_iterator it = mine.begin(); it != mine.end(); ++it) {
-            string uri = *it;
-            int ret = session.getSession()->drop(
-                session.getSession(), uri.c_str(), "force,lock_wait=false");
-            LOG(1) << "WT queued drop of  " << uri << " res " << ret;
-
-            if (ret == 0) {
-                deleted.insert(uri);
-                continue;
-            }
-
-            if (ret == EBUSY) {
-                // leave in qeuue
-                continue;
-            }
-
-            invariantWTOK(ret);
+    LOG(1) << "WT Queue is: " << numInQueue << " attempting to drop: " << numToDelete << " tables";
+    for (int i = 0; i < numToDelete; i++) {
+        string uri;
+        {
+            stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
+            if (_identToDrop.empty())
+                break;
+            uri = _identToDrop.front();
+            _identToDrop.pop();
         }
-    }
+        int ret = session.getSession()->drop(
+            session.getSession(), uri.c_str(), "force,checkpoint_wait=false");
+        LOG(1) << "WT queued drop of  " << uri << " res " << ret;
 
-    {
-        stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
-        for (set<string>::const_iterator it = deleted.begin(); it != deleted.end(); ++it) {
-            _identToDrop.erase(*it);
+        if (ret == EBUSY) {
+            stdx::lock_guard<stdx::mutex> lk(_identToDropMutex);
+            _identToDrop.push(uri);
+        } else {
+            invariantWTOK(ret);
         }
     }
 }

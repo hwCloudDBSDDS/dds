@@ -75,7 +75,7 @@
     s.ensurePrimaryShard('test', 'shard0001');
 
     var db = s.getDB('test');
-    var primary = s.getServer("test").getDB("test");
+    var primary = s.getPrimaryShard("test").getDB("test");
     var secondary = s.getOther(primary).getDB("test");
 
     var curT;
@@ -115,9 +115,7 @@
     function makeInQuery() {
         if (curT.compound) {
             // cheating a bit...
-            return {
-                'o.a': {$in: [1, 2]}
-            };
+            return {'o.a': {$in: [1, 2]}};
         } else {
             return makeObjectDotted({$in: curT.values});
         }
@@ -130,6 +128,8 @@
         }
         return o;
     }
+
+    Random.setRandomSeed();
 
     for (var i = 0; i < types.length; i++) {
         curT = types[i];
@@ -176,26 +176,26 @@
         assert.eq(
             6, c.find().sort(makeObjectDotted(1)).count(), curT.name + " total count with count()");
 
-        assert.eq(
-            2,
-            c.find({$or: [makeObjectDotted(curT.values[2]), makeObjectDotted(curT.values[4])]})
-                .count(),
-            curT.name + " $or count()");
-        assert.eq(
-            2,
-            c.find({$or: [makeObjectDotted(curT.values[2]), makeObjectDotted(curT.values[4])]})
-                .itcount(),
-            curT.name + " $or itcount()");
-        assert.eq(
-            4,
-            c.find({$nor: [makeObjectDotted(curT.values[2]), makeObjectDotted(curT.values[4])]})
-                .count(),
-            curT.name + " $nor count()");
-        assert.eq(
-            4,
-            c.find({$nor: [makeObjectDotted(curT.values[2]), makeObjectDotted(curT.values[4])]})
-                .itcount(),
-            curT.name + " $nor itcount()");
+        assert.eq(2,
+                  c.find({
+                       $or: [makeObjectDotted(curT.values[2]), makeObjectDotted(curT.values[4])]
+                   }).count(),
+                  curT.name + " $or count()");
+        assert.eq(2,
+                  c.find({
+                       $or: [makeObjectDotted(curT.values[2]), makeObjectDotted(curT.values[4])]
+                   }).itcount(),
+                  curT.name + " $or itcount()");
+        assert.eq(4,
+                  c.find({
+                       $nor: [makeObjectDotted(curT.values[2]), makeObjectDotted(curT.values[4])]
+                   }).count(),
+                  curT.name + " $nor count()");
+        assert.eq(4,
+                  c.find({
+                       $nor: [makeObjectDotted(curT.values[2]), makeObjectDotted(curT.values[4])]
+                   }).itcount(),
+                  curT.name + " $nor itcount()");
 
         var stats = c.stats();
         printjson(stats);
@@ -229,7 +229,7 @@
         assert.writeOK(
             c.update(makeObjectDotted(curT.values[3]), {$set: {xx: 17}}, {upsert: true}));
 
-        assert.commandWorked(c.ensureIndex({_id: 1}, {unique: true}));
+        assert.commandWorked(c.ensureIndex({_id: 1}));
 
         // multi update
         var mysum = 0;

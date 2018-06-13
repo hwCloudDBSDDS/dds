@@ -39,6 +39,11 @@
 namespace mongo {
 
 // Tests for Decimal128 constructors
+TEST(Decimal128Test, TestDefaultConstructor) {
+    Decimal128 d;
+    ASSERT_TRUE(d.isBinaryEqual(Decimal128(0)));
+}
+
 TEST(Decimal128Test, TestInt32ConstructorZero) {
     int32_t intZero = 0;
     Decimal128 d(intZero);
@@ -73,7 +78,7 @@ TEST(Decimal128Test, TestInt32ConstructorMin) {
 }
 
 TEST(Decimal128Test, TestInt64ConstructorZero) {
-    long long longZero = 0;
+    int64_t longZero = 0;
     Decimal128 d(longZero);
     Decimal128::Value val = d.getValue();
     // 0x3040000000000000 0000000000000000 = +0E+0
@@ -84,7 +89,7 @@ TEST(Decimal128Test, TestInt64ConstructorZero) {
 }
 
 TEST(Decimal128Test, TestInt64ConstructorMax) {
-    long long longMax = std::numeric_limits<long long>::max();
+    int64_t longMax = std::numeric_limits<long long>::max();
     Decimal128 d(longMax);
     Decimal128::Value val = d.getValue();
     // 0x3040000000000000 7fffffffffffffff = +9223372036854775807E+0
@@ -95,7 +100,7 @@ TEST(Decimal128Test, TestInt64ConstructorMax) {
 }
 
 TEST(Decimal128Test, TestInt64ConstructorMin) {
-    long long longMin = std::numeric_limits<long long>::lowest();
+    int64_t longMin = std::numeric_limits<long long>::lowest();
     Decimal128 d(longMin);
     Decimal128::Value val = d.getValue();
     // 0xb040000000000000 8000000000000000 = -9223372036854775808E+0
@@ -114,7 +119,7 @@ TEST(Decimal128Test, TestDoubleConstructorQuant1) {
 TEST(Decimal128Test, TestDoubleConstructorQuant2) {
     double dbl = 0.1 / 10000;
     Decimal128 d(dbl);
-    ASSERT_EQUALS(d.toString(), "1.00000000000000E-5");
+    ASSERT_EQUALS(d.toString(), "0.0000100000000000000");
 }
 
 TEST(Decimal128Test, TestDoubleConstructorQuant3) {
@@ -185,14 +190,23 @@ TEST(Decimal128Test, TestDoubleConstructorNeg) {
 
 TEST(Decimal128Test, TestDoubleConstructorMaxRoundDown) {
     double doubleMax = DBL_MAX;
-    Decimal128 d(doubleMax, Decimal128::RoundingMode::kRoundTowardNegative);
+    Decimal128 d(
+        doubleMax, Decimal128::kRoundTo15Digits, Decimal128::RoundingMode::kRoundTowardNegative);
     ASSERT_EQUALS(d.toString(), "1.79769313486231E+308");
 }
 
 TEST(Decimal128Test, TestDoubleConstructorMaxRoundUp) {
     double doubleMax = DBL_MAX;
-    Decimal128 d(doubleMax, Decimal128::RoundingMode::kRoundTowardPositive);
+    Decimal128 d(
+        doubleMax, Decimal128::kRoundTo15Digits, Decimal128::RoundingMode::kRoundTowardPositive);
     ASSERT_EQUALS(d.toString(), "1.79769313486232E+308");
+}
+
+TEST(Decimal128Test, TestDoubleConstructorRoundAllNines) {
+    double allNines = 0.999999999999999;  // 15 nines
+    Decimal128 d(
+        allNines, Decimal128::kRoundTo15Digits, Decimal128::RoundingMode::kRoundTiesToAway);
+    ASSERT_EQUALS(d.toString(), "0.999999999999999");  // 15 nines
 }
 
 TEST(Decimal128Test, TestDoubleConstructorMaxNeg) {
@@ -267,6 +281,39 @@ TEST(Decimal128Test, TestStringConstructorNaN) {
     uint64_t lowBytes = 0x0000000000000000;
     ASSERT_EQUALS(val.high64, highBytes);
     ASSERT_EQUALS(val.low64, lowBytes);
+}
+
+TEST(Decimal128Test, TestNonCanonicalDecimal) {
+    // It is possible to encode a significand with more than 34 decimal digits.
+    // Conforming implementations should not generate these, but they must be treated as zero
+    // when encountered. However, the exponent and sign still matter.
+
+    // 0x6c10000000000000 0000000000000000 = non-canonical 0, all ignored bits clear
+    Decimal128 nonCanonical0E0(Decimal128::Value{0, 0x6c10000000000000ull});
+    std::string zeroE0 = nonCanonical0E0.toString();
+    ASSERT_EQUALS(zeroE0, "0");
+
+    // 0xec100000deadbeef 0123456789abcdef = non-canonical -0, random stuff in ignored bits
+    Decimal128 nonCanonicalM0E0(Decimal128::Value{0x0123456789abcdefull, 0xec100000deadbeefull});
+    std::string minusZeroE0 = nonCanonicalM0E0.toString();
+    ASSERT_EQUALS(minusZeroE0, "-0");
+
+    // 0x6c11fffffffffffff ffffffffffffffff = non-canonical 0.000, all ignored bits set
+    Decimal128 nonCanonical0E3(Decimal128::Value{0xffffffffffffffffull, 0x6c11ffffffffffffull});
+    std::string zeroE3 = nonCanonical0E3.toString();
+    ASSERT_EQUALS(zeroE3, "0E+3");
+
+    // Check extraction functions, they should treat this as the corresponding zero as well.
+    ASSERT_EQUALS(nonCanonical0E3.getBiasedExponent(), Decimal128("0E+3").getBiasedExponent());
+    ASSERT_EQUALS(nonCanonical0E3.getCoefficientHigh(), 0u);
+    ASSERT_EQUALS(nonCanonical0E3.getCoefficientLow(), 0u);
+
+    // Check doing some arithmetic opations and number conversions
+    const double minusZeroDouble = nonCanonicalM0E0.toDouble();
+    ASSERT_EQUALS(minusZeroDouble, 0.0);
+    ASSERT_EQUALS(-1.0, std::copysign(1.0, minusZeroDouble));
+    ASSERT_TRUE(nonCanonical0E3.add(Decimal128(1)).isEqual(Decimal128(1)));
+    ASSERT_TRUE(Decimal128(1).divide(nonCanonicalM0E0).isEqual(Decimal128::kNegativeInfinity));
 }
 
 // Tests for absolute value function
@@ -621,13 +668,6 @@ TEST(Decimal128Test, TestDecimal128ToStringNeg) {
     ASSERT_EQUALS(result, "-2.087015E-278");
 }
 
-TEST(Decimal128Test, TestDecimal128ToStringPosNaN) {
-    std::string s = "+NaN";
-    Decimal128 d(s);
-    std::string result = d.toString();
-    ASSERT_EQUALS(result, "NaN");
-}
-
 TEST(Decimal128Test, TestDecimal128ToStringInRangeZero1) {
     std::string s = "0";
     Decimal128 d(s);
@@ -741,32 +781,11 @@ TEST(Decimal128Test, TestDecimal128ToStringInRangeNeg4Minus) {
     ASSERT_EQUALS(result, "-0.005");
 }
 
-TEST(Decimal128Test, TestDecimal128ToStringOutRangeNeg1) {
-    std::string s = ".0005";
-    Decimal128 d(s);
-    std::string result = d.toString();
-    ASSERT_EQUALS(result, "5E-4");
-}
-
-TEST(Decimal128Test, TestDecimal128ToStringOutRangeNeg2) {
-    std::string s = ".000005123123123123";
-    Decimal128 d(s);
-    std::string result = d.toString();
-    ASSERT_EQUALS(result, "5.123123123123E-6");
-}
-
 TEST(Decimal128Test, TestDecimal128ToStringOutRangeNeg3) {
     std::string s = ".012587E-200";
     Decimal128 d(s);
     std::string result = d.toString();
     ASSERT_EQUALS(result, "1.2587E-202");
-}
-
-TEST(Decimal128Test, TestDecimal128ToStringOutRangePos1) {
-    std::string s = "1234567890123";
-    Decimal128 d(s);
-    std::string result = d.toString();
-    ASSERT_EQUALS(result, "1.234567890123E+12");
 }
 
 TEST(Decimal128Test, TestDecimal128ToStringOutRangePos2) {
@@ -776,32 +795,77 @@ TEST(Decimal128Test, TestDecimal128ToStringOutRangePos2) {
     ASSERT_EQUALS(result, "1.020101E+18");
 }
 
-TEST(Decimal128Test, TestDecimal128ToStringOutRangePos3) {
-    std::string s = "1234567890123456789012345678901234";
-    Decimal128 d(s);
-    std::string result = d.toString();
-    ASSERT_EQUALS(result, "1.234567890123456789012345678901234E+33");
+TEST(Decimal128Test, TestDecimal128ToStringFinite) {
+    // General test cases taken from http://speleotrove.com/decimal/daconvs.html#reftostr
+    std::string s[15] = {"123",
+                         "-123",
+                         "123E1",
+                         "123E3",
+                         "123E-1",
+                         "123E-5",
+                         "123E-10",
+                         "-123E-12",
+                         "0E0",
+                         "0E-2",
+                         "0E2",
+                         "-0",
+                         "5E-6",
+                         "50E-7",
+                         "5E-7"};
+    std::string expected[15] = {"123",
+                                "-123",
+                                "1.23E+3",
+                                "1.23E+5",
+                                "12.3",
+                                "0.00123",
+                                "1.23E-8",
+                                "-1.23E-10",
+                                "0",
+                                "0.00",
+                                "0E+2",
+                                "-0",
+                                "0.000005",
+                                "0.0000050",
+                                "5E-7"};
+    for (int i = 0; i < 15; i++) {
+        Decimal128 d(s[i]);
+        std::string result = d.toString();
+        ASSERT_EQUALS(result, expected[i]);
+    }
 }
 
-TEST(Decimal128Test, TestDecimal128ToStringNegNaN) {
-    std::string s = "-NaN";
+TEST(Decimal128Test, TestDecimal128ToStringInvalidToNaN) {
+    std::string s = "Some garbage string";
     Decimal128 d(s);
-    std::string result = d.toString();
-    ASSERT_EQUALS(result, "NaN");
+    ASSERT_EQUALS(d.toString(), "NaN");
+}
+
+TEST(Decimal128Test, TestDecimal128ToStringNaN) {
+    std::string s[3] = {"-NaN", "+NaN", "NaN"};
+    for (auto& item : s) {
+        Decimal128 d(item);
+        ASSERT_EQUALS(d.toString(), "NaN");
+    }
+
+    // Testing a NaN with a payload
+    Decimal128 payloadNaN(Decimal128::Value({/*payload*/ 0x1, 0x7cull << 56}));
+    ASSERT_EQUALS(payloadNaN.toString(), "NaN");
 }
 
 TEST(Decimal128Test, TestDecimal128ToStringPosInf) {
-    std::string s = "+Infinity";
-    Decimal128 d(s);
-    std::string result = d.toString();
-    ASSERT_EQUALS(result, "Inf");
+    std::string s[3] = {"Inf", "Infinity", "+Inf"};
+    for (auto& item : s) {
+        Decimal128 d(item);
+        ASSERT_EQUALS(d.toString(), "Infinity");
+    }
 }
 
 TEST(Decimal128Test, TestDecimal128ToStringNegInf) {
-    std::string s = "-Infinity";
-    Decimal128 d(s);
-    std::string result = d.toString();
-    ASSERT_EQUALS(result, "-Inf");
+    std::string s[2] = {"-Infinity", "-Inf"};
+    for (auto& item : s) {
+        Decimal128 d(item);
+        ASSERT_EQUALS(d.toString(), "-Infinity");
+    }
 }
 
 // Tests for Decimal128 operations that use a signaling flag
@@ -825,7 +889,7 @@ TEST(Decimal128Test, TestDecimal128ToIntExactSignaling) {
     Decimal128 d("10000000000000000");
     uint32_t sigFlags = Decimal128::SignalingFlag::kNoFlag;
     int32_t intVal = d.toIntExact(&sigFlags);
-    ASSERT_EQUALS(intVal, -std::numeric_limits<int32_t>::lowest());
+    ASSERT_EQUALS(intVal, std::numeric_limits<int32_t>::lowest());
     // TODO: The supported library does not set the kInexact flag even though
     // the documentation claims to for exact integer conversions.
     // ASSERT_TRUE(Decimal128::hasFlag(sigFlags, Decimal128::SignalingFlag::kInexact));
@@ -836,7 +900,7 @@ TEST(Decimal128Test, TestDecimal128ToLongExactSignaling) {
     Decimal128 d("100000000000000000000000000");
     uint32_t sigFlags = Decimal128::SignalingFlag::kNoFlag;
     int64_t longVal = d.toLongExact(&sigFlags);
-    ASSERT_EQUALS(longVal, -std::numeric_limits<int64_t>::lowest());
+    ASSERT_EQUALS(longVal, std::numeric_limits<int64_t>::lowest());
     // TODO: The supported library does not set the kInexact flag even though
     // the documentation claims to for exact integer conversions.
     // ASSERT_TRUE(Decimal128::hasFlag(sigFlags, Decimal128::SignalingFlag::kInexact));

@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "mongo/executor/task_executor.h"
+#include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/mutex.h"
@@ -54,7 +55,7 @@ public:
     }
 };
 
-TaskExecutor::CallbackHandle makeCallbackHandle() {
+inline TaskExecutor::CallbackHandle makeCallbackHandle() {
     return TaskExecutor::CallbackHandle(std::make_shared<MockCallbackState>());
 }
 
@@ -113,8 +114,31 @@ private:
         return *state->thing;
     }
 
-private:
     std::shared_ptr<State> _state = std::make_shared<State>();
+};
+
+class CountdownLatch {
+public:
+    CountdownLatch(uint32_t count) : _count(count) {}
+
+    void countDown() {
+        if (_count.load() == 0) {
+            return;
+        }
+        if (_count.subtractAndFetch(1) == 0) {
+            _cv.notify_all();
+        }
+    }
+
+    void await() {
+        stdx::unique_lock<stdx::mutex> lk(_mtx);
+        _cv.wait(lk, [&] { return _count.load() == 0; });
+    }
+
+private:
+    stdx::condition_variable _cv;
+    stdx::mutex _mtx;
+    AtomicUInt32 _count;
 };
 
 namespace helpers {
@@ -135,23 +159,22 @@ static Deferred<std::vector<T>> collect(std::vector<Deferred<T>>& ds, ThreadPool
     collectState->mem.resize(collectState->goal);
 
     for (std::size_t i = 0; i < ds.size(); ++i) {
-        ds[i].then(pool,
-                   [collectState, out, i](T res) mutable {
-                       // The bool return is unused.
-                       stdx::lock_guard<stdx::mutex> lk(collectState->mtx);
-                       collectState->mem[i] = std::move(res);
+        ds[i].then(pool, [collectState, out, i](T res) mutable {
+            // The bool return is unused.
+            stdx::lock_guard<stdx::mutex> lk(collectState->mtx);
+            collectState->mem[i] = std::move(res);
 
-                       // If we're done.
-                       if (collectState->goal == ++collectState->numFinished) {
-                           std::vector<T> outInitialized;
-                           outInitialized.reserve(collectState->mem.size());
-                           for (auto&& mem_entry : collectState->mem) {
-                               outInitialized.emplace_back(std::move(*mem_entry));
-                           }
-                           out.emplace(outInitialized);
-                       }
-                       return true;
-                   });
+            // If we're done.
+            if (collectState->goal == ++collectState->numFinished) {
+                std::vector<T> outInitialized;
+                outInitialized.reserve(collectState->mem.size());
+                for (auto&& mem_entry : collectState->mem) {
+                    outInitialized.emplace_back(std::move(*mem_entry));
+                }
+                out.emplace(outInitialized);
+            }
+            return true;
+        });
     }
     return out;
 }

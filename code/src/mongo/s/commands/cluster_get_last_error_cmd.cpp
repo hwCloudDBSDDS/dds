@@ -30,12 +30,14 @@
 
 #include <vector>
 
+#include "mongo/client/remote_command_targeter.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/s/client/dbclient_multi_command.h"
+#include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_last_error_info.h"
-#include "mongo/s/dbclient_shard_resolver.h"
+#include "mongo/s/grid.h"
 #include "mongo/s/write_ops/batch_downconvert.h"
 
 namespace mongo {
@@ -45,7 +47,8 @@ class GetLastErrorCmd : public Command {
 public:
     GetLastErrorCmd() : Command("getLastError", false, "getlasterror") {}
 
-    virtual bool isWriteCommandForConfigServer() const {
+
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -107,11 +110,20 @@ public:
             const ConnectionString& shardEndpoint = it->first;
             const HostOpTime& hot = it->second;
 
-            ConnectionString resolvedHost;
-            status = DBClientShardResolver::findMaster(shardEndpoint, &resolvedHost);
-            if (!status.isOK()) {
+            const ReadPreferenceSetting readPref(ReadPreference::PrimaryOnly, TagSet());
+            auto shardStatus = grid.shardRegistry()->getShard(txn, shardEndpoint.toString());
+            if (!shardStatus.isOK()) {
+                status = shardStatus.getStatus();
                 break;
             }
+            auto shard = shardStatus.getValue();
+            auto swHostAndPort = shard->getTargeter()->findHostNoWait(readPref);
+            if (!swHostAndPort.isOK()) {
+                status = swHostAndPort.getStatus();
+                break;
+            }
+
+            ConnectionString resolvedHost(swHostAndPort.getValue());
 
             resolvedHostOpTimes[resolvedHost] = hot;
         }

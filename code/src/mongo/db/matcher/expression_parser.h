@@ -40,6 +40,7 @@
 
 namespace mongo {
 
+class CollatorInterface;
 class OperationContext;
 
 class MatchExpressionParser {
@@ -48,14 +49,15 @@ public:
      * caller has to maintain ownership obj
      * the tree has views (BSONElement) into obj
      */
-    static StatusWithMatchExpression parse(
-        const BSONObj& obj, const ExtensionsCallback& extensionsCallback = ExtensionsCallback()) {
+    static StatusWithMatchExpression parse(const BSONObj& obj,
+                                           const ExtensionsCallback& extensionsCallback,
+                                           const CollatorInterface* collator) {
         // The 0 initializes the match expression tree depth.
-        return MatchExpressionParser(&extensionsCallback)._parse(obj, 0);
+        return MatchExpressionParser(&extensionsCallback)._parse(obj, collator, 0);
     }
 
 private:
-    explicit MatchExpressionParser(const ExtensionsCallback* extensionsCallback)
+    MatchExpressionParser(const ExtensionsCallback* extensionsCallback)
         : _extensionsCallback(extensionsCallback) {}
 
     /**
@@ -81,18 +83,27 @@ private:
     /**
      * Parse 'obj' and return either a MatchExpression or an error.
      *
+     * 'collator' is the collator that constructed collation-aware MatchExpressions will use.  It
+     * must outlive the returned MatchExpression and any clones made of it.
+     *
      * 'level' tracks the current depth of the tree across recursive calls to this
      * function. Used in order to apply special logic at the top-level and to return an
      * error if the tree exceeds the maximum allowed depth.
      */
-    StatusWithMatchExpression _parse(const BSONObj& obj, int level);
+    StatusWithMatchExpression _parse(const BSONObj& obj,
+                                     const CollatorInterface* collator,
+                                     int level);
 
     /**
      * parses a field in a sub expression
      * if the query is { x : { $gt : 5, $lt : 8 } }
      * e is { $gt : 5, $lt : 8 }
      */
-    Status _parseSub(const char* name, const BSONObj& obj, AndMatchExpression* root, int level);
+    Status _parseSub(const char* name,
+                     const BSONObj& obj,
+                     AndMatchExpression* root,
+                     const CollatorInterface* collator,
+                     int level);
 
     /**
      * parses a single field in a sub expression
@@ -103,11 +114,13 @@ private:
                                              const AndMatchExpression* andSoFar,
                                              const char* name,
                                              const BSONElement& e,
+                                             const CollatorInterface* collator,
                                              int level);
 
     StatusWithMatchExpression _parseComparison(const char* name,
                                                ComparisonMatchExpression* cmp,
-                                               const BSONElement& e);
+                                               const BSONElement& e,
+                                               const CollatorInterface* collator);
 
     StatusWithMatchExpression _parseMOD(const char* name, const BSONElement& e);
 
@@ -116,21 +129,35 @@ private:
     StatusWithMatchExpression _parseRegexDocument(const char* name, const BSONObj& doc);
 
 
-    Status _parseArrayFilterEntries(ArrayFilterEntries* entries, const BSONObj& theArray);
+    Status _parseInExpression(InMatchExpression* entries,
+                              const BSONObj& theArray,
+                              const CollatorInterface* collator);
 
     StatusWithMatchExpression _parseType(const char* name, const BSONElement& elt);
 
     // arrays
 
-    StatusWithMatchExpression _parseElemMatch(const char* name, const BSONElement& e, int level);
+    StatusWithMatchExpression _parseElemMatch(const char* name,
+                                              const BSONElement& e,
+                                              const CollatorInterface* collator,
+                                              int level);
 
-    StatusWithMatchExpression _parseAll(const char* name, const BSONElement& e, int level);
+    StatusWithMatchExpression _parseAll(const char* name,
+                                        const BSONElement& e,
+                                        const CollatorInterface* collator,
+                                        int level);
 
     // tree
 
-    Status _parseTreeList(const BSONObj& arr, ListOfMatchExpression* out, int level);
+    Status _parseTreeList(const BSONObj& arr,
+                          ListOfMatchExpression* out,
+                          const CollatorInterface* collator,
+                          int level);
 
-    StatusWithMatchExpression _parseNot(const char* name, const BSONElement& e, int level);
+    StatusWithMatchExpression _parseNot(const char* name,
+                                        const BSONElement& e,
+                                        const CollatorInterface* collator,
+                                        int level);
 
     /**
      * Parses 'e' into a BitTestMatchExpression.
@@ -152,6 +179,7 @@ private:
 };
 
 typedef stdx::function<StatusWithMatchExpression(
-    const char* name, int type, const BSONObj& section)> MatchExpressionParserGeoCallback;
+    const char* name, int type, const BSONObj& section)>
+    MatchExpressionParserGeoCallback;
 extern MatchExpressionParserGeoCallback expressionParserGeoCallback;
 }

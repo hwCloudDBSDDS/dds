@@ -30,6 +30,7 @@
 
 #include "mongo/client/mongo_uri.h"
 
+#include "mongo/base/string_data.h"
 #include "mongo/unittest/unittest.h"
 
 namespace {
@@ -60,6 +61,8 @@ const URITestCase validCases[] = {
     {"mongodb://user@127.0.0.1", "user", "", kMaster, "", 1, 0, ""},
 
     {"mongodb://127.0.0.1/dbName?foo=a&c=b", "", "", kMaster, "", 1, 2, "dbName"},
+
+    {"mongodb://localhost/?foo=bar", "", "", kMaster, "", 1, 1, ""},
 
     {"mongodb://user:pwd@127.0.0.1:1234", "user", "pwd", kMaster, "", 1, 0, ""},
 
@@ -269,9 +272,20 @@ const URITestCase validCases[] = {
 
 const InvalidURITestCase invalidCases[] = {
 
+    // No host.
     {"mongodb://"},
 
+    // Needs a "/" after the hosts and before the options.
     {"mongodb://localhost:27017,localhost:27018?replicaSet=missingSlash"},
+
+    // Host list must actually be comma separated.
+    {"mongodb://localhost:27017localhost:27018"},
+
+    // Domain sockets have to end in ".sock".
+    {"mongodb:///notareal/domainsock"},
+
+    // Options can't have multiple question marks. Only one.
+    {"mongodb://localhost:27017/?foo=a?c=b&d=e?asdf=foo"},
 };
 
 TEST(MongoURI, GoodTrickyURIs) {
@@ -292,10 +306,7 @@ TEST(MongoURI, GoodTrickyURIs) {
         ASSERT_EQ(testCase.type, result.type());
         ASSERT_EQ(testCase.setname, result.getSetName());
         ASSERT_EQ(testCase.numservers, result.getServers().size());
-        auto options = result.getOptions();
-        std::set<std::string> fieldNames;
-        options.getFieldNames(fieldNames);
-        ASSERT_EQ(testCase.numOptions, fieldNames.size());
+        ASSERT_EQ(testCase.numOptions, result.getOptions().size());
         ASSERT_EQ(testCase.database, result.getDatabase());
     }
 }
@@ -309,6 +320,19 @@ TEST(MongoURI, InvalidURIs) {
         auto cs_status = MongoURI::parse(testCase.URI);
         ASSERT_FALSE(cs_status.isOK());
     }
+}
+
+TEST(MongoURI, ValidButBadURIsFailToConnect) {
+    // "invalid" is a TLD that cannot exit on the public internet (see rfc2606). It should always
+    // parse as a valid URI, but connecting should always fail.
+    auto sw_uri = MongoURI::parse("mongodb://user:pass@hostname.invalid:12345");
+    ASSERT_OK(sw_uri.getStatus());
+    auto uri = sw_uri.getValue();
+    ASSERT_TRUE(uri.isValid());
+
+    std::string errmsg;
+    auto dbclient = uri.connect(mongo::StringData(), errmsg);
+    ASSERT_EQ(dbclient, static_cast<decltype(dbclient)>(nullptr));
 }
 
 }  // namespace

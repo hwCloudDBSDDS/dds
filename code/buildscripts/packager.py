@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 # This program makes Debian and RPM repositories for MongoDB, by
 # downloading our tarballs of statically linked executables and
@@ -42,7 +42,7 @@ import time
 import urlparse
 
 # The MongoDB names for the architectures we support.
-ARCH_CHOICES=["x86_64"]
+ARCH_CHOICES=["x86_64", "arm64"]
 
 # Made up names for the flavors of distribution we package for.
 DISTROS=["suse", "debian","redhat","ubuntu", "amazon"]
@@ -132,14 +132,30 @@ class Distro(object):
         return "mongodb"
 
     def archname(self, arch):
+        """Return the packaging system's architecture name.
+        Power and x86 have different names for apt/yum (ppc64le/ppc64el
+        and x86_64/amd64)
+        """
         if re.search("^(debian|ubuntu)", self.n):
             if arch == "ppc64le":
                 return "ppc64el"
-            return "i386" if arch.endswith("86") else "amd64"
+            elif arch == "s390x":
+                return "s390x"
+            elif arch == "arm64":
+                return "arm64"
+            elif arch.endswith("86"):
+              return "i386"
+            else:
+              return "amd64"
         elif re.search("^(suse|centos|redhat|fedora|amazon)", self.n):
             if arch == "ppc64le":
                 return "ppc64le"
-            return "i686" if arch.endswith("86") else "x86_64"
+            elif arch == "s390x":
+                return "s390x"
+            elif arch.endswith("86"):
+              return "i686"
+            else:
+              return "x86_64"
         else:
             raise Exception("BUG: unsupported platform?")
 
@@ -216,6 +232,8 @@ class Distro(object):
         elif self.n == 'debian':
             if build_os == 'debian71':
                 return 'wheezy'
+            elif build_os == 'debian81':
+                return 'jessie'
             else:
                 raise Exception("unsupported build_os: %s" % build_os)
         else:
@@ -230,23 +248,22 @@ class Distro(object):
             raise Exception("BUG: unsupported platform?")
 
     def build_os(self, arch):
-        """Return the build os label in the binary package to download ("rhel55", "rhel62" and "rhel70"
-        for redhat, "ubuntu1204" and "ubuntu1404" for Ubuntu, "debian71" for Debian), and "suse11"
-        for SUSE)"""
+        """Return the build os label in the binary package to download (e.g. "rhel55" for redhat,
+        "ubuntu1204" for ubuntu, "debian71" for debian, "suse11" for suse, etc.)"""
         # Community builds only support amd64
-        if arch not in ['x86_64', 'ppc64le']:
+        if arch not in ['x86_64', 'ppc64le', 's390x', 'arm64']:
             raise Exception("BUG: unsupported architecture (%s)" % arch)
 
         if re.search("(suse)", self.n):
             return [ "suse11", "suse12" ]
         elif re.search("(redhat|fedora|centos)", self.n):
-            return [ "rhel70", "rhel71", "rhel62", "rhel55" ]
+            return [ "rhel70", "rhel71", "rhel72", "rhel62", "rhel55" ]
         elif self.n == 'amazon':
             return [ "amazon" ]
         elif self.n == 'ubuntu':
             return [ "ubuntu1204", "ubuntu1404", "ubuntu1604", ]
         elif self.n == 'debian':
-            return [ "debian71" ]
+            return [ "debian71", "debian81" ]
         else:
             raise Exception("BUG: unsupported platform?")
 
@@ -430,11 +447,10 @@ def make_package(distro, build_os, arch, spec, srcdir):
     # packaging infrastructure will move the files to wherever they
     # need to go.
     unpack_binaries_into(build_os, arch, spec, sdir)
-    # Remove the mongosniff binary due to libpcap dynamic
-    # linkage.  FIXME: this removal should go away
-    # eventually.
-    if os.path.exists(sdir + "bin/mongosniff"):
-      os.unlink(sdir + "bin/mongosniff")
+    # Remove the mongoreplay binary due to libpcap dynamic
+    # linkage.
+    if os.path.exists(sdir + "bin/mongoreplay"):
+      os.unlink(sdir + "bin/mongoreplay")
     return distro.make_pkg(build_os, arch, spec, srcdir)
 
 def make_repo(repodir, distro, build_os, spec):
@@ -453,11 +469,21 @@ def make_deb(distro, build_os, arch, spec, srcdir):
     suffix=spec.suffix()
     sdir=setupdir(distro, build_os, arch, spec)
     if re.search("debian", distro.name()):
-        os.link(sdir+"debian/init.d", sdir+"debian/%s%s-server.mongod.init" % (distro.pkgbase(), suffix))
         os.unlink(sdir+"debian/mongod.upstart")
+        if build_os == "debian71":
+            os.link(sdir+"debian/init.d", sdir+"debian/%s%s-server.mongod.init" % (distro.pkgbase(), suffix))
+            os.unlink(sdir+"debian/mongod.service")
+        else:
+            os.link(sdir+"debian/mongod.service", sdir+"debian/%s%s-server.mongod.service" % (distro.pkgbase(), suffix))
+            os.unlink(sdir+"debian/init.d")
     elif re.search("ubuntu", distro.name()):
-        os.link(sdir+"debian/mongod.upstart", sdir+"debian/%s%s-server.mongod.upstart" % (distro.pkgbase(), suffix))
         os.unlink(sdir+"debian/init.d")
+        if build_os in ("ubuntu1204", "ubuntu1404", "ubuntu1410"):
+            os.link(sdir+"debian/mongod.upstart", sdir+"debian/%s%s-server.mongod.upstart" % (distro.pkgbase(), suffix))
+            os.unlink(sdir+"debian/mongod.service")
+        else:
+            os.link(sdir+"debian/mongod.service", sdir+"debian/%s%s-server.mongod.service" % (distro.pkgbase(), suffix))
+            os.unlink(sdir+"debian/mongod.upstart")
     else:
         raise Exception("unknown debianoid flavor: not debian or ubuntu?")
     # Rewrite the control and rules files
@@ -513,7 +539,7 @@ def make_deb_repo(repo, distro, build_os, spec):
 Label: mongodb
 Suite: %s
 Codename: %s/mongodb-org
-Architectures: amd64
+Architectures: amd64 arm64
 Components: %s
 Description: MongoDB packages
 """ % (distro.repo_os_version(build_os), distro.repo_os_version(build_os), distro.repo_component())
@@ -620,13 +646,31 @@ def make_rpm(distro, build_os, arch, spec, srcdir):
     suffix=spec.suffix()
     sdir=setupdir(distro, build_os, arch, spec)
 
-    # Use special suse init script if we're building for SUSE
+    specfile = srcdir + "rpm/mongodb%s.spec" % suffix
+    init_spec = specfile.replace(".spec", "-init.spec")
+
+    # The Debian directory is here for the manpages so we we need to remove the service file
+    # from it so that RPM packages don't end up with the Debian file.
+    os.unlink(sdir + "debian/mongod.service")
+
+    # Swap out systemd files, different systemd spec files, and init scripts as needed based on
+    # underlying os version. Arranged so that new distros moving forward automatically use
+    # systemd. Note: the SUSE init packages use a different init script than then other RPM
+    # distros.
     #
-    if distro.name() == "suse":
+    if distro.name() == "suse" and distro.repo_os_version(build_os) in ("10", "11"):
         os.unlink(sdir+"rpm/init.d-mongod")
         os.link(sdir+"rpm/init.d-mongod.suse", sdir+"rpm/init.d-mongod")
 
-    specfile=srcdir+"rpm/mongodb%s.spec" % suffix
+        os.unlink(specfile)
+        os.link(init_spec, specfile)
+    elif distro.name() == "redhat" and distro.repo_os_version(build_os) in ("5", "6"):
+        os.unlink(specfile)
+        os.link(init_spec, specfile)
+    elif distro.name() == "amazon":
+        os.unlink(specfile)
+        os.link(init_spec, specfile)
+
     topdir=ensure_dir('%s/rpmbuild/%s/' % (os.getcwd(), build_os))
     for subdir in ["BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"]:
         ensure_dir("%s/%s/" % (topdir, subdir))
@@ -647,7 +691,7 @@ def make_rpm(distro, build_os, arch, spec, srcdir):
     # all of this is to let us do our work with some guarantee that
     # we're not clobbering anything that doesn't belong to us.
     #
-    # On RHEL systems, --rcfile will generally be used and 
+    # On RHEL systems, --rcfile will generally be used and
     # --macros will be used in Ubuntu.
     #
     macrofiles=[l for l in backtick(["rpm", "--showrc"]).split("\n") if l.startswith("macrofiles")]
@@ -668,7 +712,7 @@ def make_rpm(distro, build_os, arch, spec, srcdir):
     # Put the specfile and the tar'd up binaries and stuff in
     # place.
     #
-    # The version of rpm and rpm tools in RHEL 5.5 can't interpolate the 
+    # The version of rpm and rpm tools in RHEL 5.5 can't interpolate the
     # %{dynamic_version} macro, so do it manually
     with open(specfile, "r") as spec_source:
       with open(topdir+"SPECS/" + os.path.basename(specfile), "w") as spec_dest:
@@ -736,5 +780,3 @@ def is_valid_file(parser, filename):
 
 if __name__ == "__main__":
     main(sys.argv)
-
-

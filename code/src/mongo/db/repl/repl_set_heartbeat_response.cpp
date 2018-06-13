@@ -37,6 +37,7 @@
 #include "mongo/base/status.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/repl/bson_extract_optime.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -260,18 +261,18 @@ Status ReplSetHeartbeatResponse::initialize(const BSONObj& doc, long long term) 
     if (memberStateElement.eoo()) {
         _stateSet = false;
     } else if (memberStateElement.type() != NumberInt && memberStateElement.type() != NumberLong) {
-        return Status(ErrorCodes::TypeMismatch,
-                      str::stream()
-                          << "Expected \"" << kMemberStateFieldName
+        return Status(
+            ErrorCodes::TypeMismatch,
+            str::stream() << "Expected \"" << kMemberStateFieldName
                           << "\" field in response to replSetHeartbeat "
                              "command to have type NumberInt or NumberLong, but found type "
                           << typeName(memberStateElement.type()));
     } else {
         long long stateInt = memberStateElement.numberLong();
         if (stateInt < 0 || stateInt > MemberState::RS_MAX) {
-            return Status(ErrorCodes::BadValue,
-                          str::stream()
-                              << "Value for \"" << kMemberStateFieldName
+            return Status(
+                ErrorCodes::BadValue,
+                str::stream() << "Value for \"" << kMemberStateFieldName
                               << "\" in response to replSetHeartbeat is "
                                  "out of range; legal values are non-negative and no more than "
                               << MemberState::RS_MAX);
@@ -311,7 +312,8 @@ Status ReplSetHeartbeatResponse::initialize(const BSONObj& doc, long long term) 
         return Status(ErrorCodes::TypeMismatch,
                       str::stream() << "Expected \"" << kHbMessageFieldName
                                     << "\" field in response to replSetHeartbeat to have "
-                                       "type String, but found " << typeName(hbMsgElement.type()));
+                                       "type String, but found "
+                                    << typeName(hbMsgElement.type()));
     } else {
         _hbmsg = hbMsgElement.String();
     }
@@ -338,7 +340,8 @@ Status ReplSetHeartbeatResponse::initialize(const BSONObj& doc, long long term) 
         return Status(ErrorCodes::TypeMismatch,
                       str::stream() << "Expected \"" << kConfigFieldName
                                     << "\" in response to replSetHeartbeat to have type "
-                                       "Object, but found " << typeName(rsConfigElement.type()));
+                                       "Object, but found "
+                                    << typeName(rsConfigElement.type()));
     }
     _configSet = true;
 

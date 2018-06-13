@@ -33,10 +33,12 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/db_raii.h"
-#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/query/internal_plans.h"
+#include "mongo/db/storage/record_store.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -44,6 +46,8 @@ namespace mongo {
 using std::endl;
 using std::string;
 using std::stringstream;
+
+MONGO_FP_DECLARE(validateCmdCollectionNotValid);
 
 class ValidateCmd : public Command {
 public:
@@ -59,7 +63,7 @@ public:
              "Add full:true option to do a more thorough check";
     }
 
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
@@ -77,11 +81,25 @@ public:
              int,
              string& errmsg,
              BSONObjBuilder& result) {
+        if (MONGO_FAIL_POINT(validateCmdCollectionNotValid)) {
+            errmsg = "validateCmdCollectionNotValid fail point was triggered";
+            result.appendBool("valid", false);
+            return true;
+        }
+
         string ns = dbname + "." + cmdObj.firstElement().valuestrsafe();
 
         NamespaceString ns_string(ns);
         const bool full = cmdObj["full"].trueValue();
-        const bool scanData = full || cmdObj["scandata"].trueValue();
+        const bool scanData = cmdObj["scandata"].trueValue();
+
+        ValidateCmdLevel level = kValidateIndex;
+
+        if (full) {
+            level = kValidateFull;
+        } else if (scanData) {
+            level = kValidateRecordStore;
+        }
 
         if (!ns_string.isNormal() && full) {
             errmsg = "Can only run full validate on a regular collection";
@@ -89,13 +107,18 @@ public:
         }
 
         if (!serverGlobalParams.quiet) {
-            LOG(0) << "CMD: validate " << ns << endl;
+            LOG(0) << "CMD: validate " << ns;
         }
 
         AutoGetDb ctx(txn, ns_string.db(), MODE_IX);
         Lock::CollectionLock collLk(txn->lockState(), ns_string.ns(), MODE_X);
         Collection* collection = ctx.getDb() ? ctx.getDb()->getCollection(ns_string) : NULL;
         if (!collection) {
+            if (ctx.getDb() && ctx.getDb()->getViewCatalog()->lookup(txn, ns_string.ns())) {
+                errmsg = "Cannot validate a view";
+                return appendCommandStatus(result, {ErrorCodes::CommandNotSupportedOnView, errmsg});
+            }
+
             errmsg = "ns not found";
             return false;
         }
@@ -103,21 +126,23 @@ public:
         result.append("ns", ns);
 
         ValidateResults results;
-        Status status = collection->validate(txn, full, scanData, &results, &result);
+        Status status = collection->validate(txn, level, &results, &result);
         if (!status.isOK())
             return appendCommandStatus(result, status);
 
-        result.appendBool("valid", results.valid);
-        result.append("errors", results.errors);
-
         if (!full) {
-            result.append(
-                "warning",
+            results.warnings.push_back(
                 "Some checks omitted for speed. use {full:true} option to do more thorough scan.");
         }
 
+        result.appendBool("valid", results.valid);
+        result.append("warnings", results.warnings);
+        result.append("errors", results.errors);
+
         if (!results.valid) {
-            result.append("advice", "ns corrupt. See http://dochub.mongodb.org/core/data-recovery");
+            result.append("advice",
+                          "A corrupt namespace has been detected. See "
+                          "http://dochub.mongodb.org/core/data-recovery for recovery steps.");
         }
 
         return true;

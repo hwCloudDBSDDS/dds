@@ -42,8 +42,10 @@
 namespace mongo {
 namespace mozjs {
 
-const JSFunctionSpec NumberDecimalInfo::methods[2] = {
-    MONGO_ATTACH_JS_CONSTRAINED_METHOD(toString, NumberDecimalInfo), JS_FS_END,
+const JSFunctionSpec NumberDecimalInfo::methods[3] = {
+    MONGO_ATTACH_JS_CONSTRAINED_METHOD(toString, NumberDecimalInfo),
+    MONGO_ATTACH_JS_CONSTRAINED_METHOD(toJSON, NumberDecimalInfo),
+    JS_FS_END,
 };
 
 const char* const NumberDecimalInfo::className = "NumberDecimal";
@@ -76,6 +78,12 @@ void NumberDecimalInfo::Functions::toString::call(JSContext* cx, JS::CallArgs ar
     ValueReader(cx, args.rval()).fromStringData(ss.operator std::string());
 }
 
+void NumberDecimalInfo::Functions::toJSON::call(JSContext* cx, JS::CallArgs args) {
+    Decimal128 val = NumberDecimalInfo::ToNumberDecimal(cx, args.thisv());
+
+    ValueReader(cx, args.rval()).fromBSON(BSON("$numberDecimal" << val.toString()), nullptr, false);
+}
+
 void NumberDecimalInfo::construct(JSContext* cx, JS::CallArgs args) {
     auto scope = getScope(cx);
 
@@ -101,7 +109,7 @@ void NumberDecimalInfo::construct(JSContext* cx, JS::CallArgs args) {
 void NumberDecimalInfo::make(JSContext* cx, JS::MutableHandleValue thisv, Decimal128 decimal) {
     auto scope = getScope(cx);
 
-    scope->getProto<NumberDecimalInfo>().newInstance(thisv);
+    scope->getProto<NumberDecimalInfo>().newObject(thisv);
     JS_SetPrivate(thisv.toObjectOrNull(), new Decimal128(decimal));
 }
 

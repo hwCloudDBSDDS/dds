@@ -40,40 +40,7 @@ namespace mongo {
 
 class Collection;
 class OperationContext;
-
-/**
- * A container for the summary statistics that the profiler, slow query log, and
- * other non-explain debug mechanisms may want to collect.
- */
-struct PlanSummaryStats {
-    // The number of results returned by the plan.
-    size_t nReturned = 0U;
-
-    // The total number of index keys examined by the plan.
-    size_t totalKeysExamined = 0U;
-
-    // The total number of documents examined by the plan.
-    size_t totalDocsExamined = 0U;
-
-    // The number of milliseconds spent inside the root stage's work() method.
-    long long executionTimeMillis = 0;
-
-    // Did this plan use the fast path for key-value retrievals on the _id index?
-    bool isIdhack = false;
-
-    // Did this plan use an in-memory sort stage?
-    bool hasSortStage = false;
-
-    // The names of each index used by the plan.
-    std::set<std::string> indexesUsed;
-
-    // Was this plan a result of using the MultiPlanStage to select a winner among several
-    // candidates?
-    bool fromMultiPlanner = false;
-
-    // Was a replan triggered during the execution of this query?
-    bool replanned = false;
-};
+struct PlanSummaryStats;
 
 /**
  * Namespace for the collection of static methods used to generate explain information.
@@ -96,6 +63,7 @@ public:
      * added to the "executionStats" section of the explain.
      */
     static void explainStages(PlanExecutor* exec,
+                              const Collection* collection,
                               ExplainCommon::Verbosity verbosity,
                               BSONObjBuilder* out);
 
@@ -171,11 +139,13 @@ private:
      * This is a helper for generating explain BSON. It is used by explainStages(...).
      *
      * @param exec -- the stage tree for the operation being explained.
+     * @param collection -- the collection used in the operation.
      * @param winnerStats -- the stats tree for the winning plan.
      * @param rejectedStats -- an array of stats trees, one per rejected plan
      */
     static void generatePlannerInfo(
         PlanExecutor* exec,
+        const Collection* collection,
         PlanStageStats* winnerStats,
         const std::vector<std::unique_ptr<PlanStageStats>>& rejectedStats,
         BSONObjBuilder* out);

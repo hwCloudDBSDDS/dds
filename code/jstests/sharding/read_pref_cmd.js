@@ -60,9 +60,7 @@ var testReadPreference = function(conn, hostList, isMongos, mode, tagSets, secEx
         assert(cmdResult.ok);
 
         var testedAtLeastOnce = false;
-        var query = {
-            op: 'command'
-        };
+        var query = {op: 'command'};
         Object.extend(query, profileQuery);
 
         hostList.forEach(function(node) {
@@ -216,28 +214,28 @@ var testAllModes = function(conn, hostList, isMongos) {
     // { tag: 'two' } so we can test the interaction of modes and tags. Test
     // a bunch of combinations.
     [
-      // mode, tagSets, expectedHost
-      ['primary', undefined, false],
-      ['primary', [], false],
+        // mode, tagSets, expectedHost
+        ['primary', undefined, false],
+        ['primary', [], false],
 
-      ['primaryPreferred', undefined, false],
-      ['primaryPreferred', [{tag: 'one'}], false],
-      // Correctly uses primary and ignores the tag
-      ['primaryPreferred', [{tag: 'two'}], false],
+        ['primaryPreferred', undefined, false],
+        ['primaryPreferred', [{tag: 'one'}], false],
+        // Correctly uses primary and ignores the tag
+        ['primaryPreferred', [{tag: 'two'}], false],
 
-      ['secondary', undefined, true],
-      ['secondary', [{tag: 'two'}], true],
-      ['secondary', [{tag: 'doesntexist'}, {}], true],
-      ['secondary', [{tag: 'doesntexist'}, {tag: 'two'}], true],
+        ['secondary', undefined, true],
+        ['secondary', [{tag: 'two'}], true],
+        ['secondary', [{tag: 'doesntexist'}, {}], true],
+        ['secondary', [{tag: 'doesntexist'}, {tag: 'two'}], true],
 
-      ['secondaryPreferred', undefined, true],
-      ['secondaryPreferred', [{tag: 'one'}], false],
-      ['secondaryPreferred', [{tag: 'two'}], true],
+        ['secondaryPreferred', undefined, true],
+        ['secondaryPreferred', [{tag: 'one'}], false],
+        ['secondaryPreferred', [{tag: 'two'}], true],
 
-      // We don't have a way to alter ping times so we can't predict where an
-      // untagged 'nearest' command should go, hence only test with tags.
-      ['nearest', [{tag: 'one'}], false],
-      ['nearest', [{tag: 'two'}], true]
+        // We don't have a way to alter ping times so we can't predict where an
+        // untagged 'nearest' command should go, hence only test with tags.
+        ['nearest', [{tag: 'one'}], false],
+        ['nearest', [{tag: 'two'}], true]
 
     ].forEach(function(args) {
         var mode = args[0], tagSets = args[1], secExpected = args[2];
@@ -248,17 +246,17 @@ var testAllModes = function(conn, hostList, isMongos) {
     });
 
     [
-      // Tags not allowed with primary
-      ['primary', [{dc: 'doesntexist'}]],
-      ['primary', [{dc: 'ny'}]],
-      ['primary', [{dc: 'one'}]],
+        // Tags not allowed with primary
+        ['primary', [{dc: 'doesntexist'}]],
+        ['primary', [{dc: 'ny'}]],
+        ['primary', [{dc: 'one'}]],
 
-      // No matching node
-      ['secondary', [{tag: 'one'}]],
-      ['nearest', [{tag: 'doesntexist'}]],
+        // No matching node
+        ['secondary', [{tag: 'one'}]],
+        ['nearest', [{tag: 'doesntexist'}]],
 
-      ['invalid-mode', undefined],
-      ['secondary', ['misformatted-tags']]
+        ['invalid-mode', undefined],
+        ['secondary', ['misformatted-tags']]
 
     ].forEach(function(args) {
         var mode = args[0], tagSets = args[1];
@@ -269,23 +267,16 @@ var testAllModes = function(conn, hostList, isMongos) {
     });
 };
 
-var st = new ShardingTest(
-    {shards: {rs0: {nodes: NODE_COUNT, verbose: 1}}, other: {mongosOptions: {verbose: 3}}});
+var st = new ShardingTest({shards: {rs0: {nodes: NODE_COUNT}}});
 st.stopBalancer();
 
-ReplSetTest.awaitRSClientHosts(st.s, st.rs0.nodes);
+awaitRSClientHosts(st.s, st.rs0.nodes);
 
 // Tag primary with { dc: 'ny', tag: 'one' }, secondary with { dc: 'ny', tag: 'two' }
 var primary = st.rs0.getPrimary();
 var secondary = st.rs0.getSecondary();
-var PRIMARY_TAG = {
-    dc: 'ny',
-    tag: 'one'
-};
-var SECONDARY_TAG = {
-    dc: 'ny',
-    tag: 'two'
-};
+var PRIMARY_TAG = {dc: 'ny', tag: 'one'};
+var SECONDARY_TAG = {dc: 'ny', tag: 'two'};
 
 var rsConfig = primary.getDB("local").system.replset.findOne();
 jsTest.log('got rsconf ' + tojson(rsConfig));
@@ -332,6 +323,14 @@ var replConn = new Mongo(st.rs0.getURL());
 // Make sure replica set connection is ready
 _awaitRSHostViaRSMonitor(primary.name, {ok: true, tags: PRIMARY_TAG}, st.rs0.name);
 _awaitRSHostViaRSMonitor(secondary.name, {ok: true, tags: SECONDARY_TAG}, st.rs0.name);
+
+st.rs0.nodes.forEach(function(conn) {
+    assert.commandWorked(
+        conn.adminCommand({setParameter: 1, logComponentVerbosity: {command: {verbosity: 1}}}));
+});
+
+assert.commandWorked(
+    st.s.adminCommand({setParameter: 1, logComponentVerbosity: {network: {verbosity: 3}}}));
 
 testAllModes(replConn, st.rs0.nodes, false);
 

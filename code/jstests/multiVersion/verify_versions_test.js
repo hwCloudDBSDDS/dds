@@ -18,9 +18,9 @@
                "Expected \"" + v1 + "\" not to equal \"" + v2 + "\"");
     }
 
-    // The current version is in the 3.2 series. This has to be changed very time we bump
+    // The current version is in the 3.4 series. This has to be changed very time we bump
     // the major version pair, but it provides a useful test of assumptions.
-    assertBinVersionsEqual("3.2", version());
+    assertBinVersionsEqual("3.4", version());
 
     // "latest" is the same version as the shell, "last-stable" is not.
     assertBinVersionsEqual("latest", version());
@@ -29,9 +29,9 @@
     assertBinVersionsNotEqual("latest", "last-stable");
     assertBinVersionsNotEqual("last-stable", version());
 
-    // 3.0 means 3.0.z for any value of z. It does not mean 3.2 or 3.2.w.
-    assertBinVersionsEqual("3.0", "3.0.4");
-    assertBinVersionsEqual("3.0.4", "3.0");
+    // 3.2 means 3.2.z for any value of z. It does not mean 3.0 or 3.0.w.
+    assertBinVersionsEqual("3.2", "3.2.4");
+    assertBinVersionsEqual("3.2.4", "3.2");
     assertBinVersionsNotEqual("3.2", "3.0");
     assertBinVersionsNotEqual("3.0.9", "3.2.9");
 

@@ -57,7 +57,11 @@ void _compareOutputOptionField(const std::string& dbname,
     if (actual == expected)
         return;
     FAIL(str::stream() << "parseOutputOptions(\"" << dbname << ", " << cmdObjStr << "): "
-                       << fieldName << ": Expected: " << expected << ". Actual: " << actual);
+                       << fieldName
+                       << ": Expected: "
+                       << expected
+                       << ". Actual: "
+                       << actual);
 }
 
 /**
@@ -206,6 +210,45 @@ TEST(ConfigOutputOptionsTest, parseOutputOptions) {
                                   "",
                                   false,
                                   mr::Config::INMEMORY);
+}
+
+TEST(ConfigTest, ParseCollation) {
+    std::string dbname = "myDB";
+    BSONObj collation = BSON("locale"
+                             << "en_US");
+    BSONObjBuilder bob;
+    bob.append("mapReduce", "myCollection");
+    bob.appendCode("map", "function() { emit(0, 1); }");
+    bob.appendCode("reduce", "function(k, v) { return {count: 0}; }");
+    bob.append("out", "outCollection");
+    bob.append("collation", collation);
+    BSONObj cmdObj = bob.obj();
+    mr::Config config(dbname, cmdObj);
+    ASSERT_BSONOBJ_EQ(config.collation, collation);
+}
+
+TEST(ConfigTest, ParseNoCollation) {
+    std::string dbname = "myDB";
+    BSONObjBuilder bob;
+    bob.append("mapReduce", "myCollection");
+    bob.appendCode("map", "function() { emit(0, 1); }");
+    bob.appendCode("reduce", "function(k, v) { return {count: 0}; }");
+    bob.append("out", "outCollection");
+    BSONObj cmdObj = bob.obj();
+    mr::Config config(dbname, cmdObj);
+    ASSERT_BSONOBJ_EQ(config.collation, BSONObj());
+}
+
+TEST(ConfigTest, CollationNotAnObjectFailsToParse) {
+    std::string dbname = "myDB";
+    BSONObjBuilder bob;
+    bob.append("mapReduce", "myCollection");
+    bob.appendCode("map", "function() { emit(0, 1); }");
+    bob.appendCode("reduce", "function(k, v) { return {count: 0}; }");
+    bob.append("out", "outCollection");
+    bob.append("collation", "en_US");
+    BSONObj cmdObj = bob.obj();
+    ASSERT_THROWS(mr::Config(dbname, cmdObj), UserException);
 }
 
 }  // namespace

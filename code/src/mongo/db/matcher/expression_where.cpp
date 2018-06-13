@@ -34,11 +34,11 @@
 
 #include "mongo/base/init.h"
 #include "mongo/db/auth/authorization_session.h"
-#include "mongo/db/namespace_string.h"
 #include "mongo/db/client.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_parser.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/stdx/memory.h"
 
@@ -58,7 +58,7 @@ WhereMatchExpression::WhereMatchExpression(OperationContext* txn, WhereParams pa
 }
 
 Status WhereMatchExpression::init(StringData dbName) {
-    if (!globalScriptEngine) {
+    if (!getGlobalScriptEngine()) {
         return Status(ErrorCodes::BadValue, "no globalScriptEngine in $where parsing");
     }
 
@@ -69,10 +69,10 @@ Status WhereMatchExpression::init(StringData dbName) {
     _dbName = dbName.toString();
 
     const string userToken =
-        AuthorizationSession::get(ClientBasic::getCurrent())->getAuthenticatedUserNamesToken();
+        AuthorizationSession::get(Client::getCurrent())->getAuthenticatedUserNamesToken();
 
     try {
-        _scope = globalScriptEngine->getPooledScope(_txn, _dbName, "where" + userToken);
+        _scope = getGlobalScriptEngine()->getPooledScope(_txn, _dbName, "where" + userToken);
         _func = _scope->createFunction(getCode().c_str());
     } catch (...) {
         return exceptionToStatus();

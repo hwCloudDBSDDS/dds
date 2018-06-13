@@ -28,7 +28,7 @@
 #include "mongo/dbtests/mock/mock_dbclient_connection.h"
 
 #include "mongo/dbtests/mock/mock_dbclient_cursor.h"
-#include "mongo/util/net/sock.h"
+#include "mongo/util/net/socket_exception.h"
 #include "mongo/util/time_support.h"
 
 using mongo::BSONObj;
@@ -46,7 +46,9 @@ MockDBClientConnection::MockDBClientConnection(MockRemoteDBServer* remoteServer,
 
 MockDBClientConnection::~MockDBClientConnection() {}
 
-bool MockDBClientConnection::connect(const char* hostName, std::string& errmsg) {
+bool MockDBClientConnection::connect(const char* hostName,
+                                     StringData applicationName,
+                                     std::string& errmsg) {
     if (_remoteServer->isRunning()) {
         _remoteServerInstanceID = _remoteServer->getInstanceID();
         return true;

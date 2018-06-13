@@ -30,32 +30,12 @@
 
 #include "mongo/db/ops/update_lifecycle_impl.h"
 
-#include "mongo/db/client.h"
-#include "mongo/db/catalog/database.h"
-#include "mongo/db/field_ref.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/s/collection_metadata.h"
-#include "mongo/db/s/sharding_state.h"
+#include "mongo/db/field_ref.h"
 
 namespace mongo {
 
-namespace {
-
-std::shared_ptr<CollectionMetadata> getMetadata(const NamespaceString& nsString) {
-    if (ShardingState::get(getGlobalServiceContext())->enabled()) {
-        return ShardingState::get(getGlobalServiceContext())->getCollectionMetadata(nsString.ns());
-    }
-
-    return nullptr;
-}
-
-}  // namespace
-
-UpdateLifecycleImpl::UpdateLifecycleImpl(bool ignoreVersion, const NamespaceString& nsStr)
-    : _nsString(nsStr),
-      _shardVersion((!ignoreVersion && getMetadata(_nsString))
-                        ? getMetadata(_nsString)->getShardVersion()
-                        : ChunkVersion::IGNORED()) {}
+UpdateLifecycleImpl::UpdateLifecycleImpl(const NamespaceString& nsStr) : _nsString(nsStr) {}
 
 void UpdateLifecycleImpl::setCollection(Collection* collection) {
     _collection = collection;
@@ -69,16 +49,6 @@ bool UpdateLifecycleImpl::canContinue() const {
 const UpdateIndexData* UpdateLifecycleImpl::getIndexKeys(OperationContext* opCtx) const {
     if (_collection)
         return &_collection->infoCache()->getIndexKeys(opCtx);
-    return NULL;
-}
-
-const std::vector<FieldRef*>* UpdateLifecycleImpl::getImmutableFields() const {
-    std::shared_ptr<CollectionMetadata> metadata = getMetadata(_nsString);
-    if (metadata) {
-        const std::vector<FieldRef*>& fields = metadata->getKeyPatternFields();
-        // Return shard-keys as immutable for the update system.
-        return &fields;
-    }
     return NULL;
 }
 

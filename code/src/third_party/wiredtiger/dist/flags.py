@@ -8,13 +8,6 @@ flags = {
 ###################################################
 # Internal routine flag declarations
 ###################################################
-    'file_types' : [
-        'FILE_TYPE_CHECKPOINT',
-        'FILE_TYPE_DATA',
-        'FILE_TYPE_DIRECTORY',
-        'FILE_TYPE_LOG',
-        'FILE_TYPE_REGULAR',
-    ],
     'log_scan' : [
         'LOGSCAN_FIRST',
         'LOGSCAN_FROM_CKP',
@@ -44,10 +37,13 @@ flags = {
         'READ_WONT_NEED',
     ],
     'rec_write' : [
-        'EVICT_IN_MEMORY',
-        'EVICT_LOOKASIDE',
-        'EVICT_UPDATE_RESTORE',
+        'CHECKPOINTING',
         'EVICTING',
+        'EVICT_IN_MEMORY',
+        'EVICT_INMEM_SPLIT',
+        'EVICT_LOOKASIDE',
+        'EVICT_SCRUB',
+        'EVICT_UPDATE_RESTORE',
         'VISIBILITY_ERR',
     ],
     'txn_log_checkpoint' : [
@@ -56,6 +52,10 @@ flags = {
         'TXN_LOG_CKPT_START',
         'TXN_LOG_CKPT_STOP',
         'TXN_LOG_CKPT_SYNC',
+    ],
+    'txn_update_oldest' : [
+        'TXN_OLDEST_STRICT',
+        'TXN_OLDEST_WAIT',
     ],
     'verbose' : [
         'VERB_API',
@@ -80,6 +80,7 @@ flags = {
         'VERB_SHARED_CACHE',
         'VERB_SPLIT',
         'VERB_TEMPORARY',
+        'VERB_THREAD_GROUP',
         'VERB_TRANSACTION',
         'VERB_VERIFY',
         'VERB_VERSION',
@@ -101,6 +102,7 @@ flags = {
         'CONN_LSM_MERGE',
         'CONN_PANIC',
         'CONN_READONLY',
+        'CONN_RECOVERING',
         'CONN_SERVER_ASYNC',
         'CONN_SERVER_CHECKPOINT',
         'CONN_SERVER_LSM',
@@ -111,12 +113,13 @@ flags = {
     ],
     'session' : [
         'SESSION_CAN_WAIT',
-        'SESSION_CLEAR_EVICT_WALK',
         'SESSION_INTERNAL',
+        'SESSION_IN_SPLIT',
         'SESSION_LOCK_NO_WAIT',
         'SESSION_LOCKED_CHECKPOINT',
         'SESSION_LOCKED_HANDLE_LIST',
         'SESSION_LOCKED_METADATA',
+        'SESSION_LOCKED_PASS',
         'SESSION_LOCKED_SCHEMA',
         'SESSION_LOCKED_SLOT',
         'SESSION_LOCKED_TABLE',
@@ -130,6 +133,16 @@ flags = {
         'SESSION_NO_SCHEMA_LOCK',
         'SESSION_QUIET_CORRUPT_FILE',
         'SESSION_SERVER_ASYNC',
+    ],
+    'stat' : [
+        'STAT_CLEAR',
+        'STAT_JSON',
+        'STAT_ON_CLOSE',
+        'STAT_TYPE_ALL',
+        'STAT_TYPE_CACHE_WALK',
+        'STAT_TYPE_FAST',
+        'STAT_TYPE_SIZE',
+        'STAT_TYPE_TREE_WALK',
     ],
 }
 

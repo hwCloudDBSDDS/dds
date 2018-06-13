@@ -31,11 +31,12 @@
 
 #include "mongo/executor/connection_pool.h"
 
-#include "mongo/executor/connection_pool_stats.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/executor/connection_pool_stats.h"
 #include "mongo/executor/remote_command_request.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/destructor_guard.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
@@ -94,13 +95,18 @@ public:
     size_t availableConnections(const stdx::unique_lock<stdx::mutex>& lk);
 
     /**
+     * Returns the number of in progress connections in the pool.
+     */
+    size_t refreshingConnections(const stdx::unique_lock<stdx::mutex>& lk);
+
+    /**
      * Returns the total number of connections ever created in this pool.
      */
     size_t createdConnections(const stdx::unique_lock<stdx::mutex>& lk);
 
 private:
     using OwnedConnection = std::unique_ptr<ConnectionInterface>;
-    using OwnershipPool = std::unordered_map<ConnectionInterface*, OwnedConnection>;
+    using OwnershipPool = stdx::unordered_map<ConnectionInterface*, OwnedConnection>;
     using Request = std::pair<Date_t, GetConnectionCallback>;
     struct RequestComparator {
         bool operator()(const Request& a, const Request& b) {
@@ -166,15 +172,19 @@ private:
     State _state;
 };
 
-Milliseconds const ConnectionPool::kDefaultRefreshTimeout = Seconds(20);
-Milliseconds const ConnectionPool::kDefaultRefreshRequirement = Seconds(60);
-Milliseconds const ConnectionPool::kDefaultHostTimeout = Minutes(5);
+constexpr Milliseconds ConnectionPool::kDefaultHostTimeout;
+size_t const ConnectionPool::kDefaultMaxConns = std::numeric_limits<size_t>::max();
+size_t const ConnectionPool::kDefaultMinConns = 1;
+constexpr Milliseconds ConnectionPool::kDefaultRefreshRequirement;
+constexpr Milliseconds ConnectionPool::kDefaultRefreshTimeout;
 
 const Status ConnectionPool::kConnectionStateUnknown =
     Status(ErrorCodes::InternalError, "Connection is in an unknown state");
 
-ConnectionPool::ConnectionPool(std::unique_ptr<DependentTypeFactoryInterface> impl, Options options)
-    : _options(std::move(options)), _factory(std::move(impl)) {}
+ConnectionPool::ConnectionPool(std::unique_ptr<DependentTypeFactoryInterface> impl,
+                               std::string name,
+                               Options options)
+    : _name(std::move(name)), _options(std::move(options)), _factory(std::move(impl)) {}
 
 ConnectionPool::~ConnectionPool() = default;
 
@@ -219,10 +229,11 @@ void ConnectionPool::appendConnectionStats(ConnectionPoolStats* stats) const {
         HostAndPort host = kv.first;
 
         auto& pool = kv.second;
-        ConnectionStatsPerHost hostStats{pool->inUseConnections(lk),
-                                         pool->availableConnections(lk),
-                                         pool->createdConnections(lk)};
-        stats->updateStatsForHost(host, hostStats);
+        ConnectionStatsPer hostStats{pool->inUseConnections(lk),
+                                     pool->availableConnections(lk),
+                                     pool->createdConnections(lk),
+                                     pool->refreshingConnections(lk)};
+        stats->updateStatsForHost(_name, host, hostStats);
     }
 }
 
@@ -256,6 +267,11 @@ size_t ConnectionPool::SpecificPool::inUseConnections(const stdx::unique_lock<st
 size_t ConnectionPool::SpecificPool::availableConnections(
     const stdx::unique_lock<stdx::mutex>& lk) {
     return _readyPool.size();
+}
+
+size_t ConnectionPool::SpecificPool::refreshingConnections(
+    const stdx::unique_lock<stdx::mutex>& lk) {
+    return _processingPool.size();
 }
 
 size_t ConnectionPool::SpecificPool::createdConnections(const stdx::unique_lock<stdx::mutex>& lk) {
@@ -362,30 +378,29 @@ void ConnectionPool::SpecificPool::addToReady(stdx::unique_lock<stdx::mutex>& lk
     // Our strategy for refreshing connections is to check them out and
     // immediately check them back in (which kicks off the refresh logic in
     // returnConnection
-    connPtr->setTimeout(_parent->_options.refreshRequirement,
-                        [this, connPtr]() {
-                            OwnedConnection conn;
+    connPtr->setTimeout(_parent->_options.refreshRequirement, [this, connPtr]() {
+        OwnedConnection conn;
 
-                            stdx::unique_lock<stdx::mutex> lk(_parent->_mutex);
+        stdx::unique_lock<stdx::mutex> lk(_parent->_mutex);
 
-                            if (!_readyPool.count(connPtr)) {
-                                // We've already been checked out. We don't need to refresh
-                                // ourselves.
-                                return;
-                            }
+        if (!_readyPool.count(connPtr)) {
+            // We've already been checked out. We don't need to refresh
+            // ourselves.
+            return;
+        }
 
-                            conn = takeFromPool(_readyPool, connPtr);
+        conn = takeFromPool(_readyPool, connPtr);
 
-                            // If we're in shutdown, we don't need to refresh connections
-                            if (_state == State::kInShutdown)
-                                return;
+        // If we're in shutdown, we don't need to refresh connections
+        if (_state == State::kInShutdown)
+            return;
 
-                            _checkedOutPool[connPtr] = std::move(conn);
+        _checkedOutPool[connPtr] = std::move(conn);
 
-                            connPtr->indicateSuccess();
+        connPtr->indicateSuccess();
 
-                            returnConnection(connPtr, std::move(lk));
-                        });
+        returnConnection(connPtr, std::move(lk));
+    });
 
     fulfillRequests(lk);
 }
@@ -495,8 +510,15 @@ void ConnectionPool::SpecificPool::spawnConnections(stdx::unique_lock<stdx::mute
 
     // While all of our inflight connections are less than our target
     while (_readyPool.size() + _processingPool.size() + _checkedOutPool.size() < target()) {
-        // make a new connection and put it in processing
-        auto handle = _parent->_factory->makeConnection(hostAndPort, _generation);
+        std::unique_ptr<ConnectionPool::ConnectionInterface> handle;
+        try {
+            // make a new connection and put it in processing
+            handle = _parent->_factory->makeConnection(hostAndPort, _generation);
+        } catch (std::system_error& e) {
+            severe() << "Failed to construct a new connection object: " << e.what();
+            fassertFailed(40336);
+        }
+
         auto connPtr = handle.get();
         _processingPool[connPtr] = std::move(handle);
 
@@ -607,31 +629,29 @@ void ConnectionPool::SpecificPool::updateStateInLock() {
 
         // We set a timer for the most recent request, then invoke each timed
         // out request we couldn't service
-        _requestTimer->setTimeout(
-            timeout,
-            [this]() {
-                stdx::unique_lock<stdx::mutex> lk(_parent->_mutex);
+        _requestTimer->setTimeout(timeout, [this]() {
+            stdx::unique_lock<stdx::mutex> lk(_parent->_mutex);
 
-                auto now = _parent->_factory->now();
+            auto now = _parent->_factory->now();
 
-                while (_requests.size()) {
-                    auto& x = _requests.top();
+            while (_requests.size()) {
+                auto& x = _requests.top();
 
-                    if (x.first <= now) {
-                        auto cb = std::move(x.second);
-                        _requests.pop();
+                if (x.first <= now) {
+                    auto cb = std::move(x.second);
+                    _requests.pop();
 
-                        lk.unlock();
-                        cb(Status(ErrorCodes::ExceededTimeLimit,
-                                  "Couldn't get a connection within the time limit"));
-                        lk.lock();
-                    } else {
-                        break;
-                    }
+                    lk.unlock();
+                    cb(Status(ErrorCodes::ExceededTimeLimit,
+                              "Couldn't get a connection within the time limit"));
+                    lk.lock();
+                } else {
+                    break;
                 }
+            }
 
-                updateStateInLock();
-            });
+            updateStateInLock();
+        });
     } else if (_checkedOutPool.size()) {
         // If we have no requests, but someone's using a connection, we just
         // hang around until the next request or a return

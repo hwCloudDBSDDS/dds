@@ -36,7 +36,7 @@
 #include "mongo/db/field_parser.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/s/catalog/catalog_cache.h"
-#include "mongo/s/catalog/catalog_manager.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/chunk_manager.h"
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_registry.h"
@@ -64,7 +64,7 @@ public:
           << "usage: { mergeChunks : <ns>, bounds : [ <min key>, <max key> ] }";
     }
 
-    virtual Status checkAuthForCommand(ClientBasic* client,
+    virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
                                        const BSONObj& cmdObj) {
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
@@ -85,7 +85,7 @@ public:
     virtual bool slaveOk() const {
         return false;
     }
-    virtual bool isWriteCommandForConfigServer() const {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -104,6 +104,11 @@ public:
              int,
              string& errmsg,
              BSONObjBuilder& result) {
+        const NamespaceString nss(parseNs(dbname, cmdObj));
+        uassert(ErrorCodes::InvalidNamespace,
+                str::stream() << nss.ns() << " is not a valid namespace",
+                nss.isValid());
+
         vector<BSONObj> bounds;
         if (!FieldParser::extract(cmdObj, boundsField, &bounds, &errmsg)) {
             return false;
@@ -132,12 +137,6 @@ public:
             return false;
         }
 
-        const NamespaceString nss(parseNs(dbname, cmdObj));
-        if (nss.size() == 0) {
-            return appendCommandStatus(
-                result, Status(ErrorCodes::InvalidNamespace, "no namespace specified"));
-        }
-
         auto status = grid.catalogCache()->getDatabase(txn, nss.db().toString());
         if (!status.isOK()) {
             return appendCommandStatus(result, status.getStatus());
@@ -151,7 +150,7 @@ public:
         }
 
         // This refreshes the chunk metadata if stale.
-        ChunkManagerPtr manager = config->getChunkManagerIfExists(txn, nss.ns(), true);
+        shared_ptr<ChunkManager> manager = config->getChunkManagerIfExists(txn, nss.ns(), true);
         if (!manager) {
             return appendCommandStatus(
                 result,
@@ -170,7 +169,8 @@ public:
         minKey = manager->getShardKeyPattern().normalizeShardKey(minKey);
         maxKey = manager->getShardKeyPattern().normalizeShardKey(maxKey);
 
-        ChunkPtr firstChunk = manager->findIntersectingChunk(txn, minKey);
+        shared_ptr<Chunk> firstChunk =
+            manager->findIntersectingChunkWithSimpleCollation(txn, minKey);
         verify(firstChunk);
 
         BSONObjBuilder remoteCmdObjB;
@@ -185,15 +185,15 @@ public:
 
         // Throws, but handled at level above.  Don't want to rewrap to preserve exception
         // formatting.
-        const auto shard = grid.shardRegistry()->getShard(txn, firstChunk->getShardId());
-        if (!shard) {
+        const auto shardStatus = grid.shardRegistry()->getShard(txn, firstChunk->getShardId());
+        if (!shardStatus.isOK()) {
             return appendCommandStatus(
                 result,
                 Status(ErrorCodes::ShardNotFound,
                        str::stream() << "Can't find shard for chunk: " << firstChunk->toString()));
         }
 
-        ShardConnection conn(shard->getConnString(), "");
+        ShardConnection conn(shardStatus.getValue()->getConnString(), "");
         bool ok = conn->runCommand("admin", remoteCmdObjB.obj(), remoteResult);
         conn.done();
 

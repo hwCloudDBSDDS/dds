@@ -32,8 +32,11 @@
 #include "mongo/base/init.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_global.h"
+#include "mongo/db/auth/authz_manager_external_state.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -50,7 +53,8 @@ public:
 
 MONGO_INITIALIZER_GENERAL(AuthzSchemaParameter,
                           MONGO_NO_PREREQUISITES,
-                          ("BeginStartupOptionParsing"))(InitializerContext*) {
+                          ("BeginStartupOptionParsing"))
+(InitializerContext*) {
     new AuthzVersionParameter(ServerParameterSet::getGlobal(), authSchemaVersionServerParameter);
     return Status::OK();
 }
@@ -82,6 +86,24 @@ AuthorizationManager* getGlobalAuthorizationManager() {
     AuthorizationManager* globalAuthManager = AuthorizationManager::get(getGlobalServiceContext());
     fassert(16842, globalAuthManager != nullptr);
     return globalAuthManager;
+}
+
+MONGO_EXPORT_STARTUP_SERVER_PARAMETER(startupAuthSchemaValidation, bool, true);
+
+MONGO_INITIALIZER_WITH_PREREQUISITES(CreateAuthorizationManager,
+                                     ("SetupInternalSecurityUser",
+                                      "OIDGeneration",
+                                      "SetGlobalEnvironment",
+                                      "CreateAuthorizationExternalStateFactory",
+                                      "EndStartupOptionStorage"))
+(InitializerContext* context) {
+    auto authzManager =
+        stdx::make_unique<AuthorizationManager>(AuthzManagerExternalState::create());
+    authzManager->setAuthEnabled(serverGlobalParams.authState ==
+                                 ServerGlobalParams::AuthState::kEnabled);
+    authzManager->setShouldValidateAuthSchemaOnStartup(startupAuthSchemaValidation);
+    AuthorizationManager::set(getGlobalServiceContext(), std::move(authzManager));
+    return Status::OK();
 }
 
 }  // namespace mongo

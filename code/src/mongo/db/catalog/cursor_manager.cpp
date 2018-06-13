@@ -40,9 +40,9 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
-#include "mongo/db/service_context.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/plan_executor.h"
+#include "mongo/db/service_context.h"
 #include "mongo/platform/random.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/startup_test.h"
@@ -265,7 +265,7 @@ std::size_t GlobalCursorIdCache::timeoutCursors(OperationContext* txn, int milli
     for (unsigned i = 0; i < todo.size(); i++) {
         const std::string& ns = todo[i];
 
-        AutoGetCollectionForRead ctx(txn, ns);
+        AutoGetCollectionOrViewForRead ctx(txn, ns);
         if (!ctx.getDb()) {
             continue;
         }
@@ -324,67 +324,76 @@ CursorManager::~CursorManager() {
 }
 
 void CursorManager::invalidateAll(bool collectionGoingAway, const std::string& reason) {
-    stdx::lock_guard<SimpleMutex> lk(_mutex);
-    fassert(28819, !BackgroundOperation::inProgForNs(_nss));
+    vector<ClientCursor*> toDelete;
 
-    for (ExecSet::iterator it = _nonCachedExecutors.begin(); it != _nonCachedExecutors.end();
-         ++it) {
-        // we kill the executor, but it deletes itself
-        PlanExecutor* exec = *it;
-        exec->kill(reason);
-        invariant(exec->collection() == NULL);
-    }
-    _nonCachedExecutors.clear();
+    {
+        stdx::lock_guard<SimpleMutex> lk(_mutex);
+        fassert(28819, !BackgroundOperation::inProgForNs(_nss));
 
-    if (collectionGoingAway) {
-        // we're going to wipe out the world
-        for (CursorMap::const_iterator i = _cursors.begin(); i != _cursors.end(); ++i) {
-            ClientCursor* cc = i->second;
-
-            cc->kill();
-
-            invariant(cc->getExecutor() == NULL || cc->getExecutor()->collection() == NULL);
-
-            // If the CC is pinned, somebody is actively using it and we do not delete it.
-            // Instead we notify the holder that we killed it.  The holder will then delete the
-            // CC.
-            //
-            // If the CC is not pinned, there is nobody actively holding it.  We can safely
-            // delete it.
-            if (!cc->isPinned()) {
-                delete cc;
-            }
+        for (ExecSet::iterator it = _nonCachedExecutors.begin(); it != _nonCachedExecutors.end();
+             ++it) {
+            // we kill the executor, but it deletes itself
+            PlanExecutor* exec = *it;
+            exec->kill(reason);
         }
-    } else {
-        CursorMap newMap;
+        _nonCachedExecutors.clear();
 
-        // collection will still be around, just all PlanExecutors are invalid
-        for (CursorMap::const_iterator i = _cursors.begin(); i != _cursors.end(); ++i) {
-            ClientCursor* cc = i->second;
+        if (collectionGoingAway) {
+            // we're going to wipe out the world
+            for (CursorMap::const_iterator i = _cursors.begin(); i != _cursors.end(); ++i) {
+                ClientCursor* cc = i->second;
 
-            // Note that a valid ClientCursor state is "no cursor no executor."  This is because
-            // the set of active cursor IDs in ClientCursor is used as representation of query
-            // state.  See sharding_block.h.  TODO(greg,hk): Move this out.
-            if (NULL == cc->getExecutor()) {
-                newMap.insert(*i);
-                continue;
-            }
-
-            if (cc->isPinned() || cc->isAggCursor()) {
-                // Pinned cursors need to stay alive, so we leave them around.  Aggregation
-                // cursors also can stay alive (since they don't have their lifetime bound to
-                // the underlying collection).  However, if they have an associated executor, we
-                // need to kill it, because it's now invalid.
-                if (cc->getExecutor())
-                    cc->getExecutor()->kill(reason);
-                newMap.insert(*i);
-            } else {
                 cc->kill();
-                delete cc;
-            }
-        }
 
-        _cursors = newMap;
+                // If the CC is pinned, somebody is actively using it and we do not delete it.
+                // Instead we notify the holder that we killed it.  The holder will then delete the
+                // CC.
+                //
+                // If the CC is not pinned, there is nobody actively holding it.  We can safely
+                // delete it.
+                if (!cc->isPinned()) {
+                    toDelete.push_back(cc);
+                }
+            }
+        } else {
+            CursorMap newMap;
+
+            // collection will still be around, just all PlanExecutors are invalid
+            for (CursorMap::const_iterator i = _cursors.begin(); i != _cursors.end(); ++i) {
+                ClientCursor* cc = i->second;
+
+                // Note that a valid ClientCursor state is "no cursor no executor."  This is because
+                // the set of active cursor IDs in ClientCursor is used as representation of query
+                // state.  See sharding_block.h.  TODO(greg,hk): Move this out.
+                if (NULL == cc->getExecutor()) {
+                    newMap.insert(*i);
+                    continue;
+                }
+
+                if (cc->isPinned() || cc->isAggCursor()) {
+                    // Pinned cursors need to stay alive, so we leave them around.  Aggregation
+                    // cursors also can stay alive (since they don't have their lifetime bound to
+                    // the underlying collection).  However, if they have an associated executor, we
+                    // need to kill it, because it's now invalid.
+                    if (cc->getExecutor())
+                        cc->getExecutor()->kill(reason);
+                    newMap.insert(*i);
+                } else {
+                    cc->kill();
+                    toDelete.push_back(cc);
+                }
+            }
+
+            _cursors = newMap;
+        }
+    }
+
+    // ClientCursors must be destroyed without holding '_mutex'. This is because the destruction of
+    // a ClientCursor may itself require accessing another CursorManager (e.g. when deregistering a
+    // non-cached PlanExecutor from a $lookup stage). We won't access this CursorManger when
+    // destroying a ClientCursor because we've already killed all of its non-cached PlanExecutors.
+    for (auto* cursor : toDelete) {
+        delete cursor;
     }
 }
 
@@ -414,21 +423,29 @@ void CursorManager::invalidateDocument(OperationContext* txn,
 }
 
 std::size_t CursorManager::timeoutCursors(int millisSinceLastCall) {
-    stdx::lock_guard<SimpleMutex> lk(_mutex);
-
     vector<ClientCursor*> toDelete;
 
-    for (CursorMap::const_iterator i = _cursors.begin(); i != _cursors.end(); ++i) {
-        ClientCursor* cc = i->second;
-        if (cc->shouldTimeout(millisSinceLastCall))
-            toDelete.push_back(cc);
+    {
+        stdx::lock_guard<SimpleMutex> lk(_mutex);
+
+        for (CursorMap::const_iterator i = _cursors.begin(); i != _cursors.end(); ++i) {
+            ClientCursor* cc = i->second;
+            if (cc->shouldTimeout(millisSinceLastCall))
+                toDelete.push_back(cc);
+        }
+
+        for (vector<ClientCursor*>::const_iterator i = toDelete.begin(); i != toDelete.end(); ++i) {
+            ClientCursor* cc = *i;
+            _deregisterCursor_inlock(cc);
+            cc->kill();
+        }
     }
 
-    for (vector<ClientCursor*>::const_iterator i = toDelete.begin(); i != toDelete.end(); ++i) {
-        ClientCursor* cc = *i;
-        _deregisterCursor_inlock(cc);
-        cc->kill();
-        delete cc;
+    // ClientCursors must be destroyed without holding '_mutex'. This is because the destruction of
+    // a ClientCursor may itself require accessing this CursorManager (e.g. when deregistering a
+    // non-cached PlanExecutor).
+    for (auto* cursor : toDelete) {
+        delete cursor;
     }
 
     return toDelete.size();
@@ -509,32 +526,42 @@ void CursorManager::deregisterCursor(ClientCursor* cc) {
 }
 
 Status CursorManager::eraseCursor(OperationContext* txn, CursorId id, bool shouldAudit) {
-    stdx::lock_guard<SimpleMutex> lk(_mutex);
+    ClientCursor* cursor;
 
-    CursorMap::iterator it = _cursors.find(id);
-    if (it == _cursors.end()) {
-        if (shouldAudit) {
-            audit::logKillCursorsAuthzCheck(txn->getClient(), _nss, id, ErrorCodes::CursorNotFound);
+    {
+        stdx::lock_guard<SimpleMutex> lk(_mutex);
+
+        CursorMap::iterator it = _cursors.find(id);
+        if (it == _cursors.end()) {
+            if (shouldAudit) {
+                audit::logKillCursorsAuthzCheck(
+                    txn->getClient(), _nss, id, ErrorCodes::CursorNotFound);
+            }
+            return {ErrorCodes::CursorNotFound, str::stream() << "Cursor id not found: " << id};
         }
-        return {ErrorCodes::CursorNotFound, str::stream() << "Cursor id not found: " << id};
-    }
 
-    ClientCursor* cursor = it->second;
+        cursor = it->second;
 
-    if (cursor->isPinned()) {
-        if (shouldAudit) {
-            audit::logKillCursorsAuthzCheck(
-                txn->getClient(), _nss, id, ErrorCodes::OperationFailed);
+        if (cursor->isPinned()) {
+            if (shouldAudit) {
+                audit::logKillCursorsAuthzCheck(
+                    txn->getClient(), _nss, id, ErrorCodes::OperationFailed);
+            }
+            return {ErrorCodes::OperationFailed,
+                    str::stream() << "Cannot kill pinned cursor: " << id};
         }
-        return {ErrorCodes::OperationFailed, str::stream() << "Cannot kill pinned cursor: " << id};
+
+        if (shouldAudit) {
+            audit::logKillCursorsAuthzCheck(txn->getClient(), _nss, id, ErrorCodes::OK);
+        }
+
+        cursor->kill();
+        _deregisterCursor_inlock(cursor);
     }
 
-    if (shouldAudit) {
-        audit::logKillCursorsAuthzCheck(txn->getClient(), _nss, id, ErrorCodes::OK);
-    }
-
-    cursor->kill();
-    _deregisterCursor_inlock(cursor);
+    // ClientCursors must be destroyed without holding '_mutex'. This is because the destruction of
+    // a ClientCursor may itself require accessing this CursorManager (e.g. when deregistering a
+    // non-cached PlanExecutor).
     delete cursor;
     return Status::OK();
 }
