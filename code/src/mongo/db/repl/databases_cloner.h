@@ -34,6 +34,7 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
+#include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/client/fetcher.h"
 #include "mongo/db/namespace_string.h"
@@ -83,7 +84,7 @@ public:
 
     ~DatabasesCloner();
 
-    Status startup();
+    Status startup() noexcept;
     bool isActive();
     void join();
     void shutdown();
@@ -104,7 +105,21 @@ public:
      */
     void setScheduleDbWorkFn_forTest(const CollectionCloner::ScheduleDbWorkFn& scheduleDbWorkFn);
 
+    /**
+     * Calls DatabasesCloner::_setAdminAsFirst.
+     * For testing only.
+     */
+    void setAdminAsFirst_forTest(std::vector<BSONElement>& dbsArray);
+
+    /**
+     * Calls DatabasesCloner::_parseListDatabasesResponse.
+     * For testing only.
+     */
+    StatusWith<std::vector<BSONElement>> parseListDatabasesResponse_forTest(BSONObj dbResponse);
+
 private:
+    bool _isActive_inlock() const;
+
     /**
      * Returns a copy of the database cloners.
      */
@@ -133,6 +148,23 @@ private:
 
     void _onListDatabaseFinish(const CommandCallbackArgs& cbd);
 
+    /**
+     * Takes a vector of BSONElements and scans for an element that contains a 'name' field with the
+     * value 'admin'. If found, the element is swapped with the first element in the vector.
+     * Otherwise, return.
+     *
+     * Used to parse the BSONResponse returned by listDatabases.
+     */
+    void _setAdminAsFirst(std::vector<BSONElement>& dbsArray);
+
+    /**
+     * Takes a 'listDatabases' command response and parses the response into a
+     * vector of BSON elements.
+     *
+     * If the input response is malformed, Status ErrorCodes::BadValue will be returned.
+     */
+    StatusWith<std::vector<BSONElement>> _parseListDatabasesResponse(BSONObj dbResponse);
+
     //
     // All member variables are labeled with one of the following codes indicating the
     // synchronization rules for accessing them.
@@ -146,16 +178,23 @@ private:
     executor::TaskExecutor* _exec;                      // (R) executor to schedule things with
     OldThreadPool* _dbWorkThreadPool;  // (R) db worker thread pool for collection cloning.
     const HostAndPort _source;         // (R) The source to use.
-    bool _active = false;              // (M) false until we start, and true until finished.
     CollectionCloner::ScheduleDbWorkFn _scheduleDbWorkFn;  // (M)
 
     const IncludeDbFilterFn _includeDbFn;  // (R) function which decides which dbs are cloned.
-    const OnFinishFn _finishFn;            // (R) function called when finished.
+    OnFinishFn _finishFn;                  // (M) function called when finished.
     StorageInterface* _storage;            // (R)
 
     std::unique_ptr<RemoteCommandRetryScheduler> _listDBsScheduler;  // (M) scheduler for listDBs.
     std::vector<std::shared_ptr<DatabaseCloner>> _databaseCloners;   // (M) database cloners by name
     Stats _stats;                                                    // (M)
+
+    // State transitions:
+    // PreStart --> Running --> ShuttingDown --> Complete
+    // It is possible to skip intermediate states. For example,
+    // Calling shutdown() when the cloner has not started will transition from PreStart directly
+    // to Complete.
+    enum class State { kPreStart, kRunning, kShuttingDown, kComplete };
+    State _state = State::kPreStart;
 };
 
 

@@ -32,6 +32,7 @@
 #include <string>
 
 #include "mongo/bson/bsonobj.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/shard_id.h"
 
@@ -107,6 +108,9 @@ public:
     static const BSONField<Date_t> DEPRECATED_lastmod;
     static const BSONField<OID> DEPRECATED_epoch;
 
+    ChunkType();
+    ChunkType(NamespaceString nss, ChunkRange range, ChunkVersion version, ShardId shardId);
+
     /**
      * Constructs a new ChunkType object from BSON.
      * Also does validation of the contents.
@@ -150,6 +154,10 @@ public:
         return _max.get();
     }
     void setMax(const BSONObj& max);
+
+    ChunkRange getRange() const {
+        return ChunkRange(getMin(), getMax());
+    }
 
     bool isVersionSet() const {
         return _version.is_initialized();

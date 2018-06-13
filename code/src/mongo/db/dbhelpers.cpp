@@ -37,6 +37,7 @@
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/index_create.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/working_set_common.h"
@@ -61,8 +62,8 @@
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/data_protector.h"
+#include "mongo/db/storage/encryption_hooks.h"
 #include "mongo/db/storage/storage_options.h"
-#include "mongo/db/storage/wiredtiger/wiredtiger_customization_hooks.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/s/shard_key_pattern.h"
@@ -81,34 +82,6 @@ using std::string;
 using std::stringstream;
 
 using logger::LogComponent;
-
-void Helpers::ensureIndex(OperationContext* txn,
-                          Collection* collection,
-                          BSONObj keyPattern,
-                          IndexDescriptor::IndexVersion indexVersion,
-                          bool unique,
-                          const char* name) {
-    BSONObjBuilder b;
-    b.append("name", name);
-    b.append("ns", collection->ns().ns());
-    b.append("key", keyPattern);
-    b.append("v", static_cast<int>(indexVersion));
-    b.appendBool("unique", unique);
-    BSONObj o = b.done();
-
-    MultiIndexBlock indexer(txn, collection);
-
-    Status status = indexer.init(o).getStatus();
-    if (status.code() == ErrorCodes::IndexAlreadyExists)
-        return;
-    uassertStatusOK(status);
-
-    uassertStatusOK(indexer.insertAllDocumentsInCollection());
-
-    WriteUnitOfWork wunit(txn);
-    indexer.commit();
-    wunit.commit();
-}
 
 /* fetch a single object from collection ns that matches query
    set your db SavedContext first
@@ -297,6 +270,7 @@ long long Helpers::removeRange(OperationContext* txn,
                                const KeyRange& range,
                                BoundInclusion boundInclusion,
                                const WriteConcernOptions& writeConcern,
+                               Milliseconds& replWaitDuration,
                                RemoveSaver* callback,
                                bool fromMigrate,
                                bool onlyRemoveOrphanedDocs) {
@@ -310,6 +284,7 @@ long long Helpers::removeRange(OperationContext* txn,
     BSONObj max;
 
     {
+        ScopedTransaction scopedXact(txn, MODE_IS);
         AutoGetCollectionForRead ctx(txn, ns);
         Collection* collection = ctx.getCollection();
         if (!collection) {
@@ -353,11 +328,12 @@ long long Helpers::removeRange(OperationContext* txn,
 
     long long numDeleted = 0;
 
-    Milliseconds millisWaitingForReplication{0};
+    replWaitDuration = Milliseconds::zero();
 
     while (1) {
         // Scoping for write lock.
         {
+            ScopedTransaction scopedXact(txn, MODE_IX);
             AutoGetCollection ctx(txn, NamespaceString(ns), MODE_IX, MODE_IX);
             Collection* collection = ctx.getCollection();
             if (!collection)
@@ -403,8 +379,6 @@ long long Helpers::removeRange(OperationContext* txn,
 
             verify(PlanExecutor::ADVANCED == state);
 
-            WriteUnitOfWork wuow(txn);
-
             if (onlyRemoveOrphanedDocs) {
                 // Do a final check in the write lock to make absolutely sure that our
                 // collection hasn't been modified in a way that invalidates our migration
@@ -436,20 +410,25 @@ long long Helpers::removeRange(OperationContext* txn,
                 }
             }
 
-            NamespaceString nss(ns);
-            if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(nss)) {
-                warning() << "stepped down from primary while deleting chunk; "
-                          << "orphaning data in " << ns << " in range [" << redact(min) << ", "
-                          << redact(max) << ")";
-                return numDeleted;
+            MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+                WriteUnitOfWork wuow(txn);
+                NamespaceString nss(ns);
+                if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(nss)) {
+                    warning() << "stepped down from primary while deleting chunk; "
+                              << "orphaning data in " << ns << " in range [" << redact(min) << ", "
+                              << redact(max) << ")";
+                    return numDeleted;
+                }
+
+                if (callback)
+                    callback->goingToDelete(obj);
+
+                OpDebug* const nullOpDebug = nullptr;
+                collection->deleteDocument(txn, rloc, nullOpDebug, fromMigrate);
+                wuow.commit();
             }
+            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "delete range", ns);
 
-            if (callback)
-                callback->goingToDelete(obj);
-
-            OpDebug* const nullOpDebug = nullptr;
-            collection->deleteDocument(txn, rloc, nullOpDebug, fromMigrate);
-            wuow.commit();
             numDeleted++;
         }
 
@@ -462,20 +441,21 @@ long long Helpers::removeRange(OperationContext* txn,
                     txn,
                     repl::ReplClientInfo::forClient(txn->getClient()).getLastOp(),
                     writeConcern);
-            if (replStatus.status.code() == ErrorCodes::ExceededTimeLimit) {
+            if (replStatus.status.code() == ErrorCodes::ExceededTimeLimit ||
+                replStatus.status.code() == ErrorCodes::WriteConcernFailed) {
                 warning(LogComponent::kSharding) << "replication to secondaries for removeRange at "
                                                     "least 60 seconds behind";
             } else {
                 uassertStatusOK(replStatus.status);
             }
-            millisWaitingForReplication += replStatus.duration;
+            replWaitDuration += replStatus.duration;
         }
     }
 
     if (writeConcern.shouldWaitForOtherNodes())
         log(LogComponent::kSharding)
             << "Helpers::removeRangeUnlocked time spent waiting for replication: "
-            << durationCount<Milliseconds>(millisWaitingForReplication) << "ms" << endl;
+            << durationCount<Milliseconds>(replWaitDuration) << "ms" << endl;
 
     MONGO_LOG_COMPONENT(1, LogComponent::kSharding) << "end removal of " << min << " to " << max
                                                     << " in " << ns << " (took "
@@ -509,19 +489,19 @@ Helpers::RemoveSaver::RemoveSaver(const string& a, const string& b, const string
     ss << why << "." << terseCurrentTime(false) << "." << NUM++ << ".bson";
     _file /= ss.str();
 
-    auto hooks = WiredTigerCustomizationHooks::get(getGlobalServiceContext());
-    if (hooks->enabled()) {
-        _protector = hooks->getDataProtector();
-        _file += hooks->getProtectedPathSuffix();
+    auto encryptionHooks = EncryptionHooks::get(getGlobalServiceContext());
+    if (encryptionHooks->enabled()) {
+        _protector = encryptionHooks->getDataProtector();
+        _file += encryptionHooks->getProtectedPathSuffix();
     }
 }
 
 Helpers::RemoveSaver::~RemoveSaver() {
     if (_protector && _out) {
-        auto hooks = WiredTigerCustomizationHooks::get(getGlobalServiceContext());
-        invariant(hooks->enabled());
+        auto encryptionHooks = EncryptionHooks::get(getGlobalServiceContext());
+        invariant(encryptionHooks->enabled());
 
-        size_t protectedSizeMax = hooks->additionalBytesForProtectedBuffer();
+        size_t protectedSizeMax = encryptionHooks->additionalBytesForProtectedBuffer();
         std::unique_ptr<uint8_t[]> protectedBuffer(new uint8_t[protectedSizeMax]);
 
         size_t resultLen;
@@ -584,10 +564,10 @@ Status Helpers::RemoveSaver::goingToDelete(const BSONObj& o) {
 
     std::unique_ptr<uint8_t[]> protectedBuffer;
     if (_protector) {
-        auto hooks = WiredTigerCustomizationHooks::get(getGlobalServiceContext());
-        invariant(hooks->enabled());
+        auto encryptionHooks = EncryptionHooks::get(getGlobalServiceContext());
+        invariant(encryptionHooks->enabled());
 
-        size_t protectedSizeMax = dataSize + hooks->additionalBytesForProtectedBuffer();
+        size_t protectedSizeMax = dataSize + encryptionHooks->additionalBytesForProtectedBuffer();
         protectedBuffer.reset(new uint8_t[protectedSizeMax]);
 
         size_t resultLen;

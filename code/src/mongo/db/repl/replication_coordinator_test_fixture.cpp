@@ -54,14 +54,14 @@ using executor::NetworkInterfaceMock;
 using executor::RemoteCommandRequest;
 using executor::RemoteCommandResponse;
 
-ReplicaSetConfig ReplCoordTest::assertMakeRSConfig(const BSONObj& configBson) {
-    ReplicaSetConfig config;
+ReplSetConfig ReplCoordTest::assertMakeRSConfig(const BSONObj& configBson) {
+    ReplSetConfig config;
     ASSERT_OK(config.initialize(configBson));
     ASSERT_OK(config.validate());
     return config;
 }
 
-ReplicaSetConfig ReplCoordTest::assertMakeRSConfigV0(const BSONObj& configBson) {
+ReplSetConfig ReplCoordTest::assertMakeRSConfigV0(const BSONObj& configBson) {
     return assertMakeRSConfig(addProtocolVersion(configBson, 0));
 }
 
@@ -154,7 +154,7 @@ void ReplCoordTest::start() {
 
     const auto txn = makeOperationContext();
     _repl->startup(txn.get());
-    _repl->waitForStartUpComplete();
+    _repl->waitForStartUpComplete_forTest();
     _callShutdown = true;
 }
 
@@ -199,7 +199,7 @@ ResponseStatus ReplCoordTest::makeResponseStatus(const BSONObj& doc,
 
 void ReplCoordTest::simulateEnoughHeartbeatsForAllNodesUp() {
     ReplicationCoordinatorImpl* replCoord = getReplCoord();
-    ReplicaSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
+    ReplSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
     NetworkInterfaceMock* net = getNet();
     net->enterNetwork();
     for (int i = 0; i < rsConfig.getNumMembers() - 1; ++i) {
@@ -230,7 +230,7 @@ void ReplCoordTest::simulateEnoughHeartbeatsForAllNodesUp() {
 void ReplCoordTest::simulateSuccessfulDryRun(
     stdx::function<void(const RemoteCommandRequest& request)> onDryRunRequest) {
     ReplicationCoordinatorImpl* replCoord = getReplCoord();
-    ReplicaSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
+    ReplSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
     NetworkInterfaceMock* net = getNet();
 
     auto electionTimeoutWhen = replCoord->getElectionTimeout_forTest();
@@ -292,7 +292,7 @@ void ReplCoordTest::simulateSuccessfulV1ElectionAt(Date_t electionTime) {
     ReplicationCoordinatorImpl* replCoord = getReplCoord();
     NetworkInterfaceMock* net = getNet();
 
-    ReplicaSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
+    ReplSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
     ASSERT(replCoord->getMemberState().secondary()) << replCoord->getMemberState().toString();
     bool hasReadyRequests = true;
     // Process requests until we're primary and consume the heartbeats for the notification
@@ -312,6 +312,10 @@ void ReplCoordTest::simulateSuccessfulV1ElectionAt(Date_t electionTime) {
             ReplSetHeartbeatResponse hbResp;
             hbResp.setSetName(rsConfig.getReplSetName());
             hbResp.setState(MemberState::RS_SECONDARY);
+            // The smallest valid optime in PV1.
+            OpTime opTime(Timestamp(), 0);
+            hbResp.setAppliedOpTime(opTime);
+            hbResp.setDurableOpTime(opTime);
             hbResp.setConfigVersion(rsConfig.getConfigVersion());
             net->scheduleResponse(noi, net->now(), makeResponseStatus(hbResp.toBSON(true)));
         } else if (request.cmdObj.firstElement().fieldNameStringData() == "replSetRequestVotes") {
@@ -323,20 +327,21 @@ void ReplCoordTest::simulateSuccessfulV1ElectionAt(Date_t electionTime) {
                                                                << request.cmdObj["term"].Long()
                                                                << "voteGranted"
                                                                << true)));
-        } else if (request.cmdObj.firstElement().fieldNameStringData() == "replSetGetStatus") {
-            // OpTime part of replSetGetStatus for use by FreshnessScanner during catch-up period.
-            BSONObj response = BSON("optimes" << BSON("appliedOpTime" << OpTime().toBSON()));
-            net->scheduleResponse(noi, net->now(), makeResponseStatus(response));
         } else {
             error() << "Black holing unexpected request to " << request.target << ": "
                     << request.cmdObj;
             net->blackHole(noi);
         }
         net->runReadyNetworkOperations();
+        // Successful elections need to write the last vote to disk, which is done by DB worker.
+        // Wait until DB worker finishes its job to ensure the synchronization with the
+        // executor.
+        getReplExec()->waitForDBWork_forTest();
+        net->runReadyNetworkOperations();
         hasReadyRequests = net->hasReadyRequests();
         getNet()->exitNetwork();
     }
-    ASSERT(replCoord->isWaitingForApplierToDrain());
+    ASSERT(replCoord->getApplierState() == ReplicationCoordinator::ApplierState::Draining);
     ASSERT(replCoord->getMemberState().primary()) << replCoord->getMemberState().toString();
 
     IsMasterResponse imResponse;
@@ -345,8 +350,9 @@ void ReplCoordTest::simulateSuccessfulV1ElectionAt(Date_t electionTime) {
     ASSERT_TRUE(imResponse.isSecondary()) << imResponse.toBSON().toString();
     {
         auto txn = makeOperationContext();
-        replCoord->signalDrainComplete(txn.get());
+        replCoord->signalDrainComplete(txn.get(), replCoord->getTerm());
     }
+    ASSERT(replCoord->getApplierState() == ReplicationCoordinator::ApplierState::Stopped);
     replCoord->fillIsMasterForReplSet(&imResponse);
     ASSERT_TRUE(imResponse.isMaster()) << imResponse.toBSON().toString();
     ASSERT_FALSE(imResponse.isSecondary()) << imResponse.toBSON().toString();
@@ -357,7 +363,7 @@ void ReplCoordTest::simulateSuccessfulV1ElectionAt(Date_t electionTime) {
 void ReplCoordTest::simulateSuccessfulElection() {
     ReplicationCoordinatorImpl* replCoord = getReplCoord();
     NetworkInterfaceMock* net = getNet();
-    ReplicaSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
+    ReplSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
     ASSERT(replCoord->getMemberState().secondary()) << replCoord->getMemberState().toString();
     bool hasReadyRequests = true;
     // Process requests until we're primary and consume the heartbeats for the notification
@@ -398,7 +404,7 @@ void ReplCoordTest::simulateSuccessfulElection() {
         hasReadyRequests = net->hasReadyRequests();
         getNet()->exitNetwork();
     }
-    ASSERT(replCoord->isWaitingForApplierToDrain());
+    ASSERT(replCoord->getApplierState() == ReplicationCoordinator::ApplierState::Draining);
     ASSERT(replCoord->getMemberState().primary()) << replCoord->getMemberState().toString();
 
     IsMasterResponse imResponse;
@@ -407,7 +413,7 @@ void ReplCoordTest::simulateSuccessfulElection() {
     ASSERT_TRUE(imResponse.isSecondary()) << imResponse.toBSON().toString();
     {
         auto txn = makeOperationContext();
-        replCoord->signalDrainComplete(txn.get());
+        replCoord->signalDrainComplete(txn.get(), replCoord->getTerm());
     }
     replCoord->fillIsMasterForReplSet(&imResponse);
     ASSERT_TRUE(imResponse.isMaster()) << imResponse.toBSON().toString();
@@ -428,7 +434,7 @@ void ReplCoordTest::replyToReceivedHeartbeat() {
     net->enterNetwork();
     const NetworkInterfaceMock::NetworkOperationIterator noi = net->getNextReadyRequest();
     const RemoteCommandRequest& request = noi->getRequest();
-    const ReplicaSetConfig rsConfig = getReplCoord()->getReplicaSetConfig_forTest();
+    const ReplSetConfig rsConfig = getReplCoord()->getReplicaSetConfig_forTest();
     repl::ReplSetHeartbeatArgs hbArgs;
     ASSERT_OK(hbArgs.initialize(request.cmdObj));
     repl::ReplSetHeartbeatResponse hbResp;
@@ -448,7 +454,7 @@ void ReplCoordTest::replyToReceivedHeartbeatV1() {
     net->enterNetwork();
     const NetworkInterfaceMock::NetworkOperationIterator noi = net->getNextReadyRequest();
     const RemoteCommandRequest& request = noi->getRequest();
-    const ReplicaSetConfig rsConfig = getReplCoord()->getReplicaSetConfig_forTest();
+    const ReplSetConfig rsConfig = getReplCoord()->getReplicaSetConfig_forTest();
     repl::ReplSetHeartbeatArgsV1 hbArgs;
     ASSERT_OK(hbArgs.initialize(request.cmdObj));
     repl::ReplSetHeartbeatResponse hbResp;
@@ -471,32 +477,30 @@ void ReplCoordTest::disableSnapshots() {
     _externalState->setAreSnapshotsEnabled(false);
 }
 
-void ReplCoordTest::simulateCatchUpTimeout() {
+void ReplCoordTest::simulateCatchUpAbort() {
     NetworkInterfaceMock* net = getNet();
-    auto catchUpTimeoutWhen = net->now() + getReplCoord()->getConfig().getCatchUpTimeoutPeriod();
+    auto heartbeatTimeoutWhen =
+        net->now() + getReplCoord()->getConfig().getHeartbeatTimeoutPeriodMillis();
     bool hasRequest = false;
     net->enterNetwork();
-    if (net->now() < catchUpTimeoutWhen) {
-        net->runUntil(catchUpTimeoutWhen);
+    if (net->now() < heartbeatTimeoutWhen) {
+        net->runUntil(heartbeatTimeoutWhen);
     }
     hasRequest = net->hasReadyRequests();
-    net->exitNetwork();
-
     while (hasRequest) {
-        net->enterNetwork();
         auto noi = net->getNextReadyRequest();
         auto request = noi->getRequest();
         // Black hole heartbeat requests caused by time advance.
         log() << "Black holing request to " << request.target.toString() << " : " << request.cmdObj;
         net->blackHole(noi);
-        if (net->now() < catchUpTimeoutWhen) {
-            net->runUntil(catchUpTimeoutWhen);
+        if (net->now() < heartbeatTimeoutWhen) {
+            net->runUntil(heartbeatTimeoutWhen);
         } else {
             net->runReadyNetworkOperations();
         }
         hasRequest = net->hasReadyRequests();
-        net->exitNetwork();
     }
+    net->exitNetwork();
 }
 
 }  // namespace repl

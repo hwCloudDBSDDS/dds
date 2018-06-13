@@ -6,7 +6,8 @@ Documentation=https://docs.mongodb.org/manual
 [Service]
 User=mongodb
 Group=mongodb
-ExecStart=/usr/bin/mongod --quiet --config /etc/mongod.conf
+ExecStart=/usr/bin/mongod --config /etc/mongod.conf
+PIDFile=/var/run/mongodb/mongod.pid
 # file size
 LimitFSIZE=infinity
 # cpu time
@@ -17,6 +18,8 @@ LimitAS=infinity
 LimitNOFILE=64000
 # processes/threads
 LimitNPROC=64000
+# locked memory
+LimitMEMLOCK=infinity
 # total threads (user+kernel)
 TasksMax=infinity
 TasksAccounting=false

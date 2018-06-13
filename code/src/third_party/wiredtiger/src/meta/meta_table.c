@@ -68,9 +68,6 @@ __wt_metadata_cursor_open(
 	if (F_ISSET(btree, WT_BTREE_NO_LOGGING))
 		F_CLR(btree, WT_BTREE_NO_LOGGING);
 
-	/* The metadata file always uses checkpoint IDs in visibility checks. */
-	btree->include_checkpoint_txn = true;
-
 	return (0);
 }
 
@@ -195,7 +192,7 @@ __wt_metadata_update(
 	    __metadata_turtle(key) ? "" : "not ");
 
 	if (__metadata_turtle(key)) {
-		WT_WITH_TURTLE_LOCK(session, ret,
+		WT_WITH_TURTLE_LOCK(session,
 		    ret = __wt_turtle_update(session, key, value));
 		return (ret);
 	}
@@ -233,12 +230,23 @@ __wt_metadata_remove(WT_SESSION_IMPL *session, const char *key)
 		WT_RET_MSG(session, EINVAL,
 		    "%s: remove not supported on the turtle file", key);
 
+	/*
+	 * Take, release, and reacquire the metadata cursor. It's complicated,
+	 * but that way the underlying meta-tracking function doesn't have to
+	 * open a second metadata cursor, it can use the session's cached one.
+	 */
 	WT_RET(__wt_metadata_cursor(session, &cursor));
 	cursor->set_key(cursor, key);
 	WT_ERR(cursor->search(cursor));
+	WT_ERR(__wt_metadata_cursor_release(session, &cursor));
+
 	if (WT_META_TRACKING(session))
 		WT_ERR(__wt_meta_track_update(session, key));
-	WT_ERR(cursor->remove(cursor));
+
+	WT_ERR(__wt_metadata_cursor(session, &cursor));
+	cursor->set_key(cursor, key);
+	ret = cursor->remove(cursor);
+
 err:	WT_TRET(__wt_metadata_cursor_release(session, &cursor));
 	return (ret);
 }
@@ -262,8 +270,19 @@ __wt_metadata_search(WT_SESSION_IMPL *session, const char *key, char **valuep)
 	    key, WT_META_TRACKING(session) ? "true" : "false",
 	    __metadata_turtle(key) ? "" : "not ");
 
-	if (__metadata_turtle(key))
-		return (__wt_turtle_read(session, key, valuep));
+	if (__metadata_turtle(key)) {
+		/*
+		 * The returned value should only be set if ret is non-zero, but
+		 * Coverity is convinced otherwise. The code path is used enough
+		 * that Coverity complains a lot, add an error check to get some
+		 * peace and quiet.
+		 */
+		WT_WITH_TURTLE_LOCK(session,
+		    ret = __wt_turtle_read(session, key, valuep));
+		if (ret != 0)
+			__wt_free(session, *valuep);
+		return (ret);
+	}
 
 	/*
 	 * All metadata reads are at read-uncommitted isolation.  That's

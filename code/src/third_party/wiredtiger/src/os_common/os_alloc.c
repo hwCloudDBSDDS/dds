@@ -30,6 +30,7 @@
  */
 int
 __wt_calloc(WT_SESSION_IMPL *session, size_t number, size_t size, void *retp)
+    WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
 {
 	void *p;
 
@@ -265,6 +266,8 @@ __wt_strndup(WT_SESSION_IMPL *session, const void *str, size_t len, void *retp)
 
 	WT_RET(__wt_malloc(session, len + 1, &p));
 
+	WT_ASSERT(session, p != NULL);		/* quiet clang scan-build */
+
 	/*
 	 * Don't change this to strncpy, we rely on this function to duplicate
 	 * "strings" that contain nul bytes.
@@ -282,6 +285,7 @@ __wt_strndup(WT_SESSION_IMPL *session, const void *str, size_t len, void *retp)
  */
 void
 __wt_free_int(WT_SESSION_IMPL *session, const void *p_arg)
+    WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
 {
 	void *p;
 

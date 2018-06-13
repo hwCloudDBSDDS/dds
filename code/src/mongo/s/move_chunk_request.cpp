@@ -45,6 +45,7 @@ const char kFromShardId[] = "fromShard";
 const char kToShardId[] = "toShard";
 const char kMaxChunkSizeBytes[] = "maxChunkSizeBytes";
 const char kWaitForDelete[] = "waitForDelete";
+const char kWaitForDeleteDeprecated[] = "_waitForDelete";
 const char kTakeDistLock[] = "takeDistLock";
 
 }  // namespace
@@ -124,6 +125,15 @@ StatusWith<MoveChunkRequest> MoveChunkRequest::createFromCommand(NamespaceString
         }
     }
 
+    // Check for the deprecated name '_waitForDelete' if 'waitForDelete' was false.
+    if (!request._waitForDelete) {
+        Status status = bsonExtractBooleanFieldWithDefault(
+            obj, kWaitForDeleteDeprecated, false, &request._waitForDelete);
+        if (!status.isOK()) {
+            return status;
+        }
+    }
+
     {
         long long maxChunkSizeBytes;
         Status status = bsonExtractIntegerField(obj, kMaxChunkSizeBytes, &maxChunkSizeBytes);
@@ -185,7 +195,8 @@ bool MoveChunkRequest::operator==(const MoveChunkRequest& other) const {
         return false;
     if (_range != other._range)
         return false;
-
+    if (_waitForDelete != other._waitForDelete)
+        return false;
     return true;
 }
 

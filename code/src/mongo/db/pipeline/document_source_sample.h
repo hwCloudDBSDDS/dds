@@ -50,8 +50,6 @@ public:
         return _size;
     }
 
-    void doInjectExpressionContext() final;
-
     static boost::intrusive_ptr<DocumentSource> createFromBson(
         BSONElement elem, const boost::intrusive_ptr<ExpressionContext>& expCtx);
 

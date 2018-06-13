@@ -2,12 +2,22 @@ package db
 
 import (
 	"fmt"
-	"github.com/mongodb/mongo-tools/common/bsonutil"
+	"strings"
+
 	"github.com/mongodb/mongo-tools/common/log"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
-	"strings"
 )
+
+type CollectionInfo struct {
+	Name    string  `bson:"name"`
+	Type    string  `bson:"type"`
+	Options *bson.D `bson:"options"`
+}
+
+func (ci *CollectionInfo) IsView() bool {
+	return ci.Type == "view"
+}
 
 // IsNoCmd reeturns true if err indicates a query command is not supported,
 // otherwise, returns false.
@@ -124,36 +134,42 @@ func getCollectionsPre28(database *mgo.Database, name string) (*mgo.Iter, error)
 	return iter, nil
 }
 
-func GetCollectionOptions(coll *mgo.Collection) (*bson.D, error) {
+func GetCollectionInfo(coll *mgo.Collection) (*CollectionInfo, error) {
 	iter, useFullName, err := GetCollections(coll.Database, coll.Name)
 	if err != nil {
 		return nil, err
 	}
+	defer iter.Close()
 	comparisonName := coll.Name
 	if useFullName {
 		comparisonName = coll.FullName
 	}
-	collInfo := &bson.D{}
+
+	collInfo := &CollectionInfo{}
 	for iter.Next(collInfo) {
-		name, err := bsonutil.FindValueByKey("name", collInfo)
-		if err != nil {
-			collInfo = nil
-			continue
-		}
-		if nameStr, ok := name.(string); ok {
-			if nameStr == comparisonName {
-				// we've found the collection we're looking for
-				return collInfo, nil
+		if collInfo.Name == comparisonName {
+			if useFullName {
+				collName, err := StripDBFromNamespace(collInfo.Name, coll.Database.Name)
+				if err != nil {
+					return nil, err
+				}
+				collInfo.Name = collName
 			}
-		} else {
-			collInfo = nil
-			continue
+			break
 		}
 	}
-	err = iter.Err()
-	if err != nil {
+	if err := iter.Err(); err != nil {
 		return nil, err
 	}
-	// The given collection was not found, but no error encountered.
-	return nil, nil
+	return collInfo, nil
+}
+
+func StripDBFromNamespace(namespace string, dbName string) (string, error) {
+	namespacePrefix := dbName + "."
+	// if the collection info came from querying system.indexes (2.6 or earlier) then the
+	// "name" we get includes the db name as well, so we must remove it
+	if strings.HasPrefix(namespace, namespacePrefix) {
+		return namespace[len(namespacePrefix):], nil
+	}
+	return "", fmt.Errorf("namespace '%v' format is invalid - expected to start with '%v'", namespace, namespacePrefix)
 }

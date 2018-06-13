@@ -57,7 +57,6 @@
 #include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/storage/mmap_v1/dur.h"
 #include "mongo/logger/ramlog.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/shard_key_pattern.h"
@@ -74,6 +73,15 @@ using str::stream;
 namespace {
 
 Tee* migrateLog = RamLog::get("migrate");
+
+const WriteConcernOptions kMajorityWriteConcern(WriteConcernOptions::kMajority,
+                                                // Note: Even though we're setting UNSET here,
+                                                // kMajority implies JOURNAL if journaling is
+                                                // supported by mongod and
+                                                // writeConcernMajorityJournalDefault is set to true
+                                                // in the ReplSetConfig.
+                                                WriteConcernOptions::SyncMode::UNSET,
+                                                -1);
 
 /**
  * Returns a human-readabale name of the migration manager's state.
@@ -139,26 +147,33 @@ bool willOverrideLocalId(OperationContext* txn,
 bool opReplicatedEnough(OperationContext* txn,
                         const repl::OpTime& lastOpApplied,
                         const WriteConcernOptions& writeConcern) {
-    WriteConcernOptions majorityWriteConcern;
-    majorityWriteConcern.wTimeout = -1;
-    majorityWriteConcern.wMode = WriteConcernOptions::kMajority;
-    Status majorityStatus = repl::getGlobalReplicationCoordinator()
-                                ->awaitReplication(txn, lastOpApplied, majorityWriteConcern)
-                                .status;
+    WriteConcernResult writeConcernResult;
+    writeConcernResult.wTimedOut = false;
 
-    if (!writeConcern.shouldWaitForOtherNodes()) {
-        return majorityStatus.isOK();
+    Status majorityStatus =
+        waitForWriteConcern(txn, lastOpApplied, kMajorityWriteConcern, &writeConcernResult);
+    if (!majorityStatus.isOK()) {
+        if (!writeConcernResult.wTimedOut) {
+            uassertStatusOK(majorityStatus);
+        }
+        return false;
     }
 
     // Enforce the user specified write concern after "majority" so it covers the union of the 2
-    // write concerns
+    // write concerns in case the user's write concern is stronger than majority
     WriteConcernOptions userWriteConcern(writeConcern);
     userWriteConcern.wTimeout = -1;
-    Status userStatus = repl::getGlobalReplicationCoordinator()
-                            ->awaitReplication(txn, lastOpApplied, userWriteConcern)
-                            .status;
+    writeConcernResult.wTimedOut = false;
 
-    return majorityStatus.isOK() && userStatus.isOK();
+    Status userStatus =
+        waitForWriteConcern(txn, lastOpApplied, userWriteConcern, &writeConcernResult);
+    if (!userStatus.isOK()) {
+        if (!writeConcernResult.wTimedOut) {
+            uassertStatusOK(userStatus);
+        }
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -212,6 +227,7 @@ MigrationDestinationManager::State MigrationDestinationManager::getState() const
 void MigrationDestinationManager::setState(State newState) {
     stdx::lock_guard<stdx::mutex> sl(_mutex);
     _state = newState;
+    _stateChangedCV.notify_all();
 }
 
 bool MigrationDestinationManager::isActive() const {
@@ -223,7 +239,21 @@ bool MigrationDestinationManager::_isActive_inlock() const {
     return _sessionId.is_initialized();
 }
 
-void MigrationDestinationManager::report(BSONObjBuilder& b) {
+void MigrationDestinationManager::report(BSONObjBuilder& b,
+                                         OperationContext* opCtx,
+                                         bool waitForSteadyOrDone) {
+    if (waitForSteadyOrDone) {
+        stdx::unique_lock<stdx::mutex> lock(_mutex);
+        try {
+            opCtx->waitForConditionOrInterruptFor(_stateChangedCV, lock, Seconds(1), [&]() -> bool {
+                return _state != READY && _state != CLONE && _state != CATCHUP;
+            });
+        } catch (...) {
+            // Ignoring this error because this is an optional parameter and we catch timeout
+            // exceptions later.
+        }
+        b.append("waited", true);
+    }
     stdx::lock_guard<stdx::mutex> sl(_mutex);
 
     b.appendBool("active", _sessionId.is_initialized());
@@ -278,6 +308,7 @@ Status MigrationDestinationManager::start(const NamespaceString& nss,
     invariant(!_scopedRegisterReceiveChunk);
 
     _state = READY;
+    _stateChangedCV.notify_all();
     _errmsg = "";
 
     _nss = nss;
@@ -328,6 +359,7 @@ bool MigrationDestinationManager::abort(const MigrationSessionId& sessionId) {
     }
 
     _state = ABORT;
+    _stateChangedCV.notify_all();
     _errmsg = "aborted";
 
     return true;
@@ -336,6 +368,7 @@ bool MigrationDestinationManager::abort(const MigrationSessionId& sessionId) {
 void MigrationDestinationManager::abortWithoutSessionIdCheck() {
     stdx::lock_guard<stdx::mutex> sl(_mutex);
     _state = ABORT;
+    _stateChangedCV.notify_all();
     _errmsg = "aborted without session id check";
 }
 
@@ -360,6 +393,7 @@ bool MigrationDestinationManager::startCommit(const MigrationSessionId& sessionI
     }
 
     _state = COMMIT_START;
+    _stateChangedCV.notify_all();
 
     const auto deadline = Date_t::now() + Seconds(30);
 
@@ -367,6 +401,8 @@ bool MigrationDestinationManager::startCommit(const MigrationSessionId& sessionI
         if (stdx::cv_status::timeout ==
             _isActiveCV.wait_until(lock, deadline.toSystemTimePoint())) {
             _state = FAIL;
+            _stateChangedCV.notify_all();
+
             log() << "startCommit never finished!" << migrateLog;
             return false;
         }
@@ -981,18 +1017,6 @@ bool MigrationDestinationManager::_flushPendingWrites(OperationContext* txn,
 
     log() << "migrate commit succeeded flushing to secondaries for '" << ns << "' " << min << " -> "
           << max << migrateLog;
-
-    {
-        // Get global lock to wait for write to be commited to journal.
-        ScopedTransaction scopedXact(txn, MODE_S);
-        Lock::GlobalRead lk(txn->lockState());
-
-        // if durability is on, force a write to journal
-        if (getDur().commitNow(txn)) {
-            log() << "migrate commit flushed to journal for '" << ns << "' " << redact(min)
-                  << " -> " << redact(max) << migrateLog;
-        }
-    }
 
     return true;
 }

@@ -72,6 +72,7 @@ ToolTest.prototype.runTool = function() {
 ReplTest = function(name, ports) {
     this.name = name;
     this.ports = ports || allocatePorts(2);
+    this.kDefaultTimeoutMS = 10 * 60 * 1000;
 };
 
 ReplTest.prototype.getPort = function(master) {
@@ -213,11 +214,21 @@ function startParallelShell(jsCode, port, noConnect) {
     var args = ["mongo"];
 
     if (typeof db == "object") {
-        var hostAndPort = db.getMongo().host.split(':');
-        var host = hostAndPort[0];
-        args.push("--host", host);
-        if (!port && hostAndPort.length >= 2) {
-            var port = hostAndPort[1];
+        if (!port) {
+            // If no port override specified, just passthrough connect string.
+            args.push("--host", db.getMongo().host);
+        } else {
+            // Strip port numbers from connect string.
+            const uri = new MongoURI(db.getMongo().host);
+            var connString = uri.servers
+                                 .map(function(server) {
+                                     return server.host;
+                                 })
+                                 .join(',');
+            if (uri.setName.length > 0) {
+                connString = uri.setName + '/' + connString;
+            }
+            args.push("--host", connString);
         }
     }
     if (port) {

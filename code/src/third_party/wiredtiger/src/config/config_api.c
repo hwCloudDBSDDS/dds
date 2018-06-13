@@ -158,24 +158,25 @@ wiredtiger_config_validate(WT_SESSION *wt_session,
 }
 
 /*
- * __conn_foc_add --
+ * __wt_conn_foc_add --
  *	Add a new entry into the connection's free-on-close list.
  */
-static int
-__conn_foc_add(WT_SESSION_IMPL *session, const void *p)
+void
+__wt_conn_foc_add(WT_SESSION_IMPL *session, const void *p)
 {
 	WT_CONNECTION_IMPL *conn;
 
 	conn = S2C(session);
 
 	/*
-	 * Our caller is expected to be holding any locks we need.
+	 * Callers of this function are expected to be holding the connection's
+	 * api_lock.
+	 *
+	 * All callers of this function currently ignore errors.
 	 */
-	WT_RET(__wt_realloc_def(
-	    session, &conn->foc_size, conn->foc_cnt + 1, &conn->foc));
-
-	conn->foc[conn->foc_cnt++] = (void *)p;
-	return (0);
+	if (__wt_realloc_def(
+	    session, &conn->foc_size, conn->foc_cnt + 1, &conn->foc) == 0)
+		conn->foc[conn->foc_cnt++] = (void *)p;
 }
 
 /*
@@ -214,7 +215,7 @@ __wt_configure_method(WT_SESSION_IMPL *session,
 	WT_CONFIG_ENTRY *entry;
 	WT_CONNECTION_IMPL *conn;
 	WT_DECL_RET;
-	size_t cnt;
+	size_t cnt, len;
 	char *newcheck_name, *p;
 
 	/*
@@ -275,12 +276,10 @@ __wt_configure_method(WT_SESSION_IMPL *session,
 	 */
 	WT_ERR(__wt_calloc_one(session, &entry));
 	entry->method = (*epp)->method;
-	WT_ERR(__wt_calloc_def(session,
-	    strlen((*epp)->base) + strlen(",") + strlen(config) + 1, &p));
-	(void)strcpy(p, (*epp)->base);
-	(void)strcat(p, ",");
-	(void)strcat(p, config);
+	len = strlen((*epp)->base) + strlen(",") + strlen(config) + 1;
+	WT_ERR(__wt_calloc_def(session, len, &p));
 	entry->base = p;
+	WT_ERR(__wt_snprintf(p, len, "%s,%s", (*epp)->base, config));
 
 	/*
 	 * There may be a default value in the config argument passed in (for
@@ -328,12 +327,12 @@ __wt_configure_method(WT_SESSION_IMPL *session,
 	 * order to avoid freeing chunks of memory twice.  Again, this isn't a
 	 * commonly used API and it shouldn't ever happen, just leak it.
 	 */
-	(void)__conn_foc_add(session, entry->base);
-	(void)__conn_foc_add(session, entry);
-	(void)__conn_foc_add(session, checks);
-	(void)__conn_foc_add(session, newcheck->type);
-	(void)__conn_foc_add(session, newcheck->checks);
-	(void)__conn_foc_add(session, newcheck_name);
+	__wt_conn_foc_add(session, entry->base);
+	__wt_conn_foc_add(session, entry);
+	__wt_conn_foc_add(session, checks);
+	__wt_conn_foc_add(session, newcheck->type);
+	__wt_conn_foc_add(session, newcheck->checks);
+	__wt_conn_foc_add(session, newcheck_name);
 
 	/*
 	 * Instead of using locks to protect configuration information, assume

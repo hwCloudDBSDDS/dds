@@ -6,6 +6,8 @@
  * - Confirm that writes can progress after fsyncUnlock
  * - Confirm that the command can be run repeatedly without breaking things
  * - Confirm that the pseudo commands and eval can perform fsyncLock/Unlock
+ *
+ * @tags: [requires_eval_command]
  */
 (function() {
     "use strict";
@@ -89,7 +91,7 @@
     assert(fsyncPseudoCommandRes.ok, "fsyncUnlock pseudo-command failed");
     assert(db.currentOp().fsyncLock == null, "fsyncUnlock is not null in db.currentOp");
 
-    // Make sure that insert attempts made during multiple fsynLock requests will not execute until
+    // Make sure that insert attempts made during multiple fsyncLock requests will not execute until
     // all locks have been released.
     fsyncLockRes = db.fsyncLock();
     assert.commandWorked(fsyncLockRes);

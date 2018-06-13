@@ -44,7 +44,7 @@ class OperationContext;
 
 struct JSFile {
     const char* name;
-    const StringData& source;
+    const StringData source;
 };
 
 class Scope {
@@ -102,6 +102,8 @@ public:
     virtual void gc() = 0;
 
     virtual void advanceGeneration() = 0;
+
+    virtual void requireOwnedObjects() = 0;
 
     virtual ScriptingFunction createFunction(const char* code);
 
@@ -209,11 +211,7 @@ protected:
      */
     class StoredFuncModLogOpHandler;
 
-    virtual FunctionCacheMap& getFunctionCache() {
-        return _cachedFunctions;
-    }
-    virtual ScriptingFunction _createFunction(const char* code,
-                                              ScriptingFunction functionNumber = 0) = 0;
+    virtual ScriptingFunction _createFunction(const char* code) = 0;
 
     std::string _localDBName;
     int64_t _loadedVersion;

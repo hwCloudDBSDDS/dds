@@ -34,18 +34,21 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/thread/recursive_mutex.hpp>
-#include <boost/thread/tss.hpp>
+#include <boost/thread/thread.hpp>
 #include <iostream>
 #include <sstream>
+#include <stack>
 #include <string>
 #include <vector>
 
 #include "mongo/base/init.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/config.h"
+#include "mongo/db/server_parameters.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/concurrency/mutex.h"
+#include "mongo/util/concurrency/threadlocal.h"
 #include "mongo/util/debug_util.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
@@ -77,6 +80,41 @@ SSLParams sslGlobalParams;
 const SSLParams& getSSLGlobalParams() {
     return sslGlobalParams;
 }
+
+/**
+ * Configurable via --setParameter disableNonSSLConnectionLogging=true. If false (default)
+ * if the sslMode is set to preferSSL, we will log connections that are not using SSL.
+ * If true, such log messages will be suppressed.
+ */
+ExportedServerParameter<bool, ServerParameterType::kStartupOnly>
+    disableNonSSLConnectionLoggingParameter(ServerParameterSet::getGlobal(),
+                                            "disableNonSSLConnectionLogging",
+                                            &sslGlobalParams.disableNonSSLConnectionLogging);
+
+class OpenSSLCipherConfigParameter
+    : public ExportedServerParameter<std::string, ServerParameterType::kStartupOnly> {
+public:
+    OpenSSLCipherConfigParameter()
+        : ExportedServerParameter<std::string, ServerParameterType::kStartupOnly>(
+              ServerParameterSet::getGlobal(),
+              "opensslCipherConfig",
+              &sslGlobalParams.sslCipherConfig) {}
+    Status validate(const std::string& potentialNewValue) final {
+        if (!sslGlobalParams.sslCipherConfig.empty()) {
+            return Status(
+                ErrorCodes::BadValue,
+                "opensslCipherConfig setParameter is incompatible with net.ssl.sslCipherConfig");
+        }
+        // Note that there is very little validation that we can do here.
+        // OpenSSL exposes no API to validate a cipher config string. The only way to figure out
+        // what a string maps to is to make an SSL_CTX object, set the string on it, then parse the
+        // resulting STACK_OF object. If provided an invalid entry in the string, it will silently
+        // ignore it. Because an entry in the string may map to multiple ciphers, or remove ciphers
+        // from the final set produced by the full string, we can't tell if any entry failed
+        // to parse.
+        return Status::OK();
+    }
+} openSSLCipherConfig;
 
 #ifdef MONGO_CONFIG_SSL
 // Old copies of OpenSSL will not have constants to disable protocols they don't support.
@@ -113,35 +151,52 @@ IMPLEMENT_ASN1_ENCODE_FUNCTIONS_const_fname(ASN1_SEQUENCE_ANY, ASN1_SET_ANY, ASN
 #endif // MONGO_CONFIG_NEEDS_ASN1_ANY_DEFINITIONS
 // clang-format on
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+// Copies of OpenSSL after 1.1.0 define new functions for interaction with
+// X509 structure. We must polyfill used definitions to interact with older
+// OpenSSL versions.
+const STACK_OF(X509_EXTENSION) * X509_get0_extensions(const X509* peerCert) {
+    return peerCert->cert_info->extensions;
+}
+#endif
+
 /**
  * Multithreaded Support for SSL.
  *
  * In order to allow OpenSSL to work in a multithreaded environment, you
- * must provide some callbacks for it to use for locking.  The following code
- * sets up a vector of mutexes and uses thread-local storage to assign an id
- * to each thread.
+ * may need to provide some callbacks for it to use for locking. The following code
+ * sets up a vector of mutexes and provides a thread unique ID number.
  * The so-called SSLThreadInfo class encapsulates most of the logic required for
  * OpenSSL multithreaded support.
+ *
+ * OpenSSL before version 1.1.0 requires applications provide a callback which emits a thread
+ * identifier. This ID is used to store thread specific ERR information. When a thread is
+ * terminated, it must call ERR_remove_state or ERR_remove_thread_state. These functions may
+ * themselves invoke the application provided callback. These IDs are stored in a hashtable with
+ * a questionable hash function. They must be uniformly distributed to prevent collisions.
  */
-
-unsigned long _ssl_id_callback();
-void _ssl_locking_callback(int mode, int type, const char* file, int line);
-
 class SSLThreadInfo {
 public:
-    SSLThreadInfo() {
-        _id = _next.fetchAndAdd(1);
+    static unsigned long getID() {
+        struct ThreadLocalState {
+            bool firstCall;
+            unsigned long id;
+        };
+        static MONGO_TRIVIALLY_CONSTRUCTIBLE_THREAD_LOCAL ThreadLocalState state{true, 0};
+        if (state.firstCall) {
+            state.id = _idManager.reserveID();
+            unsigned long id = state.id;
+            boost::this_thread::at_thread_exit([id] {
+                ERR_remove_state(0);
+                _idManager.releaseID(id);
+            });
+            state.firstCall = false;
+        }
+
+        return state.id;
     }
 
-    ~SSLThreadInfo() {
-        ERR_remove_state(0);
-    }
-
-    unsigned long id() const {
-        return _id;
-    }
-
-    void lock_callback(int mode, int type, const char* file, int line) {
+    static void lockingCallback(int mode, int type, const char* file, int line) {
         if (mode & CRYPTO_LOCK) {
             _mutex[type]->lock();
         } else {
@@ -150,38 +205,50 @@ public:
     }
 
     static void init() {
+        CRYPTO_set_id_callback(&SSLThreadInfo::getID);
+        CRYPTO_set_locking_callback(&SSLThreadInfo::lockingCallback);
+
         while ((int)_mutex.size() < CRYPTO_num_locks()) {
             _mutex.emplace_back(stdx::make_unique<stdx::recursive_mutex>());
         }
     }
 
-    static SSLThreadInfo* get() {
-        SSLThreadInfo* me = _thread.get();
-        if (!me) {
-            me = new SSLThreadInfo();
-            _thread.reset(me);
-        }
-        return me;
-    }
-
 private:
-    unsigned _id;
+    SSLThreadInfo() = delete;
 
-    static AtomicUInt32 _next;
     // Note: see SERVER-8734 for why we are using a recursive mutex here.
     // Once the deadlock fix in OpenSSL is incorporated into most distros of
     // Linux, this can be changed back to a nonrecursive mutex.
     static std::vector<std::unique_ptr<stdx::recursive_mutex>> _mutex;
-    static boost::thread_specific_ptr<SSLThreadInfo> _thread;
+
+    class ThreadIDManager {
+    public:
+        unsigned long reserveID() {
+            stdx::unique_lock<stdx::mutex> lock(_idMutex);
+            if (!_idLast.empty()) {
+                unsigned long ret = _idLast.top();
+                _idLast.pop();
+                return ret;
+            }
+            return ++_idNext;
+        }
+
+        void releaseID(unsigned long id) {
+            stdx::unique_lock<stdx::mutex> lock(_idMutex);
+            _idLast.push(id);
+        }
+
+    private:
+        // Machinery for producing IDs that are unique for the life of a thread.
+        stdx::mutex _idMutex;       // Protects _idNext and _idLast.
+        unsigned long _idNext = 0;  // Stores the next thread ID to use, if none already allocated.
+        std::stack<unsigned long, std::vector<unsigned long>>
+            _idLast;  // Stores old thread IDs, for reuse.
+    };
+    static ThreadIDManager _idManager;
 };
-
-unsigned long _ssl_id_callback() {
-    return SSLThreadInfo::get()->id();
-}
-
-void _ssl_locking_callback(int mode, int type, const char* file, int line) {
-    SSLThreadInfo::get()->lock_callback(mode, type, file, line);
-}
+std::vector<std::unique_ptr<stdx::recursive_mutex>> SSLThreadInfo::_mutex;
+SSLThreadInfo::ThreadIDManager SSLThreadInfo::_idManager;
 
 // We only want to free SSL_CTX objects if they have been populated. OpenSSL seems to perform this
 // check before freeing them, but because it does not document this, we should protect ourselves.
@@ -190,10 +257,6 @@ void _free_ssl_context(SSL_CTX* ctx) {
         SSL_CTX_free(ctx);
     }
 }
-
-AtomicUInt32 SSLThreadInfo::_next;
-std::vector<std::unique_ptr<stdx::recursive_mutex>> SSLThreadInfo::_mutex;
-boost::thread_specific_ptr<SSLThreadInfo> SSLThreadInfo::_thread;
 
 ////////////////////////////////////////////////////////////////
 
@@ -373,19 +436,15 @@ MONGO_INITIALIZER(SetupOpenSSL)(InitializerContext*) {
     // so that encryption/decryption is backwards compatible
     OpenSSL_add_all_algorithms();
 
-    // Setup OpenSSL multithreading callbacks
-    CRYPTO_set_id_callback(_ssl_id_callback);
-    CRYPTO_set_locking_callback(_ssl_locking_callback);
-
+    // Setup OpenSSL multithreading callbacks and mutexes
     SSLThreadInfo::init();
-    SSLThreadInfo::get();
 
     return Status::OK();
 }
 
 MONGO_INITIALIZER_WITH_PREREQUISITES(SSLManager, ("SetupOpenSSL"))(InitializerContext*) {
     stdx::lock_guard<SimpleMutex> lck(sslManagerMtx);
-    if (sslGlobalParams.sslMode.load() != SSLParams::SSLMode_disabled) {
+    if (!isSSLServer || (sslGlobalParams.sslMode.load() != SSLParams::SSLMode_disabled)) {
         theSSLManager = new SSLManager(sslGlobalParams, isSSLServer);
     }
     return Status::OK();
@@ -424,10 +483,6 @@ std::string getCertificateSubjectName(X509* cert) {
 
 SSLConnection::SSLConnection(SSL_CTX* context, Socket* sock, const char* initialBytes, int len)
     : socket(sock) {
-    // This just ensures that SSL multithreading support is set up for this thread,
-    // if it's not already.
-    SSLThreadInfo::get();
-
     ssl = SSL_new(context);
 
     std::string sslErr =
@@ -741,7 +796,7 @@ bool SSLManager::_parseAndValidateCertificate(const std::string& keyFile,
                                               const std::string& keyPassword,
                                               std::string* subjectName,
                                               Date_t* serverCertificateExpirationDate) {
-    BIO* inBIO = BIO_new(BIO_s_file_internal());
+    BIO* inBIO = BIO_new(BIO_s_file());
     if (inBIO == NULL) {
         error() << "failed to allocate BIO object: " << getSSLErrorMessage(ERR_get_error());
         return false;
@@ -800,7 +855,7 @@ bool SSLManager::_setupPEM(SSL_CTX* context,
         return false;
     }
 
-    BIO* inBio = BIO_new(BIO_s_file_internal());
+    BIO* inBio = BIO_new(BIO_s_file());
     if (!inBio) {
         error() << "failed to allocate BIO object: " << getSSLErrorMessage(ERR_get_error());
         return false;
@@ -1276,7 +1331,7 @@ SSLPeerInfo SSLManager::parseAndValidatePeerCertificateDeprecated(const SSLConne
 
 StatusWith<stdx::unordered_set<RoleName>> SSLManager::_parsePeerRoles(X509* peerCert) const {
     // exts is owned by the peerCert
-    STACK_OF(X509_EXTENSION)* exts = peerCert->cert_info->extensions;
+    const STACK_OF(X509_EXTENSION)* exts = X509_get0_extensions(peerCert);
 
     int extCount = 0;
     if (exts) {

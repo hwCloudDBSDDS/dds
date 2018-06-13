@@ -2,10 +2,12 @@
  * Utilities for testing writeConcern.
  */
 
-// Shards a collection and creates 2 chunks, one on each s of two shards.
-function shardCollectionWithChunks(st, coll) {
+load("jstests/libs/check_log.js");
+
+// Shards a collection with 'numDocs' documents and creates 2 chunks, one on each of two shards.
+function shardCollectionWithChunks(st, coll, numDocs) {
     var _db = coll.getDB();
-    var numberDoc = 20;
+    var numberDoc = numDocs || 20;
     coll.ensureIndex({x: 1}, {unique: true});
     st.ensurePrimaryShard(_db.toString(), st.shard0.shardName);
     st.shardColl(
@@ -17,16 +19,29 @@ function shardCollectionWithChunks(st, coll) {
     assert.eq(coll.count(), numberDoc);
 }
 
-// Stops replication at a server.
+// Stops replication on the given server(s).
 function stopServerReplication(conn) {
+    if (conn.length) {
+        conn.forEach(function(n) {
+            stopServerReplication(n);
+        });
+        return;
+    }
+
+    // Clear ramlog so checkLog can't find log messages from previous times this fail point was
+    // enabled.
+    assert.commandWorked(conn.adminCommand({clearLog: 'global'}));
+    var errMsg = 'Failed to enable stopReplProducer failpoint.';
     assert.commandWorked(
-        conn.getDB('admin').runCommand({configureFailPoint: 'rsSyncApplyStop', mode: 'alwaysOn'}));
+        conn.adminCommand({configureFailPoint: 'stopReplProducer', mode: 'alwaysOn'}), errMsg);
+
+    // Wait until the fail point is actually hit.
+    checkLog.contains(conn, 'bgsync - stopReplProducer fail point enabled');
 }
 
 // Stops replication at all replicaset secondaries.
 function stopReplicationOnSecondaries(rs) {
-    var secondaries = rs.getSecondaries();
-    secondaries.forEach(stopServerReplication);
+    stopServerReplication(rs.getSecondaries());
 }
 
 // Stops replication at all shard secondaries.
@@ -34,15 +49,29 @@ function stopReplicationOnSecondariesOfAllShards(st) {
     st._rsObjects.forEach(stopReplicationOnSecondaries);
 }
 
-// Restarts replication at a server.
+// Restarts replication on the given server(s).
 function restartServerReplication(conn) {
+    if (conn.length) {
+        conn.forEach(function(n) {
+            restartServerReplication(n);
+        });
+        return;
+    }
+
+    var errMsg = 'Failed to disable stopReplProducer failpoint.';
     assert.commandWorked(
-        conn.getDB('admin').runCommand({configureFailPoint: 'rsSyncApplyStop', mode: 'off'}));
+        conn.getDB('admin').runCommand({configureFailPoint: 'stopReplProducer', mode: 'off'}),
+        errMsg);
 }
 
 // Restarts replication at all nodes in a replicaset.
 function restartReplSetReplication(rs) {
-    rs.nodes.forEach(restartServerReplication);
+    restartServerReplication(rs.nodes);
+}
+
+// Restarts replication at all replicaset secondaries.
+function restartReplicationOnSecondaries(rs) {
+    restartServerReplication(rs.getSecondaries());
 }
 
 // Restarts replication at all nodes in a sharded cluster.

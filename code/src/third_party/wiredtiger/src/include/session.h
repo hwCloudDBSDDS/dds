@@ -23,7 +23,7 @@ struct __wt_data_handle_cache {
  *	A hazard pointer.
  */
 struct __wt_hazard {
-	WT_PAGE *page;			/* Page address */
+	WT_REF *ref;			/* Page reference */
 #ifdef HAVE_DIAGNOSTIC
 	const char *file;		/* File/line where hazard acquired */
 	int	    line;
@@ -41,7 +41,7 @@ struct __wt_hazard {
  * WT_SESSION_IMPL --
  *	Implementation of WT_SESSION.
  */
-struct WT_COMPILER_TYPE_ALIGN(WT_CACHE_LINE_ALIGNMENT) __wt_session_impl {
+struct __wt_session_impl {
 	WT_SESSION iface;
 
 	void	*lang_private;		/* Language specific private storage */
@@ -51,8 +51,6 @@ struct WT_COMPILER_TYPE_ALIGN(WT_CACHE_LINE_ALIGNMENT) __wt_session_impl {
 	const char *name;		/* Name */
 	const char *lastop;		/* Last operation */
 	uint32_t id;			/* UID, offset in session array */
-
-	WT_CONDVAR *cond;		/* Condition variable */
 
 	WT_EVENT_HANDLER *event_handler;/* Application's event handlers */
 
@@ -68,14 +66,14 @@ struct WT_COMPILER_TYPE_ALIGN(WT_CACHE_LINE_ALIGNMENT) __wt_session_impl {
 					/* Session handle reference list */
 	TAILQ_HEAD(__dhandles, __wt_data_handle_cache) dhandles;
 	time_t last_sweep;		/* Last sweep for dead handles */
+	struct timespec last_epoch;	/* Last epoch time returned */
 
-	WT_CURSOR *cursor;		/* Current cursor */
 					/* Cursors closed with the session */
 	TAILQ_HEAD(__cursors, __wt_cursor) cursors;
 
 	WT_CURSOR_BACKUP *bkp_cursor;	/* Hot backup cursor */
 
-	WT_COMPACT	 *compact;	/* Compaction information */
+	WT_COMPACT_STATE *compact;	/* Compaction information */
 	enum { WT_COMPACT_NONE=0,
 	    WT_COMPACT_RUNNING, WT_COMPACT_SUCCESS } compact_state;
 
@@ -90,7 +88,7 @@ struct WT_COMPILER_TYPE_ALIGN(WT_CACHE_LINE_ALIGNMENT) __wt_session_impl {
 	void	  *meta_track_sub;	/* Child transaction / save point */
 	size_t	   meta_track_alloc;	/* Currently allocated */
 	int	   meta_track_nest;	/* Nesting level of meta transaction */
-#define	WT_META_TRACKING(session)	(session->meta_track_next != NULL)
+#define	WT_META_TRACKING(session)	((session)->meta_track_next != NULL)
 
 	/*
 	 * Each session keeps a cache of table handles. The set of handles
@@ -99,6 +97,16 @@ struct WT_COMPILER_TYPE_ALIGN(WT_CACHE_LINE_ALIGNMENT) __wt_session_impl {
 	 * that lives across session close - so it is declared further down.
 	 */
 	TAILQ_HEAD(__tables, __wt_table) tables;
+
+	/*
+	 * Updated when the table cache is swept of all tables older than the
+	 * current schema generation.
+	 */
+	uint64_t table_sweep_gen;
+
+	/* Current rwlock for callback. */
+	WT_RWLOCK *current_rwlock;
+	uint8_t current_rwticket;
 
 	WT_ITEM	**scratch;		/* Temporary memory for any function */
 	u_int	  scratch_alloc;	/* Currently allocated */
@@ -153,20 +161,16 @@ struct WT_COMPILER_TYPE_ALIGN(WT_CACHE_LINE_ALIGNMENT) __wt_session_impl {
 	uint32_t flags;
 
 	/*
-	 * The split stash memory and hazard information persist past session
-	 * close because they are accessed by threads of control other than the
-	 * thread owning the session.
-	 *
-	 * The random number state persists past session close because we don't
-	 * want to repeatedly allocate repeated values for skiplist depth if the
-	 * application isn't caching sessions.
-	 *
-	 * All of these fields live at the end of the structure so it's easier
-	 * to clear everything but the fields that persist.
+	 * All of the following fields live at the end of the structure so it's
+	 * easier to clear everything but the fields that persist.
 	 */
-#define	WT_SESSION_CLEAR_SIZE(s)					\
-	(WT_PTRDIFF(&(s)->rnd, s))
+#define	WT_SESSION_CLEAR_SIZE	(offsetof(WT_SESSION_IMPL, rnd))
 
+	/*
+	 * The random number state persists past session close because we don't
+	 * want to repeatedly use the same values for skiplist depth when the
+	 * application isn't caching sessions.
+	 */
 	WT_RAND_STATE rnd;		/* Random number generation state */
 
 					/* Hashed handle reference list array */
@@ -175,6 +179,9 @@ struct WT_COMPILER_TYPE_ALIGN(WT_CACHE_LINE_ALIGNMENT) __wt_session_impl {
 	TAILQ_HEAD(__tables_hash, __wt_table) *tablehash;
 
 	/*
+	 * Split stash memory persists past session close because it's accessed
+	 * by threads of control other than the thread owning the session.
+	 *
 	 * Splits can "free" memory that may still be in use, and we use a
 	 * split generation number to track it, that is, the session stores a
 	 * reference to the memory and allocates a split generation; when no
@@ -194,15 +201,22 @@ struct WT_COMPILER_TYPE_ALIGN(WT_CACHE_LINE_ALIGNMENT) __wt_session_impl {
 	/*
 	 * Hazard pointers.
 	 *
+	 * Hazard information persists past session close because it's accessed
+	 * by threads of control other than the thread owning the session.
+	 *
 	 * Use the non-NULL state of the hazard field to know if the session has
 	 * previously been initialized.
 	 */
 #define	WT_SESSION_FIRST_USE(s)						\
 	((s)->hazard == NULL)
 
-	/* The number of hazard pointers grows dynamically. */
-#define	WT_HAZARD_INCR		1
-	uint32_t   hazard_size;		/* Allocated slots in hazard array. */
+	/*
+	 * The hazard pointer array grows as necessary, initialize with 250
+	 * slots.
+	 */
+#define	WT_SESSION_INITIAL_HAZARD_SLOTS	250
+	uint32_t   hazard_size;		/* Hazard pointer array slots */
+	uint32_t   hazard_inuse;	/* Hazard pointer array slots in-use */
 	uint32_t   nhazard;		/* Count of active hazard pointers */
 	WT_HAZARD *hazard;		/* Hazard pointer array */
 };

@@ -14,7 +14,7 @@ import (
 func main() {
 	// initialize command line options
 	opts := options.New("mongooplog", mongooplog.Usage,
-		options.EnabledOptions{Auth: true, Connection: true, Namespace: false})
+		options.EnabledOptions{Auth: true, Connection: true, Namespace: false, URI: true})
 
 	// add the mongooplog-specific options
 	sourceOpts := &mongooplog.SourceOptions{}
@@ -23,7 +23,7 @@ func main() {
 	log.Logvf(log.Always, "warning: mongooplog is deprecated, and will be removed completely in a future release")
 
 	// parse the command line options
-	args, err := opts.Parse()
+	args, err := opts.ParseArgs(os.Args[1:])
 	if err != nil {
 		log.Logvf(log.Always, "error parsing command line options: %v", err)
 		log.Logvf(log.Always, "try 'mongooplog --help' for more information")
@@ -50,10 +50,8 @@ func main() {
 	log.SetVerbosity(opts.Verbosity)
 	signals.Handle()
 
-	// connect directly, unless a replica set name is explicitly specified
-	_, setName := util.ParseConnectionString(opts.Host)
-	opts.Direct = (setName == "")
-	opts.ReplicaSetName = setName
+	// verify uri options and log them
+	opts.URI.LogUnsupportedOptions()
 
 	// validate the mongooplog options
 	if sourceOpts.From == "" {
@@ -63,21 +61,21 @@ func main() {
 
 	// create a session provider for the destination server
 	sessionProviderTo, err := db.NewSessionProvider(*opts)
-	defer sessionProviderTo.Close()
 	if err != nil {
 		log.Logvf(log.Always, "error connecting to destination host: %v", err)
 		os.Exit(util.ExitError)
 	}
+	defer sessionProviderTo.Close()
 
 	// create a session provider for the source server
 	opts.Connection.Host = sourceOpts.From
 	opts.Connection.Port = ""
 	sessionProviderFrom, err := db.NewSessionProvider(*opts)
-	defer sessionProviderFrom.Close()
 	if err != nil {
 		log.Logvf(log.Always, "error connecting to source host: %v", err)
 		os.Exit(util.ExitError)
 	}
+	defer sessionProviderFrom.Close()
 
 	// initialize mongooplog
 	oplog := mongooplog.MongoOplog{

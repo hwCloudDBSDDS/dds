@@ -9,11 +9,11 @@
 #include "wt_internal.h"
 
 /*
- * __wt_epoch --
- *	Return the time since the Epoch.
+ * __wt_epoch_raw --
+ *	Return the time since the Epoch as reported by a system call.
  */
 void
-__wt_epoch(WT_SESSION_IMPL *session, struct timespec *tsp)
+__wt_epoch_raw(WT_SESSION_IMPL *session, struct timespec *tsp)
 {
 	WT_DECL_RET;
 
@@ -32,6 +32,7 @@ __wt_epoch(WT_SESSION_IMPL *session, struct timespec *tsp)
 		return;
 	WT_PANIC_MSG(session, ret, "clock_gettime");
 #elif defined(HAVE_GETTIMEOFDAY)
+	{
 	struct timeval v;
 
 	WT_SYSCALL_RETRY(gettimeofday(&v, NULL), ret);
@@ -41,6 +42,7 @@ __wt_epoch(WT_SESSION_IMPL *session, struct timespec *tsp)
 		return;
 	}
 	WT_PANIC_MSG(session, ret, "gettimeofday");
+	}
 #else
 	NO TIME-OF-DAY IMPLEMENTATION: see src/os_posix/os_time.c
 #endif

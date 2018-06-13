@@ -9,6 +9,7 @@ var blacklist = [
     'distinct.js',             // SERVER-13116 distinct isn't sharding aware
     'distinct_noindex.js',     // SERVER-13116 distinct isn't sharding aware
     'distinct_projection.js',  // SERVER-13116 distinct isn't sharding aware
+    'create_database.js',      // SERVER-17397 Drops of sharded namespaces may not fully succeed
     'drop_database.js',        // SERVER-17397 Drops of sharded namespaces may not fully succeed
     'remove_where.js',  // SERVER-14669 Multi-removes that use $where miscount removed documents
 
@@ -33,6 +34,7 @@ var blacklist = [
     'map_reduce_reduce_nonatomic.js',
     'map_reduce_replace.js',
     'map_reduce_replace_nonexistent.js',
+    'map_reduce_replace_remove.js',
 
     // Disabled due to SERVER-13364, 'The geoNear command doesn't handle shard versioning, so a
     // concurrent chunk migration may cause duplicate or missing results'

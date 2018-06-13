@@ -33,6 +33,7 @@
 #include <stack>
 
 #include "mongo/client/dbclientinterface.h"
+#include "mongo/client/mongo_uri.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/util/background.h"
 #include "mongo/util/concurrency/mutex.h"
@@ -57,13 +58,16 @@ public:
     // Sentinel value indicating pool has no cleanup limit
     static const int kPoolSizeUnlimited;
 
+    friend class DBConnectionPool;
+
     PoolForHost()
         : _created(0),
           _minValidCreationTimeMicroSec(0),
           _type(ConnectionString::INVALID),
           _maxPoolSize(kPoolSizeUnlimited),
           _checkedOut(0),
-          _badConns(0) {}
+          _badConns(0),
+          _parentDestroyed(false) {}
 
     ~PoolForHost();
 
@@ -88,12 +92,26 @@ public:
         _maxPoolSize = maxPoolSize;
     }
 
+    /**
+     * Sets the socket timeout on this host, for reporting purposes only.
+     */
+    void setSocketTimeout(double socketTimeout) {
+        _socketTimeout = socketTimeout;
+    }
+
     int numAvailable() const {
         return (int)_pool.size();
     }
 
     int numInUse() const {
         return _checkedOut;
+    }
+
+    /**
+     * Returns the number of open connections in this pool.
+     */
+    int openConnections() const {
+        return numInUse() + numAvailable();
     }
 
     void createdOne(DBClientBase* base);
@@ -148,6 +166,7 @@ private:
     };
 
     std::string _hostName;
+    double _socketTimeout;
     std::stack<StoredConnection> _pool;
 
     int64_t _created;
@@ -162,6 +181,9 @@ private:
 
     // The number of connections that we did not reuse because they went bad.
     int _badConns;
+
+    // Whether our parent DBConnectionPool object is in destruction
+    bool _parentDestroyed;
 };
 
 class DBConnectionHook {
@@ -209,6 +231,11 @@ public:
     }
 
     /**
+     * Returns the number of connections to the given host pool.
+     */
+    int openConnections(const std::string& ident, double socketTimeout);
+
+    /**
      * Sets the maximum number of connections pooled per-host.
      *
      * This setting only applies to new host connection pools, previously-pooled host pools are
@@ -227,6 +254,7 @@ public:
 
     DBClientBase* get(const std::string& host, double socketTimeout = 0);
     DBClientBase* get(const ConnectionString& host, double socketTimeout = 0);
+    DBClientBase* get(const MongoURI& uri, double socketTimeout = 0);
 
     /**
      * Gets the number of connections available in the pool.
@@ -344,6 +372,7 @@ public:
         */
     explicit ScopedDbConnection(const std::string& host, double socketTimeout = 0);
     explicit ScopedDbConnection(const ConnectionString& host, double socketTimeout = 0);
+    explicit ScopedDbConnection(const MongoURI& host, double socketTimeout = 0);
 
     ScopedDbConnection() : _host(""), _conn(0), _socketTimeout(0) {}
 

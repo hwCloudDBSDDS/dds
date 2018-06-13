@@ -41,9 +41,11 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/json.h"
+#include "mongo/db/op_observer_impl.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/repl/master_slave.h"
 #include "mongo/db/repl/oplog.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/sync_tail.h"
@@ -77,7 +79,12 @@ public:
         replSettings.setMaster(true);
         setGlobalReplicationCoordinator(new repl::ReplicationCoordinatorMock(replSettings));
 
-        getGlobalServiceContext()->setOpObserver(stdx::make_unique<OpObserver>());
+        // Since the Client object persists across tests, even though the global
+        // ReplicationCoordinator does not, we need to clear the last op associated with the client
+        // to avoid the invariant in ReplClientInfo::setLastOp that the optime only goes forward.
+        repl::ReplClientInfo::forClient(_txn.getClient()).clearLastOp_forTest();
+
+        getGlobalServiceContext()->setOpObserver(stdx::make_unique<OpObserverImpl>());
 
         setOplogCollectionName();
         createOplog(&_txn);
@@ -1374,7 +1381,7 @@ public:
     bool returnEmpty;
     SyncTest() : SyncTail(nullptr, SyncTail::MultiSyncApplyFunc()), returnEmpty(false) {}
     virtual ~SyncTest() {}
-    virtual BSONObj getMissingDoc(OperationContext* txn, Database* db, const BSONObj& o) {
+    virtual BSONObj getMissingDoc(OperationContext* txn, const BSONObj& o) {
         if (returnEmpty) {
             BSONObj o;
             return o;
@@ -1386,7 +1393,7 @@ public:
     }
 };
 
-class ShouldRetry : public Base {
+class FetchAndInsertMissingDocument : public Base {
 public:
     void run() {
         bool threw = false;
@@ -1407,7 +1414,7 @@ public:
             badSource.setHostname("localhost:123");
 
             OldClientContext ctx(&_txn, ns());
-            badSource.getMissingDoc(&_txn, ctx.db(), o);
+            badSource.getMissingDoc(&_txn, o);
         } catch (DBException&) {
             threw = true;
         }
@@ -1415,7 +1422,7 @@ public:
 
         // now this should succeed
         SyncTest t;
-        verify(t.shouldRetry(&_txn, o));
+        verify(t.fetchAndInsertMissingDocument(&_txn, o));
         verify(!_client
                     .findOne(ns(),
                              BSON("_id"
@@ -1424,7 +1431,7 @@ public:
 
         // force it not to find an obj
         t.returnEmpty = true;
-        verify(!t.shouldRetry(&_txn, o));
+        verify(!t.fetchAndInsertMissingDocument(&_txn, o));
     }
 };
 
@@ -1491,7 +1498,7 @@ public:
         add<DeleteOpIsIdBased>();
         add<DatabaseIgnorerBasic>();
         add<DatabaseIgnorerUpdate>();
-        add<ShouldRetry>();
+        add<FetchAndInsertMissingDocument>();
     }
 };
 

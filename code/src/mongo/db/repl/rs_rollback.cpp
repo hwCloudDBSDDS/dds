@@ -63,8 +63,11 @@
 #include "mongo/db/repl/rollback_source.h"
 #include "mongo/db/repl/rslog.h"
 #include "mongo/db/repl/storage_interface.h"
+#include "mongo/db/s/shard_identity_rollback_notifier.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
+#include "mongo/util/scopeguard.h"
 
 /* Scenarios
  *
@@ -120,63 +123,52 @@ namespace repl {
 
 // Failpoint which causes rollback to hang before finishing.
 MONGO_FP_DECLARE(rollbackHangBeforeFinish);
+MONGO_FP_DECLARE(rollbackHangThenFailAfterWritingMinValid);
 
-namespace {
+using namespace rollback_internal;
 
-class RSFatalException : public std::exception {
-public:
-    RSFatalException(std::string m = "replica set fatal exception") : msg(m) {}
-    virtual ~RSFatalException() throw(){};
-    virtual const char* what() const throw() {
-        return msg.c_str();
+bool DocID::operator<(const DocID& other) const {
+    int comp = strcmp(ns, other.ns);
+    if (comp < 0)
+        return true;
+    if (comp > 0)
+        return false;
+
+    const StringData::ComparatorInterface* stringComparator = nullptr;
+    BSONElementComparator eltCmp(BSONElementComparator::FieldNamesMode::kIgnore, stringComparator);
+    return eltCmp.evaluate(_id < other._id);
+}
+
+bool DocID::operator==(const DocID& other) const {
+    // Since this is only used for tests, going with the simple impl that reuses operator< which is
+    // used in the real code.
+    return !(*this < other || other < *this);
+}
+
+void FixUpInfo::removeAllDocsToRefetchFor(const std::string& collection) {
+    docsToRefetch.erase(docsToRefetch.lower_bound(DocID::minFor(collection.c_str())),
+                        docsToRefetch.upper_bound(DocID::maxFor(collection.c_str())));
+}
+
+void FixUpInfo::removeRedundantOperations() {
+    // These loops and their bodies can be done in any order. The final result of the FixUpInfo
+    // members will be the same either way.
+    for (const auto& collection : collectionsToDrop) {
+        removeAllDocsToRefetchFor(collection);
+        indexesToDrop.erase(collection);
+        collectionsToResyncMetadata.erase(collection);
     }
 
-private:
-    std::string msg;
-};
-
-struct DocID {
-    // ns and _id both point into ownedObj's buffer
-    BSONObj ownedObj;
-    const char* ns;
-    BSONElement _id;
-    bool operator<(const DocID& other) const {
-        int comp = strcmp(ns, other.ns);
-        if (comp < 0)
-            return true;
-        if (comp > 0)
-            return false;
-
-        const StringData::ComparatorInterface* stringComparator = nullptr;
-        BSONElementComparator eltCmp(BSONElementComparator::FieldNamesMode::kIgnore,
-                                     stringComparator);
-        return eltCmp.evaluate(_id < other._id);
+    for (const auto& collection : collectionsToResyncData) {
+        removeAllDocsToRefetchFor(collection);
+        indexesToDrop.erase(collection);
+        collectionsToResyncMetadata.erase(collection);
+        collectionsToDrop.erase(collection);
     }
-};
+}
 
-struct FixUpInfo {
-    // note this is a set -- if there are many $inc's on a single document we need to rollback,
-    // we only need to refetch it once.
-    set<DocID> toRefetch;
-
-    // collections to drop
-    set<string> toDrop;
-
-    // Indexes to drop.
-    // Key is collection namespace. Value is name of index to drop.
-    multimap<string, string> indexesToDrop;
-
-    set<string> collectionsToResyncData;
-    set<string> collectionsToResyncMetadata;
-
-    OpTime commonPoint;
-    RecordId commonPointOurDiskloc;
-
-    int rbid;  // remote server's current rollback sequence #
-};
-
-
-Status refetch(FixUpInfo& fixUpInfo, const BSONObj& ourObj) {
+Status rollback_internal::updateFixUpInfoFromLocalOplogEntry(FixUpInfo& fixUpInfo,
+                                                             const BSONObj& ourObj) {
     const char* op = ourObj.getStringField("op");
     if (*op == 'n')
         return Status::OK();
@@ -188,14 +180,14 @@ Status refetch(FixUpInfo& fixUpInfo, const BSONObj& ourObj) {
     doc.ownedObj = ourObj.getOwned();
     doc.ns = doc.ownedObj.getStringField("ns");
     if (*doc.ns == '\0') {
-        warning() << "ignoring op on rollback no ns TODO : " << redact(doc.ownedObj);
-        return Status::OK();
+        throw RSFatalException(str::stream() << "local op on rollback has no ns: "
+                                             << redact(doc.ownedObj));
     }
 
     BSONObj obj = doc.ownedObj.getObjectField(*op == 'u' ? "o2" : "o");
     if (obj.isEmpty()) {
-        warning() << "ignoring op on rollback : " << redact(doc.ownedObj);
-        return Status::OK();
+        throw RSFatalException(str::stream() << "local op on rollback has no object field: "
+                                             << redact(doc.ownedObj));
     }
 
     if (*op == 'c') {
@@ -213,7 +205,7 @@ Status refetch(FixUpInfo& fixUpInfo, const BSONObj& ourObj) {
             // Create collection operation
             // { ts: ..., h: ..., op: "c", ns: "foo.$cmd", o: { create: "abc", ... } }
             string ns = nss.db().toString() + '.' + obj["create"].String();  // -> foo.abc
-            fixUpInfo.toDrop.insert(ns);
+            fixUpInfo.collectionsToDrop.insert(ns);
             return Status::OK();
         } else if (cmdname == "drop") {
             string ns = nss.db().toString() + '.' + first.valuestr();
@@ -275,7 +267,7 @@ Status refetch(FixUpInfo& fixUpInfo, const BSONObj& ourObj) {
                     severe() << message;
                     return Status(ErrorCodes::UnrecoverableRollbackError, message);
                 }
-                auto subStatus = refetch(fixUpInfo, subopElement.Obj());
+                auto subStatus = updateFixUpInfoFromLocalOplogEntry(fixUpInfo, subopElement.Obj());
                 if (!subStatus.isOK()) {
                     return subStatus;
                 }
@@ -333,15 +325,61 @@ Status refetch(FixUpInfo& fixUpInfo, const BSONObj& ourObj) {
         throw RSFatalException();
     }
 
-    fixUpInfo.toRefetch.insert(doc);
+    fixUpInfo.docsToRefetch.insert(doc);
     return Status::OK();
 }
 
+namespace {
 
-void syncFixUp(OperationContext* txn,
-               FixUpInfo& fixUpInfo,
+/**
+ * This must be called before making any changes to our local data and after fetching any
+ * information from the upstream node. If any information is fetched from the upstream node after we
+ * have written locally, the function must be called again.
+ */
+void checkRbidAndUpdateMinValid(OperationContext* opCtx,
+                                const int rbid,
+                                const RollbackSource& rollbackSource,
+                                StorageInterface* storageInterface) {
+    // It is important that the steps are performed in order to avoid racing with upstream rollbacks
+    //
+    // 1) Get the last doc in their oplog.
+    // 2) Get their RBID and fail if it has changed.
+    // 3) Set our minValid to the previously fetched OpTime of the top of their oplog.
+
+    const auto newMinValidDoc = rollbackSource.getLastOperation();
+    if (newMinValidDoc.isEmpty()) {
+        uasserted(40361, "rollback error newest oplog entry on source is missing or empty");
+    }
+    if (rbid != rollbackSource.getRollbackId()) {
+        // Our source rolled back itself so the data we received isn't necessarily consistent.
+        uasserted(40365, "rollback rbid on source changed during rollback, canceling this attempt");
+    }
+
+    // we have items we are writing that aren't from a point-in-time.  thus best not to come
+    // online until we get to that point in freshness.
+    OpTime minValid = fassertStatusOK(28774, OpTime::parseFromOplogEntry(newMinValidDoc));
+    log() << "Setting minvalid to " << minValid;
+    storageInterface->setAppliedThrough(opCtx, {});  // Use top of oplog.
+    storageInterface->setMinValid(opCtx, minValid);
+
+    if (MONGO_FAIL_POINT(rollbackHangThenFailAfterWritingMinValid)) {
+        // This log output is used in js tests so please leave it.
+        log() << "rollback - rollbackHangThenFailAfterWritingMinValid fail point "
+                 "enabled. Blocking until fail point is disabled.";
+        while (MONGO_FAIL_POINT(rollbackHangThenFailAfterWritingMinValid)) {
+            invariant(!inShutdown());  // It is an error to shutdown while enabled.
+            mongo::sleepsecs(1);
+        }
+        uasserted(40378,
+                  "failing rollback due to rollbackHangThenFailAfterWritingMinValid fail point");
+    }
+}
+
+void syncFixUp(OperationContext* opCtx,
+               const FixUpInfo& fixUpInfo,
                const RollbackSource& rollbackSource,
-               ReplicationCoordinator* replCoord) {
+               ReplicationCoordinator* replCoord,
+               StorageInterface* storageInterface) {
     // fetch all first so we needn't handle interruption in a fancy way
 
     unsigned long long totalSize = 0;
@@ -349,73 +387,43 @@ void syncFixUp(OperationContext* txn,
     // namespace -> doc id -> doc
     map<string, map<DocID, BSONObj>> goodVersions;
 
-    BSONObj newMinValid;
-
     // fetch all the goodVersions of each document from current primary
-    DocID doc;
     unsigned long long numFetched = 0;
-    try {
-        for (set<DocID>::iterator it = fixUpInfo.toRefetch.begin(); it != fixUpInfo.toRefetch.end();
-             it++) {
-            doc = *it;
+    for (auto&& doc : fixUpInfo.docsToRefetch) {
+        invariant(!doc._id.eoo());  // This is checked when we insert to the set.
 
-            verify(!doc._id.eoo());
-
-            try {
-                // TODO : slow.  lots of round trips.
-                numFetched++;
-                BSONObj good = rollbackSource.findOne(NamespaceString(doc.ns), doc._id.wrap());
-                totalSize += good.objsize();
-                uassert(13410, "replSet too much data to roll back", totalSize < 300 * 1024 * 1024);
-
-                // note good might be eoo, indicating we should delete it
-                goodVersions[doc.ns][doc] = good;
-            } catch (const DBException& ex) {
-                Status status = ex.toStatus();
-                // If the collection turned into a view, we might get an error trying to
-                // refetch documents, but these errors should be ignored, as we'll be creating
-                // the view during oplog replay.
-                if (status.code() == ErrorCodes::CommandNotSupportedOnView)
-                    continue;
-
-                throw ex;
+        try {
+            // TODO : slow.  lots of round trips.
+            numFetched++;
+            BSONObj good = rollbackSource.findOne(NamespaceString(doc.ns), doc._id.wrap());
+            totalSize += good.objsize();
+            if (totalSize >= 300 * 1024 * 1024) {
+                throw RSFatalException("replSet too much data to roll back");
             }
+
+            // Note good might be empty, indicating we should delete it.
+            goodVersions[doc.ns][doc] = good;
+        } catch (const DBException& ex) {
+            // If the collection turned into a view, we might get an error trying to
+            // refetch documents, but these errors should be ignored, as we'll be creating
+            // the view during oplog replay.
+            if (ex.getCode() == ErrorCodes::CommandNotSupportedOnView)
+                continue;
+
+            log() << "rollback couldn't re-get from ns: " << doc.ns << " _id: " << redact(doc._id)
+                  << ' ' << numFetched << '/' << fixUpInfo.docsToRefetch.size() << ": "
+                  << redact(ex);
+            throw;
         }
-        newMinValid = rollbackSource.getLastOperation();
-        if (newMinValid.isEmpty()) {
-            error() << "rollback error newMinValid empty?";
-            return;
-        }
-    } catch (const DBException& e) {
-        LOG(1) << "rollback re-get objects: " << redact(e);
-        error() << "rollback couldn't re-get ns:" << doc.ns << " _id:" << redact(doc._id) << ' '
-                << numFetched << '/' << fixUpInfo.toRefetch.size();
-        throw e;
     }
 
     log() << "rollback 3.5";
-    if (fixUpInfo.rbid != rollbackSource.getRollbackId()) {
-        // Our source rolled back itself so the data we received isn't necessarily consistent.
-        warning() << "rollback rbid on source changed during rollback, "
-                  << "cancelling this attempt";
-        return;
-    }
+    checkRbidAndUpdateMinValid(opCtx, fixUpInfo.rbid, rollbackSource, storageInterface);
 
     // update them
     log() << "rollback 4 n:" << goodVersions.size();
 
-    bool warn = false;
-
     invariant(!fixUpInfo.commonPointOurDiskloc.isNull());
-
-    // we have items we are writing that aren't from a point-in-time.  thus best not to come
-    // online until we get to that point in freshness.
-    // TODO this is still wrong because we don't record that we are in rollback, and we can't really
-    // recover.
-    OpTime minValid = fassertStatusOK(28774, OpTime::parseFromOplogEntry(newMinValid));
-    log() << "minvalid=" << minValid;
-    StorageInterface::get(txn)->setAppliedThrough(txn, {});  // Use top of oplog.
-    StorageInterface::get(txn)->setMinValid(txn, minValid);
 
     // any full collection resyncs required?
     if (!fixUpInfo.collectionsToResyncData.empty() ||
@@ -423,32 +431,32 @@ void syncFixUp(OperationContext* txn,
         for (const string& ns : fixUpInfo.collectionsToResyncData) {
             log() << "rollback 4.1.1 coll resync " << ns;
 
-            fixUpInfo.indexesToDrop.erase(ns);
-            fixUpInfo.collectionsToResyncMetadata.erase(ns);
+            invariant(!fixUpInfo.indexesToDrop.count(ns));
+            invariant(!fixUpInfo.collectionsToResyncMetadata.count(ns));
 
             const NamespaceString nss(ns);
 
 
             {
-                ScopedTransaction transaction(txn, MODE_IX);
-                Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_X);
-                Database* db = dbHolder().openDb(txn, nss.db().toString());
+                ScopedTransaction transaction(opCtx, MODE_IX);
+                Lock::DBLock dbLock(opCtx->lockState(), nss.db(), MODE_X);
+                Database* db = dbHolder().openDb(opCtx, nss.db().toString());
                 invariant(db);
-                WriteUnitOfWork wunit(txn);
-                db->dropCollection(txn, ns);
+                WriteUnitOfWork wunit(opCtx);
+                fassertStatusOK(40359, db->dropCollectionEvenIfSystem(opCtx, nss));
                 wunit.commit();
             }
 
-            rollbackSource.copyCollectionFromRemote(txn, nss);
+            rollbackSource.copyCollectionFromRemote(opCtx, nss);
         }
 
         for (const string& ns : fixUpInfo.collectionsToResyncMetadata) {
             log() << "rollback 4.1.2 coll metadata resync " << ns;
 
             const NamespaceString nss(ns);
-            ScopedTransaction transaction(txn, MODE_IX);
-            Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_X);
-            auto db = dbHolder().openDb(txn, nss.db().toString());
+            ScopedTransaction transaction(opCtx, MODE_IX);
+            Lock::DBLock dbLock(opCtx->lockState(), nss.db(), MODE_X);
+            auto db = dbHolder().openDb(opCtx, nss.db().toString());
             invariant(db);
             auto collection = db->getCollection(ns);
             invariant(collection);
@@ -457,9 +465,11 @@ void syncFixUp(OperationContext* txn,
             auto infoResult = rollbackSource.getCollectionInfo(nss);
 
             if (!infoResult.isOK()) {
-                // Collection dropped by "them" so we should drop it too.
-                log() << ns << " not found on remote host, dropping";
-                fixUpInfo.toDrop.insert(ns);
+                // Collection dropped by "them" so we can't correctly change it here. If we get to
+                // the roll-forward phase, we will drop it then. If the drop is rolled-back upstream
+                // and we restart, we will be expected to still have the collection.
+                log() << ns << " not found on remote host, so not rolling back collmod operation."
+                               " We will drop the collection soon.";
                 continue;
             }
 
@@ -483,23 +493,23 @@ void syncFixUp(OperationContext* txn,
                 // Use default options.
             }
 
-            WriteUnitOfWork wuow(txn);
-            if (options.flagsSet || cce->getCollectionOptions(txn).flagsSet) {
-                cce->updateFlags(txn, options.flags);
+            WriteUnitOfWork wuow(opCtx);
+            if (options.flagsSet || cce->getCollectionOptions(opCtx).flagsSet) {
+                cce->updateFlags(opCtx, options.flags);
             }
 
-            auto status = collection->setValidator(txn, options.validator);
+            auto status = collection->setValidator(opCtx, options.validator);
             if (!status.isOK()) {
                 throw RSFatalException(str::stream() << "Failed to set validator: "
                                                      << status.toString());
             }
-            status = collection->setValidationAction(txn, options.validationAction);
+            status = collection->setValidationAction(opCtx, options.validationAction);
             if (!status.isOK()) {
                 throw RSFatalException(str::stream() << "Failed to set validationAction: "
                                                      << status.toString());
             }
 
-            status = collection->setValidationLevel(txn, options.validationLevel);
+            status = collection->setValidationLevel(opCtx, options.validationLevel);
             if (!status.isOK()) {
                 throw RSFatalException(str::stream() << "Failed to set validationLevel: "
                                                      << status.toString());
@@ -511,56 +521,28 @@ void syncFixUp(OperationContext* txn,
         // we did more reading from primary, so check it again for a rollback (which would mess
         // us up), and make minValid newer.
         log() << "rollback 4.2";
-
-        string err;
-        try {
-            newMinValid = rollbackSource.getLastOperation();
-            if (newMinValid.isEmpty()) {
-                err = "can't get minvalid from sync source";
-            } else {
-                OpTime minValid = fassertStatusOK(28775, OpTime::parseFromOplogEntry(newMinValid));
-                log() << "minvalid=" << minValid;
-                StorageInterface::get(txn)->setMinValid(txn, minValid);
-                StorageInterface::get(txn)->setAppliedThrough(txn, fixUpInfo.commonPoint);
-            }
-        } catch (const DBException& e) {
-            err = "can't get/set minvalid: ";
-            err += e.what();
-        }
-        if (fixUpInfo.rbid != rollbackSource.getRollbackId()) {
-            // our source rolled back itself.  so the data we received isn't necessarily
-            // consistent. however, we've now done writes.  thus we have a problem.
-            err += "rbid at primary changed during resync/rollback";
-        }
-        if (!err.empty()) {
-            severe() << "rolling back : " << redact(err) << ". A full resync will be necessary.";
-            // TODO: reset minvalid so that we are permanently in fatal state
-            // TODO: don't be fatal, but rather, get all the data first.
-            throw RSFatalException();
-        }
-        log() << "rollback 4.3";
+        checkRbidAndUpdateMinValid(opCtx, fixUpInfo.rbid, rollbackSource, storageInterface);
     }
 
     log() << "rollback 4.6";
-    // drop collections to drop before doing individual fixups - that might make things faster
-    // below actually if there were subsequent inserts to rollback
-    for (set<string>::iterator it = fixUpInfo.toDrop.begin(); it != fixUpInfo.toDrop.end(); it++) {
+    // drop collections to drop before doing individual fixups
+    for (set<string>::iterator it = fixUpInfo.collectionsToDrop.begin();
+         it != fixUpInfo.collectionsToDrop.end();
+         it++) {
         log() << "rollback drop: " << *it;
 
-        fixUpInfo.indexesToDrop.erase(*it);
+        invariant(!fixUpInfo.indexesToDrop.count(*it));
 
-        ScopedTransaction transaction(txn, MODE_IX);
+        ScopedTransaction transaction(opCtx, MODE_IX);
         const NamespaceString nss(*it);
-        Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_X);
-        Database* db = dbHolder().get(txn, nsToDatabaseSubstring(*it));
+        Lock::DBLock dbLock(opCtx->lockState(), nss.db(), MODE_X);
+        Database* db = dbHolder().get(opCtx, nsToDatabaseSubstring(*it));
         if (db) {
-            WriteUnitOfWork wunit(txn);
-
             Helpers::RemoveSaver removeSaver("rollback", "", *it);
 
             // perform a collection scan and write all documents in the collection to disk
             std::unique_ptr<PlanExecutor> exec(InternalPlanner::collectionScan(
-                txn, *it, db->getCollection(*it), PlanExecutor::YIELD_MANUAL));
+                opCtx, *it, db->getCollection(*it), PlanExecutor::YIELD_AUTO));
             BSONObj curObj;
             PlanExecutor::ExecState execState;
             while (PlanExecutor::ADVANCED == (execState = exec->getNext(&curObj, NULL))) {
@@ -585,7 +567,8 @@ void syncFixUp(OperationContext* txn,
                 throw RSFatalException();
             }
 
-            db->dropCollection(txn, *it);
+            WriteUnitOfWork wunit(opCtx);
+            fassertStatusOK(40360, db->dropCollectionEvenIfSystem(opCtx, nss));
             wunit.commit();
         }
     }
@@ -596,9 +579,9 @@ void syncFixUp(OperationContext* txn,
         const string& indexName = it->second;
         log() << "rollback drop index: collection: " << nss.toString() << ". index: " << indexName;
 
-        ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_X);
-        auto db = dbHolder().get(txn, nss.db());
+        ScopedTransaction transaction(opCtx, MODE_IX);
+        Lock::DBLock dbLock(opCtx->lockState(), nss.db(), MODE_X);
+        auto db = dbHolder().get(opCtx, nss.db());
         if (!db) {
             continue;
         }
@@ -612,14 +595,14 @@ void syncFixUp(OperationContext* txn,
         }
         bool includeUnfinishedIndexes = false;
         auto indexDescriptor =
-            indexCatalog->findIndexByName(txn, indexName, includeUnfinishedIndexes);
+            indexCatalog->findIndexByName(opCtx, indexName, includeUnfinishedIndexes);
         if (!indexDescriptor) {
             warning() << "rollback failed to drop index " << indexName << " in " << nss.toString()
                       << ": index not found";
             continue;
         }
-        WriteUnitOfWork wunit(txn);
-        auto status = indexCatalog->dropIndex(txn, indexDescriptor);
+        WriteUnitOfWork wunit(opCtx);
+        auto status = indexCatalog->dropIndex(opCtx, indexDescriptor);
         if (!status.isOK()) {
             severe() << "rollback failed to drop index " << indexName << " in " << nss.toString()
                      << ": " << status;
@@ -637,9 +620,8 @@ void syncFixUp(OperationContext* txn,
         // while rolling back createCollection operations.
         const auto& ns = nsAndGoodVersionsByDocID.first;
         unique_ptr<Helpers::RemoveSaver> removeSaver;
-        if (!fixUpInfo.toDrop.count(ns)) {
-            removeSaver.reset(new Helpers::RemoveSaver("rollback", "", ns));
-        }
+        invariant(!fixUpInfo.collectionsToDrop.count(ns));
+        removeSaver.reset(new Helpers::RemoveSaver("rollback", "", ns));
 
         const auto& goodVersionsByDocID = nsAndGoodVersionsByDocID.second;
         for (const auto& idAndDoc : goodVersionsByDocID) {
@@ -654,16 +636,13 @@ void syncFixUp(OperationContext* txn,
             BSONObj pattern = doc._id.wrap();  // { _id : ... }
             try {
                 verify(doc.ns && *doc.ns);
-                if (fixUpInfo.collectionsToResyncData.count(doc.ns)) {
-                    // We just synced this entire collection.
-                    continue;
-                }
+                invariant(!fixUpInfo.collectionsToResyncData.count(doc.ns));
 
                 // TODO: Lots of overhead in context. This can be faster.
                 const NamespaceString docNss(doc.ns);
-                ScopedTransaction transaction(txn, MODE_IX);
-                Lock::DBLock docDbLock(txn->lockState(), docNss.db(), MODE_X);
-                OldClientContext ctx(txn, doc.ns);
+                ScopedTransaction transaction(opCtx, MODE_IX);
+                Lock::DBLock docDbLock(opCtx->lockState(), docNss.db(), MODE_X);
+                OldClientContext ctx(opCtx, doc.ns);
 
                 Collection* collection = ctx.db()->getCollection(doc.ns);
 
@@ -675,7 +654,7 @@ void syncFixUp(OperationContext* txn,
                 // createCollection command and regardless, the document no longer exists.
                 if (collection && removeSaver) {
                     BSONObj obj;
-                    bool found = Helpers::findOne(txn, collection, pattern, obj, false);
+                    bool found = Helpers::findOne(opCtx, collection, pattern, obj, false);
                     if (found) {
                         auto status = removeSaver->goingToDelete(obj);
                         if (!status.isOK()) {
@@ -704,9 +683,9 @@ void syncFixUp(OperationContext* txn,
                                 // TODO: IIRC cappedTruncateAfter does not handle completely
                                 // empty.
                                 // this will crazy slow if no _id index.
-                                const auto clock = txn->getServiceContext()->getFastClockSource();
+                                const auto clock = opCtx->getServiceContext()->getFastClockSource();
                                 const auto findOneStart = clock->now();
-                                RecordId loc = Helpers::findOne(txn, collection, pattern, false);
+                                RecordId loc = Helpers::findOne(opCtx, collection, pattern, false);
                                 if (clock->now() - findOneStart > Milliseconds(200))
                                     warning() << "roll back slow no _id index for " << doc.ns
                                               << " perhaps?";
@@ -714,53 +693,40 @@ void syncFixUp(OperationContext* txn,
                                 // RecordId loc = Helpers::findById(nsd, pattern);
                                 if (!loc.isNull()) {
                                     try {
-                                        collection->temp_cappedTruncateAfter(txn, loc, true);
+                                        collection->temp_cappedTruncateAfter(opCtx, loc, true);
                                     } catch (const DBException& e) {
                                         if (e.getCode() == 13415) {
                                             // hack: need to just make cappedTruncate do this...
                                             MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-                                                WriteUnitOfWork wunit(txn);
-                                                uassertStatusOK(collection->truncate(txn));
+                                                WriteUnitOfWork wunit(opCtx);
+                                                uassertStatusOK(collection->truncate(opCtx));
                                                 wunit.commit();
                                             }
                                             MONGO_WRITE_CONFLICT_RETRY_LOOP_END(
-                                                txn, "truncate", collection->ns().ns());
+                                                opCtx, "truncate", collection->ns().ns());
                                         } else {
                                             throw e;
                                         }
                                     }
                                 }
                             } catch (const DBException& e) {
-                                error() << "rolling back capped collection rec " << doc.ns << ' '
-                                        << redact(e);
+                                // Replicated capped collections have many ways to become
+                                // inconsistent. We rely on age-out to make these problems go away
+                                // eventually.
+                                warning() << "ignoring failure to roll back change to capped "
+                                          << "collection " << doc.ns << " with _id "
+                                          << redact(idAndDoc.first._id.toString(
+                                                 /*includeFieldName*/ false))
+                                          << ": " << redact(e);
                             }
                         } else {
-                            deleteObjects(txn,
+                            deleteObjects(opCtx,
                                           collection,
                                           doc.ns,
                                           pattern,
                                           PlanExecutor::YIELD_MANUAL,
                                           true,   // justone
                                           true);  // god
-                        }
-                        // did we just empty the collection?  if so let's check if it even
-                        // exists on the source.
-                        if (collection->numRecords(txn) == 0) {
-                            try {
-                                NamespaceString nss(doc.ns);
-                                auto infoResult = rollbackSource.getCollectionInfo(nss);
-                                if (!infoResult.isOK()) {
-                                    // we should drop
-                                    WriteUnitOfWork wunit(txn);
-                                    ctx.db()->dropCollection(txn, doc.ns);
-                                    wunit.commit();
-                                }
-                            } catch (const DBException& ex) {
-                                // Failed to run listCollections command on sync source.
-                                // This isn't *that* big a deal, but is bad.
-                                warning() << "rollback error querying for existence of " << doc.ns
-                                          << " at the primary, ignoring: " << ex;
-                            }
                         }
                     }
                 } else {
@@ -777,12 +743,12 @@ void syncFixUp(OperationContext* txn,
                     UpdateLifecycleImpl updateLifecycle(requestNs);
                     request.setLifecycle(&updateLifecycle);
 
-                    update(txn, ctx.db(), request);
+                    update(opCtx, ctx.db(), request);
                 }
             } catch (const DBException& e) {
                 log() << "exception in rollback ns:" << doc.ns << ' ' << pattern.toString() << ' '
                       << redact(e) << " ndeletes:" << deletes;
-                warn = true;
+                throw;
             }
         }
     }
@@ -794,10 +760,10 @@ void syncFixUp(OperationContext* txn,
     LOG(2) << "rollback truncate oplog after " << fixUpInfo.commonPoint.toString();
     {
         const NamespaceString oplogNss(rsOplogName);
-        ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock oplogDbLock(txn->lockState(), oplogNss.db(), MODE_IX);
-        Lock::CollectionLock oplogCollectionLoc(txn->lockState(), oplogNss.ns(), MODE_X);
-        OldClientContext ctx(txn, rsOplogName);
+        ScopedTransaction transaction(opCtx, MODE_IX);
+        Lock::DBLock oplogDbLock(opCtx->lockState(), oplogNss.db(), MODE_IX);
+        Lock::CollectionLock oplogCollectionLoc(opCtx->lockState(), oplogNss.ns(), MODE_X);
+        OldClientContext ctx(opCtx, rsOplogName);
         Collection* oplogCollection = ctx.db()->getCollection(rsOplogName);
         if (!oplogCollection) {
             fassertFailedWithStatusNoTrace(13423,
@@ -805,151 +771,193 @@ void syncFixUp(OperationContext* txn,
                                                   str::stream() << "Can't find " << rsOplogName));
         }
         // TODO: fatal error if this throws?
-        oplogCollection->temp_cappedTruncateAfter(txn, fixUpInfo.commonPointOurDiskloc, false);
+        oplogCollection->temp_cappedTruncateAfter(opCtx, fixUpInfo.commonPointOurDiskloc, false);
     }
 
-    Status status = getGlobalAuthorizationManager()->initialize(txn);
+    Status status = getGlobalAuthorizationManager()->initialize(opCtx);
     if (!status.isOK()) {
-        warning() << "Failed to reinitialize auth data after rollback: " << status;
-        warn = true;
+        severe() << "Failed to reinitialize auth data after rollback: " << status;
+        fassertFailedNoTrace(40366);
     }
 
     // Reload the lastAppliedOpTime and lastDurableOpTime value in the replcoord and the
     // lastAppliedHash value in bgsync to reflect our new last op.
-    replCoord->resetLastOpTimesFromOplog(txn);
-
-    // done
-    if (warn)
-        warning() << "issues during syncRollback, see log";
-    else
-        log() << "rollback done";
+    replCoord->resetLastOpTimesFromOplog(opCtx);
+    log() << "rollback done";
 }
 
-Status _syncRollback(OperationContext* txn,
+Status _syncRollback(OperationContext* opCtx,
                      const OplogInterface& localOplog,
                      const RollbackSource& rollbackSource,
+                     int requiredRBID,
                      ReplicationCoordinator* replCoord,
-                     const SleepSecondsFn& sleepSecondsFn) {
-    invariant(!txn->lockState()->isLocked());
-
-    log() << "rollback 0";
-
-    /** by doing this, we will not service reads (return an error as we aren't in secondary
-     *  state. that perhaps is moot because of the write lock above, but that write lock
-     *  probably gets deferred or removed or yielded later anyway.
-     *
-     *  also, this is better for status reporting - we know what is happening.
-     */
-    {
-        Lock::GlobalWrite globalWrite(txn->lockState());
-        if (!replCoord->setFollowerMode(MemberState::RS_ROLLBACK)) {
-            return Status(ErrorCodes::OperationFailed,
-                          str::stream() << "Cannot transition from "
-                                        << replCoord->getMemberState().toString()
-                                        << " to "
-                                        << MemberState(MemberState::RS_ROLLBACK).toString());
-        }
-    }
+                     StorageInterface* storageInterface) {
+    invariant(!opCtx->lockState()->isLocked());
 
     FixUpInfo how;
     log() << "rollback 1";
     how.rbid = rollbackSource.getRollbackId();
-    {
-        log() << "rollback 2 FindCommonPoint";
-        try {
-            auto processOperationForFixUp = [&how](const BSONObj& operation) {
-                return refetch(how, operation);
-            };
-            auto res = syncRollBackLocalOperations(
-                localOplog, rollbackSource.getOplog(), processOperationForFixUp);
-            if (!res.isOK()) {
-                const auto status = res.getStatus();
-                switch (status.code()) {
-                    case ErrorCodes::OplogStartMissing:
-                    case ErrorCodes::UnrecoverableRollbackError:
-                        sleepSecondsFn(Seconds(1));
-                        return status;
-                    default:
-                        throw RSFatalException(status.toString());
-                }
-            } else {
-                how.commonPoint = res.getValue().first;
-                how.commonPointOurDiskloc = res.getValue().second;
-            }
-        } catch (const RSFatalException& e) {
-            error() << redact(e.what());
-            return Status(ErrorCodes::UnrecoverableRollbackError,
-                          str::stream()
-                              << "need to rollback, but unable to determine common point between"
-                                 " local and remote oplog: "
-                              << e.what(),
-                          18752);
-        } catch (const DBException& e) {
-            warning() << "rollback 2 exception " << redact(e) << "; sleeping 1 min";
+    uassert(
+        40362, "Upstream node rolled back. Need to retry our rollback.", how.rbid == requiredRBID);
 
-            sleepSecondsFn(Seconds(60));
-            throw;
-        }
-    }
-
-    log() << "rollback 3 fixup";
-
-    replCoord->incrementRollbackID();
+    log() << "rollback 2 FindCommonPoint";
     try {
-        syncFixUp(txn, how, rollbackSource, replCoord);
-    } catch (const RSFatalException& e) {
-        error() << "exception during rollback: " << redact(e.what());
-        return Status(ErrorCodes::UnrecoverableRollbackError,
-                      str::stream() << "exception during rollback: " << e.what(),
-                      18753);
-    } catch (...) {
-        replCoord->incrementRollbackID();
+        auto processOperationForFixUp = [&how](const BSONObj& operation) {
+            return updateFixUpInfoFromLocalOplogEntry(how, operation);
+        };
+        auto res = syncRollBackLocalOperations(
+            localOplog, rollbackSource.getOplog(), processOperationForFixUp);
+        if (!res.isOK()) {
+            const auto status = res.getStatus();
+            switch (status.code()) {
+                case ErrorCodes::OplogStartMissing:
+                case ErrorCodes::UnrecoverableRollbackError:
+                    return status;
+                default:
+                    throw RSFatalException(status.toString());
+            }
+        }
 
-        throw;
+        how.commonPoint = res.getValue().first;
+        how.commonPointOurDiskloc = res.getValue().second;
+        how.removeRedundantOperations();
+    } catch (const RSFatalException& e) {
+        return Status(ErrorCodes::UnrecoverableRollbackError,
+                      str::stream()
+                          << "need to rollback, but unable to determine common point between"
+                             " local and remote oplog: "
+                          << e.what(),
+                      18752);
     }
-    replCoord->incrementRollbackID();
+
+    log() << "rollback common point is " << how.commonPoint;
+    log() << "rollback 3 fixup";
+    try {
+        ON_BLOCK_EXIT([&] { replCoord->incrementRollbackID(); });
+        syncFixUp(opCtx, how, rollbackSource, replCoord, storageInterface);
+    } catch (const RSFatalException& e) {
+        return Status(ErrorCodes::UnrecoverableRollbackError, e.what(), 18753);
+    }
 
     if (MONGO_FAIL_POINT(rollbackHangBeforeFinish)) {
         // This log output is used in js tests so please leave it.
         log() << "rollback - rollbackHangBeforeFinish fail point "
                  "enabled. Blocking until fail point is disabled.";
         while (MONGO_FAIL_POINT(rollbackHangBeforeFinish)) {
+            invariant(!inShutdown());  // It is an error to shutdown while enabled.
             mongo::sleepsecs(1);
         }
     }
 
-    // Success; leave "ROLLBACK" state intact until applier thread has reloaded the new minValid.
-    // Otherwise, the applier could transition the node to SECONDARY with an out-of-date minValid.
     return Status::OK();
 }
 
 }  // namespace
 
-Status syncRollback(OperationContext* txn,
+Status syncRollback(OperationContext* opCtx,
                     const OplogInterface& localOplog,
                     const RollbackSource& rollbackSource,
+                    int requiredRBID,
                     ReplicationCoordinator* replCoord,
-                    const SleepSecondsFn& sleepSecondsFn) {
-    invariant(txn);
+                    StorageInterface* storageInterface) {
+    invariant(opCtx);
     invariant(replCoord);
 
     log() << "beginning rollback" << rsLog;
 
-    DisableDocumentValidation validationDisabler(txn);
-    txn->setReplicatedWrites(false);
-    Status status = _syncRollback(txn, localOplog, rollbackSource, replCoord, sleepSecondsFn);
+    DisableDocumentValidation validationDisabler(opCtx);
+    UnreplicatedWritesBlock replicationDisabler(opCtx);
+    Status status =
+        _syncRollback(opCtx, localOplog, rollbackSource, requiredRBID, replCoord, storageInterface);
 
     log() << "rollback finished" << rsLog;
     return status;
 }
 
-Status syncRollback(OperationContext* txn,
-                    const OplogInterface& localOplog,
-                    const RollbackSource& rollbackSource,
-                    ReplicationCoordinator* replCoord) {
-    return syncRollback(txn, localOplog, rollbackSource, replCoord, [](Seconds seconds) {
-        sleepsecs(durationCount<Seconds>(seconds));
-    });
+void rollback(OperationContext* opCtx,
+              const OplogInterface& localOplog,
+              const RollbackSource& rollbackSource,
+              int requiredRBID,
+              ReplicationCoordinator* replCoord,
+              StorageInterface* storageInterface,
+              stdx::function<void(int)> sleepSecsFn) {
+    // Set state to ROLLBACK while we are in this function. This prevents serving reads, even from
+    // the oplog. This can fail if we are elected PRIMARY, in which case we better not do any
+    // rolling back. If we successfully enter ROLLBACK we will only exit this function fatally or
+    // after transitioning to RECOVERING. We always transition to RECOVERING regardless of success
+    // or (recoverable) failure since we may be in an inconsistent state. If rollback failed before
+    // writing anything, SyncTail will quickly take us to SECONDARY since are are still at our
+    // original MinValid, which is fine because we may choose a sync source that doesn't require
+    // rollback. If it failed after we wrote to MinValid, then we will pick a sync source that will
+    // cause us to roll back to the same common point, which is fine. If we succeeded, we will be
+    // consistent as soon as we apply up to/through MinValid and SyncTail will make us SECONDARY
+    // then.
+    {
+        log() << "rollback 0";
+        Lock::GlobalWrite globalWrite(opCtx->lockState());
+        if (!replCoord->setFollowerMode(MemberState::RS_ROLLBACK)) {
+            log() << "Cannot transition from " << replCoord->getMemberState().toString() << " to "
+                  << MemberState(MemberState::RS_ROLLBACK).toString();
+            return;
+        }
+    }
+
+    try {
+        auto status = syncRollback(
+            opCtx, localOplog, rollbackSource, requiredRBID, replCoord, storageInterface);
+
+        // Abort only when syncRollback detects we are in a unrecoverable state.
+        // WARNING: these statuses sometimes have location codes which are lost with uassertStatusOK
+        // so we need to check here first.
+        if (ErrorCodes::UnrecoverableRollbackError == status.code()) {
+            severe() << "Unable to complete rollback. A full resync may be needed: "
+                     << redact(status);
+            fassertFailedNoTrace(28723);
+        }
+
+        // In other cases, we log the message contained in the error status and retry later.
+        uassertStatusOK(status);
+    } catch (const DBException& ex) {
+        // UnrecoverableRollbackError should only come from a returned status which is handled
+        // above.
+        invariant(ex.getCode() != ErrorCodes::UnrecoverableRollbackError);
+
+        warning() << "rollback cannot complete at this time (retrying later): " << redact(ex)
+                  << " appliedThrough=" << replCoord->getMyLastAppliedOpTime()
+                  << " minvalid=" << storageInterface->getMinValid(opCtx);
+
+        // Sleep a bit to allow upstream node to coalesce, if that was the cause of the failure. If
+        // we failed in a way that will keep failing, but wasn't flagged as a fatal failure, this
+        // will also prevent us from hot-looping and putting too much load on upstream nodes.
+        sleepSecsFn(5);  // 5 seconds was chosen as a completely arbitrary amount of time.
+    } catch (...) {
+        std::terminate();
+    }
+
+    // At this point we are about to leave rollback.  Before we do, wait for any writes done
+    // as part of rollback to be durable, and then do any necessary checks that we didn't
+    // wind up rolling back something illegal.  We must wait for the rollback to be durable
+    // so that if we wind up shutting down uncleanly in response to something we rolled back
+    // we know that we won't wind up right back in the same situation when we start back up
+    // because the rollback wasn't durable.
+    opCtx->recoveryUnit()->waitUntilDurable();
+
+    // If we detected that we rolled back the shardIdentity document as part of this rollback
+    // then we must shut down to clear the in-memory ShardingState associated with the
+    // shardIdentity document.
+    if (ShardIdentityRollbackNotifier::get(opCtx)->didRollbackHappen()) {
+        severe() << "shardIdentity document rollback detected.  Shutting down to clear "
+                    "in-memory sharding state.  Restarting this process should safely return it "
+                    "to a healthy state";
+        fassertFailedNoTrace(40276);
+    }
+
+    if (!replCoord->setFollowerMode(MemberState::RS_RECOVERING)) {
+        severe() << "Failed to transition into " << MemberState(MemberState::RS_RECOVERING)
+                 << "; expected to be in state " << MemberState(MemberState::RS_ROLLBACK)
+                 << " but found self in " << replCoord->getMemberState();
+        fassertFailedNoTrace(40364);
+    }
 }
 
 }  // namespace repl

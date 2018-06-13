@@ -32,6 +32,8 @@
 
 #include "mongo/db/storage/mmap_v1/catalog/namespace_details_collection_entry.h"
 
+#include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/record_id.h"
@@ -257,6 +259,11 @@ Status NamespaceDetailsCollectionCatalogEntry::removeIndex(OperationContext* txn
         d->idx(getTotalIndexCount(txn)) = IndexDetails();
     }
 
+    // Someone may be querying the system.indexes namespace directly, so we need to invalidate
+    // its cursors.
+    MMAPV1DatabaseCatalogEntry::invalidateSystemCollectionRecord(
+        txn, NamespaceString(_db->name(), "system.indexes"), infoLocation);
+
     // remove from system.indexes
     _indexRecordStore->deleteRecord(txn, infoLocation);
 
@@ -381,6 +388,10 @@ void NamespaceDetailsCollectionCatalogEntry::_updateSystemNamespaces(OperationCo
         StatusWith<RecordId> newLocation = _namespacesRecordStore->insertRecord(
             txn, newEntry.objdata(), newEntry.objsize(), false);
         fassert(40074, newLocation.getStatus().isOK());
+
+        // Invalidate old namespace record
+        MMAPV1DatabaseCatalogEntry::invalidateSystemCollectionRecord(
+            txn, NamespaceString(_db->name(), "system.namespaces"), _namespacesRecordId);
 
         _namespacesRecordStore->deleteRecord(txn, _namespacesRecordId);
 

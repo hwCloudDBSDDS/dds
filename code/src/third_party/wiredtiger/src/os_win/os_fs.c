@@ -16,7 +16,6 @@ static int
 __win_fs_exist(WT_FILE_SYSTEM *file_system,
     WT_SESSION *wt_session, const char *name, bool *existp)
 {
-	WT_DECL_RET;
 	WT_DECL_ITEM(name_wide);
 	WT_SESSION_IMPL *session;
 
@@ -43,8 +42,8 @@ __win_fs_remove(WT_FILE_SYSTEM *file_system,
     WT_SESSION *wt_session, const char *name, uint32_t flags)
 {
 	DWORD windows_error;
-	WT_DECL_RET;
 	WT_DECL_ITEM(name_wide);
+	WT_DECL_RET;
 	WT_SESSION_IMPL *session;
 
 	WT_UNUSED(file_system);
@@ -88,22 +87,19 @@ __win_fs_rename(WT_FILE_SYSTEM *file_system,
 	WT_ERR(__wt_to_utf16_string(session, to, &to_wide));
 
 	/*
-	 * Check if file exists since Windows does not override the file if
-	 * it exists.
+	 * We want an atomic rename, but that's not guaranteed by MoveFileExW
+	 * (or by any MSDN API). Don't set the MOVEFILE_COPY_ALLOWED flag to
+	 * prevent the system from falling back to a copy and delete process.
+	 * Do set the MOVEFILE_WRITE_THROUGH flag so the window is as small
+	 * as possible, just in case. WiredTiger renames are done in a single
+	 * directory and we expect that to be an atomic metadata update on any
+	 * modern filesystem.
 	 */
-	if (GetFileAttributesW(to_wide->data) != INVALID_FILE_ATTRIBUTES)
-		if (DeleteFileW(to_wide->data) == FALSE) {
-			windows_error = __wt_getlasterror();
-			__wt_errx(session,
-			    "%s: file-rename: DeleteFileW: %s",
-			    to, __wt_formatmessage(session, windows_error));
-			WT_ERR(__wt_map_windows_error(windows_error));
-		}
-
-	if (MoveFileW(from_wide->data, to_wide->data) == FALSE) {
+	if (MoveFileExW(from_wide->data, to_wide->data,
+	    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
 		windows_error = __wt_getlasterror();
 		__wt_errx(session,
-		    "%s to %s: file-rename: MoveFileW: %s",
+		    "%s to %s: file-rename: MoveFileExW: %s",
 		    from, to, __wt_formatmessage(session, windows_error));
 		WT_ERR(__wt_map_windows_error(windows_error));
 	}
@@ -521,9 +517,15 @@ __win_open_file(WT_FILE_SYSTEM *file_system, WT_SESSION *wt_session,
 	    FLD_ISSET(conn->txn_logsync, WT_LOG_DSYNC))
 		f |= FILE_FLAG_WRITE_THROUGH;
 
-	/* Disable read-ahead on trees: it slows down random read workloads. */
-	if (file_type == WT_FS_OPEN_FILE_TYPE_DATA)
+	/* If the user indicated a random workload, disable read-ahead. */
+	if (file_type == WT_FS_OPEN_FILE_TYPE_DATA &&
+	    LF_ISSET(WT_FS_OPEN_ACCESS_RAND))
 		f |= FILE_FLAG_RANDOM_ACCESS;
+
+	/* If the user indicated a sequential workload, set that. */
+	if (file_type == WT_FS_OPEN_FILE_TYPE_DATA &&
+	    LF_ISSET(WT_FS_OPEN_ACCESS_SEQ))
+		f |= FILE_FLAG_SEQUENTIAL_SCAN;
 
 	win_fh->filehandle = CreateFileW(name_wide->data, desired_access,
 	    FILE_SHARE_READ | FILE_SHARE_WRITE,

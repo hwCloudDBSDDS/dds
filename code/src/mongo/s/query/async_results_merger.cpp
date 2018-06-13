@@ -341,8 +341,9 @@ StatusWith<executor::TaskExecutor::EventHandle> AsyncResultsMerger::nextEvent() 
     for (size_t i = 0; i < _remotes.size(); ++i) {
         auto& remote = _remotes[i];
 
-        // It is illegal to call this method if there is an error received from any shard.
-        invariant(remote.status.isOK());
+        if (!remote.status.isOK()) {
+            return remote.status;
+        }
 
         if (!remote.hasNext() && !remote.exhausted() && !remote.cbHandle.isValid()) {
             // If we already have established a cursor with this remote, and there is no outstanding
@@ -473,6 +474,12 @@ void AsyncResultsMerger::handleBatchResponse(
             remote.docBuffer.push(result);
             remote.cursorId = 0;
             remote.status = Status::OK();
+
+            if (!_params.sort.isEmpty()) {
+                // Push the index of this remote to the merge queue so that the resolved view is
+                // visible to nextReadySorted().
+                _mergeQueue.push(remoteIndex);
+            }
             return;
         }
 
@@ -512,6 +519,12 @@ void AsyncResultsMerger::handleBatchResponse(
                 return;
             } else {
                 remote.status = cursorResponseStatus.getStatus();
+                if (remote.status == ErrorCodes::CallbackCanceled) {
+                    // This callback should only be canceled as part of the shutdown sequence, so we
+                    // promote a canceled callback error to an error that will make more sense to
+                    // the client.
+                    remote.status = Status(ErrorCodes::ShutdownInProgress, "shutdown in progress");
+                }
             }
         }
 

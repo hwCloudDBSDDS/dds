@@ -21,16 +21,9 @@ __wt_connection_open(WT_CONNECTION_IMPL *conn, const char *cfg[])
 	session = conn->default_session;
 	WT_ASSERT(session, session->iface.connection == &conn->iface);
 
-	/*
-	 * Tell internal server threads to run: this must be set before opening
-	 * any sessions.
-	 */
-	F_SET(conn, WT_CONN_SERVER_RUN | WT_CONN_LOG_SERVER_RUN);
-
 	/* WT_SESSION_IMPL array. */
 	WT_RET(__wt_calloc(session,
 	    conn->session_size, sizeof(WT_SESSION_IMPL), &conn->sessions));
-	WT_CACHE_LINE_ALIGNMENT_VERIFY(session, conn->sessions);
 
 	/*
 	 * Open the default session.  We open this before starting service
@@ -98,11 +91,20 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 		if (txn_global->oldest_id == txn_global->current &&
 		    txn_global->metadata_pinned == txn_global->current)
 			break;
+		WT_STAT_CONN_INCR(session, txn_release_blocked);
 		__wt_yield();
 	}
 
-	/* Clear any pending async ops. */
+	/* Shut down the subsystems, ensuring workers see the state change. */
+	F_SET(conn, WT_CONN_CLOSING);
+	WT_FULL_BARRIER();
+
+	/*
+	 * Clear any pending async operations and shut down the async worker
+	 * threads and system before closing LSM.
+	 */
 	WT_TRET(__wt_async_flush(session));
+	WT_TRET(__wt_async_destroy(session));
 
 	/*
 	 * Shut down server threads other than the eviction server, which is
@@ -110,15 +112,20 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 	 * btree handles, so take care in ordering shutdown to make sure they
 	 * exit before files are closed.
 	 */
-	F_CLR(conn, WT_CONN_SERVER_RUN);
-	WT_TRET(__wt_async_destroy(session));
 	WT_TRET(__wt_lsm_manager_destroy(session));
-	WT_TRET(__wt_sweep_destroy(session));
 
-	F_SET(conn, WT_CONN_CLOSING);
+	/*
+	 * Once the async and LSM threads exit, we shouldn't be opening any
+	 * more files.
+	 */
+	F_SET(conn, WT_CONN_CLOSING_NO_MORE_OPENS);
+	WT_FULL_BARRIER();
 
 	WT_TRET(__wt_checkpoint_server_destroy(session));
 	WT_TRET(__wt_statlog_destroy(session, true));
+	WT_TRET(__wt_sweep_destroy(session));
+
+	/* The eviction server is shut down last. */
 	WT_TRET(__wt_evict_destroy(session));
 
 	/* Shut down the lookaside table, after all eviction is complete. */
@@ -127,7 +134,7 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 	/* Close open data handles. */
 	WT_TRET(__wt_conn_dhandle_discard(session));
 
-	/* Shut down metadata tracking, required before creating tables. */
+	/* Shut down metadata tracking. */
 	WT_TRET(__wt_meta_track_destroy(session));
 
 	/*
@@ -137,11 +144,10 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 	 * conditional because we allocate the log path so that printlog can
 	 * run without running logging or recovery.
 	 */
-	if (FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED) &&
+	if (ret == 0 && FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED) &&
 	    FLD_ISSET(conn->log_flags, WT_CONN_LOG_RECOVER_DONE))
 		WT_TRET(__wt_txn_checkpoint_log(
 		    session, true, WT_TXN_LOG_CKPT_STOP, NULL));
-	F_CLR(conn, WT_CONN_LOG_SERVER_RUN);
 	WT_TRET(__wt_logmgr_destroy(session));
 
 	/* Free memory for collators, compressors, data sources. */
@@ -159,15 +165,6 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 
 	/* Discard transaction state. */
 	__wt_txn_global_destroy(session);
-
-	/* Close extensions, first calling any unload entry point. */
-	while ((dlh = TAILQ_FIRST(&conn->dlhqh)) != NULL) {
-		TAILQ_REMOVE(&conn->dlhqh, dlh, q);
-
-		if (dlh->terminate != NULL)
-			WT_TRET(dlh->terminate(wt_conn));
-		WT_TRET(__wt_dlclose(session, dlh));
-	}
 
 	/* Close the lock file, opening up the database to other connections. */
 	if (conn->lock_fh != NULL)
@@ -200,8 +197,22 @@ __wt_connection_close(WT_CONNECTION_IMPL *conn)
 				__wt_free(session, s->hazard);
 			}
 
+	/* Destroy the file-system configuration. */
+	if (conn->file_system != NULL && conn->file_system->terminate != NULL)
+		WT_TRET(conn->file_system->terminate(
+		    conn->file_system, (WT_SESSION *)session));
+
+	/* Close extensions, first calling any unload entry point. */
+	while ((dlh = TAILQ_FIRST(&conn->dlhqh)) != NULL) {
+		TAILQ_REMOVE(&conn->dlhqh, dlh, q);
+
+		if (dlh->terminate != NULL)
+			WT_TRET(dlh->terminate(wt_conn));
+		WT_TRET(__wt_dlclose(session, dlh));
+	}
+
 	/* Destroy the handle. */
-	WT_TRET(__wt_connection_destroy(conn));
+	__wt_connection_destroy(conn);
 
 	return (ret);
 }

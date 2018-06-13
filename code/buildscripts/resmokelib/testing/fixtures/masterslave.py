@@ -5,7 +5,6 @@ Master/slave fixture for executing JSTests against.
 from __future__ import absolute_import
 
 import os.path
-import socket
 
 import pymongo
 
@@ -84,13 +83,13 @@ class MasterSlaveFixture(interface.ReplFixture):
             self.logger.info("Replication of write operation timed out.")
             raise
 
-    def teardown(self):
+    def _do_teardown(self):
         running_at_start = self.is_running()
         success = True  # Still a success if nothing is running.
 
         if not running_at_start:
-            self.logger.info("Master-slave deployment was expected to be running in teardown(),"
-                             " but wasn't.")
+            self.logger.info(
+                "Master-slave deployment was expected to be running in _do_teardown(), but wasn't.")
 
         if self.slave is not None:
             if running_at_start:
@@ -160,6 +159,12 @@ class MasterSlaveFixture(interface.ReplFixture):
         mongod_options = self.mongod_options.copy()
         mongod_options.update(self.slave_options)
         mongod_options["slave"] = ""
-        mongod_options["source"] = "%s:%d" % (socket.gethostname(), self.port)
+        mongod_options["source"] = self.master.get_internal_connection_string()
         mongod_options["dbpath"] = os.path.join(self._dbpath_prefix, "slave")
         return self._new_mongod(mongod_logger, mongod_options)
+
+    def get_internal_connection_string(self):
+        return self.master.get_internal_connection_string()
+
+    def get_driver_connection_url(self):
+        return self.master.get_driver_connection_url()

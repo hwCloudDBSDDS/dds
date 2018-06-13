@@ -103,31 +103,37 @@
             ErrorCodes.Unauthorized,
             "modified a view to read an unreadable collection via $graphLookup in a $facet");
 
+        // When auth is enabled, users must specify both "viewOn" and "pipeline" when running
+        // collMod on a view; specifying only one or the other is not allowed. Without both the
+        // "viewOn" and "pipeline" specified, authorization checks cannot determine if the users
+        // have the necessary privileges.
+        assert.commandFailedWithCode(viewsDB.runCommand({collMod: "view", pipeline: []}),
+                                     ErrorCodes.InvalidOptions,
+                                     "modified a view without having to specify 'viewOn'");
+        assert.commandFailedWithCode(viewsDB.runCommand({collMod: "view", viewOn: "other"}),
+                                     ErrorCodes.InvalidOptions,
+                                     "modified a view without having to specify 'pipeline'");
+
+        // Create a view on a forbidden collection and populate it.
+        assert.eq(1, adminDB.auth("admin", "admin"));
+        assert.commandWorked(viewsDB.createView("view2", "forbidden", []));
+        for (let i = 0; i < 10; i++) {
+            assert.writeOK(viewsDB.forbidden.insert({x: 1}));
+        }
+        adminDB.logout();
+
         // Performing a find on a readable view returns a cursor that allows us to perform a getMore
         // even if the underlying collection is unreadable.
-        // TODO(SERVER-24771): getMore does not work yet for sharded clusters
-        assert.eq(1, adminDB.auth("admin", "admin"));
-        let isMaster = adminDB.runCommand({isMaster: 1});
-        assert.commandWorked(isMaster);
-        const isMongos = (isMaster.msg === "isdbgrid");
-        if (!isMongos) {
-            assert.commandWorked(viewsDB.createView("view2", "forbidden", []));
-            for (let i = 0; i < 10; i++) {
-                assert.writeOK(viewsDB.forbidden.insert({x: 1}));
-            }
-            adminDB.logout();
-            assert.commandFailedWithCode(
-                viewsDB.runCommand({find: "forbidden"}),
-                ErrorCodes.Unauthorized,
-                "successfully performed a find on an unreadable namespace");
-            let res = viewsDB.runCommand({find: "view2", batchSize: 1});
-            assert.commandWorked(res, "could not perform a find on a readable view");
-            assert.eq(res.cursor.ns,
-                      "views_authz.view2",
-                      "performing find on a view does not return a cursor on the view namespace");
-            assert.commandWorked(viewsDB.runCommand({getMore: res.cursor.id, collection: "view2"}),
-                                 "could not perform getMore on a readable view");
-        }
+        assert.commandFailedWithCode(viewsDB.runCommand({find: "forbidden"}),
+                                     ErrorCodes.Unauthorized,
+                                     "successfully performed a find on an unreadable namespace");
+        let res = viewsDB.runCommand({find: "view2", batchSize: 1});
+        assert.commandWorked(res, "could not perform a find on a readable view");
+        assert.eq(res.cursor.ns,
+                  "views_authz.view2",
+                  "performing find on a view does not return a cursor on the view namespace");
+        assert.commandWorked(viewsDB.runCommand({getMore: res.cursor.id, collection: "view2"}),
+                             "could not perform getMore on a readable view");
     }
 
     // Run the test on a standalone.

@@ -56,6 +56,7 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -90,6 +91,7 @@ bool shouldUseOplogHack(OperationContext* opCtx, const std::string& uri) {
 }  // namespace
 
 MONGO_FP_DECLARE(WTWriteConflictException);
+MONGO_FP_DECLARE(WTWriteConflictExceptionForReads);
 MONGO_FP_DECLARE(WTPausePrimaryOplogDurabilityLoop);
 
 const std::string kWiredTigerEngineName = "wiredTiger";
@@ -180,6 +182,7 @@ void WiredTigerRecordStore::OplogStones::awaitHasExcessStonesOrDead() {
     // Wait until kill() is called or there are too many oplog stones.
     stdx::unique_lock<stdx::mutex> lock(_oplogReclaimMutex);
     while (!_isDead && !hasExcessStones()) {
+        MONGO_IDLE_THREAD_BLOCK;
         _oplogReclaimCv.wait(lock);
     }
 }
@@ -448,7 +451,7 @@ public:
             // Nothing after the next line can throw WCEs.
             // Note that an unpositioned (or eof) WT_CURSOR returns the first/last entry in the
             // table when you call next/prev.
-            int advanceRet = WT_OP_CHECK(_forward ? c->next(c) : c->prev(c));
+            int advanceRet = WT_READ_CHECK(_forward ? c->next(c) : c->prev(c));
             if (advanceRet == WT_NOTFOUND) {
                 _eof = true;
                 return {};
@@ -487,7 +490,7 @@ public:
         WT_CURSOR* c = _cursor->get();
         c->set_key(c, _makeKey(id));
         // Nothing after the next line can throw WCEs.
-        int seekRet = WT_OP_CHECK(c->search(c));
+        int seekRet = WT_READ_CHECK(c->search(c));
         if (seekRet == WT_NOTFOUND) {
             _eof = true;
             return {};
@@ -536,7 +539,7 @@ public:
         c->set_key(c, _makeKey(_lastReturnedId));
 
         int cmp;
-        int ret = WT_OP_CHECK(c->search_near(c, &cmp));
+        int ret = WT_READ_CHECK(c->search_near(c, &cmp));
         if (ret == WT_NOTFOUND) {
             _eof = true;
             return !_rs._isCapped;
@@ -640,7 +643,7 @@ public:
     }
 
     boost::optional<Record> next() final {
-        int advanceRet = WT_OP_CHECK(_cursor->next(_cursor));
+        int advanceRet = WT_READ_CHECK(_cursor->next(_cursor));
         if (advanceRet == WT_NOTFOUND)
             return {};
         invariantWTOK(advanceRet);
@@ -906,7 +909,7 @@ int64_t WiredTigerRecordStore::storageSize(OperationContext* txn,
     if (_isEphemeral) {
         return dataSize(txn);
     }
-    WiredTigerSession* session = WiredTigerRecoveryUnit::get(txn)->getSession(txn);
+    WiredTigerSession* session = WiredTigerRecoveryUnit::get(txn)->getSessionNoTxn(txn);
     StatusWith<int64_t> result =
         WiredTigerUtil::getStatisticsValueAs<int64_t>(session->getSession(),
                                                       "statistics:" + getURI(),
@@ -940,7 +943,7 @@ RecordData WiredTigerRecordStore::dataFor(OperationContext* txn, const RecordId&
     WT_CURSOR* c = curwrap.get();
     invariant(c);
     c->set_key(c, _makeKey(id));
-    int ret = WT_OP_CHECK(c->search(c));
+    int ret = WT_READ_CHECK(c->search(c));
     massert(28556, "Didn't find RecordId in WiredTigerRecordStore", ret != WT_NOTFOUND);
     invariantWTOK(ret);
     return _getData(curwrap);
@@ -953,7 +956,7 @@ bool WiredTigerRecordStore::findRecord(OperationContext* txn,
     WT_CURSOR* c = curwrap.get();
     invariant(c);
     c->set_key(c, _makeKey(id));
-    int ret = WT_OP_CHECK(c->search(c));
+    int ret = WT_READ_CHECK(c->search(c));
     if (ret == WT_NOTFOUND) {
         return false;
     }
@@ -971,7 +974,7 @@ void WiredTigerRecordStore::deleteRecord(OperationContext* txn, const RecordId& 
     cursor.assertInActiveTxn();
     WT_CURSOR* c = cursor.get();
     c->set_key(c, _makeKey(id));
-    int ret = WT_OP_CHECK(c->search(c));
+    int ret = WT_READ_CHECK(c->search(c));
     invariantWTOK(ret);
 
     WT_ITEM old_value;
@@ -1078,7 +1081,7 @@ int64_t WiredTigerRecordStore::cappedDeleteAsNeeded_inlock(OperationContext* txn
         if (_cappedFirstRecord != RecordId()) {
             int64_t key = _makeKey(_cappedFirstRecord);
             truncateEnd->set_key(truncateEnd, key);
-            ret = WT_OP_CHECK(truncateEnd->search(truncateEnd));
+            ret = WT_READ_CHECK(truncateEnd->search(truncateEnd));
             if (ret == 0) {
                 positioned = true;
                 savedFirstKey = key;
@@ -1087,7 +1090,7 @@ int64_t WiredTigerRecordStore::cappedDeleteAsNeeded_inlock(OperationContext* txn
 
         // Advance the cursor truncateEnd until we find a suitable end point for our truncate
         while ((sizeSaved < sizeOverCap || docsRemoved < docsOverCap) && (docsRemoved < 20000) &&
-               (positioned || (ret = WT_OP_CHECK(truncateEnd->next(truncateEnd))) == 0)) {
+               (positioned || (ret = WT_READ_CHECK(truncateEnd->next(truncateEnd))) == 0)) {
             positioned = false;
             int64_t key;
             invariantWTOK(truncateEnd->get_key(truncateEnd, &key));
@@ -1122,7 +1125,7 @@ int64_t WiredTigerRecordStore::cappedDeleteAsNeeded_inlock(OperationContext* txn
         if (docsRemoved > 0) {
             // if we scanned to the end of the collection or past our insert, go back one
             if (ret == WT_NOTFOUND || newestIdToDelete >= justInserted) {
-                ret = WT_OP_CHECK(truncateEnd->prev(truncateEnd));
+                ret = WT_READ_CHECK(truncateEnd->prev(truncateEnd));
             }
             invariantWTOK(ret);
 
@@ -1191,7 +1194,9 @@ bool WiredTigerRecordStore::yieldAndAwaitOplogDeletionRequest(OperationContext* 
 
     // The top-level locks were freed, so also release any potential low-level (storage engine)
     // locks that might be held.
-    txn->recoveryUnit()->abandonSnapshot();
+    WiredTigerRecoveryUnit* recoveryUnit = (WiredTigerRecoveryUnit*)txn->recoveryUnit();
+    recoveryUnit->abandonSnapshot();
+    recoveryUnit->beginIdle();
 
     // Wait for an oplog deletion request, or for this record store to have been destroyed.
     oplogStones->awaitHasExcessStonesOrDead();
@@ -1216,15 +1221,22 @@ void WiredTigerRecordStore::reclaimOplog(OperationContext* txn) {
         try {
             WriteUnitOfWork wuow(txn);
 
-            WiredTigerCursor startwrap(_uri, _tableId, true, txn);
-            WT_CURSOR* start = startwrap.get();
-            start->set_key(start, _makeKey(_oplogStones->firstRecord));
+            WiredTigerCursor cwrap(_uri, _tableId, true, txn);
+            WT_CURSOR* cursor = cwrap.get();
 
-            WiredTigerCursor endwrap(_uri, _tableId, true, txn);
-            WT_CURSOR* end = endwrap.get();
-            end->set_key(end, _makeKey(stone->lastRecord));
+            // The first record in the oplog should be within the truncate range.
+            int ret = WT_READ_CHECK(cursor->next(cursor));
+            invariantWTOK(ret);
+            int64_t key;
+            invariantWTOK(cursor->get_key(cursor, &key));
+            RecordId firstRecord = _fromKey(key);
+            if (firstRecord < _oplogStones->firstRecord || firstRecord > stone->lastRecord) {
+                warning() << "First oplog record " << firstRecord << " is not in truncation range ("
+                          << _oplogStones->firstRecord << ", " << stone->lastRecord << ")";
+            }
 
-            invariantWTOK(session->truncate(session, nullptr, start, end, nullptr));
+            cursor->set_key(cursor, _makeKey(stone->lastRecord));
+            invariantWTOK(session->truncate(session, nullptr, nullptr, cursor, nullptr));
             _changeNumRecords(txn, -stone->records);
             _increaseDataSize(txn, -stone->bytes);
 
@@ -1281,7 +1293,7 @@ Status WiredTigerRecordStore::_insertRecords(OperationContext* txn,
         } else if (_isCapped) {
             stdx::lock_guard<stdx::mutex> lk(_uncommittedRecordIdsMutex);
             record.id = _nextId();
-            _addUncommitedRecordId_inlock(txn, record.id);
+            _addUncommittedRecordId_inlock(txn, record.id);
         } else {
             record.id = _nextId();
         }
@@ -1329,7 +1341,7 @@ StatusWith<RecordId> WiredTigerRecordStore::insertRecord(OperationContext* txn,
 }
 
 void WiredTigerRecordStore::_dealtWithCappedId(SortedRecordIds::iterator it, bool didCommit) {
-    invariant(&(*it) != NULL);
+    invariant(it->isNormal());
     stdx::lock_guard<stdx::mutex> lk(_uncommittedRecordIdsMutex);
     if (didCommit && _isOplog && *it != _oplog_highestSeen) {
         // Defer removal from _uncommittedRecordIds until it is durable. We don't need to wait for
@@ -1412,7 +1424,7 @@ Status WiredTigerRecordStore::updateRecord(OperationContext* txn,
     WT_CURSOR* c = curwrap.get();
     invariant(c);
     c->set_key(c, _makeKey(id));
-    int ret = WT_OP_CHECK(c->search(c));
+    int ret = WT_READ_CHECK(c->search(c));
     invariantWTOK(ret);
 
     WT_ITEM old_value;
@@ -1497,7 +1509,7 @@ std::vector<std::unique_ptr<RecordCursor>> WiredTigerRecordStore::getManyCursors
 Status WiredTigerRecordStore::truncate(OperationContext* txn) {
     WiredTigerCursor startWrap(_uri, _tableId, true, txn);
     WT_CURSOR* start = startWrap.get();
-    int ret = WT_OP_CHECK(start->next(start));
+    int ret = WT_READ_CHECK(start->next(start));
     // Empty collections don't have anything to truncate.
     if (ret == WT_NOTFOUND) {
         return Status::OK();
@@ -1522,8 +1534,8 @@ Status WiredTigerRecordStore::compact(OperationContext* txn,
                                       CompactStats* stats) {
     WiredTigerSessionCache* cache = WiredTigerRecoveryUnit::get(txn)->getSessionCache();
     if (!cache->isEphemeral()) {
-        UniqueWiredTigerSession session = cache->getSession();
-        WT_SESSION* s = session->getSession();
+        WT_SESSION* s = WiredTigerRecoveryUnit::get(txn)->getSession(txn)->getSession();
+        txn->recoveryUnit()->abandonSnapshot();
         int ret = s->compact(s, getURI().c_str(), "timeout=0");
         invariantWTOK(ret);
     }
@@ -1616,7 +1628,7 @@ void WiredTigerRecordStore::appendCustomStats(OperationContext* txn,
         result->appendIntOrLL("sleepCount", _cappedSleep.load());
         result->appendIntOrLL("sleepMS", _cappedSleepMS.load());
     }
-    WiredTigerSession* session = WiredTigerRecoveryUnit::get(txn)->getSession(txn);
+    WiredTigerSession* session = WiredTigerRecoveryUnit::get(txn)->getSessionNoTxn(txn);
     WT_SESSION* s = session->getSession();
     BSONObjBuilder bob(result->subobjStart(_engineName));
     {
@@ -1667,7 +1679,7 @@ Status WiredTigerRecordStore::oplogDiskLocRegister(OperationContext* txn, const 
         return id.getStatus();
 
     stdx::lock_guard<stdx::mutex> lk(_uncommittedRecordIdsMutex);
-    _addUncommitedRecordId_inlock(txn, id.getValue());
+    _addUncommittedRecordId_inlock(txn, id.getValue());
     return Status::OK();
 }
 
@@ -1698,8 +1710,11 @@ void WiredTigerRecordStore::_oplogJournalThreadLoop(WiredTigerSessionCache* sess
     Client::initThread("WTOplogJournalThread");
     while (true) {
         stdx::unique_lock<stdx::mutex> lk(_uncommittedRecordIdsMutex);
-        _opsWaitingForJournalCV.wait(
-            lk, [&] { return _shuttingDown || !_opsWaitingForJournal.empty(); });
+        {
+            MONGO_IDLE_THREAD_BLOCK;
+            _opsWaitingForJournalCV.wait(
+                lk, [&] { return _shuttingDown || !_opsWaitingForJournal.empty(); });
+        }
 
         while (!_shuttingDown && MONGO_FAIL_POINT(WTPausePrimaryOplogDurabilityLoop)) {
             lk.unlock();
@@ -1746,11 +1761,10 @@ void WiredTigerRecordStore::waitForAllEarlierOplogWritesToBeVisible(OperationCon
     });
 }
 
-void WiredTigerRecordStore::_addUncommitedRecordId_inlock(OperationContext* txn,
-                                                          const RecordId& id) {
-    // todo: make this a dassert at some point
-    // invariant(_uncommittedRecordIds.empty() || _uncommittedRecordIds.back() < id);
+void WiredTigerRecordStore::_addUncommittedRecordId_inlock(OperationContext* txn, RecordId id) {
+    dassert(_uncommittedRecordIds.empty() || _uncommittedRecordIds.back() < id);
     SortedRecordIds::iterator it = _uncommittedRecordIds.insert(_uncommittedRecordIds.end(), id);
+    invariant(it->isNormal());
     txn->recoveryUnit()->registerChange(new CappedInsertChange(this, it));
     _oplog_highestSeen = id;
 }
@@ -1770,7 +1784,7 @@ boost::optional<RecordId> WiredTigerRecordStore::oplogStartHack(
 
     int cmp;
     c->set_key(c, _makeKey(startingPosition));
-    int ret = WT_OP_CHECK(c->search_near(c, &cmp));
+    int ret = WT_READ_CHECK(c->search_near(c, &cmp));
     if (ret == 0 && cmp > 0)
         ret = c->prev(c);  // landed one higher than startingPosition
     if (ret == WT_NOTFOUND)

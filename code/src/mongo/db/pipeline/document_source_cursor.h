@@ -30,6 +30,7 @@
 
 #include <deque>
 
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_limit.h"
 #include "mongo/db/query/plan_summary_stats.h"
@@ -74,6 +75,7 @@ public:
      * in order to fetch data from the database.
      */
     static boost::intrusive_ptr<DocumentSourceCursor> create(
+        Collection* collection,
         const std::string& ns,
         std::unique_ptr<PlanExecutor> exec,
         const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
@@ -131,11 +133,9 @@ public:
 
     const PlanSummaryStats& getPlanSummaryStats() const;
 
-protected:
-    void doInjectExpressionContext() final;
-
 private:
-    DocumentSourceCursor(const std::string& ns,
+    DocumentSourceCursor(Collection* collection,
+                         const std::string& ns,
                          std::unique_ptr<PlanExecutor> exec,
                          const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
 
@@ -156,7 +156,7 @@ private:
     boost::intrusive_ptr<DocumentSourceLimit> _limit;
     long long _docsAddedToBatches;  // for _limit enforcement
 
-    const std::string _ns;
+    const NamespaceString _nss;
     std::unique_ptr<PlanExecutor> _exec;
     BSONObjSet _outputSorts;
     std::string _planSummary;

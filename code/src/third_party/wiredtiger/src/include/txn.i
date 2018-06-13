@@ -62,7 +62,6 @@ __wt_txn_unmodify(WT_SESSION_IMPL *session)
 static inline int
 __wt_txn_modify(WT_SESSION_IMPL *session, WT_UPDATE *upd)
 {
-	WT_DECL_RET;
 	WT_TXN_OP *op;
 	WT_TXN *txn;
 
@@ -77,7 +76,7 @@ __wt_txn_modify(WT_SESSION_IMPL *session, WT_UPDATE *upd)
 	    WT_TXN_OP_INMEM : WT_TXN_OP_BASIC;
 	op->u.upd = upd;
 	upd->txnid = session->txn.id;
-	return (ret);
+	return (0);
 }
 
 /*
@@ -126,7 +125,8 @@ __wt_txn_oldest_id(WT_SESSION_IMPL *session)
 	 * minimum of it with the oldest ID, which is what we want.
 	 */
 	oldest_id = txn_global->oldest_id;
-	include_checkpoint_txn = btree == NULL || btree->include_checkpoint_txn;
+	include_checkpoint_txn = btree == NULL ||
+	    btree->checkpoint_gen != txn_global->checkpoint_gen;
 	WT_READ_BARRIER();
 	checkpoint_pinned = txn_global->checkpoint_pinned;
 
@@ -145,16 +145,6 @@ __wt_txn_oldest_id(WT_SESSION_IMPL *session)
 		return (oldest_id);
 
 	return (checkpoint_pinned);
-}
-
-/*
- * __wt_txn_committed --
- *	Return if a transaction has been committed.
- */
-static inline bool
-__wt_txn_committed(WT_SESSION_IMPL *session, uint64_t id)
-{
-	return (WT_TXNID_LT(id, S2C(session)->txn_global.last_running));
 }
 
 /*

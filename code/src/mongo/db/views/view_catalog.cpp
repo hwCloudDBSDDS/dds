@@ -43,6 +43,7 @@
 #include "mongo/db/pipeline/aggregation_request.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/pipeline/lite_parsed_pipeline.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/server_options.h"
@@ -88,10 +89,22 @@ Status ViewCatalog::_reloadIfNeeded_inlock(OperationContext* txn) {
         }
 
         NamespaceString viewName(view["_id"].str());
+
+        auto pipeline = view["pipeline"].Obj();
+        for (auto&& stage : pipeline) {
+            if (BSONType::Object != stage.type()) {
+                return Status(ErrorCodes::InvalidViewDefinition,
+                              str::stream() << "View 'pipeline' entries must be objects, but "
+                                            << viewName.toString()
+                                            << " has a pipeline element of type "
+                                            << stage.type());
+            }
+        }
+
         _viewMap[viewName.ns()] = std::make_shared<ViewDefinition>(viewName.db(),
                                                                    viewName.coll(),
                                                                    view["viewOn"].str(),
-                                                                   view["pipeline"].Obj(),
+                                                                   pipeline,
                                                                    std::move(collator.getValue()));
         return Status::OK();
     });
@@ -156,10 +169,24 @@ Status ViewCatalog::_upsertIntoGraph(OperationContext* txn, const ViewDefinition
 
     // Performs the insert into the graph.
     auto doInsert = [this, &txn](const ViewDefinition& viewDef, bool needsValidation) -> Status {
-        // Parse the pipeline for this view to get the namespaces it references.
+        // Make a LiteParsedPipeline to determine the namespaces referenced by this pipeline.
         AggregationRequest request(viewDef.viewOn(), viewDef.pipeline());
-        boost::intrusive_ptr<ExpressionContext> expCtx = new ExpressionContext(txn, request);
-        expCtx->setCollator(CollatorInterface::cloneCollator(viewDef.defaultCollator()));
+        const LiteParsedPipeline liteParsedPipeline(request);
+        const auto involvedNamespaces = liteParsedPipeline.getInvolvedNamespaces();
+
+        // Verify that this is a legitimate pipeline specification by making sure it parses
+        // correctly. In order to parse a pipeline we need to resolve any namespaces involved to a
+        // collection and a pipeline, but in this case we don't need this map to be accurate since
+        // we will not be evaluating the pipeline.
+        StringMap<ExpressionContext::ResolvedNamespace> resolvedNamespaces;
+        for (auto&& nss : liteParsedPipeline.getInvolvedNamespaces()) {
+            resolvedNamespaces[nss.coll()] = {nss, {}};
+        }
+        boost::intrusive_ptr<ExpressionContext> expCtx =
+            new ExpressionContext(txn,
+                                  request,
+                                  CollatorInterface::cloneCollator(viewDef.defaultCollator()),
+                                  std::move(resolvedNamespaces));
         auto pipelineStatus = Pipeline::parse(viewDef.pipeline(), expCtx);
         if (!pipelineStatus.isOK()) {
             uassert(40255,
@@ -169,7 +196,7 @@ Status ViewCatalog::_upsertIntoGraph(OperationContext* txn, const ViewDefinition
             return pipelineStatus.getStatus();
         }
 
-        std::vector<NamespaceString> refs = pipelineStatus.getValue()->getInvolvedCollections();
+        std::vector<NamespaceString> refs(involvedNamespaces.begin(), involvedNamespaces.end());
         refs.push_back(viewDef.viewOn());
 
         int pipelineSize = 0;
@@ -183,9 +210,9 @@ Status ViewCatalog::_upsertIntoGraph(OperationContext* txn, const ViewDefinition
             if (!collationStatus.isOK()) {
                 return collationStatus;
             }
-            return _viewGraph.insertAndValidate(viewDef.name(), refs, pipelineSize);
+            return _viewGraph.insertAndValidate(viewDef, refs, pipelineSize);
         } else {
-            _viewGraph.insertWithoutValidating(viewDef.name(), refs, pipelineSize);
+            _viewGraph.insertWithoutValidating(viewDef, refs, pipelineSize);
             return Status::OK();
         }
     };
@@ -367,6 +394,7 @@ StatusWith<ResolvedView> ViewCatalog::resolveView(OperationContext* txn,
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     const NamespaceString* resolvedNss = &nss;
     std::vector<BSONObj> resolvedPipeline;
+    BSONObj collation;
 
     for (int i = 0; i < ViewGraph::kMaxViewDepth; i++) {
         auto view = _lookup_inlock(txn, resolvedNss->ns());
@@ -381,10 +409,13 @@ StatusWith<ResolvedView> ViewCatalog::resolveView(OperationContext* txn,
                         str::stream() << "View pipeline exceeds maximum size; maximum size is "
                                       << ViewGraph::kMaxViewPipelineSizeBytes};
             }
-            return StatusWith<ResolvedView>({*resolvedNss, resolvedPipeline});
+            return StatusWith<ResolvedView>(
+                {*resolvedNss, std::move(resolvedPipeline), std::move(collation)});
         }
 
         resolvedNss = &(view->viewOn());
+        collation = view->defaultCollator() ? view->defaultCollator()->getSpec().toBSON()
+                                            : CollationSpec::kSimpleSpec;
 
         // Prepend the underlying view's pipeline to the current working pipeline.
         const std::vector<BSONObj>& toPrepend = view->pipeline();
@@ -392,7 +423,8 @@ StatusWith<ResolvedView> ViewCatalog::resolveView(OperationContext* txn,
 
         // If the first stage is a $collStats, then we return early with the viewOn namespace.
         if (toPrepend.size() > 0 && !toPrepend[0]["$collStats"].eoo()) {
-            return StatusWith<ResolvedView>({*resolvedNss, resolvedPipeline});
+            return StatusWith<ResolvedView>(
+                {*resolvedNss, std::move(resolvedPipeline), std::move(collation)});
         }
     }
 

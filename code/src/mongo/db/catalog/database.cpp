@@ -234,34 +234,6 @@ Database::Database(OperationContext* txn, StringData name, DatabaseCatalogEntry*
     }
 }
 
-/*static*/
-string Database::duplicateUncasedName(const string& name, set<string>* duplicates) {
-    if (duplicates) {
-        duplicates->clear();
-    }
-
-    set<string> allShortNames;
-    dbHolder().getAllShortNames(allShortNames);
-
-    for (const auto& dbname : allShortNames) {
-        if (strcasecmp(dbname.c_str(), name.c_str()))
-            continue;
-
-        if (strcmp(dbname.c_str(), name.c_str()) == 0)
-            continue;
-
-        if (duplicates) {
-            duplicates->insert(dbname);
-        } else {
-            return dbname;
-        }
-    }
-    if (duplicates) {
-        return duplicates->empty() ? "" : *duplicates->begin();
-    }
-    return "";
-}
-
 void Database::clearTmpCollections(OperationContext* txn) {
     invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
 
@@ -372,14 +344,8 @@ Status Database::dropView(OperationContext* txn, StringData fullns) {
 }
 
 Status Database::dropCollection(OperationContext* txn, StringData fullns) {
-    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
-
-    LOG(1) << "dropCollection: " << fullns;
-    massertNamespaceNotIndex(fullns, "dropCollection");
-
-    Collection* collection = getCollection(fullns);
-    if (!collection) {
-        // collection doesn't exist
+    if (!getCollection(fullns)) {
+        // Collection doesn't exist so don't bother validating if it can be dropped.
         return Status::OK();
     }
 
@@ -393,14 +359,30 @@ Status Database::dropCollection(OperationContext* txn, StringData fullns) {
                     return Status(ErrorCodes::IllegalOperation,
                                   "turn off profiling before dropping system.profile collection");
             } else if (!nss.isSystemDotViews()) {
-                return Status(ErrorCodes::IllegalOperation, "can't drop system ns");
+                return Status(ErrorCodes::IllegalOperation,
+                              str::stream() << "can't drop system collection " << fullns);
             }
         }
     }
 
+    return dropCollectionEvenIfSystem(txn, nss);
+}
+
+Status Database::dropCollectionEvenIfSystem(OperationContext* txn, const NamespaceString& fullns) {
+    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
+
+    LOG(1) << "dropCollection: " << fullns;
+
+    Collection* collection = getCollection(fullns);
+    if (!collection) {
+        return Status::OK();  // Post condition already met.
+    }
+
+    massertNamespaceNotIndex(fullns.toString(), "dropCollection");
+
     BackgroundOperation::assertNoBgOpInProgForNs(fullns);
 
-    audit::logDropCollection(&cc(), fullns);
+    audit::logDropCollection(&cc(), fullns.toString());
 
     Status s = collection->getIndexCatalog()->dropAllIndexes(txn, true);
     if (!s.isOK()) {
@@ -412,13 +394,13 @@ Status Database::dropCollection(OperationContext* txn, StringData fullns) {
     verify(collection->_details->getTotalIndexCount(txn) == 0);
     LOG(1) << "\t dropIndexes done";
 
-    Top::get(txn->getClient()->getServiceContext()).collectionDropped(fullns);
+    Top::get(txn->getClient()->getServiceContext()).collectionDropped(fullns.toString());
 
     // We want to destroy the Collection object before telling the StorageEngine to destroy the
     // RecordStore.
-    _clearCollectionCache(txn, fullns, "collection dropped");
+    _clearCollectionCache(txn, fullns.toString(), "collection dropped");
 
-    s = _dbEntry->dropCollection(txn, fullns);
+    s = _dbEntry->dropCollection(txn, fullns.toString());
 
     if (!s.isOK())
         return s;
@@ -435,9 +417,7 @@ Status Database::dropCollection(OperationContext* txn, StringData fullns) {
         }
     }
 
-    auto opObserver = getGlobalServiceContext()->getOpObserver();
-    if (opObserver)
-        opObserver->onDropCollection(txn, nss);
+    getGlobalServiceContext()->getOpObserver()->onDropCollection(txn, fullns);
 
     return Status::OK();
 }
@@ -495,8 +475,8 @@ Status Database::renameCollection(OperationContext* txn,
         Top::get(txn->getClient()->getServiceContext()).collectionDropped(fromNS.toString());
     }
 
-    txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, toNS));
     Status s = _dbEntry->renameCollection(txn, fromNS, toNS, stayTemp);
+    txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, toNS));
     _collections[toNS] = _getOrCreateCollectionInstance(txn, toNS);
     return s;
 }
@@ -590,9 +570,8 @@ Collection* Database::createCollection(OperationContext* txn,
         }
     }
 
-    auto opObserver = getGlobalServiceContext()->getOpObserver();
-    if (opObserver)
-        opObserver->onCreateCollection(txn, nss, options, fullIdIndexSpec);
+    getGlobalServiceContext()->getOpObserver()->onCreateCollection(
+        txn, nss, options, fullIdIndexSpec);
 
     return collection;
 }

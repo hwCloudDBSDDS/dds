@@ -40,7 +40,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer.h"
+#include "mongo/db/op_observer_impl.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/query_request.h"
 #include "mongo/db/repl/oplog.h"
@@ -55,7 +55,6 @@
 #include "mongo/rpc/metadata/repl_set_metadata.h"
 #include "mongo/rpc/metadata/server_selection_metadata.h"
 #include "mongo/s/balancer_configuration.h"
-#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/catalog/dist_lock_catalog.h"
 #include "mongo/s/catalog/dist_lock_manager.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
@@ -63,6 +62,7 @@
 #include "mongo/s/catalog/type_changelog.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_shard.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_local.h"
 #include "mongo/s/client/shard_registry.h"
@@ -116,7 +116,7 @@ void ShardingMongodTestFixture::setUp() {
     for (size_t i = 0; i < _servers.size(); ++i) {
         serversBob.append(BSON("host" << _servers[i].toString() << "_id" << static_cast<int>(i)));
     }
-    repl::ReplicaSetConfig replSetConfig;
+    repl::ReplSetConfig replSetConfig;
     replSetConfig.initialize(BSON("_id" << _setName << "protocolVersion" << 1 << "version" << 3
                                         << "members"
                                         << serversBob.arr()));
@@ -124,7 +124,7 @@ void ShardingMongodTestFixture::setUp() {
 
     repl::ReplicationCoordinator::set(serviceContext, std::move(replCoordPtr));
 
-    serviceContext->setOpObserver(stdx::make_unique<OpObserver>());
+    serviceContext->setOpObserver(stdx::make_unique<OpObserverImpl>());
     repl::setOplogCollectionName();
     repl::createOplog(_opCtx.get());
 }

@@ -23,9 +23,7 @@
  *         nodes {number}: number of replica members. Defaults to 3.
  *         protocolVersion {number}: protocol version of replset used by the
  *             replset initiation.
- *         initiateTimeout {number}: timeout in milliseconds to specify
- *              to ReplSetTest.prototype.initiate().
- *         For other options, @see ReplSetTest#start
+ *         For other options, @see ReplSetTest#initiate
  *       }
  *
  *     shards {number|Object|Array.<Object>}: number of shards or shard
@@ -372,10 +370,14 @@ var ShardingTest = function(params) {
         }
     };
 
-    this.stop = function(opts) {
+    this.stopAllMongos = function(opts) {
         for (var i = 0; i < this._mongos.length; i++) {
             this.stopMongos(i, opts);
         }
+    };
+
+    this.stop = function(opts) {
+        this.stopAllMongos(opts);
 
         for (var i = 0; i < this._connections.length; i++) {
             if (this._rs[i]) {
@@ -659,8 +661,6 @@ var ShardingTest = function(params) {
         if (collName.getDB) {
             c = "" + collName;
         }
-
-        var isEmpty = (this.s.getCollection(c).count() == 0);
 
         if (!_isSharded(dbName)) {
             this.s.adminCommand({enableSharding: dbName});
@@ -1066,8 +1066,6 @@ var ShardingTest = function(params) {
 
             var protocolVersion = rsDefaults.protocolVersion;
             delete rsDefaults.protocolVersion;
-            var initiateTimeout = rsDefaults.initiateTimeout;
-            delete rsDefaults.initiateTimeout;
 
             var rs = new ReplSetTest({
                 name: setName,
@@ -1083,7 +1081,10 @@ var ShardingTest = function(params) {
             this._rs[i] =
                 {setName: setName, test: rs, nodes: rs.startSet(rsDefaults), url: rs.getURL()};
 
-            rs.initiate(null, null, initiateTimeout);
+            // ReplSetTest.initiate() requires all nodes to be to be authorized to run
+            // replSetGetStatus.
+            // TODO(SERVER-14017): Remove this in favor of using initiate() everywhere.
+            rs.initiateWithAnyNodeAsPrimary();
 
             this["rs" + i] = rs;
             this._rsObjects[i] = rs;
@@ -1231,8 +1232,10 @@ var ShardingTest = function(params) {
     var config = this.configRS.getReplSetConfig();
     config.configsvr = true;
     config.settings = config.settings || {};
-    var initiateTimeout = otherParams.rsOptions && otherParams.rsOptions.initiateTimeout;
-    this.configRS.initiate(config, null, initiateTimeout);
+
+    // ReplSetTest.initiate() requires all nodes to be to be authorized to run replSetGetStatus.
+    // TODO(SERVER-14017): Remove this in favor of using initiate() everywhere.
+    this.configRS.initiateWithAnyNodeAsPrimary(config);
 
     // Wait for master to be elected before starting mongos
     var csrsPrimary = this.configRS.getPrimary();

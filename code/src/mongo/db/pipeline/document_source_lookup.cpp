@@ -34,6 +34,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression_algo.h"
 #include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/document_path_support.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/value.h"
@@ -54,7 +55,16 @@ DocumentSourceLookUp::DocumentSourceLookUp(NamespaceString fromNs,
       _as(std::move(as)),
       _localField(std::move(localField)),
       _foreignField(foreignField),
-      _foreignFieldFieldName(std::move(foreignField)) {}
+      _foreignFieldFieldName(std::move(foreignField)) {
+    const auto& resolvedNamespace = pExpCtx->getResolvedNamespace(_fromNs);
+    _fromExpCtx = pExpCtx->copyWith(resolvedNamespace.ns);
+    _fromPipeline = resolvedNamespace.pipeline;
+
+    // We append an additional BSONObj to '_fromPipeline' as a placeholder for the $match stage
+    // we'll eventually construct from the input document.
+    _fromPipeline.reserve(_fromPipeline.size() + 1);
+    _fromPipeline.push_back(BSONObj());
+}
 
 std::unique_ptr<LiteParsedDocumentSourceOneForeignCollection> DocumentSourceLookUp::liteParse(
     const AggregationRequest& request, const BSONElement& spec) {
@@ -96,7 +106,7 @@ namespace {
  *    ...
  *  ]}
  */
-BSONObj buildEqualityOrQuery(const std::string& fieldName, const vector<Value>& values) {
+BSONObj buildEqualityOrQuery(const std::string& fieldName, const BSONArray& values) {
     BSONObjBuilder orBuilder;
     {
         BSONArrayBuilder orPredicatesBuilder(orBuilder.subarrayStart("$or"));
@@ -282,28 +292,41 @@ BSONObj DocumentSourceLookUp::makeMatchStageFromInput(const Document& input,
                                                       const FieldPath& localFieldPath,
                                                       const std::string& foreignFieldName,
                                                       const BSONObj& additionalFilter) {
-    Value localFieldVal = input.getNestedField(localFieldPath);
+    // Add the 'localFieldPath' of 'input' into 'localFieldList'. If 'localFieldPath' references a
+    // field with an array in its path, we may need to join on multiple values, so we add each
+    // element to 'localFieldList'.
+    BSONArrayBuilder arrBuilder;
+    bool containsRegex = false;
+    document_path_support::visitAllValuesAtPath(input, localFieldPath, [&](const Value& nextValue) {
+        arrBuilder << nextValue;
+        if (!containsRegex && nextValue.getType() == RegEx) {
+            containsRegex = true;
+        }
+    });
 
-    // Missing values are treated as null.
-    if (localFieldVal.missing()) {
-        localFieldVal = Value(BSONNULL);
+    if (arrBuilder.arrSize() == 0) {
+        // Missing values are treated as null.
+        arrBuilder << BSONNULL;
     }
 
+    const auto localFieldListSize = arrBuilder.arrSize();
+    const auto localFieldList = arrBuilder.arr();
+
     // We construct a query of one of the following forms, depending on the contents of
-    // 'localFieldVal'.
+    // 'localFieldList'.
     //
-    //   {$and: [{<foreignFieldName>: {$eq: <localFieldVal>}}, <additionalFilter>]}
-    //     if 'localFieldVal' isn't an array value.
+    //   {$and: [{<foreignFieldName>: {$eq: <localFieldList[0]>}}, <additionalFilter>]}
+    //     if 'localFieldList' contains a single element.
     //
     //   {$and: [{<foreignFieldName>: {$in: [<value>, <value>, ...]}}, <additionalFilter>]}
-    //     if 'localFieldVal' is an array value but doesn't contain any elements that are regular
-    //     expressions.
+    //     if 'localFieldList' contains more than one element but doesn't contain any that are
+    //     regular expressions.
     //
     //   {$and: [{$or: [{<foreignFieldName>: {$eq: <value>}},
     //                  {<foreignFieldName>: {$eq: <value>}}, ...]},
     //           <additionalFilter>]}
-    //     if 'localFieldVal' is an array value and it contains at least one element that is a
-    //     regular expression.
+    //     if 'localFieldList' contains more than one element and it contains at least one element
+    //     that is a regular expression.
 
     // We wrap the query in a $match so that it can be parsed into a DocumentSourceMatch when
     // constructing a pipeline to execute.
@@ -313,31 +336,27 @@ BSONObj DocumentSourceLookUp::makeMatchStageFromInput(const Document& input,
     BSONArrayBuilder andObj(query.subarrayStart("$and"));
     BSONObjBuilder joiningObj(andObj.subobjStart());
 
-    if (localFieldVal.isArray()) {
+    if (localFieldListSize > 1) {
         // A $lookup on an array value corresponds to finding documents in the foreign collection
         // that have a value of any of the elements in the array value, rather than finding
         // documents that have a value equal to the entire array value. These semantics are
         // automatically provided to us by using the $in query operator.
-        const vector<Value>& localArray = localFieldVal.getArray();
-        const bool containsRegex = std::any_of(
-            localArray.begin(), localArray.end(), [](Value val) { return val.getType() == RegEx; });
-
         if (containsRegex) {
             // A regular expression inside the $in query operator will perform pattern matching on
             // any string values. Since we want regular expressions to only match other RegEx types,
             // we write the query as a $or of equality comparisons instead.
-            BSONObj orQuery = buildEqualityOrQuery(foreignFieldName, localFieldVal.getArray());
+            BSONObj orQuery = buildEqualityOrQuery(foreignFieldName, localFieldList);
             joiningObj.appendElements(orQuery);
         } else {
-            // { <foreignFieldName> : { "$in" : <localFieldVal> } }
+            // { <foreignFieldName> : { "$in" : <localFieldList> } }
             BSONObjBuilder subObj(joiningObj.subobjStart(foreignFieldName));
-            subObj << "$in" << localFieldVal;
+            subObj << "$in" << localFieldList;
             subObj.doneFast();
         }
     } else {
-        // { <foreignFieldName> : { "$eq" : <localFieldVal> } }
+        // { <foreignFieldName> : { "$eq" : <localFieldList[0]> } }
         BSONObjBuilder subObj(joiningObj.subobjStart(foreignFieldName));
-        subObj << "$eq" << localFieldVal;
+        subObj << "$eq" << localFieldList[0];
         subObj.doneFast();
     }
 
@@ -452,19 +471,6 @@ void DocumentSourceLookUp::serializeToArray(std::vector<Value>& array, bool expl
 DocumentSource::GetDepsReturn DocumentSourceLookUp::getDependencies(DepsTracker* deps) const {
     deps->fields.insert(_localField.fullPath());
     return SEE_NEXT;
-}
-
-void DocumentSourceLookUp::doInjectExpressionContext() {
-    auto it = pExpCtx->resolvedNamespaces.find(_fromNs.coll());
-    invariant(it != pExpCtx->resolvedNamespaces.end());
-    const auto& resolvedNamespace = it->second;
-    _fromExpCtx = pExpCtx->copyWith(resolvedNamespace.ns);
-    _fromPipeline = resolvedNamespace.pipeline;
-
-    // We append an additional BSONObj to '_fromPipeline' as a placeholder for the $match stage
-    // we'll eventually construct from the input document.
-    _fromPipeline.reserve(_fromPipeline.size() + 1);
-    _fromPipeline.push_back(BSONObj());
 }
 
 void DocumentSourceLookUp::doDetachFromOperationContext() {

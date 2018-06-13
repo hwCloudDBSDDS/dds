@@ -33,7 +33,7 @@ __rename_file(
 	WT_RET(__wt_schema_backup_check(session, filename));
 	WT_RET(__wt_schema_backup_check(session, newfile));
 	/* Close any btree handles in the file. */
-	WT_WITH_HANDLE_LIST_LOCK(session,
+	WT_WITH_HANDLE_LIST_WRITE_LOCK(session,
 	    ret = __wt_conn_dhandle_close_all(session, uri, false));
 	WT_ERR(ret);
 
@@ -233,7 +233,7 @@ __rename_table(WT_SESSION_IMPL *session,
 	WT_ERR(__metadata_rename(session, uri, newuri));
 
 err:	if (table != NULL)
-		__wt_schema_release_table(session, table);
+		WT_TRET(__wt_schema_release_table(session, table));
 	return (ret);
 }
 

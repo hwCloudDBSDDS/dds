@@ -206,7 +206,11 @@ void ReplicationCoordinatorImpl::_onFreshnessCheckComplete() {
             return;
     }
 
-    log() << "running for election";
+    log() << "running for election"
+          << (abortReason == FreshnessChecker::FreshnessTie
+                  ? "; slept last election, so running regardless of possible tie"
+                  : "");
+
     // Secure our vote for ourself first
     if (!_topCoord->voteForMyself(now)) {
         return;
@@ -283,7 +287,7 @@ void ReplicationCoordinatorImpl::_recoverFromElectionTie(
     if (!status.isOK()) {
         LOG(2) << "ReplicationCoordinatorImpl::_recoverFromElectionTie -- " << status.reason();
     } else {
-        fassertStatusOK(28817, _topCoord->becomeCandidateIfElectable(now, lastOpApplied));
+        fassertStatusOK(28817, _topCoord->becomeCandidateIfElectable(now, lastOpApplied, false));
         _startElectSelf();
     }
 }

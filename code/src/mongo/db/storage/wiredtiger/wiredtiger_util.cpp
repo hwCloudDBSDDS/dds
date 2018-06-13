@@ -103,9 +103,13 @@ void WiredTigerUtil::fetchTypeAndSourceURI(OperationContext* opCtx,
 
 StatusWith<std::string> WiredTigerUtil::getMetadata(OperationContext* opCtx, StringData uri) {
     invariant(opCtx);
-    WiredTigerCursor curwrap("metadata:create", WiredTigerSession::kMetadataTableId, false, opCtx);
-    WT_CURSOR* cursor = curwrap.get();
+
+    auto session = WiredTigerRecoveryUnit::get(opCtx)->getSessionNoTxn(opCtx);
+    WT_CURSOR* cursor =
+        session->getCursor("metadata:create", WiredTigerSession::kMetadataTableId, false);
     invariant(cursor);
+    ON_BLOCK_EXIT([&] { session->releaseCursor(WiredTigerSession::kMetadataTableId, cursor); });
+
     std::string strUri = uri.toString();
     cursor->set_key(cursor, strUri.c_str());
     int ret = cursor->search(cursor);
@@ -425,9 +429,9 @@ int WiredTigerUtil::verifyTable(OperationContext* txn,
     ErrorAccumulator eventHandler(errors);
 
     // Try to close as much as possible to avoid EBUSY errors.
-    WiredTigerRecoveryUnit::get(txn)->getSession(txn)->closeAllCursors();
+    WiredTigerRecoveryUnit::get(txn)->getSession(txn)->closeAllCursors(uri);
     WiredTigerSessionCache* sessionCache = WiredTigerRecoveryUnit::get(txn)->getSessionCache();
-    sessionCache->closeAllCursors();
+    sessionCache->closeAllCursors(uri);
 
     // Open a new session with custom error handlers.
     WT_CONNECTION* conn = WiredTigerRecoveryUnit::get(txn)->getSessionCache()->conn();

@@ -2,6 +2,7 @@
 
 (function() {
     "use strict";
+    load("jstests/libs/check_log.js");
 
     var replTest = new ReplSetTest({nodes: 2});
     replTest.startSet();
@@ -33,30 +34,6 @@
                                          ErrorCodes.ExceededTimeLimit);
         };
 
-        var countLogMessages = function(msg) {
-            var total = 0;
-            var logMessages = assert.commandWorked(testDB.adminCommand({getLog: 'global'})).log;
-            for (var i = 0; i < logMessages.length; i++) {
-                if (logMessages[i].indexOf(msg) != -1) {
-                    total++;
-                }
-            }
-            return total;
-        };
-
-        var checkLog = function(msg, expectedCount) {
-            var count;
-            assert.soon(
-                function() {
-                    count = countLogMessages(msg);
-                    return expectedCount == count;
-                },
-                'Expected ' + expectedCount + ', but instead saw ' + count +
-                    ' log entries containing the following message: ' + msg,
-                60000,
-                300);
-        };
-
         // Run the time out test 3 times with replication debug log level increased to 2
         // for first and last run. The time out message should be logged twice.
         testDB.setLogLevel(2, 'command');
@@ -65,7 +42,7 @@
 
         var msg = 'Command on database ' + testDB.getName() +
             ' timed out waiting for read concern to be satisfied. Command:';
-        checkLog(msg, 1);
+        checkLog.containsWithCount(testDB.getMongo(), msg, 1);
 
         // Read concern timed out message should not be logged.
         runTimeoutTest();
@@ -74,38 +51,35 @@
         runTimeoutTest();
         testDB.setLogLevel(0, 'command');
 
-        checkLog(msg, 2);
+        checkLog.containsWithCount(testDB.getMongo(), msg, 2);
 
         // Test read on future afterOpTime that will eventually occur.
         primaryConn.getDB(dbName).parallelShellStarted.drop();
-        var insertFunc =
-            startParallelShell('let testDB = db.getSiblingDB("' + dbName + '"); ' +
-                                   'testDB.parallelShellStarted.insert({}); ' +
-                                   'sleep(2100); ' +
-                                   'testDB.user.insert({y: 1}, { writeConcern: { w: 2 }});',
-                               primaryConn.port);
-        assert.soon(function() {
-            return primaryConn.getDB(dbName).parallelShellStarted.count();
-        });
-
         oplogTS = localDB.oplog.rs.find().sort({$natural: -1}).limit(1).next();
+        var insertFunc = startParallelShell('let testDB = db.getSiblingDB("' + dbName + '"); ' +
+                                                'sleep(3000); ' +
+                                                'testDB.user.insert({y: 1});',
+                                            primaryConn.port);
+
         var twoSecTS = new Timestamp(oplogTS.ts.getTime() + 2, 0);
         var res = assert.commandWorked(testDB.runCommand({
             find: 'user',
-            filter: {x: 1},
+            filter: {y: 1},
             readConcern: {
                 afterOpTime: {ts: twoSecTS, t: term},
             },
-            maxTimeMS: 10 * 1000,
+            maxTimeMS: 90 * 1000,
         }));
 
         assert.eq(null, res.code);
-
+        assert.eq(res.cursor.firstBatch[0].y, 1);
         insertFunc();
     };
 
     var primary = replTest.getPrimary();
+    jsTest.log("test1");
     runTest(primary.getDB('test1'), primary);
+    jsTest.log("test2");
     runTest(replTest.getSecondary().getDB('test2'), primary);
 
     replTest.stopSet();

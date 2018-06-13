@@ -53,7 +53,6 @@
 #include "mongo/rpc/metadata/repl_set_metadata.h"
 #include "mongo/rpc/metadata/server_selection_metadata.h"
 #include "mongo/s/balancer_configuration.h"
-#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/catalog/dist_lock_catalog_impl.h"
 #include "mongo/s/catalog/replset_dist_lock_manager.h"
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
@@ -62,6 +61,7 @@
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_shard.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_local.h"
 #include "mongo/s/client/shard_registry.h"
@@ -143,7 +143,7 @@ std::unique_ptr<ShardingCatalogManager> ConfigServerTestFixture::makeShardingCat
     _addShardNetworkTestEnv =
         stdx::make_unique<NetworkTestEnv>(specialExec.get(), _mockNetworkForAddShard);
 
-    return stdx::make_unique<ShardingCatalogManagerImpl>(catalogClient, std::move(specialExec));
+    return stdx::make_unique<ShardingCatalogManagerImpl>(std::move(specialExec));
 }
 
 std::unique_ptr<CatalogCache> ConfigServerTestFixture::makeCatalogCache() {

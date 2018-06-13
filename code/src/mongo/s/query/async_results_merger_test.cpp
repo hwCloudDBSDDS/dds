@@ -858,7 +858,7 @@ TEST_F(AsyncResultsMergerTest, NextEventAfterTaskExecutorShutdown) {
     BSONObj findCmd = fromjson("{find: 'testcoll'}");
     makeCursorFromFindCmd(findCmd, kTestShardIds);
     executor()->shutdown();
-    ASSERT_NOT_OK(arm->nextEvent().getStatus());
+    ASSERT_EQ(ErrorCodes::ShutdownInProgress, arm->nextEvent().getStatus());
     auto killEvent = arm->kill();
     ASSERT_FALSE(killEvent.isValid());
 }
@@ -1512,6 +1512,48 @@ TEST_F(AsyncResultsMergerTest, GetMoreRequestWithoutAwaitDataCantHaveMaxTime) {
     ASSERT_NOT_OK(arm->setAwaitDataTimeout(Milliseconds(789)));
     auto killEvent = arm->kill();
     executor()->waitForEvent(killEvent);
+}
+
+TEST_F(AsyncResultsMergerTest, ShardCanErrorInBetweenReadyAndNextEvent) {
+    BSONObj findCmd = fromjson("{find: 'testcoll', tailable: true}");
+    makeCursorFromFindCmd(findCmd, {kTestShardIds[0]});
+
+    ASSERT_FALSE(arm->ready());
+    auto readyEvent = unittest::assertGet(arm->nextEvent());
+    scheduleErrorResponse({ErrorCodes::BadValue, "bad thing happened"});
+
+    ASSERT_EQ(ErrorCodes::BadValue, arm->nextEvent().getStatus());
+
+    // Required to kill the 'arm' on error before destruction.
+    auto killEvent = arm->kill();
+    executor()->waitForEvent(killEvent);
+}
+
+TEST_F(AsyncResultsMergerTest, RetryWhenShardHasRetriableErrorInBetweenReadyAndNextEvent) {
+    BSONObj findCmd = fromjson("{find: 'testcoll'}");
+    makeCursorFromFindCmd(findCmd, {kTestShardIds[0]});
+
+    ASSERT_FALSE(arm->ready());
+
+    // First attempt returns a retriable error.
+    auto readyEvent = unittest::assertGet(arm->nextEvent());
+    scheduleErrorResponse({ErrorCodes::NotMasterNoSlaveOk, "not master and not slave"});
+
+    // We expect to be able to retrieve another event, and be waiting on the retry to succeed.
+    readyEvent = unittest::assertGet(arm->nextEvent());
+    std::vector<CursorResponse> responses;
+    std::vector<BSONObj> batch = {fromjson("{_id: 1}"), fromjson("{_id: 2}")};
+    responses.emplace_back(_nss, CursorId(0), batch);
+    scheduleNetworkResponses(std::move(responses), CursorResponse::ResponseType::InitialResponse);
+
+    executor()->waitForEvent(readyEvent);
+    ASSERT_TRUE(arm->ready());
+    ASSERT_BSONOBJ_EQ(fromjson("{_id: 1}"), *unittest::assertGet(arm->nextReady()).getResult());
+    ASSERT_TRUE(arm->ready());
+    ASSERT_BSONOBJ_EQ(fromjson("{_id: 2}"), *unittest::assertGet(arm->nextReady()).getResult());
+    ASSERT_TRUE(arm->ready());
+    ASSERT_TRUE(arm->remotesExhausted());
+    ASSERT_TRUE(unittest::assertGet(arm->nextReady()).isEOF());
 }
 
 }  // namespace

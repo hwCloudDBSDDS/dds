@@ -55,7 +55,6 @@ ReplicationCoordinatorExternalStateMock::ReplicationCoordinatorExternalStateMock
       _storeLocalLastVoteDocumentStatus(Status::OK()),
       _storeLocalConfigDocumentShouldHang(false),
       _storeLocalLastVoteDocumentShouldHang(false),
-      _isApplierSignaledToCancelFetcher(false),
       _connectionsClosed(false),
       _threadsStarted(false) {}
 
@@ -202,10 +201,6 @@ void ReplicationCoordinatorExternalStateMock::setStoreLocalConfigDocumentToHang(
     }
 }
 
-bool ReplicationCoordinatorExternalStateMock::isApplierSignaledToCancelFetcher() const {
-    return _isApplierSignaledToCancelFetcher;
-}
-
 bool ReplicationCoordinatorExternalStateMock::threadsStarted() const {
     return _threadsStarted;
 }
@@ -232,14 +227,17 @@ void ReplicationCoordinatorExternalStateMock::shardingOnStepDownHook() {}
 
 void ReplicationCoordinatorExternalStateMock::signalApplierToChooseNewSyncSource() {}
 
-void ReplicationCoordinatorExternalStateMock::signalApplierToCancelFetcher() {
-    _isApplierSignaledToCancelFetcher = true;
-}
+void ReplicationCoordinatorExternalStateMock::stopProducer() {}
+
+void ReplicationCoordinatorExternalStateMock::startProducerIfStopped() {}
 
 void ReplicationCoordinatorExternalStateMock::dropAllSnapshots() {}
 
 void ReplicationCoordinatorExternalStateMock::updateCommittedSnapshot(SnapshotName newCommitPoint) {
 }
+
+void ReplicationCoordinatorExternalStateMock::createSnapshot(OperationContext* txn,
+                                                             SnapshotName name) {}
 
 void ReplicationCoordinatorExternalStateMock::forceSnapshotCreation() {}
 

@@ -206,14 +206,15 @@ void receivedCommand(OperationContext* txn,
 
     const int32_t responseToMsgId = message.header().getId();
 
-    DbMessage dbMessage(message);
-    QueryMessage queryMessage(dbMessage);
-
     CurOp* op = CurOp::get(txn);
-
     rpc::LegacyReplyBuilder builder{};
 
     try {
+        DbMessage dbMessage(message);
+
+        // Can throw, so make sure it's under the try statement.
+        QueryMessage queryMessage(dbMessage);
+
         // This will throw if the request is on an invalid namespace.
         rpc::LegacyRequest request{&message};
         // Auth checking for Commands happens later.
@@ -465,7 +466,7 @@ bool receivedGetMore(OperationContext* txn, DbResponse& dbresponse, Message& m, 
     curop.debug().cursorid = cursorid;
 
     {
-        stdx::lock_guard<Client>(*txn->getClient());
+        stdx::lock_guard<Client> lk(*txn->getClient());
         CurOp::get(txn)->setNS_inlock(ns);
     }
 

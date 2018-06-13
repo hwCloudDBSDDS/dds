@@ -425,37 +425,40 @@ __schema_open_table(WT_SESSION_IMPL *session,
 	WT_DECL_RET;
 	WT_TABLE *table;
 	const char *tconfig;
-	char *tablename;
 
 	*tablep = NULL;
 
 	cursor = NULL;
 	table = NULL;
-	tablename = NULL;
 
 	WT_ASSERT(session, F_ISSET(session, WT_SESSION_LOCKED_TABLE));
 
-	WT_ERR(__wt_scr_alloc(session, 0, &buf));
-	WT_ERR(__wt_buf_fmt(session, buf, "table:%.*s", (int)namelen, name));
-	WT_ERR(__wt_strndup(session, buf->data, buf->size, &tablename));
-
-	WT_ERR(__wt_metadata_cursor(session, &cursor));
-	cursor->set_key(cursor, tablename);
-	WT_ERR(cursor->search(cursor));
-	WT_ERR(cursor->get_value(cursor, &tconfig));
-
 	WT_ERR(__wt_calloc_one(session, &table));
-	table->name = tablename;
-	tablename = NULL;
 	table->name_hash = __wt_hash_city64(name, namelen);
 
-	WT_ERR(__wt_config_getones(session, tconfig, "columns", &cval));
+	WT_ERR(__wt_scr_alloc(session, 0, &buf));
+	WT_ERR(__wt_buf_fmt(session, buf, "table:%.*s", (int)namelen, name));
+	WT_ERR(__wt_strndup(session, buf->data, buf->size, &table->name));
 
-	WT_ERR(__wt_config_getones(session, tconfig, "key_format", &cval));
+	/*
+	 * Don't hold the metadata cursor pinned, we call functions that use it
+	 * to retrieve column group information.
+	 */
+	WT_ERR(__wt_metadata_cursor(session, &cursor));
+	cursor->set_key(cursor, table->name);
+	if ((ret = cursor->search(cursor)) == 0 &&
+	    (ret = cursor->get_value(cursor, &tconfig)) == 0)
+		ret = __wt_strdup(session, tconfig, &table->config);
+	WT_TRET(__wt_metadata_cursor_release(session, &cursor));
+	WT_ERR(ret);
+
+	WT_ERR(__wt_config_getones(session, table->config, "columns", &cval));
+	WT_ERR(__wt_config_getones(
+	    session, table->config, "key_format", &cval));
 	WT_ERR(__wt_strndup(session, cval.str, cval.len, &table->key_format));
-	WT_ERR(__wt_config_getones(session, tconfig, "value_format", &cval));
+	WT_ERR(__wt_config_getones(
+	    session, table->config, "value_format", &cval));
 	WT_ERR(__wt_strndup(session, cval.str, cval.len, &table->value_format));
-	WT_ERR(__wt_strdup(session, tconfig, &table->config));
 
 	/* Point to some items in the copy to save re-parsing. */
 	WT_ERR(__wt_config_getones(session, table->config,
@@ -491,7 +494,7 @@ __schema_open_table(WT_SESSION_IMPL *session,
 
 	if (table->ncolgroups > 0 && table->is_simple)
 		WT_ERR_MSG(session, EINVAL,
-		    "%s requires a table with named columns", tablename);
+		    "%s requires a table with named columns", table->name);
 
 	WT_ERR(__wt_calloc_def(session, WT_COLGROUPS(table), &table->cgroups));
 	WT_ERR(__wt_schema_open_colgroups(session, table));
@@ -509,9 +512,7 @@ __schema_open_table(WT_SESSION_IMPL *session,
 	if (0) {
 err:		WT_TRET(__wt_schema_destroy_table(session, &table));
 	}
-	WT_TRET(__wt_metadata_cursor_release(session, &cursor));
 
-	__wt_free(session, tablename);
 	__wt_scr_free(session, &buf);
 	return (ret);
 }
@@ -529,8 +530,8 @@ __wt_schema_get_colgroup(WT_SESSION_IMPL *session,
 	const char *tablename, *tend;
 	u_int i;
 
-	if (tablep != NULL)
-		*tablep = NULL;
+	WT_ASSERT(session, tablep != NULL);
+	*tablep = NULL;
 	*colgroupp = NULL;
 
 	tablename = uri;
@@ -547,15 +548,12 @@ __wt_schema_get_colgroup(WT_SESSION_IMPL *session,
 		colgroup = table->cgroups[i];
 		if (strcmp(colgroup->name, uri) == 0) {
 			*colgroupp = colgroup;
-			if (tablep != NULL)
-				*tablep = table;
-			else
-				__wt_schema_release_table(session, table);
+			*tablep = table;
 			return (0);
 		}
 	}
 
-	__wt_schema_release_table(session, table);
+	WT_RET(__wt_schema_release_table(session, table));
 	if (quiet)
 		WT_RET(ENOENT);
 	WT_RET_MSG(session, ENOENT, "%s not found in table", uri);
@@ -575,8 +573,8 @@ __wt_schema_get_index(WT_SESSION_IMPL *session,
 	const char *tablename, *tend;
 	u_int i;
 
-	if (tablep != NULL)
-		*tablep = NULL;
+	WT_ASSERT(session, tablep != NULL);
+	*tablep = NULL;
 	*indexp = NULL;
 
 	tablename = uri;
@@ -591,11 +589,8 @@ __wt_schema_get_index(WT_SESSION_IMPL *session,
 	for (i = 0; i < table->nindices; i++) {
 		idx = table->indices[i];
 		if (idx != NULL && strcmp(idx->name, uri) == 0) {
-			if (tablep != NULL)
-				*tablep = table;
-			else
-				__wt_schema_release_table(session, table);
 			*indexp = idx;
+			*tablep = table;
 			return (0);
 		}
 	}
@@ -603,14 +598,11 @@ __wt_schema_get_index(WT_SESSION_IMPL *session,
 	/* Otherwise, open it. */
 	WT_ERR(__wt_schema_open_index(
 	    session, table, tend + 1, strlen(tend + 1), indexp));
-	if (tablep != NULL)
-		*tablep = table;
+	*tablep = table;
+	return (0);
 
-err:	__wt_schema_release_table(session, table);
+err:	WT_TRET(__wt_schema_release_table(session, table));
 	WT_RET(ret);
-
-	if (*indexp != NULL)
-		return (0);
 
 	if (quiet)
 		WT_RET(ENOENT);

@@ -37,6 +37,7 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/read_concern_args.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -99,6 +100,9 @@ const char kPartialResultsField[] = "allowPartialResults";
 const char kTermField[] = "term";
 const char kOptionsField[] = "options";
 
+// Field names for sorting options.
+const char kNaturalSortField[] = "$natural";
+
 }  // namespace
 
 const char QueryRequest::kFindCommandName[] = "find";
@@ -110,7 +114,7 @@ QueryRequest::QueryRequest(NamespaceString nss) : _nss(std::move(nss)) {}
 StatusWith<unique_ptr<QueryRequest>> QueryRequest::makeFromFindCommand(NamespaceString nss,
                                                                        const BSONObj& cmdObj,
                                                                        bool isExplain) {
-    unique_ptr<QueryRequest> qr(new QueryRequest(std::move(nss)));
+    auto qr = stdx::make_unique<QueryRequest>(nss);
     qr->_explain = isExplain;
 
     // Parse the command BSON by looping through one element at a time.
@@ -586,7 +590,7 @@ Status QueryRequest::validate() const {
 
     if (_tailable) {
         // Tailable cursors cannot have any sort other than {$natural: 1}.
-        const BSONObj expectedSort = BSON("$natural" << 1);
+        const BSONObj expectedSort = BSON(kNaturalSortField << 1);
         if (!_sort.isEmpty() &&
             SimpleBSONObjComparator::kInstance.evaluate(_sort != expectedSort)) {
             return Status(ErrorCodes::BadValue,
@@ -699,9 +703,25 @@ bool QueryRequest::isQueryIsolated(const BSONObj& query) {
 
 // static
 StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQueryMessage(const QueryMessage& qm) {
-    unique_ptr<QueryRequest> qr(new QueryRequest(NamespaceString(qm.ns)));
+    auto qr = stdx::make_unique<QueryRequest>(NamespaceString(qm.ns));
 
     Status status = qr->init(qm.ntoskip, qm.ntoreturn, qm.queryOptions, qm.query, qm.fields, true);
+    if (!status.isOK()) {
+        return status;
+    }
+
+    return std::move(qr);
+}
+
+StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQueryForTest(NamespaceString nss,
+                                                                          const BSONObj& queryObj,
+                                                                          const BSONObj& proj,
+                                                                          int ntoskip,
+                                                                          int ntoreturn,
+                                                                          int queryOptions) {
+    auto qr = stdx::make_unique<QueryRequest>(nss);
+
+    Status status = qr->init(ntoskip, ntoreturn, queryOptions, queryObj, proj, true);
     if (!status.isOK()) {
         return status;
     }
@@ -859,6 +879,13 @@ Status QueryRequest::initFullQuery(const BSONObj& top) {
                     return maxTimeMS.getStatus();
                 }
                 _maxTimeMS = maxTimeMS.getValue();
+            } else if (str::equals("comment", name)) {
+                // Legacy $comment can be any BSON element. Convert to string if it isn't already.
+                if (e.type() == BSONType::String) {
+                    _comment = e.str();
+                } else {
+                    _comment = e.toString(false);
+                }
             }
         }
     }
@@ -980,6 +1007,11 @@ StatusWith<BSONObj> QueryRequest::asAggregationCommand() const {
     if (_ntoreturn) {
         return {ErrorCodes::BadValue,
                 str::stream() << "Cannot convert to an aggregation if ntoreturn is set."};
+    }
+    if (_sort[kNaturalSortField]) {
+        return {ErrorCodes::InvalidPipelineOperator,
+                str::stream() << "Sort option " << kNaturalSortField
+                              << " not supported in aggregation."};
     }
     // The aggregation command normally does not support the 'singleBatch' option, but we make a
     // special exception if 'limit' is set to 1.

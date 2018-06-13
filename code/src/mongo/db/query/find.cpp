@@ -373,7 +373,7 @@ Message getMore(OperationContext* txn,
 
         auto planSummary = Explain::getPlanSummary(exec);
         {
-            stdx::lock_guard<Client>(*txn->getClient());
+            stdx::lock_guard<Client> lk(*txn->getClient());
             curOp.setPlanSummary_inlock(planSummary);
 
             // Ensure that the original query or command object is available in the slow query log,
@@ -478,9 +478,13 @@ Message getMore(OperationContext* txn,
 
             *exhaust = cc->queryOptions() & QueryOption_Exhaust;
 
-            // If the getmore had a time limit, remaining time is "rolled over" back to the
-            // cursor (for use by future getmore ops).
-            cc->setLeftoverMaxTimeMicros(txn->getRemainingMaxTimeMicros());
+            // We assume that cursors created through a DBDirectClient are always used from their
+            // original OperationContext, so we do not need to move time to and from the cursor.
+            if (!txn->getClient()->isInDirectClient()) {
+                // If the getmore had a time limit, remaining time is "rolled over" back to the
+                // cursor (for use by future getmore ops).
+                cc->setLeftoverMaxTimeMicros(txn->getRemainingMaxTimeMicros());
+            }
         }
     }
 
@@ -689,9 +693,13 @@ std::string runQuery(OperationContext* txn,
 
         cc->setPos(numResults);
 
-        // If the query had a time limit, remaining time is "rolled over" to the cursor (for
-        // use by future getmore ops).
-        cc->setLeftoverMaxTimeMicros(txn->getRemainingMaxTimeMicros());
+        // We assume that cursors created through a DBDirectClient are always used from their
+        // original OperationContext, so we do not need to move time to and from the cursor.
+        if (!txn->getClient()->isInDirectClient()) {
+            // If the query had a time limit, remaining time is "rolled over" to the cursor (for
+            // use by future getmore ops).
+            cc->setLeftoverMaxTimeMicros(txn->getRemainingMaxTimeMicros());
+        }
 
         endQueryOp(txn, collection, *cc->getExecutor(), numResults, ccId);
     } else {

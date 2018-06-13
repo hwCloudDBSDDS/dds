@@ -145,15 +145,9 @@ MigrationSourceManager::MigrationSourceManager(OperationContext* txn,
     // With nonzero shard version, we must have a coll version >= our shard version
     invariant(collectionVersion >= shardVersion);
 
-    // With nonzero shard version, we must have a shard key
-    invariant(!_collectionMetadata->getKeyPattern().isEmpty());
-
     ChunkType chunkToMove;
     chunkToMove.setMin(_args.getMinKey());
     chunkToMove.setMax(_args.getMaxKey());
-    if (_args.hasChunkVersion()) {
-        chunkToMove.setVersion(_args.getChunkVersion());
-    }
 
     Status chunkValidateStatus = _collectionMetadata->checkChunkIsValid(chunkToMove);
     if (!chunkValidateStatus.isOK()) {
@@ -274,17 +268,17 @@ Status MigrationSourceManager::commitChunkOnRecipient(OperationContext* txn) {
     auto scopedGuard = MakeGuard([&] { cleanupOnError(txn); });
 
     // Tell the recipient shard to fetch the latest changes.
-    Status commitCloneStatus = _cloneDriver->commitClone(txn);
+    auto commitCloneStatus = _cloneDriver->commitClone(txn);
 
     if (MONGO_FAIL_POINT(failMigrationCommit) && commitCloneStatus.isOK()) {
         commitCloneStatus = {ErrorCodes::InternalError,
                              "Failing _recvChunkCommit due to failpoint."};
     }
-
     if (!commitCloneStatus.isOK()) {
-        return {commitCloneStatus.code(),
-                str::stream() << "commit clone failed due to " << commitCloneStatus.toString()};
+        return commitCloneStatus.getStatus();
     }
+
+    _recipientCloneCounts = commitCloneStatus.getValue()["counts"].Obj().getOwned();
 
     _state = kCloneCompleted;
     scopedGuard.Dismiss();
@@ -338,9 +332,13 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* txn
             ErrorCodes::InternalError, "Failpoint 'migrationCommitNetworkError' generated error");
     }
 
-    const Status migrationCommitStatus =
-        (commitChunkMigrationResponse.isOK() ? commitChunkMigrationResponse.getValue().commandStatus
-                                             : commitChunkMigrationResponse.getStatus());
+    Status migrationCommitStatus = commitChunkMigrationResponse.getStatus();
+    if (migrationCommitStatus.isOK()) {
+        migrationCommitStatus = commitChunkMigrationResponse.getValue().commandStatus;
+        if (migrationCommitStatus.isOK()) {
+            migrationCommitStatus = commitChunkMigrationResponse.getValue().writeConcernStatus;
+        }
+    }
 
     if (!migrationCommitStatus.isOK()) {
         // Need to get the latest optime in case the refresh request goes to a secondary --
@@ -437,7 +435,9 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* txn
                                                   << "from"
                                                   << _args.getFromShardId()
                                                   << "to"
-                                                  << _args.getToShardId()),
+                                                  << _args.getToShardId()
+                                                  << "counts"
+                                                  << _recipientCloneCounts),
                                        ShardingCatalogClient::kMajorityWriteConcern);
 
     return Status::OK();
@@ -464,7 +464,7 @@ void MigrationSourceManager::cleanupOnError(OperationContext* txn) {
 void MigrationSourceManager::_cleanup(OperationContext* txn) {
     invariant(_state != kDone);
 
-    {
+    auto cloneDriver = [&]() {
         // Unregister from the collection's sharding state
         ScopedTransaction scopedXact(txn, MODE_IX);
         AutoGetCollection autoColl(txn, getNss(), MODE_IX, MODE_X);
@@ -479,7 +479,9 @@ void MigrationSourceManager::_cleanup(OperationContext* txn) {
         if (_critSecSignal) {
             _critSecSignal->set();
         }
-    }
+
+        return std::move(_cloneDriver);
+    }();
 
     // Decrement the metadata op counter outside of the collection lock in order to hold it for as
     // short as possible.
@@ -487,9 +489,8 @@ void MigrationSourceManager::_cleanup(OperationContext* txn) {
         ShardingStateRecovery::endMetadataOp(txn);
     }
 
-    if (_cloneDriver) {
-        _cloneDriver->cancelClone(txn);
-        _cloneDriver.reset();
+    if (cloneDriver) {
+        cloneDriver->cancelClone(txn);
     }
 
     _state = kDone;

@@ -421,7 +421,7 @@ env.Library(
         "clientlistplugin.cpp",
         "restapi.cpp",
         "stats/snapshots_webplugins.cpp",
-        "repl/replset_web_handler.cpp",
+        "repl/repl_set_web_handler.cpp",
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/db/curop",
@@ -445,6 +445,7 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/serveronly',
         '$BUILD_DIR/mongo/util/options_parser/options_parser_init',
+        'repl/replica_set_messages',
         'server_options',
     ],
 )
@@ -635,7 +636,7 @@ serverOnlyFiles = [
     "index_rebuilder.cpp",
     "instance.cpp",
     "introspect.cpp",
-    "op_observer.cpp",
+    "op_observer_impl.cpp",
     "operation_context_impl.cpp",
     "prefetch.cpp",
     "range_deleter_db_env.cpp",
@@ -650,7 +651,6 @@ serverOnlyFiles = [
 ]
 
 serveronlyLibdeps = [
-    "$BUILD_DIR/mongo/client/parallel",
     "$BUILD_DIR/mongo/db/bson/dotted_path_support",
     "$BUILD_DIR/mongo/executor/network_interface_factory",
     "$BUILD_DIR/mongo/s/catalog/sharding_catalog_client_impl",
@@ -740,11 +740,21 @@ env.Library(
 )
 
 env.Library(
+    target= 'op_observer_noop',
+    source= [
+        'op_observer_noop.cpp',
+    ],
+    LIBDEPS= [
+    ],
+)
+
+env.Library(
     target= 'service_context_d_test_fixture',
     source= [
         'service_context_d_test_fixture.cpp',
     ],
     LIBDEPS= [
+        'op_observer_noop',
         '$BUILD_DIR/mongo/db/serveronly',
         '$BUILD_DIR/mongo/db/storage/storage_options',
         '$BUILD_DIR/mongo/unittest/unittest',
@@ -757,9 +767,12 @@ env.Library(
         'log_process_details.cpp',
     ],
     LIBDEPS=[
+        'repl/repl_coordinator_global',
+        'repl/repl_coordinator_interface',
+        'repl/replica_set_messages',
+        'server_options',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/net/network',
-        'server_options',
     ],
 )
 
@@ -796,3 +809,17 @@ env.Library(
         '$BUILD_DIR/mongo/base',
     ],
 )
+
+asioEnv = env.Clone()
+asioEnv.InjectThirdPartyIncludePaths('asio')
+
+asioEnv.CppIntegrationTest(
+    target='nesting_depth_test',
+    source=[
+        'nesting_depth_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/executor/network_interface_asio_fixture',
+    ],
+)
+

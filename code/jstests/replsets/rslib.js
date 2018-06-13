@@ -1,3 +1,4 @@
+var syncFrom;
 var wait;
 var occasionally;
 var reconnect;
@@ -7,15 +8,49 @@ var reconfig;
 var awaitOpTime;
 var startSetIfSupportsReadMajority;
 var waitUntilAllNodesCaughtUp;
-var updateConfigIfNotDurable;
+var waitForState;
 var reInitiateWithoutThrowingOnAbortedMember;
 var awaitRSClientHosts;
 var getLastOpTime;
 
 (function() {
     "use strict";
+    load("jstests/libs/write_concern_util.js");
+
     var count = 0;
     var w = 0;
+
+    /**
+     * A wrapper around `replSetSyncFrom` to ensure that the desired sync source is ahead of the
+     * syncing node so that the syncing node can choose to sync from the desired sync source.
+     * It first stops replication on the syncing node so that it can do a write on the desired
+     * sync source and make sure it's ahead. When replication is restarted, the desired sync
+     * source will be a valid sync source for the syncing node.
+     */
+    syncFrom = function(syncingNode, desiredSyncSource, rst) {
+        jsTestLog("Forcing " + syncingNode.name + " to sync from " + desiredSyncSource.name);
+
+        // Ensure that 'desiredSyncSource' doesn't already have the dummy write sitting around from
+        // a previous syncFrom attempt.
+        var dummyName = "dummyForSyncFrom";
+        rst.getPrimary().getDB(dummyName).getCollection(dummyName).drop();
+        assert.soonNoExcept(function() {
+            return desiredSyncSource.getDB(dummyName).getCollection(dummyName).findOne() == null;
+        });
+
+        stopServerReplication(syncingNode);
+
+        assert.writeOK(rst.getPrimary().getDB(dummyName).getCollection(dummyName).insert({a: 1}));
+        // Wait for 'desiredSyncSource' to get the dummy write we just did so we know it's
+        // definitely ahead of 'syncingNode' before we call replSetSyncFrom.
+        assert.soonNoExcept(function() {
+            return desiredSyncSource.getDB(dummyName).getCollection(dummyName).findOne({a: 1});
+        });
+
+        assert.commandWorked(syncingNode.adminCommand({replSetSyncFrom: desiredSyncSource.name}));
+        restartServerReplication(syncingNode);
+        rst.awaitSyncSource(syncingNode, desiredSyncSource);
+    };
 
     wait = function(f, msg) {
         w++;
@@ -121,11 +156,13 @@ var getLastOpTime;
         var e;
         var master;
         try {
-            assert.commandWorked(admin.runCommand({replSetReconfig: config, force: force}));
+            assert.commandWorked(admin.runCommand(
+                {replSetReconfig: rs._updateConfigIfNotDurable(config), force: force}));
         } catch (e) {
-            if (tojson(e).indexOf("error doing query: failed") < 0) {
+            if (!isNetworkError(e)) {
                 throw e;
             }
+            print("Calling replSetReconfig failed. " + tojson(e));
         }
 
         var master = rs.getPrimary().getDB("admin");
@@ -212,6 +249,17 @@ var getLastOpTime;
     };
 
     /**
+     * Waits for the given node to reach the given state, ignoring network errors.
+     */
+    waitForState = function(node, state) {
+        assert.soonNoExcept(function() {
+            assert.commandWorked(node.adminCommand(
+                {replSetTest: 1, waitForMemberState: state, timeoutMillis: 60 * 1000 * 5}));
+            return true;
+        });
+    };
+
+    /**
      * Starts each node in the given replica set if the storage engine supports readConcern
      *'majority'.
      * Returns true if the replica set was started successfully and false otherwise.
@@ -234,19 +282,6 @@ var getLastOpTime;
     };
 
     /**
-     * Changes the replica set config if journaling/ephemal storage engine to set
-     * writeConcernMajorityJournalDefault to false.
-     */
-    updateConfigIfNotDurable = function(config) {
-        var runningWithoutJournaling = TestData.noJournal ||
-            0 != ["inMemory", "ephemeralForTest"].filter((a) => a == TestData.storageEngine).length;
-        if (runningWithoutJournaling) {
-            config.writeConcernMajorityJournalDefault = false;
-        }
-        return config;
-    };
-
-    /**
      * Performs a reInitiate() call on 'replSetTest', ignoring errors that are related to an aborted
      * secondary member. All other errors are rethrown.
      */
@@ -257,8 +292,7 @@ var getLastOpTime;
             // reInitiate can throw because it tries to run an ismaster command on
             // all secondaries, including the new one that may have already aborted
             const errMsg = tojson(e);
-            if (errMsg.indexOf("error doing query: failed") > -1 ||
-                errMsg.indexOf("socket exception") > -1) {
+            if (isNetworkError(e)) {
                 // Ignore these exceptions, which are indicative of an aborted node
             } else {
                 throw e;

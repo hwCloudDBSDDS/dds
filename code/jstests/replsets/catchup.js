@@ -1,19 +1,22 @@
 // Test the catch-up behavior of new primaries.
 
-load("jstests/replsets/rslib.js");
-
 (function() {
-
     "use strict";
+
+    load("jstests/libs/check_log.js");
+    load("jstests/libs/write_concern_util.js");
+    load("jstests/replsets/rslib.js");
+
     var name = "catch_up";
     var rst = new ReplSetTest({name: name, nodes: 3, useBridge: true});
 
     rst.startSet();
     var conf = rst.getReplSetConfig();
+    conf.members[2].priority = 0;
     conf.settings = {
         heartbeatIntervalMillis: 500,
         electionTimeoutMillis: 10000,
-        catchUpTimeoutMillis: 10000
+        catchUpTimeoutMillis: 4 * 60 * 1000
     };
     rst.initiate(conf);
     rst.awaitSecondaryNodes();
@@ -32,40 +35,14 @@ load("jstests/replsets/rslib.js");
         node.adminCommand(verbosity);
     });
 
-    function enableFailPoint(node) {
-        jsTest.log("enable failpoint " + node.host);
-        // Disable syncing on both secondaries.
-        assert.commandWorked(
-            node.adminCommand({configureFailPoint: 'pauseRsBgSyncProducer', mode: 'alwaysOn'}),
-            'Failed to configure pauseRsBgSyncProducer failpoint.');
-        assert.commandWorked(
-            node.adminCommand({configureFailPoint: 'stopOplogFetcher', mode: 'alwaysOn'}));
-    }
+    function stepUpNode(node) {
+        assert.soonNoExcept(function() {
+            assert.commandWorked(node.adminCommand({replSetStepUp: 1}));
+            rst.awaitNodesAgreeOnPrimary(rst.kDefaultTimeoutMS, rst.nodes, rst.getNodeId(node));
+            return node.adminCommand('replSetGetStatus').myState == ReplSetTest.State.PRIMARY;
+        }, 'failed to step up node ' + node.host, rst.kDefaultTimeoutMS);
 
-    function disableFailPoint(node) {
-        jsTest.log("disable failpoint " + node.host);
-        assert.commandWorked(
-            node.adminCommand({configureFailPoint: 'stopOplogFetcher', mode: 'off'}));
-        try {
-            assert.commandWorked(
-                node.adminCommand({configureFailPoint: 'pauseRsBgSyncProducer', mode: 'off'}),
-                'Failed to disable pauseRsBgSyncProducer failpoint.');
-        } catch (e) {
-            // Enable bgsync producer may cause rollback, which will close all connections
-            // including the one sending "configureFailPoint".
-            print("got exception when disabling fail point 'pauseRsBgSyncProducer': " + e);
-        }
-    }
-
-    function stepUp(node) {
-        assert.commandWorked(node.adminCommand({replSetStepUp: 1}));
         return node;
-    }
-
-    function doWrites(node) {
-        for (var i = 0; i < 3; i++) {
-            assert.writeOK(node.getDB("test").foo.insert({x: i}));
-        }
     }
 
     function checkOpInOplog(node, op, count) {
@@ -75,102 +52,152 @@ load("jstests/replsets/rslib.js");
         assert.eq(oplog.count(op), count, "op: " + tojson(op) + ", oplog: " + tojson(oplogArray));
     }
 
-    function isEarlierTimestamp(ts1, ts2) {
-        if (ts1.getTime() == ts2.getTime()) {
-            return ts1.getInc() < ts2.getInc();
+    // Stop replication on secondaries, do writes and step up one of the secondaries.
+    //
+    // The old primary has extra writes that are not replicated to the other nodes yet,
+    // but the new primary steps up, getting the vote from the the third node "voter".
+    function stopRelicationAndEnforceNewPrimaryToCatchUp() {
+        // Write documents that cannot be replicated to secondaries in time.
+        var oldSecondaries = rst.getSecondaries();
+        var oldPrimary = rst.getPrimary();
+        stopServerReplication(oldSecondaries);
+        for (var i = 0; i < 3; i++) {
+            assert.writeOK(oldPrimary.getDB("test").foo.insert({x: i}));
         }
-        return ts1.getTime() < ts2.getTime();
+        var latestOpOnOldPrimary = getLatestOp(oldPrimary);
+        // New primary wins immediately, but needs to catch up.
+        var newPrimary = stepUpNode(oldSecondaries[0]);
+        rst.awaitNodesAgreeOnPrimary();
+        var latestOpOnNewPrimary = getLatestOp(newPrimary);
+        // Check this node is not writable.
+        assert.eq(newPrimary.getDB("test").isMaster().ismaster, false);
+
+        return {
+            oldSecondaries: oldSecondaries,
+            oldPrimary: oldPrimary,
+            newPrimary: newPrimary,
+            voter: oldSecondaries[1],
+            latestOpOnOldPrimary: latestOpOnOldPrimary,
+            latestOpOnNewPrimary: latestOpOnNewPrimary
+        };
     }
 
-    function countMatchedLog(node, regex) {
-        var res = node.adminCommand({getLog: 'global'});
-        assert.commandWorked(res);
-        var count = 0;
-        res.log.forEach(function(line) {
-            if (regex.exec(line)) {
-                count += 1;
-            }
-        });
-        return count;
+    function reconfigCatchUpTimeoutMillis(timeout) {
+        // Reconnect all nodes to make sure reconfig succeeds.
+        rst.nodes.forEach(reconnect);
+        // Reconfigure replicaset to decrease catchup timeout
+        conf = rst.getReplSetConfigFromNode();
+        conf.version++;
+        conf.settings.catchUpTimeoutMillis = timeout;
+        reconfig(rst, conf);
+        rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
+        rst.awaitNodesAgreeOnPrimary();
     }
 
-    jsTest.log("Case 1: The primary is up-to-date after freshness scan.");
-    // Should complete transition to primary immediately.
     rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
-    var newPrimary = stepUp(rst.getSecondary());
-    rst.awaitNodesAgreeOnPrimary();
+
+    jsTest.log("Case 1: The primary is up-to-date after refreshing heartbeats.");
+    // Should complete transition to primary immediately.
+    var newPrimary = stepUpNode(rst.getSecondary());
     // Should win an election and finish the transition very quickly.
     assert.eq(newPrimary, rst.getPrimary());
+    rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
 
     jsTest.log("Case 2: The primary needs to catch up, succeeds in time.");
-    rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
-    // Write documents that cannot be replicated to secondaries in time.
-    var originalSecondaries = rst.getSecondaries();
-    originalSecondaries.forEach(enableFailPoint);
-    doWrites(rst.getPrimary());
-    var latestOp = getLatestOp(rst.getPrimary());
-    // New primary wins immediately, but needs to catch up.
-    newPrimary = stepUp(rst.getSecondary());
-    rst.awaitNodesAgreeOnPrimary();
-    // Check this node is not writable.
-    assert.eq(newPrimary.getDB("test").isMaster().ismaster, false);
+    var stepUpResults = stopRelicationAndEnforceNewPrimaryToCatchUp();
+
     // Disable fail point to allow replication.
-    originalSecondaries.forEach(disableFailPoint);
+    restartServerReplication(stepUpResults.oldSecondaries);
     // getPrimary() blocks until the primary finishes drain mode.
-    assert.eq(newPrimary, rst.getPrimary());
+    assert.eq(stepUpResults.newPrimary, rst.getPrimary());
     // Wait for all secondaries to catch up
-    rst.awaitReplication();
-    // Check the latest op on old primary is preserved on the new one.
-    checkOpInOplog(newPrimary, latestOp, 1);
-
-    jsTest.log("Case 3: The primary needs to catch up, fails due to timeout.");
     rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
-    // Write documents that cannot be replicated to secondaries in time.
-    originalSecondaries = rst.getSecondaries();
-    originalSecondaries.forEach(enableFailPoint);
-    doWrites(rst.getPrimary());
-    latestOp = getLatestOp(rst.getPrimary());
+    // Check the latest op on old primary is preserved on the new one.
+    checkOpInOplog(stepUpResults.newPrimary, stepUpResults.latestOpOnOldPrimary, 1);
+    rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
 
-    // New primary wins immediately, but needs to catch up.
-    newPrimary = stepUp(originalSecondaries[0]);
-    rst.awaitNodesAgreeOnPrimary();
-    var latestOpOnNewPrimary = getLatestOp(newPrimary);
-    // Wait until the new primary completes the transition to primary and writes a no-op.
+    jsTest.log("Case 3: The primary needs to catch up, but has to change sync source to catch up.");
+    stepUpResults = stopRelicationAndEnforceNewPrimaryToCatchUp();
+
+    // Disable fail point on the voter. Wait until it catches up with the old primary.
+    restartServerReplication(stepUpResults.voter);
+    assert.commandWorked(
+        stepUpResults.voter.adminCommand({replSetSyncFrom: stepUpResults.oldPrimary.host}));
+    // Wait until the new primary knows the last applied optime on the voter, so it will keep
+    // catching up after the old primary is disconnected.
     assert.soon(function() {
-        return countMatchedLog(newPrimary, /Cannot catch up oplog after becoming primary/) > 0;
+        var replSetStatus =
+            assert.commandWorked(stepUpResults.newPrimary.adminCommand({replSetGetStatus: 1}));
+        var voterStatus = replSetStatus.members.filter(m => m.name == stepUpResults.voter.host)[0];
+        return rs.compareOpTimes(voterStatus.optime, stepUpResults.latestOpOnOldPrimary) == 0;
     });
-    disableFailPoint(newPrimary);
-    assert.eq(newPrimary, rst.getPrimary());
+    // Disconnect the new primary and the old one.
+    stepUpResults.oldPrimary.disconnect(stepUpResults.newPrimary);
+    // Disable the failpoint, the new primary should sync from the other secondary.
+    restartServerReplication(stepUpResults.newPrimary);
+    assert.eq(stepUpResults.newPrimary, rst.getPrimary());
+    checkOpInOplog(stepUpResults.newPrimary, stepUpResults.latestOpOnOldPrimary, 1);
+    // Restore the broken connection
+    stepUpResults.oldPrimary.reconnect(stepUpResults.newPrimary);
+    rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
+
+    jsTest.log("Case 4: The primary needs to catch up, fails due to timeout.");
+    reconfigCatchUpTimeoutMillis(10 * 1000);
+
+    stepUpResults = stopRelicationAndEnforceNewPrimaryToCatchUp();
+    // Wait until the new primary completes the transition to primary and writes a no-op.
+    checkLog.contains(stepUpResults.newPrimary, "Catchup timed out after becoming primary");
+    restartServerReplication(stepUpResults.newPrimary);
+    assert.eq(stepUpResults.newPrimary, rst.getPrimary());
 
     // Wait for the no-op "new primary" after winning an election, so that we know it has
     // finished transition to primary.
     assert.soon(function() {
-        return isEarlierTimestamp(latestOpOnNewPrimary.ts, getLatestOp(newPrimary).ts);
+        return rs.compareOpTimes(stepUpResults.latestOpOnOldPrimary,
+                                 getLatestOp(stepUpResults.newPrimary)) < 0;
     });
     // The extra oplog entries on the old primary are not replicated to the new one.
-    checkOpInOplog(newPrimary, latestOp, 0);
-    disableFailPoint(originalSecondaries[1]);
-
-    jsTest.log("Case 4: The primary needs to catch up, but has to change sync source to catch up.");
+    checkOpInOplog(stepUpResults.newPrimary, stepUpResults.latestOpOnOldPrimary, 0);
+    restartServerReplication(stepUpResults.voter);
     rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
-    // Write documents that cannot be replicated to secondaries in time.
-    rst.getSecondaries().forEach(enableFailPoint);
-    doWrites(rst.getPrimary());
-    var oldPrimary = rst.getPrimary();
-    originalSecondaries = rst.getSecondaries();
-    latestOp = getLatestOp(oldPrimary);
-    newPrimary = stepUp(originalSecondaries[0]);
-    rst.awaitNodesAgreeOnPrimary();
-    // Disable fail point on one of the other secondaries.
-    // Wait until it catches up with the old primary.
-    disableFailPoint(originalSecondaries[1]);
-    assert.commandWorked(originalSecondaries[1].adminCommand({replSetSyncFrom: oldPrimary.host}));
-    awaitOpTime(originalSecondaries[1], latestOp.ts);
-    // Disconnect the new primary and the old one.
-    oldPrimary.disconnect(newPrimary);
-    // Disable the failpoint, the new primary should sync from the other secondary.
-    disableFailPoint(newPrimary);
-    assert.eq(newPrimary, rst.getPrimary());
-    checkOpInOplog(newPrimary, latestOp, 1);
+
+    jsTest.log("Case 5: The primary needs to catch up with no timeout, then gets aborted.");
+    reconfigCatchUpTimeoutMillis(-1);
+    stepUpResults = stopRelicationAndEnforceNewPrimaryToCatchUp();
+
+    // Abort catchup.
+    assert.commandWorked(stepUpResults.newPrimary.adminCommand({replSetAbortPrimaryCatchUp: 1}));
+
+    // Wait for the no-op "new primary" after winning an election, so that we know it has
+    // finished transition to primary.
+    assert.soon(function() {
+        return rs.compareOpTimes(stepUpResults.latestOpOnOldPrimary,
+                                 getLatestOp(stepUpResults.newPrimary)) < 0;
+    });
+    // The extra oplog entries on the old primary are not replicated to the new one.
+    checkOpInOplog(stepUpResults.newPrimary, stepUpResults.latestOpOnOldPrimary, 0);
+    restartServerReplication(stepUpResults.oldSecondaries);
+    rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
+    checkOpInOplog(stepUpResults.newPrimary, stepUpResults.latestOpOnOldPrimary, 0);
+
+    jsTest.log("Case 6: The primary needs to catch up with no timeout, but steps down.");
+    var stepUpResults = stopRelicationAndEnforceNewPrimaryToCatchUp();
+
+    // Step-down command should abort catchup.
+    try {
+        printjson(stepUpResults.newPrimary.adminCommand({replSetStepDown: 60}));
+    } catch (e) {
+        print(e);
+    }
+    // Rename the primary.
+    var steppedDownPrimary = stepUpResults.newPrimary;
+    var newPrimary = rst.getPrimary();
+    assert.neq(newPrimary, steppedDownPrimary);
+
+    // Enable data replication on the stepped down primary and make sure it syncs old writes.
+    rst.nodes.forEach(reconnect);
+    restartServerReplication(stepUpResults.oldSecondaries);
+    rst.awaitReplication(ReplSetTest.kDefaultTimeoutMS, ReplSetTest.OpTimeType.LAST_DURABLE);
+    checkOpInOplog(steppedDownPrimary, stepUpResults.latestOpOnOldPrimary, 1);
 
 })();

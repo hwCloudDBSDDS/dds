@@ -7,35 +7,96 @@
 (function() {
     "use strict";
 
-    var configRS = new ReplSetTest({nodes: 3});
-    var nodes = configRS.startSet({configsvr: '', storageEngine: 'wiredTiger'});
+    load("jstests/libs/write_concern_util.js");
 
-    // Prevent any replication from happening, so that the initial writes that the config
-    // server performs on first transition to primary can be rolled back.
+    // The config.version document is written on transition to primary. We need to ensure this
+    // config.version document is rolled back for this test.
     //
-    // We cannot stop bgsync here because the new primary needs it to complete drain mode,
-    // so we let the bgsync on secondaries keep trying but fail to sync anything new.
-    nodes.forEach(function(node) {
-        assert.commandWorked(node.getDB('admin').runCommand(
-            {configureFailPoint: 'stopOplogFetcher', mode: 'alwaysOn'}));
-    });
+    // This means we have to guarantee the config.version document is not replicated by a secondary
+    // during any of 1) initial sync, 2) steady state replication, or 3) catchup after election.
+    //
+    // 1) initial sync
+    // We need non-primaries to finish initial sync so that they are electable, but without
+    // replicating the config.version document. Since we can't control when the config.version
+    // document is written (it's an internal write, not a client write), we turn on a failpoint
+    // that stalls the write of the config.version document until we have ascertained that the
+    // secondaries have finished initial sync.
+    //
+    // 2) steady state replication
+    // Once the non-primaries have transitioned to secondary, we stop the secondaries from
+    // replicating anything further by turning on a failpoint that stops the OplogFetcher. We then
+    // allow the primary to write the config.verison document.
+    //
+    // 3) catchup after election
+    // When the primary is stepped down and one of the secondaries is elected, the new primary will
+    // notice that it is behind the original primary and try to catchup for a short period. So, we
+    // also ensure that this short period is 0 by setting catchupTimeoutMillis to 0 earlier in the
+    // ReplSetConfig passed to initiate().
+    //
+    // Thus, we guarantee the new primary will not have replicated the config.version document in
+    // initial sync, steady state replication, or catchup, so the document will be rolled back.
 
-    configRS.initiate();
+    jsTest.log("Starting the replica set and waiting for secondaries to finish initial sync");
+    var configRS = new ReplSetTest({nodes: 3});
+    var nodes = configRS.startSet({
+        configsvr: '',
+        storageEngine: 'wiredTiger',
+        setParameter: {
+            "failpoint.transitionToPrimaryHangBeforeTakingGlobalExclusiveLock":
+                "{'mode':'alwaysOn'}"
+        }
+    });
+    var conf = configRS.getReplSetConfig();
+    conf.settings = {catchUpTimeoutMillis: 0};
+
+    // Ensure conf.members[0] is the only node that can become primary at first, so we know on which
+    // nodes to wait for transition to SECONDARY.
+    conf.members[1].priority = 0;
+    conf.members[2].priority = 0;
+    configRS.nodes[0].adminCommand({replSetInitiate: conf});
+
+    jsTest.log("Waiting for " + nodes[1] + " and " + nodes[2] + " to transition to SECONDARY.");
+    configRS.waitForState([nodes[1], nodes[2]], ReplSetTest.State.SECONDARY);
+
+    jsTest.log("Stopping the replication producer on all nodes");
+    // Now that the secondaries have finished initial sync and are electable, stop replication.
+    stopServerReplication([nodes[1], nodes[2]]);
+
+    jsTest.log("Allowing the primary to write the config.version doc");
+    nodes.forEach(function(node) {
+        assert.commandWorked(node.adminCommand({
+            configureFailPoint: "transitionToPrimaryHangBeforeTakingGlobalExclusiveLock",
+            mode: "off"
+        }));
+    });
 
     var origPriConn = configRS.getPrimary();
     var secondaries = configRS.getSecondaries();
 
     jsTest.log("Confirming that the primary has the config.version doc but the secondaries do not");
-    var origConfigVersionDoc = origPriConn.getCollection('config.version').findOne();
-    assert.neq(null, origConfigVersionDoc);
+    var origConfigVersionDoc;
+    assert.soon(function() {
+        origConfigVersionDoc = origPriConn.getCollection('config.version').findOne();
+        return null !== origConfigVersionDoc;
+    });
     secondaries.forEach(function(secondary) {
         secondary.setSlaveOk();
         assert.eq(null, secondary.getCollection('config.version').findOne());
     });
 
-    // Ensure manually deleting the config.version document is not allowed.
+    jsTest.log("Checking that manually deleting the config.version document is not allowed.");
     assert.writeErrorWithCode(origPriConn.getCollection('config.version').remove({}), 40302);
     assert.commandFailedWithCode(origPriConn.getDB('config').runCommand({drop: 'version'}), 40303);
+
+    jsTest.log("Making the secondaries electable by giving all nodes non-zero, equal priority.");
+    var res = configRS.getPrimary().adminCommand({replSetGetConfig: 1});
+    assert.commandWorked(res);
+    conf = res.config;
+    conf.members[0].priority = 1;
+    conf.members[1].priority = 1;
+    conf.members[2].priority = 1;
+    conf.version++;
+    configRS.getPrimary().adminCommand({replSetReconfig: conf});
 
     jsTest.log("Stepping down original primary");
     try {
@@ -53,13 +114,11 @@
     assert.neq(origConfigVersionDoc.clusterId, newConfigVersionDoc.clusterId);
 
     jsTest.log("Re-enabling replication on all nodes");
-    nodes.forEach(function(node) {
-        assert.commandWorked(
-            node.getDB('admin').runCommand({configureFailPoint: 'stopOplogFetcher', mode: 'off'}));
-    });
+    restartServerReplication([nodes[1], nodes[2]]);
 
     jsTest.log(
         "Waiting for original primary to rollback and replicate new config.version document");
+    configRS.waitForState(origPriConn, ReplSetTest.State.SECONDARY);
     origPriConn.setSlaveOk();
     assert.soonNoExcept(function() {
         var foundClusterId = origPriConn.getCollection('config.version').findOne().clusterId;
@@ -110,4 +169,5 @@
               shardIdentityDoc.clusterId,
               "oldPriClusterId: " + origConfigVersionDoc.clusterId);
     configRS.stopSet();
+
 })();

@@ -240,8 +240,11 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     _applierThread->startup();
     log() << "Starting replication reporter thread";
     invariant(!_syncSourceFeedbackThread);
-    _syncSourceFeedbackThread.reset(new stdx::thread(stdx::bind(
-        &SyncSourceFeedback::run, &_syncSourceFeedback, _taskExecutor.get(), _bgSync.get())));
+    _syncSourceFeedbackThread.reset(new stdx::thread(stdx::bind(&SyncSourceFeedback::run,
+                                                                &_syncSourceFeedback,
+                                                                _taskExecutor.get(),
+                                                                _bgSync.get(),
+                                                                replCoord)));
 }
 
 void ReplicationCoordinatorExternalStateImpl::stopDataReplication(OperationContext* txn) {
@@ -258,13 +261,11 @@ void ReplicationCoordinatorExternalStateImpl::_stopDataReplication_inlock(Operat
     auto oldSSF = std::move(_syncSourceFeedbackThread);
     auto oldBgSync = std::move(_bgSync);
     auto oldApplier = std::move(_applierThread);
-    if (oldSSF) {
-        log() << "Stopping replication reporter thread";
-        _syncSourceFeedback.shutdown();
-    }
     lock->unlock();
 
     if (oldSSF) {
+        log() << "Stopping replication reporter thread";
+        _syncSourceFeedback.shutdown();
         oldSSF->join();
     }
 
@@ -321,32 +322,37 @@ void ReplicationCoordinatorExternalStateImpl::startMasterSlave(OperationContext*
     repl::startMasterSlave(txn);
 }
 
-void ReplicationCoordinatorExternalStateImpl::shutdown(OperationContext* txn) {
+void ReplicationCoordinatorExternalStateImpl::shutdown(OperationContext* opCtx) {
     UniqueLock lk(_threadMutex);
-    if (_startedThreads) {
-        _stopDataReplication_inlock(txn, &lk);
+    if (!_startedThreads) {
+        return;
+    }
 
-        if (_snapshotThread) {
-            log() << "Stopping replication snapshot thread";
-            _snapshotThread->shutdown();
-        }
+    _stopDataReplication_inlock(opCtx, &lk);
 
-        if (_storageInterface->getOplogDeleteFromPoint(txn).isNull() &&
-            loadLastOpTime(txn) == _storageInterface->getAppliedThrough(txn)) {
-            // Clear the appliedThrough marker to indicate we are consistent with the top of the
-            // oplog.
-            _storageInterface->setAppliedThrough(txn, {});
-        }
+    if (_snapshotThread) {
+        log() << "Stopping replication snapshot thread";
+        _snapshotThread->shutdown();
+    }
 
-        if (_noopWriter) {
-            LOG(1) << "Stopping noop writer";
-            _noopWriter->stopWritingPeriodicNoops();
-        }
+    if (_noopWriter) {
+        LOG(1) << "Stopping noop writer";
+        _noopWriter->stopWritingPeriodicNoops();
+    }
 
-        log() << "Stopping replication storage threads";
-        _taskExecutor->shutdown();
-        _taskExecutor->join();
-        _storageInterface->shutdown();
+    log() << "Stopping replication storage threads";
+    _taskExecutor->shutdown();
+    _taskExecutor->join();
+    _storageInterface->shutdown();
+    lk.unlock();
+
+    // Perform additional shutdown steps below that must be done outside _threadMutex.
+
+    if (_storageInterface->getOplogDeleteFromPoint(opCtx).isNull() &&
+        loadLastOpTime(opCtx) == _storageInterface->getAppliedThrough(opCtx)) {
+        // Clear the appliedThrough marker to indicate we are consistent with the top of the
+        // oplog.
+        _storageInterface->setAppliedThrough(opCtx, {});
     }
 }
 
@@ -412,11 +418,11 @@ Status ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage(Operati
 void ReplicationCoordinatorExternalStateImpl::onDrainComplete(OperationContext* txn) {
     invariant(!txn->lockState()->isLocked());
 
-    // If this is a config server node becoming a primary, start the balancer
+    // If this is a config server node becoming a primary, ensure the balancer is ready to start.
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-        // We need to join the balancer here, because it might have been running at a previous time
-        // when this node was a primary.
-        Balancer::get(txn)->onDrainComplete(txn);
+        // We must ensure the balancer has stopped because it may still be in the process of
+        // stopping if this node was previously primary.
+        Balancer::get(txn)->waitForBalancerToStop();
     }
 }
 
@@ -531,9 +537,7 @@ StatusWith<LastVote> ReplicationCoordinatorExternalStateImpl::loadLocalLastVoteD
                                                 << "Did not find replica set lastVote document in "
                                                 << lastVoteCollectionName);
             }
-            LastVote lastVote;
-            lastVote.initialize(lastVoteObj);
-            return StatusWith<LastVote>(lastVote);
+            return LastVote::readFromLastVote(lastVoteObj);
         }
         MONGO_WRITE_CONFLICT_RETRY_LOOP_END(
             txn, "load replica set lastVote", lastVoteCollectionName);
@@ -549,12 +553,29 @@ Status ReplicationCoordinatorExternalStateImpl::storeLocalLastVoteDocument(
         MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
             ScopedTransaction transaction(txn, MODE_IX);
             Lock::DBLock dbWriteLock(txn->lockState(), lastVoteDatabaseName, MODE_X);
-            Helpers::putSingleton(txn, lastVoteCollectionName, lastVoteObj);
-            return Status::OK();
+
+            // If there is no last vote document, we want to store one. Otherwise, we only want to
+            // replace it if the new last vote document would have a higher term. We both check
+            // the term of the current last vote document and insert the new document under the
+            // DBLock to synchronize the two operations.
+            BSONObj result;
+            bool exists = Helpers::getSingleton(txn, lastVoteCollectionName, result);
+            if (!exists) {
+                Helpers::putSingleton(txn, lastVoteCollectionName, lastVoteObj);
+            } else {
+                StatusWith<LastVote> oldLastVoteDoc = LastVote::readFromLastVote(result);
+                if (!oldLastVoteDoc.isOK()) {
+                    return oldLastVoteDoc.getStatus();
+                }
+                if (lastVote.getTerm() > oldLastVoteDoc.getValue().getTerm()) {
+                    Helpers::putSingleton(txn, lastVoteCollectionName, lastVoteObj);
+                }
+            }
         }
         MONGO_WRITE_CONFLICT_RETRY_LOOP_END(
             txn, "save replica set lastVote", lastVoteCollectionName);
-        MONGO_UNREACHABLE;
+        txn->recoveryUnit()->waitUntilDurable();
+        return Status::OK();
     } catch (const DBException& ex) {
         return ex.toStatus();
     }
@@ -707,7 +728,7 @@ void ReplicationCoordinatorExternalStateImpl::killAllUserOperations(OperationCon
 
 void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-        Balancer::get(getGlobalServiceContext())->onStepDownFromPrimary();
+        Balancer::get(getGlobalServiceContext())->interruptBalancer();
     }
 
     ShardingState::get(getGlobalServiceContext())->markCollectionsNotShardedAtStepdown();
@@ -775,7 +796,7 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
         distLockManager->unlockAll(txn, distLockManager->getProcessID());
 
         // If this is a config server node becoming a primary, start the balancer
-        Balancer::get(txn)->onTransitionToPrimary(txn);
+        Balancer::get(txn)->initiateBalancer(txn);
     } else if (ShardingState::get(txn)->enabled()) {
         const auto configsvrConnStr =
             Grid::get(txn)->shardRegistry()->getConfigShard()->getConnString();
@@ -799,12 +820,18 @@ void ReplicationCoordinatorExternalStateImpl::signalApplierToChooseNewSyncSource
     }
 }
 
-void ReplicationCoordinatorExternalStateImpl::signalApplierToCancelFetcher() {
+void ReplicationCoordinatorExternalStateImpl::stopProducer() {
     LockGuard lk(_threadMutex);
-    if (!_bgSync) {
-        return;
+    if (_bgSync) {
+        _bgSync->stop(false);
     }
-    _bgSync->cancelFetcher();
+}
+
+void ReplicationCoordinatorExternalStateImpl::startProducerIfStopped() {
+    LockGuard lk(_threadMutex);
+    if (_bgSync) {
+        _bgSync->startProducerIfStopped();
+    }
 }
 
 void ReplicationCoordinatorExternalStateImpl::_dropAllTempCollections(OperationContext* txn) {
@@ -836,6 +863,13 @@ void ReplicationCoordinatorExternalStateImpl::updateCommittedSnapshot(SnapshotNa
     auto manager = getGlobalServiceContext()->getGlobalStorageEngine()->getSnapshotManager();
     invariant(manager);  // This should never be called if there is no SnapshotManager.
     manager->setCommittedSnapshot(newCommitPoint);
+}
+
+void ReplicationCoordinatorExternalStateImpl::createSnapshot(OperationContext* txn,
+                                                             SnapshotName name) {
+    auto manager = getGlobalServiceContext()->getGlobalStorageEngine()->getSnapshotManager();
+    invariant(manager);  // This should never be called if there is no SnapshotManager.
+    manager->createSnapshot(txn, name);
 }
 
 void ReplicationCoordinatorExternalStateImpl::forceSnapshotCreation() {

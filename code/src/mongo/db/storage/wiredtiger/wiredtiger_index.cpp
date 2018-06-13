@@ -368,7 +368,7 @@ bool WiredTigerIndex::isEmpty(OperationContext* txn) {
     WT_CURSOR* c = curwrap.get();
     if (!c)
         return true;
-    int ret = WT_OP_CHECK(c->next(c));
+    int ret = WT_READ_CHECK(c->next(c));
     if (ret == WT_NOTFOUND)
         return true;
     invariantWTOK(ret);
@@ -429,7 +429,7 @@ bool WiredTigerIndex::isDup(WT_CURSOR* c, const BSONObj& key, const RecordId& id
     KeyString data(keyStringVersion(), key, _ordering);
     WiredTigerItem item(data.getBuffer(), data.getSize());
     c->set_key(c, item.Get());
-    int ret = WT_OP_CHECK(c->search(c));
+    int ret = WT_READ_CHECK(c->search(c));
     if (ret == WT_NOTFOUND) {
         return false;
     }
@@ -457,8 +457,8 @@ Status WiredTigerIndex::initAsEmpty(OperationContext* txn) {
 Status WiredTigerIndex::compact(OperationContext* txn) {
     WiredTigerSessionCache* cache = WiredTigerRecoveryUnit::get(txn)->getSessionCache();
     if (!cache->isEphemeral()) {
-        UniqueWiredTigerSession session = cache->getSession();
-        WT_SESSION* s = session->getSession();
+        WT_SESSION* s = WiredTigerRecoveryUnit::get(txn)->getSession(txn)->getSession();
+        txn->recoveryUnit()->abandonSnapshot();
         int ret = s->compact(s, uri().c_str(), "timeout=0");
         invariantWTOK(ret);
     }
@@ -487,7 +487,7 @@ protected:
         // Open cursors can cause bulk open_cursor to fail with EBUSY.
         // TODO any other cases that could cause EBUSY?
         WiredTigerSession* outerSession = WiredTigerRecoveryUnit::get(_txn)->getSession(_txn);
-        outerSession->closeAllCursors();
+        outerSession->closeAllCursors(idx->uri());
 
         // Not using cursor cache since we need to set "bulk".
         WT_CURSOR* cursor;
@@ -814,7 +814,7 @@ protected:
 
     void advanceWTCursor() {
         WT_CURSOR* c = _cursor->get();
-        int ret = WT_OP_CHECK(_forward ? c->next(c) : c->prev(c));
+        int ret = WT_READ_CHECK(_forward ? c->next(c) : c->prev(c));
         if (ret == WT_NOTFOUND) {
             _cursorAtEof = true;
             return;
@@ -831,7 +831,7 @@ protected:
         const WiredTigerItem keyItem(query.getBuffer(), query.getSize());
         c->set_key(c, keyItem.Get());
 
-        int ret = WT_OP_CHECK(c->search_near(c, &cmp));
+        int ret = WT_READ_CHECK(c->search_near(c, &cmp));
         if (ret == WT_NOTFOUND) {
             _cursorAtEof = true;
             TRACE_CURSOR << "\t not found";
@@ -983,7 +983,7 @@ public:
         c->set_key(c, keyItem.Get());
 
         // Using search rather than search_near.
-        int ret = WT_OP_CHECK(c->search(c));
+        int ret = WT_READ_CHECK(c->search(c));
         if (ret != WT_NOTFOUND)
             invariantWTOK(ret);
         _cursorAtEof = ret == WT_NOTFOUND;
@@ -998,7 +998,7 @@ public:
 WiredTigerIndexUnique::WiredTigerIndexUnique(OperationContext* ctx,
                                              const std::string& uri,
                                              const IndexDescriptor* desc)
-    : WiredTigerIndex(ctx, uri, desc) {}
+    : WiredTigerIndex(ctx, uri, desc), _partial(desc->isPartial()) {}
 
 std::unique_ptr<SortedDataInterface::Cursor> WiredTigerIndexUnique::newCursor(OperationContext* txn,
                                                                               bool forward) const {
@@ -1034,7 +1034,7 @@ Status WiredTigerIndexUnique::_insert(WT_CURSOR* c,
     // we put them all in the "list"
     // Note that we can't omit AllZeros when there are multiple ids for a value. When we remove
     // down to a single value, it will be cleaned up.
-    ret = WT_OP_CHECK(c->search(c));
+    ret = WT_READ_CHECK(c->search(c));
     invariantWTOK(ret);
 
     WT_ITEM old;
@@ -1082,8 +1082,38 @@ void WiredTigerIndexUnique::_unindex(WT_CURSOR* c,
     WiredTigerItem keyItem(data.getBuffer(), data.getSize());
     c->set_key(c, keyItem.Get());
 
+    auto triggerWriteConflictAtPoint = [&keyItem](WT_CURSOR* point) {
+        // WT_NOTFOUND may occur during a background index build. Insert a dummy value and
+        // delete it again to trigger a write conflict in case this is being concurrently
+        // indexed by the background indexer.
+        point->set_key(point, keyItem.Get());
+        point->set_value(point, emptyItem.Get());
+        invariantWTOK(WT_OP_CHECK(point->insert(point)));
+        point->set_key(point, keyItem.Get());
+        invariantWTOK(WT_OP_CHECK(point->remove(point)));
+    };
+
     if (!dupsAllowed) {
-        // nice and clear
+        if (_partial) {
+            // Check that the record id matches.  We may be called to unindex records that are not
+            // present in the index due to the partial filter expression.
+            int ret = WT_OP_CHECK(c->search(c));
+            if (ret == WT_NOTFOUND) {
+                triggerWriteConflictAtPoint(c);
+                return;
+            }
+            invariantWTOK(ret);
+            WT_ITEM value;
+            invariantWTOK(c->get_value(c, &value));
+            BufReader br(value.data, value.size);
+            fassert(40416, br.remaining());
+            if (KeyString::decodeRecordId(&br) != id) {
+                return;
+            }
+            // Ensure there aren't any other values in here.
+            KeyString::TypeBits::fromBuffer(keyStringVersion(), &br);
+            fassert(40417, !br.remaining());
+        }
         int ret = WT_OP_CHECK(c->remove(c));
         if (ret == WT_NOTFOUND) {
             return;
@@ -1094,16 +1124,9 @@ void WiredTigerIndexUnique::_unindex(WT_CURSOR* c,
 
     // dups are allowed, so we have to deal with a vector of RecordIds.
 
-    int ret = WT_OP_CHECK(c->search(c));
+    int ret = WT_READ_CHECK(c->search(c));
     if (ret == WT_NOTFOUND) {
-        // WT_NOTFOUND is only expected during a background index build. Insert a dummy value and
-        // delete it again to trigger a write conflict in case this is being concurrently indexed by
-        // the background indexer.
-        c->set_key(c, keyItem.Get());
-        c->set_value(c, emptyItem.Get());
-        invariantWTOK(WT_OP_CHECK(c->insert(c)));
-        c->set_key(c, keyItem.Get());
-        invariantWTOK(WT_OP_CHECK(c->remove(c)));
+        triggerWriteConflictAtPoint(c);
         return;
     }
     invariantWTOK(ret);

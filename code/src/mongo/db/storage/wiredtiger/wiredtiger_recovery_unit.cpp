@@ -43,6 +43,7 @@
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/scopeguard.h"
 #include "mongo/util/stacktrace.h"
 
 namespace mongo {
@@ -172,7 +173,12 @@ WiredTigerSession* WiredTigerRecoveryUnit::getSession(OperationContext* opCtx) {
 
 WiredTigerSession* WiredTigerRecoveryUnit::getSessionNoTxn(OperationContext* opCtx) {
     _ensureSession();
-    return _session.get();
+    WiredTigerSession* session = _session.get();
+
+    // Dropping the queued idents might block session, which is not desired for fastpath workflow
+    // like FTDC thread. Disable dropping of queued idents for such sessions.
+    session->dropQueuedIdentsAtSessionEndAllowed(false);
+    return session;
 }
 
 void WiredTigerRecoveryUnit::abandonSnapshot() {
@@ -247,6 +253,13 @@ void WiredTigerRecoveryUnit::_txnOpen(OperationContext* opCtx) {
     LOG(3) << "WT begin_transaction for snapshot id " << _mySnapshotId;
     _timer.reset();
     _active = true;
+}
+
+void WiredTigerRecoveryUnit::beginIdle() {
+    // Close all cursors, we don't want to keep any old cached cursors around.
+    if (_session) {
+        _session->closeAllCursors("");
+    }
 }
 
 // ---------------------

@@ -9,8 +9,12 @@
  * it rolled back, which could then lead to a double-rollback when node 2 was reconnected
  * to node 1 and tried to apply its oplog despite not being in a consistent state.
  */
+
 (function() {
     'use strict';
+
+    load("jstests/libs/check_log.js");
+    load("jstests/replsets/rslib.js");
 
     var name = "double_rollback";
     var dbName = "test";
@@ -30,24 +34,9 @@
     var nodes = rst.startSet();
     rst.initiate();
 
-    function waitForState(node, state) {
-        assert.soonNoExcept(function() {
-            assert.commandWorked(node.adminCommand(
-                {replSetTest: 1, waitForMemberState: state, timeoutMillis: rst.kDefaultTimeoutMS}));
-            return true;
-        });
-    }
-
-    function stepUp(rst, node) {
-        var primary = rst.getPrimary();
-        if (primary != node) {
-            assert.commandWorked(primary.adminCommand({replSetStepDown: 1}));
-        }
-        waitForState(node, ReplSetTest.State.PRIMARY);
-    }
-
+    // SERVER-20844 ReplSetTest starts up a single node replica set then reconfigures to the correct
+    // size for faster startup, so nodes[0] is always the first primary.
     jsTestLog("Make sure node 0 is primary.");
-    stepUp(rst, nodes[0]);
     assert.eq(nodes[0], rst.getPrimary());
     // Wait for all data bearing nodes to get up to date.
     assert.writeOK(nodes[0].getDB(dbName).getCollection(collName).insert(
@@ -97,18 +86,7 @@
 
     jsTestLog("Wait for failpoint on node 2 to pause rollback before it finishes");
     // Wait for fail point message to be logged.
-    var checkLog = function(node, msg) {
-        assert.soon(function() {
-            var logMessages = assert.commandWorked(node.adminCommand({getLog: 'global'})).log;
-            for (var i = 0; i < logMessages.length; i++) {
-                if (logMessages[i].indexOf(msg) != -1) {
-                    return true;
-                }
-            }
-            return false;
-        }, 'Did not see a log entry containing the following message: ' + msg);
-    };
-    checkLog(nodes[2], 'rollback - rollbackHangBeforeFinish fail point enabled');
+    checkLog.contains(nodes[2], 'rollback - rollbackHangBeforeFinish fail point enabled');
 
     jsTestLog("Repartition to: [1,3,4] and [0,2].");
     nodes[2].disconnect(nodes[1]);
@@ -125,8 +103,8 @@
     // for a sync source it can use to reach minvalid and get back into SECONDARY state.  Node 0
     // is the only node it can reach, but since node 0 doesn't contain node 2's minvalid oplog entry
     // node 2 will refuse to use it as a sync source.
-    checkLog(nodes[2],
-             "remote oplog does not contain entry with optime matching our required optime");
+    checkLog.contains(
+        nodes[2], "remote oplog does not contain entry with optime matching our required optime");
 
     var node0RBID = nodes[0].adminCommand('replSetGetRBID').rbid;
     var node1RBID = nodes[1].adminCommand('replSetGetRBID').rbid;

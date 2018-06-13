@@ -1086,6 +1086,41 @@ err:	/*
 			WT_TRET(wt_session->close(wt_session, config));
 		}
 
+	/*
+	 * Perform a system-wide checkpoint so that all tables are consistent
+	 * with each other.  Do this before shutting down all the subsystems.
+	 * We have shut down all user sessions, but send in true for waiting
+	 * for internal races.
+	 */
+	if (!F_ISSET(conn, WT_CONN_IN_MEMORY | WT_CONN_READONLY)) {
+		s = NULL;
+		WT_TRET(__wt_open_internal_session(
+		    conn, "close_ckpt", true, 0, &s));
+		if (s != NULL) {
+			const char *checkpoint_cfg[] = {
+			    WT_CONFIG_BASE(session, WT_SESSION_checkpoint),
+			    NULL
+			};
+			wt_session = &s->iface;
+			WT_TRET(__wt_txn_checkpoint(s, checkpoint_cfg, true));
+
+			/*
+			 * Mark the metadata dirty so we flush it on close,
+			 * allowing recovery to be skipped.
+			 */
+			WT_WITH_DHANDLE(s, WT_SESSION_META_DHANDLE(s),
+			    __wt_tree_modify_set(s));
+
+			WT_TRET(wt_session->close(wt_session, config));
+		}
+	}
+
+	if (ret != 0) {
+		__wt_err(session, ret,
+		    "failure during close, disabling further writes");
+		F_SET(conn, WT_CONN_PANIC);
+	}
+
 	WT_TRET(__wt_connection_close(conn));
 
 	/* We no longer have a session, don't try to update it. */
@@ -1662,8 +1697,8 @@ __conn_single(WT_SESSION_IMPL *session, const char *cfg[])
 			WT_ERR_MSG(session, EINVAL,
 			    "Creating a new database is incompatible with "
 			    "read-only configuration");
-		len = (size_t)snprintf(buf, sizeof(buf),
-		    "%s\n%s\n", WT_WIREDTIGER, WIREDTIGER_VERSION_STRING);
+		WT_ERR(__wt_snprintf_len_set(buf, sizeof(buf), &len,
+		    "%s\n%s\n", WT_WIREDTIGER, WIREDTIGER_VERSION_STRING));
 		WT_ERR(__wt_write(session, fh, (wt_off_t)0, len, buf));
 		WT_ERR(__wt_fsync(session, fh, true));
 	} else {
@@ -1798,6 +1833,7 @@ __wt_verbose_config(WT_SESSION_IMPL *session, const char *cfg[])
 		{ "checkpoint",		WT_VERB_CHECKPOINT },
 		{ "compact",		WT_VERB_COMPACT },
 		{ "evict",		WT_VERB_EVICT },
+		{ "evict_stuck",	WT_VERB_EVICT_STUCK },
 		{ "evictserver",	WT_VERB_EVICTSERVER },
 		{ "fileops",		WT_VERB_FILEOPS },
 		{ "handleops",		WT_VERB_HANDLEOPS },
@@ -1811,6 +1847,7 @@ __wt_verbose_config(WT_SESSION_IMPL *session, const char *cfg[])
 		{ "rebalance",		WT_VERB_REBALANCE },
 		{ "reconcile",		WT_VERB_RECONCILE },
 		{ "recovery",		WT_VERB_RECOVERY },
+		{ "recovery_progress",	WT_VERB_RECOVERY_PROGRESS },
 		{ "salvage",		WT_VERB_SALVAGE },
 		{ "shared_cache",	WT_VERB_SHARED_CACHE },
 		{ "split",		WT_VERB_SPLIT },
@@ -1985,6 +2022,16 @@ __conn_set_file_system(
 	conn = (WT_CONNECTION_IMPL *)wt_conn;
 	CONNECTION_API_CALL(conn, session, set_file_system, config, cfg);
 	WT_UNUSED(cfg);
+
+	/*
+	 * You can only configure a file system once, and attempting to do it
+	 * again probably means the extension argument didn't have early-load
+	 * set and we've already configured the default file system.
+	 */
+	if (conn->file_system != NULL)
+		WT_ERR_MSG(session, EPERM,
+		    "filesystem already configured; custom filesystems should "
+		    "enable \"early_load\" configuration");
 
 	conn->file_system = file_system;
 
@@ -2173,6 +2220,18 @@ wiredtiger_open(const char *home, WT_EVENT_HANDLER *event_handler,
 	WT_ERR(__wt_config_gets(session, cfg, "readonly", &cval));
 	if (cval.val)
 		F_SET(conn, WT_CONN_READONLY);
+	WT_ERR(__wt_config_gets(session, cfg, "session_table_cache", &cval));
+	if (cval.val)
+		F_SET(conn, WT_CONN_TABLE_CACHE);
+
+	/* Configure error messages so we get them right early. */
+	WT_ERR(__wt_config_gets(session, cfg, "error_prefix", &cval));
+	if (cval.len != 0)
+		WT_ERR(__wt_strndup(
+		    session, cval.str, cval.len, &conn->error_prefix));
+
+	/* Set the database home so extensions have access to it. */
+	WT_ERR(__conn_home(session, home, cfg));
 
 	/*
 	 * Load early extensions before doing further initialization (one early
@@ -2197,6 +2256,9 @@ wiredtiger_open(const char *home, WT_EVENT_HANDLER *event_handler,
 	WT_ERR(
 	    __conn_chk_file_system(session, F_ISSET(conn, WT_CONN_READONLY)));
 
+	/* Make sure no other thread of control already owns this database. */
+	WT_ERR(__conn_single(session, cfg));
+
 	/*
 	 * Capture the config_base setting file for later use. Again, if the
 	 * application doesn't want us to read the base configuration file,
@@ -2205,18 +2267,6 @@ wiredtiger_open(const char *home, WT_EVENT_HANDLER *event_handler,
 	 */
 	WT_ERR(__wt_config_gets(session, cfg, "config_base", &cval));
 	config_base_set = cval.val != 0;
-
-	/* Configure error messages so we get them right early. */
-	WT_ERR(__wt_config_gets(session, cfg, "error_prefix", &cval));
-	if (cval.len != 0)
-		WT_ERR(__wt_strndup(
-		    session, cval.str, cval.len, &conn->error_prefix));
-
-	/* Get the database home. */
-	WT_ERR(__conn_home(session, home, cfg));
-
-	/* Make sure no other thread of control already owns this database. */
-	WT_ERR(__conn_single(session, cfg));
 
 	/*
 	 * Build the real configuration stack, in the following order (where
@@ -2238,10 +2288,9 @@ wiredtiger_open(const char *home, WT_EVENT_HANDLER *event_handler,
 	WT_ERR(__wt_scr_alloc(session, 0, &i3));
 	cfg[0] = WT_CONFIG_BASE(session, wiredtiger_open_all);
 	cfg[1] = NULL;
-	WT_ERR_TEST(snprintf(version, sizeof(version),
+	WT_ERR(__wt_snprintf(version, sizeof(version),
 	    "version=(major=%d,minor=%d)",
-	    WIREDTIGER_VERSION_MAJOR, WIREDTIGER_VERSION_MINOR) >=
-	    (int)sizeof(version), ENOMEM);
+	    WIREDTIGER_VERSION_MAJOR, WIREDTIGER_VERSION_MINOR));
 	__conn_config_append(cfg, version);
 
 	/* Ignore the base_config file if config_base_set is false. */
@@ -2308,9 +2357,6 @@ wiredtiger_open(const char *home, WT_EVENT_HANDLER *event_handler,
 		    session, cval.str, cval.len, &conn->error_prefix));
 	}
 	WT_ERR(__wt_verbose_config(session, cfg));
-
-	WT_ERR(__wt_config_gets(session, cfg, "hazard_max", &cval));
-	conn->hazard_max = (uint32_t)cval.val;
 
 	WT_ERR(__wt_config_gets(session, cfg, "session_max", &cval));
 	conn->session_size = (uint32_t)cval.val + WT_EXTRA_INTERNAL_SESSIONS;
@@ -2467,8 +2513,15 @@ err:	/* Discard the scratch buffers. */
 		__wt_scr_discard(session);
 	__wt_scr_discard(&conn->dummy_session);
 
-	if (ret != 0)
+	if (ret != 0) {
+		/*
+		 * Set panic if we're returning the run recovery error so that
+		 * we don't try to checkpoint data handles.
+		 */
+		if (ret == WT_RUN_RECOVERY)
+			F_SET(conn, WT_CONN_PANIC);
 		WT_TRET(__wt_connection_close(conn));
+	}
 
 	return (ret);
 }

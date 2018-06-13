@@ -29,6 +29,7 @@ int
 __wt_nfilename(
     WT_SESSION_IMPL *session, const char *name, size_t namelen, char **path)
 {
+	WT_DECL_RET;
 	size_t len;
 	char *buf;
 
@@ -39,16 +40,17 @@ __wt_nfilename(
 	 * the exists API which is used by the test utilities.
 	 */
 	if (session == NULL || __wt_absolute_path(name))
-		WT_RET(__wt_strndup(session, name, namelen, path));
-	else {
-		len = strlen(S2C(session)->home) + 1 + namelen + 1;
-		WT_RET(__wt_calloc(session, 1, len, &buf));
-		snprintf(buf, len, "%s%s%.*s", S2C(session)->home,
-		    __wt_path_separator(), (int)namelen, name);
-		*path = buf;
-	}
+		return (__wt_strndup(session, name, namelen, path));
 
+	len = strlen(S2C(session)->home) + 1 + namelen + 1;
+	WT_RET(__wt_calloc(session, 1, len, &buf));
+	WT_ERR(__wt_snprintf(buf, len, "%s%s%.*s",
+	    S2C(session)->home, __wt_path_separator(), (int)namelen, name));
+	*path = buf;
 	return (0);
+
+err:	__wt_free(session, buf);
+	return (ret);
 }
 
 /*
@@ -72,6 +74,7 @@ __wt_remove_if_exists(WT_SESSION_IMPL *session, const char *name, bool durable)
  */
 int
 __wt_copy_and_sync(WT_SESSION *wt_session, const char *from, const char *to)
+    WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
 {
 	WT_DECL_ITEM(tmp);
 	WT_DECL_RET;

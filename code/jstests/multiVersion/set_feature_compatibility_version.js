@@ -54,6 +54,23 @@
     // featureCompatibilityVersion cannot be set via setParameter.
     assert.commandFailed(adminDB.runCommand({setParameter: 1, featureCompatibilityVersion: "3.2"}));
 
+    // setFeatureCompatibilityVersion fails to downgrade to FCV=3.2 if the write fails.
+    assert.commandWorked(adminDB.runCommand({
+        configureFailPoint: "failCollectionUpdates",
+        data: {collectionNS: "admin.system.version"},
+        mode: "alwaysOn"
+    }));
+    assert.commandFailed(adminDB.runCommand({setFeatureCompatibilityVersion: "3.2"}));
+    res = adminDB.runCommand({getParameter: 1, featureCompatibilityVersion: 1});
+    assert.commandWorked(res);
+    assert.eq(res.featureCompatibilityVersion, "3.4");
+    assert.eq(adminDB.system.version.findOne({_id: "featureCompatibilityVersion"}).version, "3.4");
+    assert.commandWorked(adminDB.runCommand({
+        configureFailPoint: "failCollectionUpdates",
+        data: {collectionNS: "admin.system.version"},
+        mode: "off"
+    }));
+
     // featureCompatibilityVersion can be set to 3.2.
     assert.commandWorked(adminDB.runCommand({setFeatureCompatibilityVersion: "3.2"}));
     res = adminDB.runCommand({getParameter: 1, featureCompatibilityVersion: 1});
@@ -69,6 +86,23 @@
               spec,
               "Expected index with name 'incompatible_with_version_32' to have been removed: " +
                   tojson(allIndexes));
+
+    // setFeatureCompatibilityVersion fails to upgrade to FCV=3.4 if the write fails.
+    assert.commandWorked(adminDB.runCommand({
+        configureFailPoint: "failCollectionUpdates",
+        data: {collectionNS: "admin.system.version"},
+        mode: "alwaysOn"
+    }));
+    assert.commandFailed(adminDB.runCommand({setFeatureCompatibilityVersion: "3.4"}));
+    res = adminDB.runCommand({getParameter: 1, featureCompatibilityVersion: 1});
+    assert.commandWorked(res);
+    assert.eq(res.featureCompatibilityVersion, "3.2");
+    assert.eq(adminDB.system.version.findOne({_id: "featureCompatibilityVersion"}).version, "3.2");
+    assert.commandWorked(adminDB.runCommand({
+        configureFailPoint: "failCollectionUpdates",
+        data: {collectionNS: "admin.system.version"},
+        mode: "off"
+    }));
 
     // featureCompatibilityVersion can be set to 3.4.
     assert.commandWorked(adminDB.runCommand({setFeatureCompatibilityVersion: "3.4"}));
@@ -203,10 +237,15 @@
     rst = new ReplSetTest({nodes: [{binVersion: latest}, {binVersion: downgrade}]});
     rst.startSet();
 
-    // Rig the election so that the node running latest version becomes the primary.
+    // Rig the election so that the node running latest version becomes the primary. Give the 3.2
+    // node no votes, so that the primary doesn't step down when it crashes.
     replSetConfig = rst.getReplSetConfig();
     replSetConfig.members[1].priority = 0;
-    rst.initiate(replSetConfig);
+    replSetConfig.members[1].votes = 0;
+
+    // TODO(SERVER-14017): remove this in favor of using initiate() everywhere.
+    rst.initiateWithAnyNodeAsPrimary(replSetConfig);
+    rst.awaitSecondaryNodes();
 
     primaryAdminDB = rst.getPrimary().getDB("admin");
     res = assert.commandWorked(
@@ -337,7 +376,16 @@
     st.rs0.getPrimary().discardMessagesFrom(st.configRS.getPrimary(), 0.0);
 
     // featureCompatibilityVersion can be set to 3.2 on mongos.
-    assert.commandWorked(mongosAdminDB.runCommand({setFeatureCompatibilityVersion: "3.2"}));
+    // This is run through assert.soon() because we've just caused a network interruption
+    // by discarding messages in the bridge.
+    assert.soon(function() {
+        var res = mongosAdminDB.runCommand({setFeatureCompatibilityVersion: "3.2"});
+        if (res.ok == 0) {
+            print("Failed to set feature compatibility version: " + tojson(res));
+            return false;
+        }
+        return true;
+    });
 
     // featureCompatibilityVersion propagates to config and shard.
     res = configPrimaryAdminDB.runCommand({getParameter: 1, featureCompatibilityVersion: 1});

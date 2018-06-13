@@ -71,6 +71,7 @@ public:
     static constexpr Milliseconds kDefaultHostTimeout = Milliseconds(300000);  // 5mins
     static const size_t kDefaultMaxConns;
     static const size_t kDefaultMinConns;
+    static const size_t kDefaultMaxConnecting;
     static constexpr Milliseconds kDefaultRefreshRequirement = Milliseconds(60000);  // 1min
     static constexpr Milliseconds kDefaultRefreshTimeout = Milliseconds(20000);      // 20secs
 
@@ -91,6 +92,13 @@ public:
          * as well as the obvious live connections in the pool.
          */
         size_t maxConnections = kDefaultMaxConns;
+
+        /**
+         * The maximum number of processing connections for a host.  This includes pending
+         * connections in setup/refresh. It's designed to rate limit connection storms rather than
+         * steady state processing (as maxConnections does).
+         */
+        size_t maxConnecting = kDefaultMaxConnecting;
 
         /**
          * Amount of time to wait before timing out a refresh attempt
@@ -122,6 +130,8 @@ public:
     void get(const HostAndPort& hostAndPort, Milliseconds timeout, GetConnectionCallback cb);
 
     void appendConnectionStats(ConnectionPoolStats* stats) const;
+
+    size_t getNumConnectionsPerHost(const HostAndPort& hostAndPort) const;
 
 private:
     void returnConnection(ConnectionInterface* connection);
@@ -194,7 +204,6 @@ class ConnectionPool::ConnectionInterface : public TimerInterface {
 
 public:
     ConnectionInterface() = default;
-
     virtual ~ConnectionInterface() = default;
 
     /**

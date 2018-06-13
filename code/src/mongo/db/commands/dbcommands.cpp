@@ -35,6 +35,7 @@
 #include <time.h>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/base/simple_string_data_comparator.h"
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
@@ -60,6 +61,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/commands/shutdown.h"
+#include "mongo/db/concurrency/global_lock_acquisition_tracker.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
@@ -95,6 +97,7 @@
 #include "mongo/db/write_concern.h"
 #include "mongo/rpc/metadata.h"
 #include "mongo/rpc/metadata/config_server_metadata.h"
+#include "mongo/rpc/metadata/oplog_query_metadata.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
 #include "mongo/rpc/metadata/server_selection_metadata.h"
 #include "mongo/rpc/metadata/sharding_metadata.h"
@@ -139,7 +142,7 @@ public:
                      BSONObjBuilder& result) {
         bool force = cmdObj.hasField("force") && cmdObj["force"].trueValue();
 
-        long long timeoutSecs = 0;
+        long long timeoutSecs = 10;
         if (cmdObj.hasField("timeoutSecs")) {
             timeoutSecs = cmdObj["timeoutSecs"].numberLong();
         }
@@ -188,7 +191,8 @@ public:
              string& errmsg,
              BSONObjBuilder& result) {
         // disallow dropping the config database
-        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && (dbname == "config")) {
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer &&
+            (dbname == NamespaceString::kConfigDb)) {
             return appendCommandStatus(result,
                                        Status(ErrorCodes::IllegalOperation,
                                               "Cannot drop 'config' database if mongod started "
@@ -197,7 +201,7 @@ public:
 
         if ((repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
              repl::ReplicationCoordinator::modeNone) &&
-            (dbname == "local")) {
+            (dbname == NamespaceString::kLocalDb)) {
             return appendCommandStatus(result,
                                        Status(ErrorCodes::IllegalOperation,
                                               "Cannot drop 'local' database while replication "
@@ -1220,22 +1224,6 @@ private:
     bool maintenanceModeSet;
 };
 
-namespace {
-
-// Symbolic names for indexes to make code more readable.
-const std::size_t kCmdOptionMaxTimeMSField = 0;
-const std::size_t kHelpField = 1;
-const std::size_t kShardVersionFieldIdx = 2;
-const std::size_t kQueryOptionMaxTimeMSField = 3;
-
-// We make an array of the fields we need so we can call getFields once. This saves repeated
-// scans over the command object.
-const std::array<StringData, 4> neededFieldNames{QueryRequest::cmdOptionMaxTimeMS,
-                                                 Command::kHelpFieldName,
-                                                 ChunkVersion::kShardVersionField,
-                                                 QueryRequest::queryOptionMaxTimeMS};
-}  // namespace
-
 void appendOpTimeMetadata(OperationContext* txn,
                           const rpc::RequestInterface& request,
                           BSONObjBuilder* metadataBob) {
@@ -1249,9 +1237,7 @@ void appendOpTimeMetadata(OperationContext* txn,
         // Attach our own last opTime.
         repl::OpTime lastOpTimeFromClient =
             repl::ReplClientInfo::forClient(txn->getClient()).getLastOp();
-        if (request.getMetadata().hasField(rpc::kReplSetMetadataFieldName)) {
-            replCoord->prepareReplMetadata(lastOpTimeFromClient, metadataBob);
-        }
+        replCoord->prepareReplMetadata(request.getMetadata(), lastOpTimeFromClient, metadataBob);
         // For commands from mongos, append some info to help getLastError(w) work.
         // TODO: refactor out of here as part of SERVER-18236
         if (isShardingAware || isConfig) {
@@ -1266,6 +1252,39 @@ void appendOpTimeMetadata(OperationContext* txn,
         rpc::ConfigServerMetadata(opTime).writeToMetadata(metadataBob);
     }
 }
+
+namespace {
+
+void _waitForWriteConcernAndAddToCommandResponse(OperationContext* opCtx,
+                                                 const std::string& commandName,
+                                                 const repl::OpTime& lastOpBeforeRun,
+                                                 BSONObjBuilder* commandResponseBuilder) {
+    auto lastOpAfterRun = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
+
+    // Ensures that if we tried to do a write, we wait for write concern, even if that write was
+    // a noop.
+    if ((lastOpAfterRun == lastOpBeforeRun) &&
+        GlobalLockAcquisitionTracker::get(opCtx).getGlobalExclusiveLockTaken()) {
+        repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
+        lastOpAfterRun = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
+    }
+
+    WriteConcernResult res;
+    auto waitForWCStatus =
+        waitForWriteConcern(opCtx, lastOpAfterRun, opCtx->getWriteConcern(), &res);
+    Command::appendCommandWCStatus(*commandResponseBuilder, waitForWCStatus, res);
+
+    // SERVER-22421: This code is to ensure error response backwards compatibility with the
+    // user management commands. This can be removed in 3.6.
+    if (!waitForWCStatus.isOK() && Command::isUserManagementCommand(commandName)) {
+        BSONObj temp = commandResponseBuilder->asTempObj().copy();
+        commandResponseBuilder->resetToEmpty();
+        Command::appendCommandStatus(*commandResponseBuilder, waitForWCStatus);
+        commandResponseBuilder->appendElementsUnique(temp);
+    }
+}
+
+}  // namespace
 
 /**
  * this handles
@@ -1296,11 +1315,31 @@ void Command::execCommand(OperationContext* txn,
         std::string dbname = request.getDatabase().toString();
         unique_ptr<MaintenanceModeSetter> mmSetter;
 
-        std::array<BSONElement, std::tuple_size<decltype(neededFieldNames)>::value>
-            extractedFields{};
-        request.getCommandArgs().getFields(neededFieldNames, &extractedFields);
+        BSONElement cmdOptionMaxTimeMSField;
+        BSONElement helpField;
+        BSONElement shardVersionFieldIdx;
+        BSONElement queryOptionMaxTimeMSField;
 
-        if (isHelpRequest(extractedFields[kHelpField])) {
+        StringMap<int> topLevelFields;
+        for (auto&& element : request.getCommandArgs()) {
+            StringData fieldName = element.fieldNameStringData();
+            if (fieldName == QueryRequest::cmdOptionMaxTimeMS) {
+                cmdOptionMaxTimeMSField = element;
+            } else if (fieldName == Command::kHelpFieldName) {
+                helpField = element;
+            } else if (fieldName == ChunkVersion::kShardVersionField) {
+                shardVersionFieldIdx = element;
+            } else if (fieldName == QueryRequest::queryOptionMaxTimeMS) {
+                queryOptionMaxTimeMSField = element;
+            }
+
+            uassert(ErrorCodes::FailedToParse,
+                    str::stream() << "Parsed command object contains duplicate top level key: "
+                                  << fieldName,
+                    topLevelFields[fieldName]++ == 0);
+        }
+
+        if (Command::isHelpRequest(helpField)) {
             CurOp::get(txn)->ensureStarted();
             // We disable last-error for help requests due to SERVER-11492, because config servers
             // use help requests to determine which commands are database writes, and so must be
@@ -1367,12 +1406,11 @@ void Command::execCommand(OperationContext* txn,
         }
 
         // Handle command option maxTimeMS.
-        int maxTimeMS = uassertStatusOK(
-            QueryRequest::parseMaxTimeMS(extractedFields[kCmdOptionMaxTimeMSField]));
+        int maxTimeMS = uassertStatusOK(QueryRequest::parseMaxTimeMS(cmdOptionMaxTimeMSField));
 
         uassert(ErrorCodes::InvalidOptions,
                 "no such command option $maxTimeMs; use maxTimeMS instead",
-                extractedFields[kQueryOptionMaxTimeMSField].eoo());
+                queryOptionMaxTimeMSField.eoo());
 
         if (maxTimeMS > 0) {
             uassert(40119,
@@ -1389,10 +1427,8 @@ void Command::execCommand(OperationContext* txn,
             auto& oss = OperationShardingState::get(txn);
 
             auto commandNS = NamespaceString(command->parseNs(dbname, request.getCommandArgs()));
-            oss.initializeShardVersion(commandNS, extractedFields[kShardVersionFieldIdx]);
-
+            oss.initializeShardVersion(commandNS, shardVersionFieldIdx);
             auto shardingState = ShardingState::get(txn);
-
             if (oss.hasShardVersion()) {
                 if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
                     uassertStatusOK(
@@ -1507,46 +1543,47 @@ bool Command::run(OperationContext* txn,
         replyBuilder->setMetadata(rpc::makeEmptyMetadata());
         return result;
     }
-    auto wcResult = extractWriteConcern(txn, cmd, db, supportsWriteConcern(cmd));
-    if (!wcResult.isOK()) {
-        auto result = appendCommandStatus(inPlaceReplyBob, wcResult.getStatus());
-        inPlaceReplyBob.doneFast();
-        replyBuilder->setMetadata(rpc::makeEmptyMetadata());
-        return result;
-    }
+
     std::string errmsg;
     bool result;
     if (!supportsWriteConcern(cmd)) {
+        if (commandSpecifiesWriteConcern(cmd)) {
+            auto result = appendCommandStatus(
+                inPlaceReplyBob,
+                {ErrorCodes::InvalidOptions, "Command does not support writeConcern"});
+            inPlaceReplyBob.doneFast();
+            replyBuilder->setMetadata(rpc::makeEmptyMetadata());
+            return result;
+        }
+
         // TODO: remove queryOptions parameter from command's run method.
         result = run(txn, db, cmd, 0, errmsg, inPlaceReplyBob);
     } else {
+        auto wcResult = extractWriteConcern(txn, cmd, db);
+        if (!wcResult.isOK()) {
+            auto result = appendCommandStatus(inPlaceReplyBob, wcResult.getStatus());
+            inPlaceReplyBob.doneFast();
+            replyBuilder->setMetadata(rpc::makeEmptyMetadata());
+            return result;
+        }
+
+        auto lastOpBeforeRun = repl::ReplClientInfo::forClient(txn->getClient()).getLastOp();
+
         // Change the write concern while running the command.
         const auto oldWC = txn->getWriteConcern();
         ON_BLOCK_EXIT([&] { txn->setWriteConcern(oldWC); });
         txn->setWriteConcern(wcResult.getValue());
+
+        ON_BLOCK_EXIT([&] {
+            _waitForWriteConcernAndAddToCommandResponse(
+                txn, getName(), lastOpBeforeRun, &inPlaceReplyBob);
+        });
 
         result = run(txn, db, cmd, 0, errmsg, inPlaceReplyBob);
 
         // Nothing in run() should change the writeConcern.
         dassert(SimpleBSONObjComparator::kInstance.evaluate(txn->getWriteConcern().toBSON() ==
                                                             wcResult.getValue().toBSON()));
-
-        WriteConcernResult res;
-        auto waitForWCStatus =
-            waitForWriteConcern(txn,
-                                repl::ReplClientInfo::forClient(txn->getClient()).getLastOp(),
-                                wcResult.getValue(),
-                                &res);
-        appendCommandWCStatus(inPlaceReplyBob, waitForWCStatus, res);
-
-        // SERVER-22421: This code is to ensure error response backwards compatibility with the
-        // user management commands. This can be removed in 3.6.
-        if (!waitForWCStatus.isOK() && isUserManagementCommand(getName())) {
-            BSONObj temp = inPlaceReplyBob.asTempObj().copy();
-            inPlaceReplyBob.resetToEmpty();
-            appendCommandStatus(inPlaceReplyBob, waitForWCStatus);
-            inPlaceReplyBob.appendElementsUnique(temp);
-        }
     }
 
     // When a linearizable read command is passed in, check to make sure we're reading

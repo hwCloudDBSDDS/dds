@@ -14,8 +14,8 @@ static int __curtable_update(WT_CURSOR *cursor);
 #define	APPLY_CG(ctable, f) do {					\
 	WT_CURSOR **__cp;						\
 	u_int __i;							\
-	for (__i = 0, __cp = ctable->cg_cursors;			\
-	    __i < WT_COLGROUPS(ctable->table);				\
+	for (__i = 0, __cp = (ctable)->cg_cursors;			\
+	    __i < WT_COLGROUPS((ctable)->table);			\
 	    __i++, __cp++)						\
 		WT_TRET((*__cp)->f(*__cp));				\
 } while (0)
@@ -511,9 +511,16 @@ __curtable_insert(WT_CURSOR *cursor)
 	 */
 	F_SET(primary, flag_orig | WT_CURSTD_KEY_EXT | WT_CURSTD_VALUE_EXT);
 
-	if (ret == WT_DUPLICATE_KEY && F_ISSET(cursor, WT_CURSTD_OVERWRITE))
+	if (ret == WT_DUPLICATE_KEY && F_ISSET(cursor, WT_CURSTD_OVERWRITE)) {
 		WT_ERR(__curtable_update(cursor));
-	else {
+
+		/*
+		 * The cursor is no longer positioned. This isn't just cosmetic,
+		 * without a reset, iteration on this cursor won't start at the
+		 * beginning/end of the table.
+		 */
+		APPLY_CG(ctable, reset);
+	} else {
 		WT_ERR(ret);
 
 		for (i = 1; i < WT_COLGROUPS(ctable->table); i++, cp++) {
@@ -601,22 +608,53 @@ err:	CURSOR_UPDATE_API_END(session, ret);
 static int
 __curtable_remove(WT_CURSOR *cursor)
 {
+	WT_CURSOR *primary;
 	WT_CURSOR_TABLE *ctable;
 	WT_DECL_RET;
 	WT_SESSION_IMPL *session;
+	bool positioned;
 
 	ctable = (WT_CURSOR_TABLE *)cursor;
 	JOINABLE_CURSOR_REMOVE_API_CALL(cursor, session, NULL);
 	WT_ERR(__curtable_open_indices(ctable));
 
+	/* Check if the cursor was positioned. */
+	primary = *ctable->cg_cursors;
+	positioned = F_ISSET(primary, WT_CURSTD_KEY_INT);
+
 	/* Find the old record so it can be removed from indices */
 	if (ctable->table->nindices > 0) {
 		APPLY_CG(ctable, search);
+		if (ret == WT_NOTFOUND)
+			goto notfound;
 		WT_ERR(ret);
 		WT_ERR(__apply_idx(ctable, offsetof(WT_CURSOR, remove), false));
 	}
 
 	APPLY_CG(ctable, remove);
+	if (ret == WT_NOTFOUND)
+		goto notfound;
+	WT_ERR(ret);
+
+notfound:
+	/*
+	 * If the cursor is configured to overwrite and the record is not found,
+	 * that is exactly what we want.
+	 */
+	if (ret == WT_NOTFOUND && F_ISSET(primary, WT_CURSTD_OVERWRITE))
+		ret = 0;
+
+	/*
+	 * If the cursor was positioned, it stays positioned with a key but no
+	 * no value, otherwise, there's no position, key or value. This isn't
+	 * just cosmetic, without a reset, iteration on this cursor won't start
+	 * at the beginning/end of the table.
+	 */
+	F_CLR(primary, WT_CURSTD_KEY_SET | WT_CURSTD_VALUE_SET);
+	if (positioned)
+		F_SET(primary, WT_CURSTD_KEY_INT);
+	else
+		APPLY_CG(ctable, reset);
 
 err:	CURSOR_UPDATE_API_END(session, ret);
 	return (ret);
@@ -748,7 +786,7 @@ __curtable_close(WT_CURSOR *cursor)
 	__wt_free(session, ctable->cg_cursors);
 	__wt_free(session, ctable->cg_valcopy);
 	__wt_free(session, ctable->idx_cursors);
-	__wt_schema_release_table(session, ctable->table);
+	WT_TRET(__wt_schema_release_table(session, ctable->table));
 	/* The URI is owned by the table. */
 	cursor->internal_uri = NULL;
 	WT_TRET(__wt_cursor_close(cursor));
@@ -763,16 +801,13 @@ err:	API_END_RET(session, ret);
 static int
 __curtable_complete(WT_SESSION_IMPL *session, WT_TABLE *table)
 {
-	WT_DECL_RET;
 	bool complete;
 
 	if (table->cg_complete)
 		return (0);
 
 	/* If the table is incomplete, wait on the table lock and recheck. */
-	complete = false;
-	WT_WITH_TABLE_LOCK(session, ret, complete = table->cg_complete);
-	WT_RET(ret);
+	WT_WITH_TABLE_READ_LOCK(session, complete = table->cg_complete);
 	if (!complete)
 		WT_RET_MSG(session, EINVAL,
 		    "'%s' not available until all column groups are created",
@@ -907,7 +942,13 @@ __wt_curtable_open(WT_SESSION_IMPL *session,
 		ret = __wt_open_cursor(session,
 		    table->cgroups[0]->source, NULL, cfg, cursorp);
 
-		__wt_schema_release_table(session, table);
+		WT_TRET(__wt_schema_release_table(session, table));
+		if (ret == 0) {
+			/* Fix up the public URI to match what was passed in. */
+			cursor = *cursorp;
+			__wt_free(session, cursor->uri);
+			WT_TRET(__wt_strdup(session, uri, &cursor->uri));
+		}
 		return (ret);
 	}
 
@@ -927,7 +968,7 @@ __wt_curtable_open(WT_SESSION_IMPL *session,
 	WT_ERR(__wt_scr_alloc(session, 0, &tmp));
 	if (columns != NULL) {
 		WT_ERR(__wt_struct_reformat(session, table,
-		    columns, strlen(columns), NULL, true, tmp));
+		    columns, strlen(columns), NULL, false, tmp));
 		WT_ERR(__wt_strndup(
 		    session, tmp->data, tmp->size, &cursor->value_format));
 
@@ -954,7 +995,7 @@ __wt_curtable_open(WT_SESSION_IMPL *session,
 
 	if (F_ISSET(cursor, WT_CURSTD_DUMP_JSON))
 		__wt_json_column_init(
-		    cursor, table->key_format, NULL, &table->colconf);
+		    cursor, uri, table->key_format, NULL, &table->colconf);
 
 	/*
 	 * Open the colgroup cursors immediately: we're going to need them for
@@ -992,11 +1033,15 @@ __wt_curtable_open(WT_SESSION_IMPL *session,
 
 	if (0) {
 err:		if (*cursorp != NULL) {
-			if (*cursorp != cursor)
-				WT_TRET(__wt_cursor_close(*cursorp));
+			/*
+			 * When a dump cursor is opened, then *cursorp, not
+			 * cursor, is the dump cursor. Close the dump cursor,
+			 * and the table cursor will be closed as its child.
+			 */
+			cursor = *cursorp;
 			*cursorp = NULL;
 		}
-		WT_TRET(__curtable_close(cursor));
+		WT_TRET(cursor->close(cursor));
 	}
 
 	__wt_scr_free(session, &tmp);

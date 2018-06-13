@@ -97,10 +97,24 @@ public:
 
     void releaseCursor(uint64_t id, WT_CURSOR* cursor);
 
-    void closeAllCursors();
+    void closeCursorsForQueuedDrops(WiredTigerKVEngine* engine);
+
+    /**
+     * Closes all cached cursors matching the uri.  If the uri is empty,
+     * all cached cursors are closed.
+     */
+    void closeAllCursors(const std::string& uri);
 
     int cursorsOut() const {
         return _cursorsOut;
+    }
+
+    bool isDropQueuedIdentsAtSessionEndAllowed() const {
+        return _dropQueuedIdentsAtSessionEnd;
+    }
+
+    void dropQueuedIdentsAtSessionEndAllowed(bool dropQueuedIdentsAtSessionEnd) {
+        _dropQueuedIdentsAtSessionEnd = dropQueuedIdentsAtSessionEnd;
     }
 
     static uint64_t genTableId();
@@ -132,7 +146,8 @@ private:
     WT_SESSION* _session;            // owned
     CursorCache _cursors;            // owned
     uint64_t _cursorGen;
-    int _cursorsCached, _cursorsOut;
+    int _cursorsOut;
+    bool _dropQueuedIdentsAtSessionEnd = true;
 };
 
 /**
@@ -167,10 +182,15 @@ public:
     void closeAll();
 
     /**
-     * Closes all cached cursors and ensures that previously opened cursors will be closed on
-     * release.
+     * Closes cached cursors for tables that are queued to be dropped.
      */
-    void closeAllCursors();
+    void closeCursorsForQueuedDrops();
+
+    /**
+     * Closes all cached cursors matching the uri.  If the uri is empty,
+     * all cached cursors are closed.
+     */
+    void closeAllCursors(const std::string& uri);
 
     /**
      * Transitions the cache to shutting down mode. Any already released sessions are freed and

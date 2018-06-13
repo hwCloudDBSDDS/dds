@@ -33,6 +33,7 @@
 
 #include "mongo/db/concurrency/lock_manager.h"
 #include "mongo/db/concurrency/lock_stats.h"
+#include "mongo/stdx/thread.h"
 
 namespace mongo {
 
@@ -83,6 +84,12 @@ public:
     virtual LockerId getId() const = 0;
 
     /**
+     * Get a platform-specific thread identifier of the thread which owns the this locker for
+     * tracing purposes.
+     */
+    virtual stdx::thread::id getThreadId() const = 0;
+
+    /**
      * This should be the first method invoked for a particular Locker object. It acquires the
      * Global lock in the specified mode and effectively indicates the mode of the operation.
      * This is what the lock modes on the global lock mean:
@@ -98,22 +105,22 @@ public:
      *
      * @param mode Mode in which the global lock should be acquired. Also indicates the intent
      *              of the operation.
-     * @param timeoutMs How long to wait for the global lock (and the flush lock, for the MMAP
-     *          V1 engine) to be acquired.
      *
      * @return LOCK_OK, if the global lock (and the flush lock, for the MMAP V1 engine) were
      *          acquired within the specified time bound. Otherwise, the respective failure
      *          code and neither lock will be acquired.
      */
-    virtual LockResult lockGlobal(LockMode mode, unsigned timeoutMs = UINT_MAX) = 0;
+    virtual LockResult lockGlobal(LockMode mode) = 0;
 
     /**
      * Requests the global lock to be acquired in the specified mode.
      *
      * See the comments for lockBegin/Complete for more information on the semantics.
+     * The timeout indicates how long to wait for the lock to be acquired. The lockGlobalBegin
+     * method has a timeout for use with the TicketHolder, if there is one.
      */
-    virtual LockResult lockGlobalBegin(LockMode mode) = 0;
-    virtual LockResult lockGlobalComplete(unsigned timeoutMs) = 0;
+    virtual LockResult lockGlobalBegin(LockMode mode, Milliseconds timeout) = 0;
+    virtual LockResult lockGlobalComplete(Milliseconds timeout) = 0;
 
     /**
      * This method is used only in the MMAP V1 storage engine, otherwise it is a no-op. See the
@@ -164,9 +171,9 @@ public:
      *
      * @param resId Id of the resource to be locked.
      * @param mode Mode in which the resource should be locked. Lock upgrades are allowed.
-     * @param timeoutMs How many milliseconds to wait for the lock to be granted, before
-     *              returning LOCK_TIMEOUT. This parameter defaults to UINT_MAX, which means
-     *              wait infinitely. If 0 is passed, the request will return immediately, if
+     * @param timeout How long to wait for the lock to be granted, before
+     *              returning LOCK_TIMEOUT. This parameter defaults to an infinite timeout.
+     *              If Milliseconds(0) is passed, the request will return immediately, if
      *              the request could not be granted right away.
      * @param checkDeadlock Whether to enable deadlock detection for this acquisition. This
      *              parameter is put in place until we can handle deadlocks at all places,
@@ -176,7 +183,7 @@ public:
      */
     virtual LockResult lock(ResourceId resId,
                             LockMode mode,
-                            unsigned timeoutMs = UINT_MAX,
+                            Milliseconds timeout = Milliseconds::max(),
                             bool checkDeadlock = false) = 0;
 
     /**
@@ -327,11 +334,25 @@ public:
         return _shouldConflictWithSecondaryBatchApplication;
     }
 
+    /**
+     * If set to false, this opts out of the ticket mechanism. This should be used sparingly
+     * for special purpose threads, such as FTDC.
+     */
+    void setShouldAcquireTicket(bool newValue) {
+        invariant(!isLocked());
+        _shouldAcquireTicket = newValue;
+    }
+    bool shouldAcquireTicket() const {
+        return _shouldAcquireTicket;
+    }
+
+
 protected:
     Locker() {}
 
 private:
     bool _shouldConflictWithSecondaryBatchApplication = true;
+    bool _shouldAcquireTicket = true;
 };
 
 }  // namespace mongo

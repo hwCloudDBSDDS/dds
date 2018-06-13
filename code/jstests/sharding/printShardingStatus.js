@@ -7,6 +7,8 @@
 
     var st = new ShardingTest({shards: 1, mongos: 2, config: 1, other: {smallfiles: true}});
 
+    var standalone = MongoRunner.runMongod();
+
     var mongos = st.s0;
     var admin = mongos.getDB("admin");
 
@@ -85,9 +87,10 @@
     testBasicVerboseOnly(outputVerbose);
 
     // Take a copy of the config db, in order to test the harder-to-setup cases below.
+    // Copy into a standalone to also test running printShardingStatus() against a config dump.
     // TODO: Replace this manual copy with copydb once SERVER-13080 is fixed.
     var config = mongos.getDB("config");
-    var configCopy = mongos.getDB("configCopy");
+    var configCopy = standalone.getDB("configCopy");
     config.getCollectionInfos().forEach(function(c) {
         // Create collection with options.
         assert.commandWorked(configCopy.createCollection(c.name, c.options));
@@ -140,11 +143,11 @@
     configCopy.mongos.remove({});
 
     var output = grabStatusOutput(configCopy, false);
-    assertPresentInOutput(output, "most recently active mongoses:\n\tnone", "no mongoses");
+    assertPresentInOutput(output, "most recently active mongoses:\n        none", "no mongoses");
 
     var output = grabStatusOutput(configCopy, true);
     assertPresentInOutput(
-        output, "most recently active mongoses:\n\tnone", "no mongoses (verbose)");
+        output, "most recently active mongoses:\n        none", "no mongoses (verbose)");
 
     assert(mongos.getDB(dbName).dropDatabase());
 
@@ -181,6 +184,7 @@
         var output = grabStatusOutput(st.config);
 
         assertPresentInOutput(output, collName, "collection");
+
         // If any of the previous collection names are present, then their optional indicators
         // might also be present.  This might taint the results when we go searching through
         // the output.
@@ -190,6 +194,7 @@
         }
 
         assertPresentInOutput(output, "unique: " + (!!args.unique), "unique shard key indicator");
+
         if (args.hasOwnProperty("unique") && typeof(args.unique) != "boolean") {
             // non-bool: actual value must be shown
             assertPresentInOutput(
@@ -204,7 +209,12 @@
             assertPresentInOutput(output, tojson(args.noBalance), "noBalance indicator (non bool)");
         }
 
-        assert(mongos.getCollection(collName).drop());
+        try {
+            mongos.getCollection(collName).drop();
+        } catch (e) {
+            // Ignore drop errors because they are from the illegal values in the collection entry
+            assert.writeOK(mongos.getDB("config").collections.remove({_id: collName}));
+        }
 
         testCollDetailsNum++;
     }
@@ -229,6 +239,8 @@
     testCollDetails({unique: 0, noBalance: 0});
 
     assert(mongos.getDB("test").dropDatabase());
+
+    MongoRunner.stopMongod(standalone);
 
     st.stop();
 })();

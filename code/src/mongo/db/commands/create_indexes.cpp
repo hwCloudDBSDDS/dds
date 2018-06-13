@@ -66,6 +66,7 @@ namespace {
 const StringData kIndexesFieldName = "indexes"_sd;
 const StringData kCommandName = "createIndexes"_sd;
 const StringData kWriteConcern = "writeConcern"_sd;
+const StringData kMaxTimeMS = "maxTimeMS"_sd;
 
 /**
  * Parses the index specifications from 'cmdObj', validates them, and returns equivalent index
@@ -122,8 +123,8 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
             }
 
             hasIndexesField = true;
-        } else if (kCommandName == cmdElemFieldName || kWriteConcern == cmdElemFieldName) {
-            // Both the command name and writeConcern are valid top-level fields.
+        } else if (kCommandName == cmdElemFieldName || kWriteConcern == cmdElemFieldName ||
+                   kMaxTimeMS == cmdElemFieldName) {
             continue;
         } else {
             return {ErrorCodes::BadValue,
@@ -289,12 +290,6 @@ public:
         const int numIndexesBefore = collection->getIndexCatalog()->numIndexesTotal(txn);
         result.append("numIndexesBefore", numIndexesBefore);
 
-        auto client = txn->getClient();
-        ScopeGuard lastOpSetterGuard =
-            MakeObjGuard(repl::ReplClientInfo::forClient(client),
-                         &repl::ReplClientInfo::setLastOpToSystemLastOpTime,
-                         txn);
-
         MultiIndexBlock indexer(txn, collection);
         indexer.allowBackgroundBuilding();
         indexer.allowInterruption();
@@ -392,10 +387,8 @@ public:
 
             for (auto&& infoObj : indexInfoObjs) {
                 std::string systemIndexes = ns.getSystemIndexesCollection();
-                auto opObserver = getGlobalServiceContext()->getOpObserver();
-                if (opObserver) {
-                    opObserver->onCreateIndex(txn, systemIndexes, infoObj);
-                }
+                getGlobalServiceContext()->getOpObserver()->onCreateIndex(
+                    txn, systemIndexes, infoObj, false);
             }
 
             wunit.commit();
@@ -403,8 +396,6 @@ public:
         MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, kCommandName, ns.ns());
 
         result.append("numIndexesAfter", collection->getIndexCatalog()->numIndexesTotal(txn));
-
-        lastOpSetterGuard.Dismiss();
 
         return true;
     }

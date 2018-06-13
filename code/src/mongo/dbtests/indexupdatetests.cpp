@@ -38,15 +38,12 @@
 #include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/dbhelpers.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_d.h"
 #include "mongo/dbtests/dbtests.h"
 
 namespace IndexUpdateTests {
-
-using std::unique_ptr;
 
 namespace {
 const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
@@ -73,32 +70,6 @@ public:
     }
 
 protected:
-// QUERY_MIGRATION
-#if 0
-        /** @return IndexDetails for a new index on a:1, with the info field populated. */
-        IndexDescriptor* addIndexWithInfo() {
-            BSONObj indexInfo = BSON( "v" << 1 <<
-                                      "key" << BSON( "a" << 1 ) <<
-                                      "ns" << _ns <<
-                                      "name" << "a_1" );
-            int32_t lenWHdr = indexInfo.objsize() + Record::HeaderSize;
-            const char* systemIndexes = "unittests.system.indexes";
-            RecordId infoLoc = allocateSpaceForANewRecord( systemIndexes,
-                                                          nsdetails( systemIndexes ),
-                                                          lenWHdr,
-                                                          false );
-            Record* infoRecord = reinterpret_cast<Record*>( getDur().writingPtr( infoLoc.rec(),
-                                                                                 lenWHdr ) );
-            memcpy( infoRecord->data(), indexInfo.objdata(), indexInfo.objsize() );
-            addRecordToRecListInExtent( infoRecord, infoLoc );
-
-            IndexCatalog::IndexBuildBlock blk( collection()->getIndexCatalog(), "a_1", infoLoc );
-            blk.success();
-
-            return collection()->getIndexCatalog()->findIndexByName( "a_1" );
-        }
-#endif
-
     Status createIndex(const std::string& dbname, const BSONObj& indexSpec);
 
     bool buildIndexInterrupted(const BSONObj& key, bool allowInterruption) {
@@ -127,221 +98,6 @@ protected:
     DBDirectClient _client;
 };
 
-/** addKeysToPhaseOne() adds keys from a collection's documents to an external sorter. */
-// QUERY_MIGRATION
-#if 0
-    class AddKeysToPhaseOne : public IndexBuildBase {
-    public:
-        void run() {
-            // Add some data to the collection.
-            int32_t nDocs = 130;
-            for( int32_t i = 0; i < nDocs; ++i ) {
-                _client.insert( _ns, BSON( "a" << i ) );
-            }
-
-            IndexDescriptor* id = addIndexWithInfo();
-            // Create a SortPhaseOne.
-            SortPhaseOne phaseOne;
-            ProgressMeterHolder pm (txn->setMessage("AddKeysToPhaseOne",
-                                                    "AddKeysToPhaseOne Progress",
-                                                    nDocs,
-                                                    nDocs));
-            // Add keys to phaseOne.
-            BtreeBasedBuilder::addKeysToPhaseOne( collection(),
-                                                  id,
-                                                  BSON( "a" << 1 ),
-                                                  &phaseOne,
-                                                  pm.get(), true );
-            // Keys for all documents were added to phaseOne.
-            ASSERT_EQUALS( static_cast<uint64_t>( nDocs ), phaseOne.n );
-        }
-    };
-
-    /** addKeysToPhaseOne() aborts if the current operation is killed. */
-    class InterruptAddKeysToPhaseOne : public IndexBuildBase {
-    public:
-        InterruptAddKeysToPhaseOne( bool mayInterrupt ) :
-            _mayInterrupt( mayInterrupt ) {
-        }
-        void run() {
-            // It's necessary to index sufficient keys that a RARELY condition will be triggered.
-            int32_t nDocs = 130;
-            // Add some data to the collection.
-            for( int32_t i = 0; i < nDocs; ++i ) {
-                _client.insert( _ns, BSON( "a" << i ) );
-            }
-            IndexDescriptor* id = addIndexWithInfo();
-            // Create a SortPhaseOne.
-            SortPhaseOne phaseOne;
-            ProgressMeterHolder pm (txn->setMessage("InterruptAddKeysToPhaseOne",
-                                                    "InterruptAddKeysToPhaseOne Progress",
-                                                    nDocs,
-                                                    nDocs));
-            // Register a request to kill the current operation.
-            CurOp::get(txn)->kill();
-            if ( _mayInterrupt ) {
-                // Add keys to phaseOne.
-                ASSERT_THROWS( BtreeBasedBuilder::addKeysToPhaseOne( collection(),
-                                                                     id,
-                                                                     BSON( "a" << 1 ),
-                                                                     &phaseOne,
-                                                                     pm.get(),
-                                                                     _mayInterrupt ),
-                               UserException );
-                // Not all keys were added to phaseOne due to the interrupt.
-                ASSERT( static_cast<uint64_t>( nDocs ) > phaseOne.n );
-            }
-            else {
-                // Add keys to phaseOne.
-                BtreeBasedBuilder::addKeysToPhaseOne( collection(),
-                                                      id,
-                                                      BSON( "a" << 1 ),
-                                                      &phaseOne,
-                                                      pm.get(),
-                                                      _mayInterrupt );
-                // All keys were added to phaseOne despite to the kill request, because
-                // mayInterrupt == false.
-                ASSERT_EQUALS( static_cast<uint64_t>( nDocs ), phaseOne.n );
-            }
-        }
-    private:
-        bool _mayInterrupt;
-    };
-#endif
-
-// QUERY_MIGRATION
-#if 0
-    /** buildBottomUpPhases2And3() builds a btree from the keys in an external sorter. */
-    class BuildBottomUp : public IndexBuildBase {
-    public:
-        void run() {
-            IndexDescriptor* id = addIndexWithInfo();
-            // Create a SortPhaseOne.
-            SortPhaseOne phaseOne;
-            phaseOne.sorter.reset( new BSONObjExternalSorter(_aFirstSort));
-            // Add index keys to the phaseOne.
-            int32_t nKeys = 130;
-            for( int32_t i = 0; i < nKeys; ++i ) {
-                phaseOne.sorter->add( BSON( "a" << i ), /* dummy disk loc */ RecordId(), false );
-            }
-            phaseOne.nkeys = phaseOne.n = nKeys;
-            phaseOne.sorter->sort( false );
-            // Set up remaining arguments.
-            set<RecordId> dups;
-            CurOp* op = CurOp::get(txn);
-            ProgressMeterHolder pm (op->setMessage("BuildBottomUp",
-                                                   "BuildBottomUp Progress",
-                                                   nKeys,
-                                                   nKeys));
-            pm.finished();
-            Timer timer;
-            // The index's root has not yet been set.
-            ASSERT( id->getHead().isNull() );
-            // Finish building the index.
-            buildBottomUpPhases2And3<V1>( true,
-                                          id,
-                                          *phaseOne.sorter,
-                                          false,
-                                          dups,
-                                          op,
-                                          &phaseOne,
-                                          pm,
-                                          timer,
-                                          true );
-            // The index's root is set after the build is complete.
-            ASSERT( !id->getHead().isNull() );
-            // Create a cursor over the index.
-            unique_ptr<BtreeCursor> cursor(
-                    BtreeCursor::make( nsdetails( _ns ),
-                                       id->getOnDisk(),
-                                       BSON( "" << -1 ),    // startKey below minimum key.
-                                       BSON( "" << nKeys ), // endKey above maximum key.
-                                       true,                // endKeyInclusive true.
-                                       1                    // direction forward.
-                                       ) );
-            // Check that the keys in the index are the expected ones.
-            int32_t expectedKey = 0;
-            for( ; cursor->ok(); cursor->advance(), ++expectedKey ) {
-                ASSERT_EQUALS( expectedKey, cursor->currKey().firstElement().number() );
-            }
-            ASSERT_EQUALS( nKeys, expectedKey );
-        }
-    };
-#endif
-
-// QUERY_MIGRATION
-#if 0
-    /** buildBottomUpPhases2And3() aborts if the current operation is interrupted. */
-    class InterruptBuildBottomUp : public IndexBuildBase {
-    public:
-        InterruptBuildBottomUp( bool mayInterrupt ) :
-            _mayInterrupt( mayInterrupt ) {
-        }
-        void run() {
-            IndexDescriptor* id = addIndexWithInfo();
-            // Create a SortPhaseOne.
-            SortPhaseOne phaseOne;
-            phaseOne.sorter.reset(new BSONObjExternalSorter(_aFirstSort));
-            // It's necessary to index sufficient keys that a RARELY condition will be triggered,
-            // but few enough keys that the btree builder will not create an internal node and check
-            // for an interrupt internally (which would cause this test to pass spuriously).
-            int32_t nKeys = 130;
-            // Add index keys to the phaseOne.
-            for( int32_t i = 0; i < nKeys; ++i ) {
-                phaseOne.sorter->add( BSON( "a" << i ), /* dummy disk loc */ RecordId(), false );
-            }
-            phaseOne.nkeys = phaseOne.n = nKeys;
-            phaseOne.sorter->sort( false );
-            // Set up remaining arguments.
-            set<RecordId> dups;
-            CurOp* op = CurOp::get(txn);
-            ProgressMeterHolder pm (op->setMessage("InterruptBuildBottomUp",
-                                                   "InterruptBuildBottomUp Progress",
-                                                   nKeys,
-                                                   nKeys));
-            pm.finished();
-            Timer timer;
-            // The index's root has not yet been set.
-            ASSERT( id->getHead().isNull() );
-            // Register a request to kill the current operation.
-            CurOp::get(txn)->kill();
-            if ( _mayInterrupt ) {
-                // The build is aborted due to the kill request.
-                ASSERT_THROWS
-                        ( buildBottomUpPhases2And3<V1>( true,
-                                                        id,
-                                                        *phaseOne.sorter,
-                                                        false,
-                                                        dups,
-                                                        op,
-                                                        &phaseOne,
-                                                        pm,
-                                                        timer,
-                                                        _mayInterrupt ),
-                          UserException );
-                // The root of the index is not set because the build did not complete.
-                ASSERT( id->getHead().isNull() );
-            }
-            else {
-                // The build is aborted despite the kill request because mayInterrupt == false.
-                buildBottomUpPhases2And3<V1>( true,
-                                              id,
-                                              *phaseOne.sorter,
-                                              false,
-                                              dups,
-                                              op,
-                                              &phaseOne,
-                                              pm,
-                                              timer,
-                                              _mayInterrupt );
-                // The index's root is set after the build is complete.
-                ASSERT( !id->getHead().isNull() );
-            }
-        }
-    private:
-        bool _mayInterrupt;
-    };
-#endif
 /** Index creation ignores unique constraints when told to. */
 template <bool background>
 class InsertBuildIgnoreUnique : public IndexBuildBase {
@@ -657,86 +413,6 @@ public:
     }
 };
 
-/** Helpers::ensureIndex() is not interrupted. */
-class HelpersEnsureIndexInterruptDisallowed : public IndexBuildBase {
-public:
-    void run() {
-        // Insert some documents.
-        int32_t nDocs = 1000;
-        for (int32_t i = 0; i < nDocs; ++i) {
-            _client.insert(_ns, BSON("a" << i));
-        }
-        // Start with just _id
-        ASSERT_EQUALS(1U, _client.getIndexSpecs(_ns).size());
-        // Request an interrupt.
-        getGlobalServiceContext()->setKillAllOperations();
-        // The call is not interrupted.
-        Helpers::ensureIndex(&_txn, collection(), BSON("a" << 1), kIndexVersion, false, "a_1");
-        // only want to interrupt the index build
-        getGlobalServiceContext()->unsetKillAllOperations();
-        // The new index is listed in getIndexSpecs because the index build completed.
-        ASSERT_EQUALS(2U, _client.getIndexSpecs(_ns).size());
-    }
-};
-// QUERY_MIGRATION
-#if 0
-    class IndexBuildInProgressTest : public IndexBuildBase {
-    public:
-        void run() {
-
-            NamespaceDetails* nsd = nsdetails( _ns );
-
-            // _id_ is at 0, so nIndexes == 1
-            IndexCatalog::IndexBuildBlock* a = halfAddIndex("a");
-            IndexCatalog::IndexBuildBlock* b = halfAddIndex("b");
-            IndexCatalog::IndexBuildBlock* c = halfAddIndex("c");
-            IndexCatalog::IndexBuildBlock* d = halfAddIndex("d");
-            int offset = nsd->_catalogFindIndexByName( "b_1", true );
-            ASSERT_EQUALS(2, offset);
-
-            delete b;
-
-            ASSERT_EQUALS(2, nsd->_catalogFindIndexByName( "c_1", true ) );
-            ASSERT_EQUALS(3, nsd->_catalogFindIndexByName( "d_1", true ) );
-
-            offset = nsd->_catalogFindIndexByName( "d_1", true );
-            delete d;
-
-            ASSERT_EQUALS(2, nsd->_catalogFindIndexByName( "c_1", true ) );
-            ASSERT( nsd->_catalogFindIndexByName( "d_1", true ) < 0 );
-
-            offset = nsd->_catalogFindIndexByName( "a_1", true );
-            delete a;
-
-            ASSERT_EQUALS(1, nsd->_catalogFindIndexByName( "c_1", true ));
-            delete c;
-        }
-
-    private:
-        IndexCatalog::IndexBuildBlock* halfAddIndex(const std::string& key) {
-            string name = key + "_1";
-            BSONObj indexInfo = BSON( "v" << 1 <<
-                                      "key" << BSON( key << 1 ) <<
-                                      "ns" << _ns <<
-                                      "name" << name );
-            int32_t lenWHdr = indexInfo.objsize() + Record::HeaderSize;
-            const char* systemIndexes = "unittests.system.indexes";
-            RecordId infoLoc = allocateSpaceForANewRecord( systemIndexes,
-                                                          nsdetails( systemIndexes ),
-                                                          lenWHdr,
-                                                          false );
-            Record* infoRecord = reinterpret_cast<Record*>( getDur().writingPtr( infoLoc.rec(),
-                                                                                 lenWHdr ) );
-            memcpy( infoRecord->data(), indexInfo.objdata(), indexInfo.objsize() );
-            addRecordToRecListInExtent( infoRecord, infoLoc );
-
-            return new IndexCatalog::IndexBuildBlock( _ctx.getCollection()->getIndexCatalog(),
-                                                     name,
-                                                     infoLoc );
-        }
-    };
-#endif
-
 Status IndexBuildBase::createIndex(const std::string& dbname, const BSONObj& indexSpec) {
     MultiIndexBlock indexer(&_txn, collection());
     Status status = indexer.init(indexSpec).getStatus();
@@ -1013,18 +689,116 @@ public:
     }
 };
 
+class InsertSymbolIntoIndexWithCollationFails {
+public:
+    void run() {
+        auto opCtx = cc().makeOperationContext();
+        DBDirectClient client(opCtx.get());
+        client.dropCollection(_ns);
+        IndexSpec indexSpec;
+        indexSpec.addKey("a").addOptions(BSON("collation" << BSON("locale"
+                                                                  << "fr")));
+        client.createIndex(_ns, indexSpec);
+        client.insert(_ns, BSON("a" << BSONSymbol("mySymbol")));
+        ASSERT_EQUALS(client.getLastErrorDetailed()["code"].numberInt(),
+                      ErrorCodes::CannotBuildIndexKeys);
+        ASSERT_EQUALS(client.count(_ns), 0U);
+    }
+};
+
+class InsertSymbolIntoIndexWithoutCollationSucceeds {
+public:
+    void run() {
+        auto opCtx = cc().makeOperationContext();
+        DBDirectClient client(opCtx.get());
+        client.dropCollection(_ns);
+        IndexSpec indexSpec;
+        indexSpec.addKey("a");
+        client.createIndex(_ns, indexSpec);
+        client.insert(_ns, BSON("a" << BSONSymbol("mySymbol")));
+        ASSERT(client.getLastError().empty());
+        ASSERT_EQUALS(client.count(_ns), 1U);
+    }
+};
+
+class InsertSymbolInsideNestedObjectIntoIndexWithCollationFails {
+public:
+    void run() {
+        auto opCtx = cc().makeOperationContext();
+        DBDirectClient client(opCtx.get());
+        client.dropCollection(_ns);
+        IndexSpec indexSpec;
+        indexSpec.addKey("a").addOptions(BSON("collation" << BSON("locale"
+                                                                  << "fr")));
+        client.createIndex(_ns, indexSpec);
+        client.insert(_ns, BSON("a" << BSON("b" << 99 << "c" << BSONSymbol("mySymbol"))));
+        ASSERT_EQUALS(client.getLastErrorDetailed()["code"].numberInt(),
+                      ErrorCodes::CannotBuildIndexKeys);
+        ASSERT_EQUALS(client.count(_ns), 0U);
+    }
+};
+
+class InsertSymbolInsideNestedArrayIntoIndexWithCollationFails {
+public:
+    void run() {
+        auto opCtx = cc().makeOperationContext();
+        DBDirectClient client(opCtx.get());
+        client.dropCollection(_ns);
+        IndexSpec indexSpec;
+        indexSpec.addKey("a").addOptions(BSON("collation" << BSON("locale"
+                                                                  << "fr")));
+        client.createIndex(_ns, indexSpec);
+        client.insert(_ns, BSON("a" << BSON_ARRAY(99 << BSONSymbol("mySymbol"))));
+        ASSERT_EQUALS(client.getLastErrorDetailed()["code"].numberInt(),
+                      ErrorCodes::CannotBuildIndexKeys);
+        ASSERT_EQUALS(client.count(_ns), 0U);
+    }
+};
+
+class BuildingIndexWithCollationWhenSymbolDataExistsShouldFail {
+public:
+    void run() {
+        auto opCtx = cc().makeOperationContext();
+        DBDirectClient client(opCtx.get());
+        client.dropCollection(_ns);
+        client.insert(_ns, BSON("a" << BSON_ARRAY(99 << BSONSymbol("mySymbol"))));
+        ASSERT_EQUALS(client.count(_ns), 1U);
+        IndexSpec indexSpec;
+        indexSpec.addKey("a").addOptions(BSON("collation" << BSON("locale"
+                                                                  << "fr")));
+        ASSERT_THROWS_CODE(
+            client.createIndex(_ns, indexSpec), UserException, ErrorCodes::CannotBuildIndexKeys);
+    }
+};
+
+class IndexingSymbolWithInheritedCollationShouldFail {
+public:
+    void run() {
+        auto opCtx = cc().makeOperationContext();
+        DBDirectClient client(opCtx.get());
+        client.dropCollection(_ns);
+        BSONObj cmdResult;
+        ASSERT_TRUE(client.runCommand("unittests",
+                                      BSON("create"
+                                           << "indexupdate"
+                                           << "collation"
+                                           << BSON("locale"
+                                                   << "fr")),
+                                      cmdResult));
+        IndexSpec indexSpec;
+        indexSpec.addKey("a");
+        client.createIndex(_ns, indexSpec);
+        client.insert(_ns, BSON("a" << BSON_ARRAY(99 << BSONSymbol("mySymbol"))));
+        ASSERT_EQUALS(client.getLastErrorDetailed()["code"].numberInt(),
+                      ErrorCodes::CannotBuildIndexKeys);
+    }
+};
+
 class IndexUpdateTests : public Suite {
 public:
     IndexUpdateTests() : Suite("indexupdate") {}
 
     void setupTests() {
-        // add<AddKeysToPhaseOne>();
-        // add<InterruptAddKeysToPhaseOne>( false );
-        // add<InterruptAddKeysToPhaseOne>( true );
-        // QUERY_MIGRATION
-        // add<BuildBottomUp>();
-        // add<InterruptBuildBottomUp>( false );
-        // add<InterruptBuildBottomUp>( true );
         add<InsertBuildIgnoreUnique<true>>();
         add<InsertBuildIgnoreUnique<false>>();
         add<InsertBuildEnforceUnique<true>>();
@@ -1035,8 +809,6 @@ public:
         add<InsertBuildIndexInterruptDisallowed>();
         add<InsertBuildIdIndexInterrupt>();
         add<InsertBuildIdIndexInterruptDisallowed>();
-        add<HelpersEnsureIndexInterruptDisallowed>();
-        // add<IndexBuildInProgressTest>();
         add<SameSpecDifferentOption>();
         add<SameSpecSameOptions>();
         add<DifferentSpecSameName>();
@@ -1047,6 +819,13 @@ public:
         add<StorageEngineOptions>();
 
         add<IndexCatatalogFixIndexKey>();
+
+        add<InsertSymbolInsideNestedObjectIntoIndexWithCollationFails>();
+        add<InsertSymbolIntoIndexWithoutCollationSucceeds>();
+        add<InsertSymbolInsideNestedObjectIntoIndexWithCollationFails>();
+        add<InsertSymbolInsideNestedArrayIntoIndexWithCollationFails>();
+        add<BuildingIndexWithCollationWhenSymbolDataExistsShouldFail>();
+        add<IndexingSymbolWithInheritedCollationShouldFail>();
     }
 } indexUpdateTests;
 

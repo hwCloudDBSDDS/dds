@@ -129,6 +129,8 @@ public:
 
     void advanceGeneration() override;
 
+    void requireOwnedObjects() override;
+
     double getNumber(const char* field) override;
     int getNumberInt(const char* field) override;
     long long getNumberLongLong(const char* field) override;
@@ -165,8 +167,7 @@ public:
 
     void injectNative(const char* field, NativeFunction func, void* data = 0) override;
 
-    ScriptingFunction _createFunction(const char* code,
-                                      ScriptingFunction functionNumber = 0) override;
+    ScriptingFunction _createFunction(const char* code) override;
 
     OperationContext* getOpContext() const;
 

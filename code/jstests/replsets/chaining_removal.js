@@ -2,6 +2,8 @@
 
 (function() {
     "use strict";
+    load("jstests/replsets/rslib.js");
+
     var numNodes = 5;
     var host = getHostName();
     var name = "chaining_removal";
@@ -19,38 +21,35 @@
             {_id: 4, host: nodes[4].host, priority: 0},
         ],
     });
-    replTest.waitForState(nodes[0], ReplSetTest.State.PRIMARY);
-    replTest.awaitNodesAgreeOnPrimary();
+    replTest.awaitNodesAgreeOnPrimary(replTest.kDefaultTimeoutMS, nodes, 0);
     var primary = replTest.getPrimary();
     replTest.awaitReplication();
 
-    // Force node 1 to sync directly from node 0.
-    assert.commandWorked(nodes[1].getDB("admin").runCommand({"replSetSyncFrom": nodes[0].host}));
-    var res;
-    assert.soon(
-        function() {
-            res = nodes[1].getDB("admin").runCommand({"replSetGetStatus": 1});
-            return res.syncingTo === nodes[0].host;
-        },
-        function() {
-            return "node 1 failed to start syncing from node 0: " + tojson(res);
-        });
+    // When setting up chaining on slow machines, we do not want slow writes or delayed heartbeats
+    // to cause our nodes to invalidate the sync source provided in the 'replSetSyncFrom' command.
+    // To achieve this, we disable the server parameter 'maxSyncSourceLagSecs' (see
+    // repl_settings_init.cpp and TopologyCoordinatorImpl::Options) in
+    // TopologyCoordinatorImpl::shouldChangeSyncSource().
+    assert.commandWorked(nodes[1].getDB('admin').runCommand(
+        {configureFailPoint: 'disableMaxSyncSourceLagSecs', mode: 'alwaysOn'}));
+    assert.commandWorked(nodes[4].getDB('admin').runCommand(
+        {configureFailPoint: 'disableMaxSyncSourceLagSecs', mode: 'alwaysOn'}));
 
+    // Force node 1 to sync directly from node 0.
+    syncFrom(nodes[1], nodes[0], replTest);
     // Force node 4 to sync through node 1.
-    assert.commandWorked(nodes[4].getDB("admin").runCommand({"replSetSyncFrom": nodes[1].host}));
-    assert.soon(
-        function() {
-            res = nodes[4].getDB("admin").runCommand({"replSetGetStatus": 1});
-            return res.syncingTo === nodes[1].host;
-        },
-        function() {
-            return "node 4 failed to start chaining through node 1: " + tojson(res);
-        });
+    syncFrom(nodes[4], nodes[1], replTest);
 
     // write that should reach all nodes
     var timeout = 60 * 1000;
     var options = {writeConcern: {w: numNodes, wtimeout: timeout}};
     assert.writeOK(primary.getDB(name).foo.insert({x: 1}, options));
+
+    // Re-enable 'maxSyncSourceLagSecs' checking on sync source.
+    assert.commandWorked(nodes[1].getDB('admin').runCommand(
+        {configureFailPoint: 'disableMaxSyncSourceLagSecs', mode: 'off'}));
+    assert.commandWorked(nodes[4].getDB('admin').runCommand(
+        {configureFailPoint: 'disableMaxSyncSourceLagSecs', mode: 'off'}));
 
     var config = primary.getDB("local").system.replset.findOne();
     config.members.pop();

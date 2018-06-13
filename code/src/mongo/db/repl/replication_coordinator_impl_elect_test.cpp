@@ -33,9 +33,9 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/repl/is_master_response.h"
+#include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/repl/repl_set_heartbeat_args.h"
 #include "mongo/db/repl/repl_set_heartbeat_response.h"
-#include "mongo/db/repl/replica_set_config.h"
 #include "mongo/db/repl/replication_coordinator_external_state_mock.h"
 #include "mongo/db/repl/replication_coordinator_impl.h"
 #include "mongo/db/repl/replication_coordinator_test_fixture.h"
@@ -64,7 +64,7 @@ void ReplCoordElectTest::assertStartSuccess(const BSONObj& configDoc, const Host
 
 void ReplCoordElectTest::simulateFreshEnoughForElectability() {
     ReplicationCoordinatorImpl* replCoord = getReplCoord();
-    ReplicaSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
+    ReplSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
     NetworkInterfaceMock* net = getNet();
     net->enterNetwork();
     for (int i = 0; i < rsConfig.getNumMembers() - 1; ++i) {
@@ -155,7 +155,7 @@ TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyElectableNode) {
 
     ASSERT(getReplCoord()->getMemberState().primary())
         << getReplCoord()->getMemberState().toString();
-    ASSERT(getReplCoord()->isWaitingForApplierToDrain());
+    ASSERT(getReplCoord()->getApplierState() == ReplicationCoordinator::ApplierState::Draining);
 
     const auto txnPtr = makeOperationContext();
     auto& txn = *txnPtr;
@@ -165,7 +165,7 @@ TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyElectableNode) {
     getReplCoord()->fillIsMasterForReplSet(&imResponse);
     ASSERT_FALSE(imResponse.isMaster()) << imResponse.toBSON().toString();
     ASSERT_TRUE(imResponse.isSecondary()) << imResponse.toBSON().toString();
-    getReplCoord()->signalDrainComplete(&txn);
+    getReplCoord()->signalDrainComplete(&txn, getReplCoord()->getTerm());
     getReplCoord()->fillIsMasterForReplSet(&imResponse);
     ASSERT_TRUE(imResponse.isMaster()) << imResponse.toBSON().toString();
     ASSERT_FALSE(imResponse.isSecondary()) << imResponse.toBSON().toString();
@@ -189,7 +189,7 @@ TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyNode) {
 
     ASSERT(getReplCoord()->getMemberState().primary())
         << getReplCoord()->getMemberState().toString();
-    ASSERT(getReplCoord()->isWaitingForApplierToDrain());
+    ASSERT(getReplCoord()->getApplierState() == ReplicationCoordinator::ApplierState::Draining);
 
     const auto txnPtr = makeOperationContext();
     auto& txn = *txnPtr;
@@ -199,7 +199,7 @@ TEST_F(ReplCoordElectTest, ElectionSucceedsWhenNodeIsTheOnlyNode) {
     getReplCoord()->fillIsMasterForReplSet(&imResponse);
     ASSERT_FALSE(imResponse.isMaster()) << imResponse.toBSON().toString();
     ASSERT_TRUE(imResponse.isSecondary()) << imResponse.toBSON().toString();
-    getReplCoord()->signalDrainComplete(&txn);
+    getReplCoord()->signalDrainComplete(&txn, getReplCoord()->getTerm());
     getReplCoord()->fillIsMasterForReplSet(&imResponse);
     ASSERT_TRUE(imResponse.isMaster()) << imResponse.toBSON().toString();
     ASSERT_FALSE(imResponse.isSecondary()) << imResponse.toBSON().toString();
@@ -244,7 +244,7 @@ TEST_F(ReplCoordElectTest, ElectionFailsWhenOneNodeVotesNay) {
                                            << BSON("_id" << 3 << "host"
                                                          << "node3:12345")));
     assertStartSuccess(configObj, HostAndPort("node1", 12345));
-    ReplicaSetConfig config = assertMakeRSConfig(configObj);
+    ReplSetConfig config = assertMakeRSConfig(configObj);
 
     OperationContextNoop txn;
     OpTime time1(Timestamp(100, 1), 0);
@@ -291,7 +291,7 @@ TEST_F(ReplCoordElectTest, VotesWithStringValuesAreNotCountedAsYeas) {
                                            << BSON("_id" << 3 << "host"
                                                          << "node3:12345")));
     assertStartSuccess(configObj, HostAndPort("node1", 12345));
-    ReplicaSetConfig config = assertMakeRSConfig(configObj);
+    ReplSetConfig config = assertMakeRSConfig(configObj);
 
     OperationContextNoop txn;
     OpTime time1(Timestamp(100, 1), 0);
@@ -339,7 +339,7 @@ TEST_F(ReplCoordElectTest, ElectionsAbortWhenNodeTransitionsToRollbackState) {
                                            << BSON("_id" << 3 << "host"
                                                          << "node3:12345")));
     assertStartSuccess(configObj, HostAndPort("node1", 12345));
-    ReplicaSetConfig config = assertMakeRSConfig(configObj);
+    ReplSetConfig config = assertMakeRSConfig(configObj);
 
     OperationContextNoop txn;
     OpTime time1(Timestamp(100, 1), 0);
@@ -390,7 +390,7 @@ TEST_F(ReplCoordElectTest, NodeWillNotStandForElectionDuringHeartbeatReconfig) {
     NetworkInterfaceMock* net = getNet();
     net->enterNetwork();
     ReplSetHeartbeatResponse hbResp2;
-    ReplicaSetConfig config;
+    ReplSetConfig config;
     config.initialize(BSON("_id"
                            << "mySet"
                            << "version"
@@ -426,7 +426,7 @@ TEST_F(ReplCoordElectTest, NodeWillNotStandForElectionDuringHeartbeatReconfig) {
 
     // receive sufficient heartbeats to trigger an election
     ReplicationCoordinatorImpl* replCoord = getReplCoord();
-    ReplicaSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
+    ReplSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
     net->enterNetwork();
     for (int i = 0; i < 2; ++i) {
         const NetworkInterfaceMock::NetworkOperationIterator noi = net->getNextReadyRequest();
@@ -473,7 +473,7 @@ TEST_F(ReplCoordElectTest, StepsDownRemoteIfNodeHasHigherPriorityThanCurrentPrim
                                            << BSON("_id" << 3 << "host"
                                                          << "node3:12345")));
     assertStartSuccess(configObj, HostAndPort("node1", 12345));
-    ReplicaSetConfig config = assertMakeRSConfig(configObj);
+    ReplSetConfig config = assertMakeRSConfig(configObj);
 
     auto replCoord = getReplCoord();
 
@@ -516,6 +516,7 @@ TEST_F(ReplCoordElectTest, StepsDownRemoteIfNodeHasHigherPriorityThanCurrentPrim
     auto&& request = noi->getRequest();
     log() << request.target << " processing " << request.cmdObj;
     ASSERT_EQUALS("replSetStepDown", request.cmdObj.firstElement().fieldNameStringData());
+    ASSERT_EQUALS(1LL, request.cmdObj["secondaryCatchUpPeriodSecs"].safeNumberLong());
     auto target = request.target;
     ASSERT_EQUALS(HostAndPort("node2", 12345), target);
     auto response = makeResponseStatus(BSON("ok" << 1));

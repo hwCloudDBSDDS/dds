@@ -25,14 +25,17 @@ __schema_add_table(WT_SESSION_IMPL *session,
 	/* Make sure the metadata is open before getting other locks. */
 	WT_RET(__wt_metadata_cursor(session, NULL));
 
-	WT_WITH_TABLE_LOCK(session, ret,
+	WT_WITH_TABLE_READ_LOCK(session,
 	    ret = __wt_schema_open_table(
 	    session, name, namelen, ok_incomplete, &table));
 	WT_RET(ret);
 
-	bucket = table->name_hash % WT_HASH_ARRAY_SIZE;
-	TAILQ_INSERT_HEAD(&session->tables, table, q);
-	TAILQ_INSERT_HEAD(&session->tablehash[bucket], table, hashq);
+	if (!table->is_simple || F_ISSET(S2C(session), WT_CONN_TABLE_CACHE)) {
+		bucket = table->name_hash % WT_HASH_ARRAY_SIZE;
+		TAILQ_INSERT_HEAD(&session->tables, table, q);
+		TAILQ_INSERT_HEAD(&session->tablehash[bucket], table, hashq);
+	}
+
 	*tablep = table;
 
 	return (0);
@@ -112,11 +115,14 @@ __wt_schema_get_table(WT_SESSION_IMPL *session,
  * __wt_schema_release_table --
  *	Release a table handle.
  */
-void
+int
 __wt_schema_release_table(WT_SESSION_IMPL *session, WT_TABLE *table)
 {
 	WT_ASSERT(session, table->refcnt > 0);
-	--table->refcnt;
+	if (--table->refcnt == 0 &&
+	    table->is_simple && !F_ISSET(S2C(session), WT_CONN_TABLE_CACHE))
+		WT_RET(__wt_schema_destroy_table(session, &table));
+	return (0);
 }
 
 /*
@@ -229,9 +235,11 @@ __wt_schema_remove_table(WT_SESSION_IMPL *session, WT_TABLE *table)
 	uint64_t bucket;
 	WT_ASSERT(session, table->refcnt <= 1);
 
-	bucket = table->name_hash % WT_HASH_ARRAY_SIZE;
-	TAILQ_REMOVE(&session->tables, table, q);
-	TAILQ_REMOVE(&session->tablehash[bucket], table, hashq);
+	if (!table->is_simple || F_ISSET(S2C(session), WT_CONN_TABLE_CACHE)) {
+		bucket = table->name_hash % WT_HASH_ARRAY_SIZE;
+		TAILQ_REMOVE(&session->tables, table, q);
+		TAILQ_REMOVE(&session->tablehash[bucket], table, hashq);
+	}
 	return (__wt_schema_destroy_table(session, &table));
 }
 
@@ -248,4 +256,35 @@ __wt_schema_close_tables(WT_SESSION_IMPL *session)
 	while ((table = TAILQ_FIRST(&session->tables)) != NULL)
 		WT_TRET(__wt_schema_remove_table(session, table));
 	return (ret);
+}
+
+/*
+ * __wt_schema_sweep_tables --
+ *	Close all idle, obsolete tables in a session.
+ */
+int
+__wt_schema_sweep_tables(WT_SESSION_IMPL *session)
+{
+	WT_TABLE *table, *next;
+	uint64_t schema_gen;
+	bool old_table_busy;
+
+	WT_ORDERED_READ(schema_gen, S2C(session)->schema_gen);
+	if (schema_gen == session->table_sweep_gen)
+		return (0);
+
+	old_table_busy = false;
+	TAILQ_FOREACH_SAFE(table, &session->tables, q, next)
+		if (table->schema_gen != schema_gen) {
+			if (table->refcnt == 0)
+				WT_RET(__wt_schema_remove_table(
+				    session, table));
+			else
+				old_table_busy = true;
+		}
+
+	if (!old_table_busy)
+		session->table_sweep_gen = schema_gen;
+
+	return (0);
 }

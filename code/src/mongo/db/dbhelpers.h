@@ -32,7 +32,6 @@
 #include <memory>
 
 #include "mongo/db/db.h"
-#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/data_protector.h"
 
@@ -53,23 +52,6 @@ struct WriteConcernOptions;
  */
 struct Helpers {
     class RemoveSaver;
-
-    /* ensure the specified index exists.
-
-       @param keyPattern key pattern, e.g., { ts : 1 }
-       @param name index name, e.g., "name_1"
-
-       This method can be a little (not much) cpu-slow, so you may wish to use
-         OCCASIONALLY ensureIndex(...);
-
-       Note: does nothing if collection does not yet exist.
-    */
-    static void ensureIndex(OperationContext* txn,
-                            Collection* collection,
-                            BSONObj keyPattern,
-                            IndexDescriptor::IndexVersion indexVersion,
-                            bool unique,
-                            const char* name);
 
     /* fetch a single object from collection ns that matches query.
        set your db SavedContext first.
@@ -159,10 +141,12 @@ struct Helpers {
     /**
      * Takes a namespace range, specified by a min and max and qualified by an index pattern,
      * and removes all the documents in that range found by iterating
-     * over the given index. Caller is responsible for insuring that min/max are
+     * over the given index. Caller is responsible for ensuring that min/max are
      * compatible with the given keyPattern (e.g min={a:100} is compatible with
      * keyPattern={a:1,b:1} since it can be extended to {a:100,b:minKey}, but
      * min={b:100} is not compatible).
+     *
+     * Returns time spent waiting for majority replication in replWaitDuration.
      *
      * Caller must hold a write lock on 'ns'
      *
@@ -175,6 +159,7 @@ struct Helpers {
                                  const KeyRange& range,
                                  BoundInclusion boundInclusion,
                                  const WriteConcernOptions& secondaryThrottle,
+                                 Milliseconds& replWaitDuration,
                                  RemoveSaver* callback = NULL,
                                  bool fromMigrate = false,
                                  bool onlyRemoveOrphanedDocs = false);

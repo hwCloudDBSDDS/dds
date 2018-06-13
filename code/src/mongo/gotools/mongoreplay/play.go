@@ -21,6 +21,7 @@ type PlayCommand struct {
 	QueueTime    int     `long:"queueTime" description:"don't queue ops much further in the future than this number of seconds" default:"15"`
 	NoPreprocess bool    `long:"no-preprocess" description:"don't preprocess the input file to premap data such as mongo cursorIDs"`
 	Gzip         bool    `long:"gzip" description:"decompress gzipped input"`
+	Collect      string  `long:"collect" description:"Stat collection format; 'format' option uses the --format string" choice:"json" choice:"format" choice:"none" default:"none"`
 }
 
 const queueGranularity = 1000
@@ -179,7 +180,7 @@ func (play *PlayCommand) Execute(args []string) error {
 	}
 	play.GlobalOpts.SetLogging()
 
-	statColl, err := newStatCollector(play.StatOptions, true, true)
+	statColl, err := newStatCollector(play.StatOptions, play.Collect, true, true)
 	if err != nil {
 		return err
 	}
@@ -239,7 +240,7 @@ func Play(context *ExecutionContext,
 	repeat int,
 	queueTime int) error {
 
-	sessionChans := make(map[string]chan<- *RecordedOp)
+	sessionChans := make(map[int64]chan<- *RecordedOp)
 	var playbackStartTime, recordingStartTime time.Time
 	var connectionID int64
 	var opCounter int
@@ -275,30 +276,23 @@ func Play(context *ExecutionContext,
 			time.Sleep(op.PlayAt.Add(time.Duration(-queueTime) * time.Second).Sub(time.Now()))
 		}
 
-		var connectionString string
-		if op.OpCode() == OpCodeReply || op.OpCode() == OpCodeCommandReply {
-			connectionString = op.ReversedConnectionString()
-		} else {
-			connectionString = op.ConnectionString()
-		}
-		sessionChan, ok := sessionChans[connectionString]
+		sessionChan, ok := sessionChans[op.SeenConnectionNum]
 		if !ok {
 			connectionID++
 			sessionChan = context.newExecutionSession(url, op.PlayAt.Time, connectionID)
-			sessionChans[connectionString] = sessionChan
+			sessionChans[op.SeenConnectionNum] = sessionChan
 		}
 		if op.EOF {
 			userInfoLogger.Logv(DebugLow, "EOF Seen in playback")
 			close(sessionChan)
-			delete(sessionChans, connectionString)
+			delete(sessionChans, op.SeenConnectionNum)
 		} else {
 			sessionChan <- op
-
 		}
 	}
-	for connectionString, sessionChan := range sessionChans {
+	for connectionNum, sessionChan := range sessionChans {
 		close(sessionChan)
-		delete(sessionChans, connectionString)
+		delete(sessionChans, connectionNum)
 	}
 	toolDebugLogger.Logvf(Info, "Waiting for sessions to finish")
 	context.SessionChansWaitGroup.Wait()

@@ -187,7 +187,7 @@ class CPPIntegrationTestCase(TestCase):
     def configure(self, fixture, *args, **kwargs):
         TestCase.configure(self, fixture, *args, **kwargs)
 
-        self.program_options["connectionString"] = self.fixture.get_connection_string()
+        self.program_options["connectionString"] = self.fixture.get_internal_connection_string()
 
     def run_test(self):
         try:
@@ -362,6 +362,19 @@ class JSTestCase(TestCase):
             # Directory already exists.
             pass
 
+        process_kwargs = self.shell_options.get("process_kwargs", {}).copy()
+
+        if "KRB5_CONFIG" in process_kwargs and "KRB5CCNAME" not in process_kwargs:
+            # Use a job-specific credential cache for JavaScript tests involving Kerberos.
+            krb5_dir = os.path.join(data_dir, "krb5")
+            try:
+                os.makedirs(krb5_dir)
+            except os.error:
+                pass
+            process_kwargs["KRB5CCNAME"] = "DIR:" + os.path.join(krb5_dir, ".")
+
+        self.shell_options["process_kwargs"] = process_kwargs
+
     def _get_data_dir(self, global_vars):
         """
         Returns the value that the mongo shell should set for the
@@ -408,11 +421,13 @@ class JSTestCase(TestCase):
         is_main_test = True
         if thread_id > 0:
             is_main_test = False
-        return core.programs.mongo_shell_program(logger,
-                                                 executable=self.shell_executable,
-                                                 filename=self.js_filename,
-                                                 isMainTest=is_main_test,
-                                                 **self.shell_options)
+        return core.programs.mongo_shell_program(
+            logger,
+            executable=self.shell_executable,
+            filename=self.js_filename,
+            connection_string=self.fixture.get_driver_connection_url(),
+            isMainTest=is_main_test,
+            **self.shell_options)
 
     def _run_test_in_thread(self, thread_id):
         # Make a logger for each thread.

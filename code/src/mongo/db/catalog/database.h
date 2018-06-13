@@ -149,7 +149,12 @@ public:
 
     const DatabaseCatalogEntry* getDatabaseCatalogEntry() const;
 
+    /**
+     * dropCollection() will refuse to drop system collections. Use dropCollectionEvenIfSystem() if
+     * that is required.
+     */
     Status dropCollection(OperationContext* txn, StringData fullns);
+    Status dropCollectionEvenIfSystem(OperationContext* txn, const NamespaceString& fullns);
 
     Status dropView(OperationContext* txn, StringData fullns);
 
@@ -193,15 +198,6 @@ public:
      * Must be called with the specified database locked in X mode.
      */
     static void dropDatabase(OperationContext* txn, Database* db);
-
-    /**
-     * @return name of an existing database with same text name but different
-     * casing, if one exists.  Otherwise the empty std::string is returned.  If
-     * 'duplicates' is specified, it is filled with all duplicate names.
-     // TODO move???
-     */
-    static std::string duplicateUncasedName(const std::string& name,
-                                            std::set<std::string>* duplicates = 0);
 
     static Status validateDBName(StringData dbname);
 

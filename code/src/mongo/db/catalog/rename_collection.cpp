@@ -41,6 +41,8 @@
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_create.h"
 #include "mongo/db/client.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builder.h"
@@ -69,7 +71,15 @@ Status renameCollection(OperationContext* txn,
     DisableDocumentValidation validationDisabler(txn);
 
     ScopedTransaction transaction(txn, MODE_X);
-    Lock::GlobalWrite globalWriteLock(txn->lockState());
+    boost::optional<Lock::GlobalWrite> globalWriteLock;
+    boost::optional<Lock::DBLock> dbWriteLock;
+
+    // If the rename is known not to be a cross-database rename, just a database lock suffices.
+    if (source.db() == target.db())
+        dbWriteLock.emplace(txn->lockState(), source.db(), MODE_X);
+    else
+        globalWriteLock.emplace(txn->lockState());
+
     // We stay in source context the whole time. This is mostly to set the CurOp namespace.
     OldClientContext ctx(txn, source.ns());
 
@@ -125,7 +135,7 @@ Status renameCollection(OperationContext* txn,
 
     Database* const targetDB = dbHolder().openDb(txn, target.db());
 
-    {
+    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         WriteUnitOfWork wunit(txn);
 
         // Check if the target namespace exists and if dropTarget is true.
@@ -166,6 +176,7 @@ Status renameCollection(OperationContext* txn,
 
         wunit.commit();
     }
+    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "renameCollection", target.ns());
 
     // If we get here, we are renaming across databases, so we must copy all the data and
     // indexes, then remove the source collection.

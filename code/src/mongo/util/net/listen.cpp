@@ -40,6 +40,7 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/asio_message_port.h"
@@ -291,7 +292,10 @@ void Listener::initAndListen() {
 
         maxSelectTime.tv_sec = 0;
         maxSelectTime.tv_usec = 250000;
-        const int ret = select(maxfd + 1, fds, nullptr, nullptr, &maxSelectTime);
+        const int ret = [&] {
+            MONGO_IDLE_THREAD_BLOCK;
+            return select(maxfd + 1, fds, nullptr, nullptr, &maxSelectTime);
+        }();
 
         if (ret == 0) {
             continue;
@@ -455,7 +459,9 @@ void Listener::initAndListen() {
         events[count] = ev->get();
     }
 
-    while (!inShutdown()) {
+    // The check against _finished allows us to actually stop the listener by signalling it through
+    // the _finished flag.
+    while (!inShutdown() && !_finished.load()) {
         // Turn on listening for accept-ready sockets
         for (size_t count = 0; count < _socks.size(); ++count) {
             int status = WSAEventSelect(_socks[count], events[count], FD_ACCEPT | FD_CLOSE);

@@ -26,6 +26,7 @@ extern int   __wt_optopt;		/* character checked for validity */
 extern int   __wt_optreset;		/* reset getopt */
 extern char *__wt_optarg;		/* argument associated with option */
 
+int	 util_alter(WT_SESSION *, int, char *[]);
 int	 util_backup(WT_SESSION *, int, char *[]);
 int	 util_cerr(WT_CURSOR *, const char *, int);
 int	 util_compact(WT_SESSION *, int, char *[]);
@@ -39,7 +40,6 @@ int	 util_flush(WT_SESSION *, const char *);
 int	 util_list(WT_SESSION *, int, char *[]);
 int	 util_load(WT_SESSION *, int, char *[]);
 int	 util_loadtext(WT_SESSION *, int, char *[]);
-char	*util_name(WT_SESSION *, const char *, const char *);
 int	 util_printlog(WT_SESSION *, int, char *[]);
 int	 util_read(WT_SESSION *, int, char *[]);
 int	 util_read_line(WT_SESSION *, ULINE *, bool, bool *);
@@ -48,6 +48,8 @@ int	 util_rename(WT_SESSION *, int, char *[]);
 int	 util_salvage(WT_SESSION *, int, char *[]);
 int	 util_stat(WT_SESSION *, int, char *[]);
 int	 util_str2recno(WT_SESSION *, const char *p, uint64_t *recnop);
+int	 util_truncate(WT_SESSION *, int, char *[]);
 int	 util_upgrade(WT_SESSION *, int, char *[]);
+char	*util_uri(WT_SESSION *, const char *, const char *);
 int	 util_verify(WT_SESSION *, int, char *[]);
 int	 util_write(WT_SESSION *, int, char *[]);

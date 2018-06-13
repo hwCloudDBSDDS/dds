@@ -65,7 +65,7 @@ tasks:
               ./build_posix/reconf
               ${configure_env_vars|} ./configure --enable-diagnostic --enable-python --enable-zlib --enable-strict --enable-verbose
               ${make_command|make} ${smp_command|} 2>&1
-              ${make_command|make} VERBOSE=1 check 2>&1
+              TESTUTIL_ENABLE_LONG_TESTS=1 ${make_command|make} VERBOSE=1 check 2>&1
             fi
       - command: archive.targz_pack
         params:
@@ -152,20 +152,6 @@ buildvariants:
     test_env_vars: LD_LIBRARY_PATH=`pwd`/.libs
     smp_command: -j $(grep -c ^processor /proc/cpuinfo)
     configure_env_vars: CC=/opt/mongodbtoolchain/bin/gcc CXX=/opt/mongodbtoolchain/bin/g++
-  tasks:
-    - name: compile
-    - name: unit-test
-    - name: fops
-
-- name: solaris
-  display_name: Solaris
-  run_on:
-  - solaris
-  expansions:
-    make_command: PATH=/opt/mongodbtoolchain/bin:$PATH gmake
-    test_env_vars: LD_LIBRARY_PATH=`pwd`/.libs
-    smp_command: -j $(kstat cpu | sort -u | grep -c "^module")
-    configure_env_vars: PATH=/opt/mongodbtoolchain/bin:$PATH CFLAGS="-m64"
   tasks:
     - name: compile
     - name: unit-test

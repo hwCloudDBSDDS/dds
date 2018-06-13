@@ -118,8 +118,23 @@ lsm_config = [
     ]),
 ]
 
+file_runtime_config = [
+    Config('access_pattern_hint', 'none', r'''
+        It is recommended that workloads that consist primarily of
+        updates and/or point queries specify \c random.  Workloads that
+        do many cursor scans through large ranges of data specify
+        \c sequential and other workloads specify \c none.  The
+        option leads to an advisory call to an appropriate operating
+        system API where available''',
+        choices=['none', 'random', 'sequential']),
+    Config('cache_resident', 'false', r'''
+        do not ever evict the object's pages from cache. Not compatible with
+        LSM tables; see @ref tuning_cache_resident for more information''',
+        type='boolean'),
+]
+
 # Per-file configuration
-file_config = format_meta + [
+file_config = format_meta + file_runtime_config + [
     Config('block_allocation', 'best', r'''
         configure block allocation. Permitted values are \c "first" or
         \c "best"; the \c "first" configuration uses a first-available
@@ -138,10 +153,6 @@ file_config = format_meta + [
         WT_CONNECTION::add_compressor.  If WiredTiger has builtin support for
         \c "lz4", \c "snappy", \c "zlib" or \c "zstd" compression, these names
         are also available.  See @ref compression for more information'''),
-    Config('cache_resident', 'false', r'''
-        do not ever evict the object's pages from cache. Not compatible with
-        LSM tables; see @ref tuning_cache_resident for more information''',
-        type='boolean'),
     Config('checksum', 'uncompressed', r'''
         configure block checksums; permitted values are <code>on</code>
         (checksum all blocks), <code>off</code> (checksum no blocks) and
@@ -284,12 +295,12 @@ file_config = format_meta + [
     Config('split_deepen_per_child', '0', r'''
         entries allocated per child when deepening the tree''',
         type='int', undoc=True),
-    Config('split_pct', '75', r'''
+    Config('split_pct', '90', r'''
         the Btree page split size as a percentage of the maximum Btree
         page size, that is, when a Btree page is split, it will be
         split into smaller pages, where each page is the specified
         percentage of the maximum Btree page size''',
-        min='25', max='100'),
+        min='50', max='100'),
 ]
 
 # File metadata, including both configurable and non-configurable (internal)
@@ -395,7 +406,7 @@ connection_runtime_config = [
     Config('eviction', '', r'''
         eviction configuration options''',
         type='category', subconfig=[
-            Config('threads_max', '1', r'''
+            Config('threads_max', '8', r'''
                 maximum number of threads WiredTiger will start to help evict
                 pages from cache. The number of threads started will vary
                 depending on the current eviction load. Each eviction worker
@@ -513,6 +524,7 @@ connection_runtime_config = [
             'checkpoint',
             'compact',
             'evict',
+            'evict_stuck',
             'evictserver',
             'fileops',
             'handleops',
@@ -526,6 +538,7 @@ connection_runtime_config = [
             'rebalance',
             'reconcile',
             'recovery',
+            'recovery_progress',
             'salvage',
             'shared_cache',
             'split',
@@ -705,7 +718,7 @@ wiredtiger_open_common =\
         ]),
     Config('extensions', '', r'''
         list of shared library extensions to load (using dlopen).
-        Any values specified to an library extension are passed to
+        Any values specified to a library extension are passed to
         WT_CONNECTION::load_extension as the \c config parameter
         (for example,
         <code>extensions=(/path/ext.so={entry=my_entry})</code>)''',
@@ -719,7 +732,7 @@ wiredtiger_open_common =\
     Config('hazard_max', '1000', r'''
         maximum number of simultaneous hazard pointers per session
         handle''',
-        min='15'),
+        min=15, undoc=True),
     Config('mmap', 'true', r'''
         Use memory mapping to access files when possible''',
         type='boolean'),
@@ -740,6 +753,9 @@ wiredtiger_open_common =\
     Config('session_scratch_max', '2MB', r'''
         maximum memory to cache in each session''',
         type='int', undoc=True),
+    Config('session_table_cache', 'true', r'''
+        Maintain a per-session cache of tables''',
+        type='boolean'),
     Config('transaction_sync', '', r'''
         how to sync log records when the transaction commits''',
         type='category', subconfig=[
@@ -826,6 +842,8 @@ methods = {
 
 'WT_CURSOR.reconfigure' : Method(cursor_runtime_config),
 
+'WT_SESSION.alter' : Method(file_runtime_config),
+
 'WT_SESSION.close' : Method([]),
 
 'WT_SESSION.compact' : Method([
@@ -847,9 +865,10 @@ methods = {
 
 'WT_SESSION.drop' : Method([
     Config('checkpoint_wait', 'true', r'''
-        wait for the checkpoint lock, if \c checkpoint_wait=false, perform
-        the drop operation without taking a lock, returning EBUSY if the
-        operation conflicts with a running checkpoint''',
+        wait for concurrent checkpoints to complete before attempting the drop
+        operation. If \c checkpoint_wait=false, attempt the drop operation
+        without waiting, returning EBUSY if the operation conflicts with a
+        running checkpoint''',
         type='boolean', undoc=True),
     Config('force', 'false', r'''
         return success if the object does not exist''',
@@ -1119,6 +1138,10 @@ methods = {
         Config('to', '', r'''
             drop all snapshots up to and including the specified name'''),
     ]),
+    Config('include_updates', 'false', r'''
+        make updates from the current transaction visible to users of the
+        named snapshot.  Transactions started with such a named snapshot are
+        restricted to being read-only''', type='boolean'),
     Config('name', '', r'''specify a name for the snapshot'''),
 ]),
 

@@ -35,7 +35,6 @@
 #include "mongo/bson/oid.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/s/active_migrations_registry.h"
-#include "mongo/db/s/collection_range_deleter.h"
 #include "mongo/db/s/migration_destination_manager.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/executor/thread_pool_task_executor.h"
@@ -43,8 +42,6 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/unordered_map.h"
-#include "mongo/util/concurrency/ticketholder.h"
-#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -238,24 +235,6 @@ public:
     void setGlobalInitMethodForTest(GlobalInitFunc func);
 
     /**
-     * Schedules for the range to clean of the given namespace to be deleted.
-     * Behavior can be modified through setScheduleCleanupFunctionForTest.
-     */
-    void scheduleCleanup(const NamespaceString& nss);
-
-    /**
-     * Returns a pointer to the collection range deleter task executor.
-     */
-    executor::ThreadPoolTaskExecutor* getRangeDeleterTaskExecutor();
-
-    /**
-     * Sets the function used by scheduleWorkOnRangeDeleterTaskExecutor to
-     * schedule work. Used for mocking the executor for testing. See the ShardingState
-     * for the default implementation of _scheduleWorkFn.
-     */
-    void setScheduleCleanupFunctionForTest(RangeDeleterCleanupNotificationFunc fn);
-
-    /**
      * If started with --shardsvr, initializes sharding awareness from the shardIdentity document
      * on disk, if there is one.
      * If started with --shardsvr in queryableBackupMode, initializes sharding awareness from the
@@ -347,16 +326,8 @@ private:
      * Refreshes collection metadata by asking the config server for the latest information and
      * returns the latest version at the time the reload was done. This call does network I/O and
      * should never be called with a lock.
-     *
-     * The metadataForDiff argument indicates that the specified metadata should be used as a base
-     * from which to only load the differences. If nullptr is passed, a full reload will be done.
      */
-    StatusWith<ChunkVersion> _refreshMetadata(OperationContext* txn,
-                                              const NamespaceString& nss,
-                                              const CollectionMetadata* metadataForDiff);
-
-    // Initializes a TaskExecutor for cleaning up orphaned ranges
-    void _initializeRangeDeleterTaskExecutor();
+    ChunkVersion _refreshMetadata(OperationContext* opCtx, const NamespaceString& nss);
 
     // Manages the state of the migration recipient shard
     MigrationDestinationManager _migrationDestManager;
@@ -379,9 +350,6 @@ private:
     // Sets the shard name for this host (comes through setShardVersion)
     std::string _shardName;
 
-    // Protects from hitting the config server from too many threads at once
-    TicketHolder _configServerTickets;
-
     // Cache of collection metadata on this shard. It is not safe to look-up values from this map
     // without holding some form of collection lock. It is only safe to add/remove values when
     // holding X lock on the respective namespace.
@@ -396,13 +364,6 @@ private:
 
     // Function for initializing the external sharding state components not owned here.
     GlobalInitFunc _globalInit;
-
-    // Function for scheduling work on the _rangeDeleterTaskExecutor.
-    // Used in call to scheduleCleanup(NamespaceString).
-    RangeDeleterCleanupNotificationFunc _scheduleWorkFn;
-
-    // Task executor for the collection range deleter.
-    std::unique_ptr<executor::ThreadPoolTaskExecutor> _rangeDeleterTaskExecutor;
 };
 
 }  // namespace mongo

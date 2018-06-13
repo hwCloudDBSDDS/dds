@@ -38,6 +38,7 @@
 #include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/auth/internal_user_auth.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/feature_compatibility_version_command_parser.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/rpc/factory.h"
@@ -218,8 +219,7 @@ void NetworkInterfaceASIO::_authenticate(AsyncOp* op) {
     };
 
     auto params = getInternalUserAuthParams();
-    auth::authenticateClient(
-        params, op->request().target.host(), clientName, runCommandHook, authHook);
+    auth::authenticateClient(params, op->request().target, clientName, runCommandHook, authHook);
 }
 
 }  // namespace executor

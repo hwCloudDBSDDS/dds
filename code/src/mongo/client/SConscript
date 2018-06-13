@@ -60,6 +60,7 @@ saslClientSource = [
     'sasl_client_session.cpp',
     'sasl_plain_client_conversation.cpp',
     'sasl_scramsha1_client_conversation.cpp',
+    'scram_sha1_client_cache.cpp',
 ]
 
 # Add in actual sasl dependencies if sasl is enabled, otherwise
@@ -244,20 +245,6 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/transport/transport_layer_legacy',
         '$BUILD_DIR/mongo/util/net/network',
         '$BUILD_DIR/mongo/util/version_impl',
-    ],
-)
-
-env.Library(
-    target='parallel',
-    source=[
-        'parallel.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/bson/dotted_path_support',
-        '$BUILD_DIR/mongo/s/coreshard',
-        '$BUILD_DIR/mongo/util/net/network',
-        'clientdriver',
     ],
 )
 

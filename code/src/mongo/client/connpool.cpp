@@ -62,6 +62,11 @@ PoolForHost::~PoolForHost() {
 }
 
 void PoolForHost::clear() {
+    if (!_parentDestroyed) {
+        logNoCache() << "Dropping all pooled connections to " << _hostName << "(with timeout of "
+                     << _socketTimeout << " seconds)";
+    }
+
     while (!_pool.empty()) {
         StoredConnection sc = _pool.top();
         delete sc.conn;
@@ -83,11 +88,18 @@ void PoolForHost::done(DBConnectionPool* pool, DBClientBase* c) {
     bool isBroken = c->getSockCreationMicroSec() < _minValidCreationTimeMicroSec;
     if (isFailed || isBroken) {
         _badConns++;
-    }
-
-    if (isFailed || isBroken ||
+        logNoCache() << "Ending connection to host " << _hostName << "(with timeout of "
+                     << _socketTimeout << " seconds)"
+                     << " due to bad connection status; " << openConnections()
+                     << " connections to that host remain open";
+        pool->onDestroy(c);
+        delete c;
+    } else if (_maxPoolSize >= 0 && static_cast<int>(_pool.size()) >= _maxPoolSize) {
         // We have a pool size that we need to enforce
-        (_maxPoolSize >= 0 && static_cast<int>(_pool.size()) >= _maxPoolSize)) {
+        logNoCache() << "Ending idle connection to host " << _hostName << "(with timeout of "
+                     << _socketTimeout << " seconds)"
+                     << " because the pool meets constraints; " << openConnections()
+                     << " connections to that host remain open";
         pool->onDestroy(c);
         delete c;
     } else {
@@ -100,9 +112,9 @@ void PoolForHost::reportBadConnectionAt(uint64_t microSec) {
     if (microSec != DBClientBase::INVALID_SOCK_CREATION_TIME &&
         microSec > _minValidCreationTimeMicroSec) {
         _minValidCreationTimeMicroSec = microSec;
-        log() << "Detected bad connection created at " << _minValidCreationTimeMicroSec
-              << " microSec, clearing pool for " << _hostName << " of " << _pool.size()
-              << " connections" << endl;
+        logNoCache() << "Detected bad connection created at " << _minValidCreationTimeMicroSec
+                     << " microSec, clearing pool for " << _hostName << " of " << openConnections()
+                     << " connections" << endl;
         clear();
     }
 }
@@ -200,8 +212,15 @@ DBClientBase* DBConnectionPool::_get(const string& ident, double socketTimeout) 
     stdx::lock_guard<stdx::mutex> L(_mutex);
     PoolForHost& p = _pools[PoolKey(ident, socketTimeout)];
     p.setMaxPoolSize(_maxPoolSize);
+    p.setSocketTimeout(socketTimeout);
     p.initializeHostName(ident);
     return p.get(this, socketTimeout);
+}
+
+int DBConnectionPool::openConnections(const string& ident, double socketTimeout) {
+    stdx::lock_guard<stdx::mutex> L(_mutex);
+    PoolForHost& p = _pools[PoolKey(ident, socketTimeout)];
+    return p.openConnections();
 }
 
 DBClientBase* DBConnectionPool::_finishCreate(const string& ident,
@@ -222,6 +241,10 @@ DBClientBase* DBConnectionPool::_finishCreate(const string& ident,
         delete conn;
         throw;
     }
+
+    log() << "Successfully connected to " << ident << " (" << openConnections(ident, socketTimeout)
+          << " connections now open to " << ident << " with a " << socketTimeout
+          << " second timeout)";
 
     return conn;
 }
@@ -266,7 +289,22 @@ DBClientBase* DBConnectionPool::get(const string& host, double socketTimeout) {
                               host,
                               11002,
                               str::stream() << _name << " error: " << errmsg);
+
     return _finishCreate(host, socketTimeout, c);
+}
+
+DBClientBase* DBConnectionPool::get(const MongoURI& uri, double socketTimeout) {
+    std::unique_ptr<DBClientBase> c(_get(uri.toString(), socketTimeout));
+    if (c) {
+        onHandedOut(c.get());
+        return c.release();
+    }
+
+    string errmsg;
+    c = std::unique_ptr<DBClientBase>(uri.connect(StringData(), errmsg, socketTimeout));
+    uassert(40356, _name + ": connect failed " + uri.toString() + " : " + errmsg, c);
+
+    return _finishCreate(uri.toString(), socketTimeout, c.release());
 }
 
 int DBConnectionPool::getNumAvailableConns(const string& host, double socketTimeout) const {
@@ -300,7 +338,13 @@ void DBConnectionPool::release(const string& host, DBClientBase* c) {
 
 
 DBConnectionPool::~DBConnectionPool() {
-    // connection closing is handled by ~PoolForHost
+    // Do not log in destruction, because global connection pools get
+    // destroyed after the logging framework.
+    stdx::lock_guard<stdx::mutex> L(_mutex);
+    for (PoolMap::iterator i = _pools.begin(); i != _pools.end(); i++) {
+        PoolForHost& p = i->second;
+        p._parentDestroyed = true;
+    }
 }
 
 void DBConnectionPool::flush() {
@@ -478,6 +522,13 @@ ScopedDbConnection::ScopedDbConnection(const ConnectionString& host, double sock
     _setSocketTimeout();
 }
 
+ScopedDbConnection::ScopedDbConnection(const MongoURI& uri, double socketTimeout)
+    : _host(uri.toString()),
+      _conn(globalConnPool.get(uri, socketTimeout)),
+      _socketTimeout(socketTimeout) {
+    _setSocketTimeout();
+}
+
 void ScopedDbConnection::done() {
     if (!_conn) {
         return;
@@ -507,8 +558,8 @@ ScopedDbConnection::~ScopedDbConnection() {
             }
         } else {
             /* see done() comments above for why we log this line */
-            log() << "scoped connection to " << _conn->getServerAddress()
-                  << " not being returned to the pool" << endl;
+            logNoCache() << "scoped connection to " << _conn->getServerAddress()
+                         << " not being returned to the pool" << endl;
             kill();
         }
     }

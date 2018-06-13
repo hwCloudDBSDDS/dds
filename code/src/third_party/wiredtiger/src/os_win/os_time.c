@@ -9,11 +9,11 @@
 #include "wt_internal.h"
 
 /*
- * __wt_epoch --
- *	Return the time since the Epoch.
+ * __wt_epoch_raw --
+ *	Return the time since the Epoch as reported by the system.
  */
 void
-__wt_epoch(WT_SESSION_IMPL *session, struct timespec *tsp)
+__wt_epoch_raw(WT_SESSION_IMPL *session, struct timespec *tsp)
 {
 	FILETIME time;
 	uint64_t ns100;

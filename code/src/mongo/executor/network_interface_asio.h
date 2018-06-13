@@ -137,6 +137,8 @@ public:
 
     bool onNetworkThread() override;
 
+    void dropConnections(const HostAndPort& hostAndPort) override;
+
 private:
     using ResponseStatus = TaskExecutor::ResponseStatus;
     using NetworkInterface::RemoteCommandCompletionFn;
@@ -286,7 +288,7 @@ private:
 
         AsyncCommand* command();
 
-        void finish(const TaskExecutor::ResponseStatus& status);
+        void finish(TaskExecutor::ResponseStatus&& status);
 
         const RemoteCommandRequest& request() const;
 
@@ -427,7 +429,8 @@ private:
             str::stream msg;
             msg << "Operation timed out"
                 << ", request was " << op->_request.toString();
-            auto rs = ResponseStatus(ErrorCodes::ExceededTimeLimit, msg, now() - op->start());
+            auto rs = ResponseStatus(
+                ErrorCodes::NetworkInterfaceExceededTimeLimit, msg, now() - op->start());
             return _completeOperation(op, rs);
         } else if (ec)
             return _networkErrorCallback(op, ec);

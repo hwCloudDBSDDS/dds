@@ -51,18 +51,17 @@
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
-#include "mongo/db/dbhelpers.h"
 #include "mongo/db/global_timestamp.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/prefetch.h"
 #include "mongo/db/query/query_knobs.h"
 #include "mongo/db/repl/bgsync.h"
-#include "mongo/db/repl/data_replicator.h"
+#include "mongo/db/repl/initial_syncer.h"
 #include "mongo/db/repl/multiapplier.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplogreader.h"
 #include "mongo/db/repl/repl_client_info.h"
-#include "mongo/db/repl/replica_set_config.h"
+#include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/server_parameters.h"
@@ -358,20 +357,24 @@ Status SyncTail::syncApply(OperationContext* txn,
 
             auto resetLocks = [&](LockMode mode) {
                 collectionLock.reset();
+                // Warning: We must reset the pointer to nullptr first, in order to ensure that we
+                // drop the DB lock before acquiring
+                // the upgraded one.
+                dbLock.reset();
                 dbLock.reset(new Lock::DBLock(txn->lockState(), dbName, mode));
                 collectionLock.reset(new Lock::CollectionLock(txn->lockState(), ns, mode));
             };
 
             resetLocks(MODE_IX);
             if (!dbHolder().get(txn, dbName)) {
-                // need to create database, try again
+                // Need to create database, so reset lock to stronger mode.
                 resetLocks(MODE_X);
                 ctx.reset(new OldClientContext(txn, ns));
             } else {
                 ctx.reset(new OldClientContext(txn, ns));
                 if (!ctx->db()->getCollection(ns)) {
-                    // uh, oh, we need to create collection
-                    // try again
+                    // Need to implicitly create collection.  This occurs for 'u' opTypes,
+                    // but not for 'i' nor 'd'.
                     ctx.reset();
                     resetLocks(MODE_X);
                     ctx.reset(new OldClientContext(txn, ns));
@@ -445,7 +448,6 @@ void applyOps(std::vector<MultiApplier::OperationPtrs>& writerVectors,
               const MultiApplier::ApplyOperationFn& func,
               std::vector<Status>* statusVector) {
     invariant(writerVectors.size() == statusVector->size());
-    TimerHolder timer(&applyBatchStats);
     for (size_t i = 0; i < writerVectors.size(); i++) {
         if (!writerVectors[i].empty()) {
             writerPool->schedule([&func, &writerVectors, statusVector, i] {
@@ -692,43 +694,53 @@ public:
     }
 
 private:
+    /**
+     * Calculates batch limit size (in bytes) using the maximum capped collection size of the oplog
+     * size.
+     * Batches are limited to 10% of the oplog.
+     */
+    std::size_t _calculateBatchLimitBytes() {
+        auto opCtx = cc().makeOperationContext();
+        auto storageInterface = StorageInterface::get(opCtx.get());
+        auto oplogMaxSizeResult =
+            storageInterface->getOplogMaxSize(opCtx.get(), NamespaceString(rsOplogName));
+        auto oplogMaxSize = fassertStatusOK(40301, oplogMaxSizeResult);
+        return std::min(oplogMaxSize / 10, std::size_t(replBatchLimitBytes));
+    }
+
+    /**
+     * If slaveDelay is enabled, this function calculates the most recent timestamp of any oplog
+     * entries that can be be returned in a batch.
+     */
+    boost::optional<Date_t> _calculateSlaveDelayLatestTimestamp() {
+        auto service = cc().getServiceContext();
+        auto replCoord = ReplicationCoordinator::get(service);
+        auto slaveDelay = replCoord->getSlaveDelaySecs();
+        if (slaveDelay <= Seconds(0)) {
+            return {};
+        }
+        auto fastClockSource = service->getFastClockSource();
+        return fastClockSource->now() - slaveDelay;
+    }
+
     void run() {
         Client::initThread("ReplBatcher");
-        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
-        OperationContext& txn = *txnPtr;
-        const auto replCoord = ReplicationCoordinator::get(&txn);
-        const auto fastClockSource = txn.getServiceContext()->getFastClockSource();
-        const auto oplogMaxSize = fassertStatusOK(
-            40301,
-            StorageInterface::get(&txn)->getOplogMaxSize(&txn, NamespaceString(rsOplogName)));
 
-        // Batches are limited to 10% of the oplog.
         BatchLimits batchLimits;
-        batchLimits.bytes = std::min(oplogMaxSize / 10, size_t(replBatchLimitBytes));
+        batchLimits.bytes = _calculateBatchLimitBytes();
 
         while (true) {
-            const auto slaveDelay = replCoord->getSlaveDelaySecs();
-            batchLimits.slaveDelayLatestTimestamp = (slaveDelay > Seconds(0))
-                ? (fastClockSource->now() - slaveDelay)
-                : boost::optional<Date_t>();
+            batchLimits.slaveDelayLatestTimestamp = _calculateSlaveDelayLatestTimestamp();
 
             // Check this once per batch since users can change it at runtime.
             batchLimits.ops = replBatchLimitOperations.load();
 
             OpQueue ops;
             // tryPopAndWaitForMore adds to ops and returns true when we need to end a batch early.
-            while (!_syncTail->tryPopAndWaitForMore(&txn, &ops, batchLimits)) {
-            }
-
-            // For pausing replication in tests.
-            while (MONGO_FAIL_POINT(rsSyncApplyStop)) {
-                // Tests should not trigger clean shutdown while that failpoint is active. If we
-                // think we need this, we need to think hard about what the behavior should be.
-                if (_syncTail->_networkQueue->inShutdown()) {
-                    severe() << "Turn off rsSyncApplyStop before attempting clean shutdown";
-                    fassertFailedNoTrace(40304);
+            {
+                auto opCtx = cc().makeOperationContext();
+                while (!_syncTail->tryPopAndWaitForMore(opCtx.get(), &ops, batchLimits)) {
                 }
-                sleepmillis(10);
             }
 
             if (ops.empty() && !ops.mustShutdown()) {
@@ -763,16 +775,29 @@ private:
 void SyncTail::oplogApplication(ReplicationCoordinator* replCoord) {
     OpQueueBatcher batcher(this);
 
-    const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
-    OperationContext& txn = *txnPtr;
     std::unique_ptr<ApplyBatchFinalizer> finalizer{
         getGlobalServiceContext()->getGlobalStorageEngine()->isDurable()
             ? new ApplyBatchFinalizerForJournal(replCoord)
             : new ApplyBatchFinalizer(replCoord)};
 
     while (true) {  // Exits on message from OpQueueBatcher.
+        const ServiceContext::UniqueOperationContext txnPtr = cc().makeOperationContext();
+        OperationContext& txn = *txnPtr;
+
+        // For pausing replication in tests.
+        while (MONGO_FAIL_POINT(rsSyncApplyStop)) {
+            // Tests should not trigger clean shutdown while that failpoint is active. If we
+            // think we need this, we need to think hard about what the behavior should be.
+            if (_networkQueue->inShutdown()) {
+                severe() << "Turn off rsSyncApplyStop before attempting clean shutdown";
+                fassertFailedNoTrace(40304);
+            }
+            sleepmillis(10);
+        }
+
         tryToGoLiveAsASecondary(&txn, replCoord);
 
+        long long termWhenBufferIsEmpty = replCoord->getTerm();
         // Blocks up to a second waiting for a batch to be ready to apply. If one doesn't become
         // ready in time, we'll loop again so we can do the above checks periodically.
         OpQueue ops = batcher.getNextBatch(Seconds(1));
@@ -780,17 +805,12 @@ void SyncTail::oplogApplication(ReplicationCoordinator* replCoord) {
             if (ops.mustShutdown()) {
                 return;
             }
-            continue;  // Try again.
-        }
-
-        if (ops.front().raw.isEmpty()) {
-            // This means that the network thread has coalesced and we have processed all of its
-            // data.
-            invariant(ops.getCount() == 1);
-            if (replCoord->isWaitingForApplierToDrain()) {
-                replCoord->signalDrainComplete(&txn);
+            if (MONGO_FAIL_POINT(rsSyncApplyStop)) {
+                continue;
             }
-            continue;  // This wasn't a real op. Don't try to apply it.
+            // Signal drain complete if we're in Draining state and the buffer is empty.
+            replCoord->signalDrainComplete(&txn, termWhenBufferIsEmpty);
+            continue;  // Try again.
         }
 
         // Extract some info from ops that we'll need after releasing the batch below.
@@ -858,6 +878,12 @@ bool SyncTail::tryPopAndWaitForMore(OperationContext* txn,
         // processed.
         if (!ops->empty() && (ops->getBytes() + size_t(op.objsize())) > limits.bytes) {
             return true;  // Return before wasting time parsing the op.
+        }
+
+        // Don't consume the op if we are told to stop.
+        if (MONGO_FAIL_POINT(rsSyncApplyStop)) {
+            sleepmillis(10);
+            return true;
         }
 
         ops->emplace_back(std::move(op));  // Parses the op in-place.
@@ -930,16 +956,9 @@ OldThreadPool* SyncTail::getWriterPool() {
     return _writerPool.get();
 }
 
-BSONObj SyncTail::getMissingDoc(OperationContext* txn, Database* db, const BSONObj& o) {
+BSONObj SyncTail::getMissingDoc(OperationContext* txn, const BSONObj& o) {
     OplogReader missingObjReader;  // why are we using OplogReader to run a non-oplog query?
     const char* ns = o.getStringField("ns");
-
-    // capped collections
-    Collection* collection = db->getCollection(ns);
-    if (collection && collection->isCapped()) {
-        log() << "missing doc, but this is okay for a capped collection (" << ns << ")";
-        return BSONObj();
-    }
 
     if (MONGO_FAIL_POINT(initialSyncHangBeforeGettingMissingDocument)) {
         log() << "initial sync - initialSyncHangBeforeGettingMissingDocument fail point enabled. "
@@ -999,43 +1018,52 @@ BSONObj SyncTail::getMissingDoc(OperationContext* txn, Database* db, const BSONO
                 str::stream() << "Can no longer connect to initial sync source: " << _hostname);
 }
 
-bool SyncTail::shouldRetry(OperationContext* txn, const BSONObj& o) {
+bool SyncTail::fetchAndInsertMissingDocument(OperationContext* txn, const BSONObj& o) {
     const NamespaceString nss(o.getStringField("ns"));
+
+    {
+        // If the document is in a capped collection then it's okay for it to be missing.
+        AutoGetCollectionForRead autoColl(txn, nss);
+        Collection* const collection = autoColl.getCollection();
+        if (collection && collection->isCapped()) {
+            log() << "Not fetching missing document in capped collection (" << nss << ")";
+            return false;
+        }
+    }
+
+    log() << "Fetching missing document: " << redact(o);
+    BSONObj missingObj = getMissingDoc(txn, o);
+
+    if (missingObj.isEmpty()) {
+        log() << "Missing document not found on source; presumably deleted later in oplog. o first "
+                 "field: "
+              << o.getObjectField("o").firstElementFieldName()
+              << ", o2: " << redact(o.getObjectField("o2"));
+
+        return false;
+    }
+
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         // Take an X lock on the database in order to preclude other modifications.
         // Also, the database might not exist yet, so create it.
         AutoGetOrCreateDb autoDb(txn, nss.db(), MODE_X);
         Database* const db = autoDb.getDb();
 
-        // we don't have the object yet, which is possible on initial sync.  get it.
-        log() << "adding missing object" << endl;  // rare enough we can log
+        WriteUnitOfWork wunit(txn);
 
-        BSONObj missingObj = getMissingDoc(txn, db, o);
+        Collection* const coll = db->getOrCreateCollection(txn, nss.toString());
+        invariant(coll);
 
-        if (missingObj.isEmpty()) {
-            log() << "missing object not found on source."
-                     " presumably deleted later in oplog";
-            log() << "o2: " << redact(o.getObjectField("o2"));
-            log() << "o firstfield: " << o.getObjectField("o").firstElementFieldName();
+        OpDebug* const nullOpDebug = nullptr;
+        Status status = coll->insertDocument(txn, missingObj, nullOpDebug, true);
+        uassert(15917,
+                str::stream() << "Failed to insert missing document: " << status.toString(),
+                status.isOK());
 
-            return false;
-        } else {
-            WriteUnitOfWork wunit(txn);
+        LOG(1) << "Inserted missing document: " << redact(missingObj);
 
-            Collection* const coll = db->getOrCreateCollection(txn, nss.toString());
-            invariant(coll);
-
-            OpDebug* const nullOpDebug = nullptr;
-            Status status = coll->insertDocument(txn, missingObj, nullOpDebug, true);
-            uassert(15917,
-                    str::stream() << "failed to insert missing doc: " << status.toString(),
-                    status.isOK());
-
-            LOG(1) << "inserted missing doc: " << redact(missingObj);
-
-            wunit.commit();
-            return true;
-        }
+        wunit.commit();
+        return true;
     }
     MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "InsertRetry", nss.ns());
 
@@ -1063,6 +1091,8 @@ Status multiSyncApply_noAbort(OperationContext* txn,
     // allow us to get through the magic barrier
     txn->lockState()->setShouldConflictWithSecondaryBatchApplication(false);
 
+    // Sort the oplog entries by namespace, so that entries from the same namespace will be next to
+    // each other in the list.
     if (oplogEntryPointers->size() > 1) {
         std::stable_sort(oplogEntryPointers->begin(),
                          oplogEntryPointers->end(),
@@ -1079,25 +1109,54 @@ Status multiSyncApply_noAbort(OperationContext* txn,
     for (auto oplogEntriesIterator = oplogEntryPointers->begin();
          oplogEntriesIterator != oplogEntryPointers->end();
          ++oplogEntriesIterator) {
+
         auto entry = *oplogEntriesIterator;
         if (entry->opType[0] == 'i' && !entry->isForCappedCollection &&
             oplogEntriesIterator > doNotGroupBeforePoint) {
-            // Attempt to group inserts if possible.
+
             std::vector<BSONObj> toInsert;
-            int batchSize = 0;
-            int batchCount = 0;
+
+            auto maxBatchSize = insertVectorMaxBytes;
+            auto maxBatchCount = 64;
+
+            // Make sure to include the first op in the batch size.
+            int batchSize = (*oplogEntriesIterator)->o.Obj().objsize();
+            int batchCount = 1;
+            auto batchNamespace = entry->ns;
+
+            /**
+             * Search for the op that delimits this insert batch, and save its position
+             * in endOfGroupableOpsIterator. For example, given the following list of oplog
+             * entries with a sequence of groupable inserts:
+             *
+             *                S--------------E
+             *       u, u, u, i, i, i, i, i, d, d
+             *
+             *       S: start of insert group
+             *       E: end of groupable ops
+             *
+             * E is the position of endOfGroupableOpsIterator. i.e. endOfGroupableOpsIterator
+             * will point to the first op that *can't* be added to the current insert group.
+             */
             auto endOfGroupableOpsIterator = std::find_if(
                 oplogEntriesIterator + 1,
                 oplogEntryPointers->end(),
-                [&](const OplogEntry* nextEntry) {
-                    return nextEntry->opType[0] != 'i' ||  // Must be an insert.
-                        nextEntry->ns != entry->ns ||      // Must be the same namespace.
-                        // Must not create too large an object.
-                        (batchSize += nextEntry->o.Obj().objsize()) > insertVectorMaxBytes ||
-                        ++batchCount >= 64;  // Or have too many entries.
+                [&](const OplogEntry* nextEntry) -> bool {
+                    auto opNamespace = nextEntry->ns;
+                    batchSize += nextEntry->o.Obj().objsize();
+                    batchCount += 1;
+
+                    // Only add the op to this batch if it passes the criteria.
+                    return nextEntry->opType[0] != 'i'    // Must be an insert.
+                        || opNamespace != batchNamespace  // Must be in the same namespace.
+                        || batchSize > maxBatchSize       // Must not create too large an object.
+                        || batchCount > maxBatchCount;    // Limit number of ops in a single group.
                 });
 
-            if (endOfGroupableOpsIterator != oplogEntriesIterator + 1) {
+            // See if we were able to create a group that contains more than a single op.
+            bool isGroup = (endOfGroupableOpsIterator > oplogEntriesIterator + 1);
+
+            if (isGroup) {
                 // Since we found more than one document, create grouped insert of many docs.
                 BSONObjBuilder groupedInsertBuilder;
                 // Generate an op object of all elements except for "o", since we need to
@@ -1108,7 +1167,7 @@ Status multiSyncApply_noAbort(OperationContext* txn,
                     }
                 }
 
-                // Populate the "o" field with all the groupable inserts.
+                // Populate the "o" field with an array of all the grouped inserts.
                 BSONArrayBuilder insertArrayBuilder(groupedInsertBuilder.subarrayStart("o"));
                 for (auto groupingIterator = oplogEntriesIterator;
                      groupingIterator != endOfGroupableOpsIterator;
@@ -1138,6 +1197,7 @@ Status multiSyncApply_noAbort(OperationContext* txn,
             }
         }
 
+        // If we didn't create a group, try to apply the op individually.
         try {
             // Apply an individual (non-grouped) op.
             const Status status = syncApply(txn, entry->raw, inSteadyStateReplication);
@@ -1191,27 +1251,19 @@ Status multiInitialSyncApply_noAbort(OperationContext* txn,
         try {
             const Status s = SyncTail::syncApply(txn, entry.raw, inSteadyStateReplication);
             if (!s.isOK()) {
-                // Don't retry on commands.
-                if (entry.isCommand()) {
-                    error() << "Error applying command (" << redact(entry.raw)
-                            << "): " << redact(s);
+                // In initial sync, update operations can cause documents to be missed during
+                // collection cloning. As a result, it is possible that a document that we need to
+                // update is not present locally. In that case we fetch the document from the
+                // sync source.
+                if (s != ErrorCodes::UpdateOperationFailed) {
+                    error() << "Error applying operation: " << redact(s) << " ("
+                            << redact(entry.raw) << ")";
                     return s;
                 }
 
                 // We might need to fetch the missing docs from the sync source.
                 fetchCount->fetchAndAdd(1);
-                if (st->shouldRetry(txn, entry.raw)) {
-                    const Status s2 = SyncTail::syncApply(txn, entry.raw, inSteadyStateReplication);
-                    if (!s2.isOK()) {
-                        severe() << "Error applying operation (" << redact(entry.raw)
-                                 << "): " << redact(s2);
-                        return s2;
-                    }
-                }
-
-                // If shouldRetry() returns false, fall through.
-                // This can happen if the document that was moved and missed by Cloner
-                // subsequently got deleted and no longer exists on the Sync Target at all
+                st->fetchAndInsertMissingDocument(txn, entry.raw);
             }
         } catch (const DBException& e) {
             // SERVER-24927 If we have a NamespaceNotFound exception, then this document will be
@@ -1262,8 +1314,7 @@ StatusWith<OpTime> multiApply(OperationContext* txn,
     Lock::ParallelBatchWriterMode pbwm(txn->lockState());
 
     auto replCoord = ReplicationCoordinator::get(txn);
-    if (replCoord->getMemberState().primary() && !replCoord->isWaitingForApplierToDrain() &&
-        !replCoord->isCatchingUp()) {
+    if (replCoord->getApplierState() == ReplicationCoordinator::ApplierState::Stopped) {
         severe() << "attempting to replicate ops while primary";
         return {ErrorCodes::CannotApplyOplogWhilePrimary,
                 "attempting to replicate ops while primary"};
@@ -1271,6 +1322,9 @@ StatusWith<OpTime> multiApply(OperationContext* txn,
 
     std::vector<Status> statusVector(workerPool->getNumThreads(), Status::OK());
     {
+        // Each node records cumulative batch application stats for itself using this timer.
+        TimerHolder timer(&applyBatchStats);
+
         // We must wait for the all work we've dispatched to complete before leaving this block
         // because the spawned threads refer to objects on our stack, including writerVectors.
         std::vector<MultiApplier::OperationPtrs> writerVectors(workerPool->getNumThreads());

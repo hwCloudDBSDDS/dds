@@ -50,8 +50,8 @@
 #include "mongo/db/commands/list_collections_filter.h"
 #include "mongo/db/commands/rename_collection.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/curop.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/dbhelpers.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builder.h"
 #include "mongo/db/jsobj.h"
@@ -423,7 +423,8 @@ void Cloner::copyIndexes(OperationContext* txn,
         const string targetSystemIndexesCollectionName = to_collection.getSystemIndexesCollection();
         const char* createIndexNs = targetSystemIndexesCollectionName.c_str();
         for (auto&& infoObj : indexInfoObjs) {
-            getGlobalServiceContext()->getOpObserver()->onCreateIndex(txn, createIndexNs, infoObj);
+            getGlobalServiceContext()->getOpObserver()->onCreateIndex(
+                txn, createIndexNs, infoObj, false);
         }
     }
     wunit.commit();

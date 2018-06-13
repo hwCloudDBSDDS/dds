@@ -15,6 +15,44 @@ static int __btree_preload(WT_SESSION_IMPL *);
 static int __btree_tree_open_empty(WT_SESSION_IMPL *, bool);
 
 /*
+ * __btree_clear --
+ *	Clear a Btree, either on handle discard or re-open.
+ */
+static int
+__btree_clear(WT_SESSION_IMPL *session)
+{
+	WT_BTREE *btree;
+	WT_DECL_RET;
+
+	btree = S2BT(session);
+
+	/*
+	 * If the tree hasn't gone through an open/close cycle, there's no
+	 * cleanup to be done.
+	 */
+	if (!F_ISSET(btree, WT_BTREE_CLOSED))
+		return (0);
+
+	/* Close the Huffman tree. */
+	__wt_btree_huffman_close(session);
+
+	/* Terminate any associated collator. */
+	if (btree->collator_owned && btree->collator->terminate != NULL)
+		WT_TRET(btree->collator->terminate(
+		    btree->collator, &session->iface));
+
+	/* Destroy locks. */
+	__wt_rwlock_destroy(session, &btree->ovfl_lock);
+	__wt_spin_destroy(session, &btree->flush_lock);
+
+	/* Free allocated memory. */
+	__wt_free(session, btree->key_format);
+	__wt_free(session, btree->value_format);
+
+	return (ret);
+}
+
+/*
  * __wt_btree_open --
  *	Open a Btree.
  */
@@ -32,8 +70,21 @@ __wt_btree_open(WT_SESSION_IMPL *session, const char *op_cfg[])
 	const char *filename;
 	bool creation, forced_salvage, readonly;
 
-	dhandle = session->dhandle;
 	btree = S2BT(session);
+	dhandle = session->dhandle;
+
+	/*
+	 * This may be a re-open, clean up the btree structure.
+	 * Clear the fields that don't persist across a re-open.
+	 * Clear all flags other than the operation flags (which are set by the
+	 * connection handle software that called us).
+	 */
+	WT_RET(__btree_clear(session));
+	memset(btree, 0, WT_BTREE_CLEAR_SIZE);
+	F_CLR(btree, ~WT_BTREE_SPECIAL_FLAGS);
+
+	/* Set the data handle first, our called functions reasonably use it. */
+	btree->dhandle = dhandle;
 
 	/* Checkpoint files are readonly. */
 	readonly = dhandle->checkpoint != NULL ||
@@ -126,6 +177,26 @@ __wt_btree_open(WT_SESSION_IMPL *session, const char *op_cfg[])
 		}
 	}
 
+	/*
+	 * Eviction ignores trees until the handle's open flag is set, configure
+	 * eviction before that happens.
+	 *
+	 * Files that can still be bulk-loaded cannot be evicted.
+	 * Permanently cache-resident files can never be evicted.
+	 * Special operations don't enable eviction. The underlying commands may
+	 * turn on eviction (for example, verify turns on eviction while working
+	 * a file to keep from consuming the cache), but it's their decision. If
+	 * an underlying command reconfigures eviction, it must either clear the
+	 * evict-disabled-open flag or restore the eviction configuration when
+	 * finished so that handle close behaves correctly.
+	 */
+	if (btree->original ||
+	    F_ISSET(btree, WT_BTREE_IN_MEMORY | WT_BTREE_REBALANCE |
+	    WT_BTREE_SALVAGE | WT_BTREE_UPGRADE | WT_BTREE_VERIFY)) {
+		WT_ERR(__wt_evict_file_exclusive_on(session));
+		btree->evict_disabled_open = true;
+	}
+
 	if (0) {
 err:		WT_TRET(__wt_btree_close(session));
 	}
@@ -147,7 +218,33 @@ __wt_btree_close(WT_SESSION_IMPL *session)
 
 	btree = S2BT(session);
 
+	/*
+	 * The close process isn't the same as discarding the handle: we might
+	 * re-open the handle, which isn't a big deal, but the backing blocks
+	 * for the handle may not yet have been discarded from the cache, and
+	 * eviction uses WT_BTREE structure elements. Free backing resources
+	 * but leave the rest alone, and we'll discard the structure when we
+	 * discard the data handle.
+	 *
+	 * Handles can be closed multiple times, ignore all but the first.
+	 */
+	if (F_ISSET(btree, WT_BTREE_CLOSED))
+		return (0);
+	F_SET(btree, WT_BTREE_CLOSED);
+
+	/*
+	 * If we turned eviction off and never turned it back on, do that now,
+	 * otherwise the counter will be off.
+	 */
+	if (btree->evict_disabled_open) {
+		btree->evict_disabled_open = false;
+		__wt_evict_file_exclusive_off(session);
+	}
+
+	/* Discard any underlying block manager resources. */
 	if ((bm = btree->bm) != NULL) {
+		btree->bm = NULL;
+
 		/* Unload the checkpoint, unless it's a special command. */
 		if (!F_ISSET(btree,
 		    WT_BTREE_SALVAGE | WT_BTREE_UPGRADE | WT_BTREE_VERIFY))
@@ -155,33 +252,26 @@ __wt_btree_close(WT_SESSION_IMPL *session)
 
 		/* Close the underlying block manager reference. */
 		WT_TRET(bm->close(bm, session));
-
-		btree->bm = NULL;
 	}
 
-	/* Close the Huffman tree. */
-	__wt_btree_huffman_close(session);
+	return (ret);
+}
 
-	/* Destroy locks. */
-	__wt_rwlock_destroy(session, &btree->ovfl_lock);
-	__wt_spin_destroy(session, &btree->flush_lock);
+/*
+ * __wt_btree_discard --
+ *	Discard a Btree.
+ */
+int
+__wt_btree_discard(WT_SESSION_IMPL *session)
+{
+	WT_BTREE *btree;
+	WT_DECL_RET;
 
-	/* Free allocated memory. */
-	__wt_free(session, btree->key_format);
-	__wt_free(session, btree->value_format);
+	ret = __btree_clear(session);
 
-	if (btree->collator_owned) {
-		if (btree->collator->terminate != NULL)
-			WT_TRET(btree->collator->terminate(
-			    btree->collator, &session->iface));
-		btree->collator_owned = 0;
-	}
-	btree->collator = NULL;
-	btree->kencryptor = NULL;
-
-	btree->bulk_load_ok = false;
-
-	F_CLR(btree, WT_BTREE_SPECIAL_FLAGS);
+	btree = S2BT(session);
+	__wt_overwrite_and_free(session, btree);
+	session->dhandle->handle = NULL;
 
 	return (ret);
 }
@@ -267,9 +357,9 @@ __btree_conf(WT_SESSION_IMPL *session, WT_CKPT *ckpt)
 
 	WT_RET(__wt_config_gets(session, cfg, "cache_resident", &cval));
 	if (cval.val)
-		F_SET(btree, WT_BTREE_IN_MEMORY | WT_BTREE_NO_EVICTION);
+		F_SET(btree, WT_BTREE_IN_MEMORY);
 	else
-		F_CLR(btree, WT_BTREE_IN_MEMORY | WT_BTREE_NO_EVICTION);
+		F_CLR(btree, WT_BTREE_IN_MEMORY);
 
 	WT_RET(__wt_config_gets(session,
 	    cfg, "ignore_in_memory_cache_size", &cval));
@@ -281,6 +371,14 @@ __btree_conf(WT_SESSION_IMPL *session, WT_CKPT *ckpt)
 		F_SET(btree, WT_BTREE_IGNORE_CACHE);
 	} else
 		F_CLR(btree, WT_BTREE_IGNORE_CACHE);
+
+	/*
+	 * The metadata isn't blocked by in-memory cache limits because metadata
+	 * "unroll" is performed by updates that are potentially blocked by the
+	 * cache-full checks.
+	 */
+	if (WT_IS_METADATA(btree->dhandle))
+		F_SET(btree, WT_BTREE_IGNORE_CACHE);
 
 	WT_RET(__wt_config_gets(session, cfg, "log.enabled", &cval));
 	if (cval.val)
@@ -359,13 +457,14 @@ __btree_conf(WT_SESSION_IMPL *session, WT_CKPT *ckpt)
 	}
 
 	/* Initialize locks. */
-	WT_RET(__wt_rwlock_alloc(
-	    session, &btree->ovfl_lock, "btree overflow lock"));
+	WT_RET(__wt_rwlock_init(session, &btree->ovfl_lock));
 	WT_RET(__wt_spin_init(session, &btree->flush_lock, "btree flush"));
 
-	btree->checkpointing = WT_CKPT_OFF;		/* Not checkpointing */
 	btree->modified = false;			/* Clean */
-	btree->write_gen = ckpt->write_gen;		/* Write generation */
+
+	btree->checkpointing = WT_CKPT_OFF;	/* Not checkpointing */
+	btree->write_gen = ckpt->write_gen;	/* Write generation */
+	btree->checkpoint_gen = S2C(session)->txn_global.checkpoint_gen;
 
 	return (0);
 }
@@ -483,13 +582,10 @@ __btree_tree_open_empty(WT_SESSION_IMPL *session, bool creation)
 	/*
 	 * Newly created objects can be used for cursor inserts or for bulk
 	 * loads; set a flag that's cleared when a row is inserted into the
-	 * tree. Objects being bulk-loaded cannot be evicted, we set it
-	 * globally, there's no point in searching empty trees for eviction.
+	 * tree.
 	 */
-	if (creation) {
-		btree->bulk_load_ok = true;
-		__wt_btree_evictable(session, false);
-	}
+	if (creation)
+		btree->original = 1;
 
 	/*
 	 * A note about empty trees: the initial tree is a single root page.
@@ -579,27 +675,6 @@ __wt_btree_new_leaf_page(WT_SESSION_IMPL *session, WT_PAGE **pagep)
 		break;
 	}
 	return (0);
-}
-
-/*
- * __wt_btree_evictable --
- *      Setup or release a cache-resident tree.
- */
-void
-__wt_btree_evictable(WT_SESSION_IMPL *session, bool on)
-{
-	WT_BTREE *btree;
-
-	btree = S2BT(session);
-
-	/* Permanently cache-resident files can never be evicted. */
-	if (F_ISSET(btree, WT_BTREE_IN_MEMORY))
-		return;
-
-	if (on)
-		F_CLR(btree, WT_BTREE_NO_EVICTION);
-	else
-		F_SET(btree, WT_BTREE_NO_EVICTION);
 }
 
 /*
@@ -728,9 +803,16 @@ __btree_page_sizes(WT_SESSION_IMPL *session)
 	 * Get the split percentage (reconciliation splits pages into smaller
 	 * than the maximum page size chunks so we don't split every time a
 	 * new entry is added). Determine how large newly split pages will be.
+	 * Set to the minimum, if the read value is less than that.
 	 */
 	WT_RET(__wt_config_gets(session, cfg, "split_pct", &cval));
-	btree->split_pct = (int)cval.val;
+	if (cval.val < WT_BTREE_MIN_SPLIT_PCT) {
+		btree->split_pct = WT_BTREE_MIN_SPLIT_PCT;
+		WT_RET(__wt_msg(session,
+		    "Re-setting split_pct for %s to the minimum allowed of "
+		    "%d%%.", session->dhandle->name, WT_BTREE_MIN_SPLIT_PCT));
+	} else
+		btree->split_pct = (int)cval.val;
 	intl_split_size = __wt_split_page_size(btree, btree->maxintlpage);
 	leaf_split_size = __wt_split_page_size(btree, btree->maxleafpage);
 

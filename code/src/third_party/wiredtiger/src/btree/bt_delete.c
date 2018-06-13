@@ -153,6 +153,7 @@ void
 __wt_delete_page_rollback(WT_SESSION_IMPL *session, WT_REF *ref)
 {
 	WT_UPDATE **upd;
+	uint64_t yield_count;
 
 	/*
 	 * If the page is still "deleted", it's as we left it, reset the state
@@ -160,7 +161,7 @@ __wt_delete_page_rollback(WT_SESSION_IMPL *session, WT_REF *ref)
 	 * instantiated or being instantiated.  Loop because it's possible for
 	 * the page to return to the deleted state if instantiation fails.
 	 */
-	for (;; __wt_yield())
+	for (yield_count = 0;; yield_count++, __wt_yield())
 		switch (ref->state) {
 		case WT_REF_DISK:
 		case WT_REF_READING:
@@ -173,7 +174,7 @@ __wt_delete_page_rollback(WT_SESSION_IMPL *session, WT_REF *ref)
 			 */
 			if (__wt_atomic_casv32(
 			    &ref->state, WT_REF_DELETED, WT_REF_DISK))
-				return;
+				goto done;
 			break;
 		case WT_REF_LOCKED:
 			/*
@@ -203,8 +204,10 @@ __wt_delete_page_rollback(WT_SESSION_IMPL *session, WT_REF *ref)
 			 */
 			__wt_free(session, ref->page_del->update_list);
 			__wt_free(session, ref->page_del);
-			return;
+			goto done;
 		}
+
+done:	WT_STAT_CONN_INCRV(session, page_del_rollback_blocked, yield_count);
 }
 
 /*
@@ -318,13 +321,12 @@ __wt_delete_page_instantiate(WT_SESSION_IMPL *session, WT_REF *ref)
 	 * hard case is if a page splits: the update structures might be moved
 	 * to different pages, and we still have to find them all for an abort.
 	 */
-
 	if (page_del != NULL)
 		WT_RET(__wt_calloc_def(
-		    session, page->pg_row_entries + 1, &page_del->update_list));
+		    session, page->entries + 1, &page_del->update_list));
 
 	/* Allocate the per-page update array. */
-	WT_ERR(__wt_calloc_def(session, page->pg_row_entries, &upd_array));
+	WT_ERR(__wt_calloc_def(session, page->entries, &upd_array));
 	page->modify->mod_row_update = upd_array;
 
 	/*
@@ -332,7 +334,7 @@ __wt_delete_page_instantiate(WT_SESSION_IMPL *session, WT_REF *ref)
 	 * structures, fill in the per-page update array with references to
 	 * deleted items.
 	 */
-	for (i = 0, size = 0; i < page->pg_row_entries; ++i) {
+	for (i = 0, size = 0; i < page->entries; ++i) {
 		WT_ERR(__wt_calloc_one(session, &upd));
 		WT_UPDATE_DELETED_SET(upd);
 

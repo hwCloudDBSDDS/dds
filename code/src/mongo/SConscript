@@ -70,6 +70,7 @@ baseSource=[
     'base/string_data.cpp',
     'base/validate_locale.cpp',
     'bson/bson_comparator_interface_base.cpp',
+    'bson/bson_depth.cpp',
     'bson/bson_validate.cpp',
     'bson/bsonelement.cpp',
     'bson/bsonmisc.cpp',
@@ -108,6 +109,7 @@ baseSource=[
     'util/allocator.cpp',
     'util/assert_util.cpp',
     'util/base64.cpp',
+    'util/concurrency/idle_thread_block.cpp',
     'util/concurrency/thread_name.cpp',
     'util/duration.cpp',
     'util/exception_filter_win32.cpp',
@@ -242,7 +244,6 @@ if env.TargetOSIs('windows'):
 config_header_substs = (
     ('@mongo_config_byte_order@', 'MONGO_CONFIG_BYTE_ORDER'),
     ('@mongo_config_debug_build@', 'MONGO_CONFIG_DEBUG_BUILD'),
-    ('@mongo_config_have_thread_local@', 'MONGO_CONFIG_HAVE_THREAD_LOCAL'),
     ('@mongo_config_have___declspec_thread@', 'MONGO_CONFIG_HAVE___DECLSPEC_THREAD'),
     ('@mongo_config_have___thread@', 'MONGO_CONFIG_HAVE___THREAD'),
     ('@mongo_config_have_execinfo_backtrace@', 'MONGO_CONFIG_HAVE_EXECINFO_BACKTRACE'),
@@ -250,11 +251,13 @@ config_header_substs = (
     ('@mongo_config_have_header_unistd_h@', 'MONGO_CONFIG_HAVE_HEADER_UNISTD_H'),
     ('@mongo_config_have_memset_s@', 'MONGO_CONFIG_HAVE_MEMSET_S'),
     ('@mongo_config_have_posix_monotonic_clock@', 'MONGO_CONFIG_HAVE_POSIX_MONOTONIC_CLOCK'),
-    ('@mongo_config_have_std_is_trivially_copyable@', 'MONGO_CONFIG_HAVE_STD_IS_TRIVIALLY_COPYABLE'),
-    ('@mongo_config_have_std_enable_if_t@', 'MONGO_CONFIG_HAVE_STD_ENABLE_IF_T'),
-    ('@mongo_config_have_std_make_unique@', 'MONGO_CONFIG_HAVE_STD_MAKE_UNIQUE'),
+    ('@mongo_config_have_pthread_setname_np@', 'MONGO_CONFIG_HAVE_PTHREAD_SETNAME_NP'),
     ('@mongo_config_have_std_align@', 'MONGO_CONFIG_HAVE_STD_ALIGN'),
+    ('@mongo_config_have_std_enable_if_t@', 'MONGO_CONFIG_HAVE_STD_ENABLE_IF_T'),
+    ('@mongo_config_have_std_is_trivially_copyable@', 'MONGO_CONFIG_HAVE_STD_IS_TRIVIALLY_COPYABLE'),
+    ('@mongo_config_have_std_make_unique@', 'MONGO_CONFIG_HAVE_STD_MAKE_UNIQUE'),
     ('@mongo_config_have_strnlen@', 'MONGO_CONFIG_HAVE_STRNLEN'),
+    ('@mongo_config_have_thread_local@', 'MONGO_CONFIG_HAVE_THREAD_LOCAL'),
     ('@mongo_config_optimized_build@', 'MONGO_CONFIG_OPTIMIZED_BUILD'),
     ('@mongo_config_ssl@', 'MONGO_CONFIG_SSL'),
     ('@mongo_config_ssl_has_asn1_any_definitions@', 'MONGO_CONFIG_HAVE_ASN1_ANY_DEFINITIONS'),
@@ -280,7 +283,7 @@ mongodLibDeps = [
     'db/mongod_options',
     'db/mongodandmongos',
     'db/mongodwebserver',
-    'db/repl/replset_commands',
+    'db/repl/repl_set_commands',
     'db/repl/storage_interface_impl',
     'db/s/balancer',
     'db/serveronly',
@@ -338,6 +341,7 @@ env.Install(
         LIBDEPS=[
             'db/conn_pool_options',
             'db/commands/core',
+            'db/ftdc/ftdc_mongos',
             'db/mongodandmongos',
             's/client/sharding_connection_hook',
             's/commands/cluster_commands',
@@ -406,12 +410,17 @@ if not has_option('noshell') and usemozjs:
     mongo_shell = shellEnv.Program(
         "mongo",
         ["shell/dbshell.cpp"] + env.WindowsResourceFile("shell/shell.rc"),
-        LIBDEPS=["$BUILD_DIR/third_party/shim_pcrecpp",
-                 "shell_core",
-                 "db/server_options_core",
-                 "client/clientdriver",
-                 "$BUILD_DIR/mongo/util/password",
-                 ])
+        LIBDEPS=[
+            "$BUILD_DIR/third_party/shim_pcrecpp",
+            "shell_core",
+            "db/server_options_core",
+            "client/clientdriver",
+            "$BUILD_DIR/mongo/util/password",
+        ],
+        LIBDEPS_PRIVATE=[
+            "$BUILD_DIR/mongo/client/connection_string",
+        ]
+    )
 
     shellEnv.Install( '#/', mongo_shell )
 else:

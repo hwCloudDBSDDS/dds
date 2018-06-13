@@ -37,43 +37,70 @@
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
-#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/field_parser.h"
-#include "mongo/s/catalog/catalog_cache.h"
-#include "mongo/s/chunk_manager.h"
-#include "mongo/s/client/shard_connection.h"
-#include "mongo/s/config.h"
+#include "mongo/s/catalog_cache.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/commands/cluster_commands_common.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_util.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-using std::shared_ptr;
-using std::string;
-using std::vector;
-
 namespace {
+
+/**
+ * Asks the mongod holding this chunk to find a key that approximately divides the specified chunk
+ * in two. Throws on error or if the chunk is empty.
+ */
+BSONObj selectMedianKey(OperationContext* txn,
+                        const ShardId& shardId,
+                        const NamespaceString& nss,
+                        const ShardKeyPattern& shardKeyPattern,
+                        const ChunkRange& chunkRange) {
+    BSONObjBuilder cmd;
+    cmd.append("splitVector", nss.ns());
+    cmd.append("keyPattern", shardKeyPattern.toBSON());
+    chunkRange.append(&cmd);
+    cmd.appendBool("force", true);
+
+    auto shard = uassertStatusOK(Grid::get(txn)->shardRegistry()->getShard(txn, shardId));
+
+    auto cmdResponse = uassertStatusOK(
+        shard->runCommandWithFixedRetryAttempts(txn,
+                                                ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+                                                "admin",
+                                                cmd.obj(),
+                                                Shard::RetryPolicy::kIdempotent));
+
+    uassertStatusOK(cmdResponse.commandStatus);
+
+    BSONObjIterator it(cmdResponse.response.getObjectField("splitKeys"));
+    if (it.more()) {
+        return it.next().Obj().getOwned();
+    }
+
+    uasserted(ErrorCodes::CannotSplit,
+              "Unable to find median in chunk, possibly because chunk is empty.");
+}
 
 class SplitCollectionCmd : public Command {
 public:
     SplitCollectionCmd() : Command("split", false, "split") {}
 
-    virtual bool slaveOk() const {
+    bool slaveOk() const override {
         return true;
     }
 
-    virtual bool adminOnly() const {
+    bool adminOnly() const override {
         return true;
     }
 
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+    bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    virtual void help(std::stringstream& help) const {
+    void help(std::stringstream& help) const override {
         help << " example: - split the shard that contains give key\n"
              << "   { split : 'alleyinsider.blog.posts' , find : { ts : 1 } }\n"
              << " example: - split the shard that contains the key with this as the middle\n"
@@ -81,9 +108,9 @@ public:
              << " NOTE: this does not move the chunks, it just creates a logical separation.";
     }
 
-    virtual Status checkAuthForCommand(Client* client,
-                                       const std::string& dbname,
-                                       const BSONObj& cmdObj) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) override {
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
                 ResourcePattern::forExactNamespace(NamespaceString(parseNs(dbname, cmdObj))),
                 ActionType::splitChunk)) {
@@ -92,36 +119,22 @@ public:
         return Status::OK();
     }
 
-    virtual std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const {
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
         return parseNsFullyQualified(dbname, cmdObj);
     }
 
-    virtual bool run(OperationContext* txn,
-                     const std::string& dbname,
-                     BSONObj& cmdObj,
-                     int options,
-                     std::string& errmsg,
-                     BSONObjBuilder& result) {
+    bool run(OperationContext* opCtx,
+             const std::string& dbname,
+             BSONObj& cmdObj,
+             int options,
+             std::string& errmsg,
+             BSONObjBuilder& result) override {
         const NamespaceString nss(parseNs(dbname, cmdObj));
-        uassert(ErrorCodes::InvalidNamespace,
-                str::stream() << nss.ns() << " is not a valid namespace",
-                nss.isValid());
 
-        auto status = grid.catalogCache()->getDatabase(txn, nss.db().toString());
-        if (!status.isOK()) {
-            return appendCommandStatus(result, status.getStatus());
-        }
-
-        std::shared_ptr<DBConfig> config = status.getValue();
-        if (!config->isSharded(nss.ns())) {
-            config->reload(txn);
-
-            if (!config->isSharded(nss.ns())) {
-                return appendCommandStatus(result,
-                                           Status(ErrorCodes::NamespaceNotSharded,
-                                                  "ns [" + nss.ns() + " is not sharded."));
-            }
-        }
+        auto routingInfo = uassertStatusOK(
+            Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx,
+                                                                                         nss));
+        const auto cm = routingInfo.cm();
 
         const BSONField<BSONObj> findField("find", BSONObj());
         const BSONField<BSONArray> boundsField("bounds", BSONArray());
@@ -156,6 +169,7 @@ public:
         }
 
         BSONObj middle;
+
         if (FieldParser::extract(cmdObj, middleField, &middle, &errmsg) ==
             FieldParser::FIELD_INVALID) {
             return false;
@@ -176,104 +190,95 @@ public:
             return false;
         }
 
-        // This refreshes the chunk metadata if stale.
-        shared_ptr<ChunkManager> info = config->getChunkManager(txn, nss.ns(), true);
-        shared_ptr<Chunk> chunk;
+        std::shared_ptr<Chunk> chunk;
 
         if (!find.isEmpty()) {
-            StatusWith<BSONObj> status =
-                info->getShardKeyPattern().extractShardKeyFromQuery(txn, find);
-
-            // Bad query
-            if (!status.isOK()) {
-                return appendCommandStatus(result, status.getStatus());
-            }
-
-            BSONObj shardKey = status.getValue();
+            // find
+            BSONObj shardKey =
+                uassertStatusOK(cm->getShardKeyPattern().extractShardKeyFromQuery(opCtx, find));
             if (shardKey.isEmpty()) {
                 errmsg = stream() << "no shard key found in chunk query " << find;
                 return false;
             }
 
-            chunk = info->findIntersectingChunkWithSimpleCollation(txn, shardKey);
+            chunk = cm->findIntersectingChunkWithSimpleCollation(shardKey);
         } else if (!bounds.isEmpty()) {
-            if (!info->getShardKeyPattern().isShardKey(bounds[0].Obj()) ||
-                !info->getShardKeyPattern().isShardKey(bounds[1].Obj())) {
-                errmsg = stream() << "shard key bounds "
-                                  << "[" << bounds[0].Obj() << "," << bounds[1].Obj() << ")"
-                                  << " are not valid for shard key pattern "
-                                  << info->getShardKeyPattern().toBSON();
+            // bounds
+            if (!cm->getShardKeyPattern().isShardKey(bounds[0].Obj()) ||
+                !cm->getShardKeyPattern().isShardKey(bounds[1].Obj())) {
+                errmsg = str::stream() << "shard key bounds "
+                                       << "[" << bounds[0].Obj() << "," << bounds[1].Obj() << ")"
+                                       << " are not valid for shard key pattern "
+                                       << cm->getShardKeyPattern().toBSON();
                 return false;
             }
 
-            BSONObj minKey = info->getShardKeyPattern().normalizeShardKey(bounds[0].Obj());
-            BSONObj maxKey = info->getShardKeyPattern().normalizeShardKey(bounds[1].Obj());
+            BSONObj minKey = cm->getShardKeyPattern().normalizeShardKey(bounds[0].Obj());
+            BSONObj maxKey = cm->getShardKeyPattern().normalizeShardKey(bounds[1].Obj());
 
-            chunk = info->findIntersectingChunkWithSimpleCollation(txn, minKey);
-            invariant(chunk.get());
+            chunk = cm->findIntersectingChunkWithSimpleCollation(minKey);
 
             if (chunk->getMin().woCompare(minKey) != 0 || chunk->getMax().woCompare(maxKey) != 0) {
-                errmsg = stream() << "no chunk found with the shard key bounds "
-                                  << "[" << minKey << "," << maxKey << ")";
+                errmsg = str::stream() << "no chunk found with the shard key bounds "
+                                       << ChunkRange(minKey, maxKey).toString();
                 return false;
             }
         } else {
-            // Middle
-            if (!info->getShardKeyPattern().isShardKey(middle)) {
-                errmsg = stream() << "new split key " << middle
-                                  << " is not valid for shard key pattern "
-                                  << info->getShardKeyPattern().toBSON();
+            // middle
+            if (!cm->getShardKeyPattern().isShardKey(middle)) {
+                errmsg = str::stream() << "new split key " << middle
+                                       << " is not valid for shard key pattern "
+                                       << cm->getShardKeyPattern().toBSON();
                 return false;
             }
 
-            middle = info->getShardKeyPattern().normalizeShardKey(middle);
+            middle = cm->getShardKeyPattern().normalizeShardKey(middle);
 
             // Check shard key size when manually provided
-            Status status = ShardKeyPattern::checkShardKeySize(middle);
-            if (!status.isOK()) {
-                return appendCommandStatus(result, status);
-            }
+            uassertStatusOK(ShardKeyPattern::checkShardKeySize(middle));
 
-            chunk = info->findIntersectingChunkWithSimpleCollation(txn, middle);
-            invariant(chunk.get());
+            chunk = cm->findIntersectingChunkWithSimpleCollation(middle);
 
             if (chunk->getMin().woCompare(middle) == 0 || chunk->getMax().woCompare(middle) == 0) {
-                errmsg = stream() << "new split key " << middle
-                                  << " is a boundary key of existing chunk "
-                                  << "[" << chunk->getMin() << "," << chunk->getMax() << ")";
+                errmsg = str::stream() << "new split key " << middle
+                                       << " is a boundary key of existing chunk "
+                                       << "[" << chunk->getMin() << "," << chunk->getMax() << ")";
                 return false;
             }
         }
 
-        invariant(chunk.get());
+        // Once the chunk to be split has been determined, if the split point was explicitly
+        // specified in the split command through the "middle" parameter, choose "middle" as the
+        // splitPoint. Otherwise use the splitVector command with 'force' to ask the shard for the
+        // middle of the chunk.
+        const BSONObj splitPoint = !middle.isEmpty()
+            ? middle
+            : selectMedianKey(opCtx,
+                              chunk->getShardId(),
+                              nss,
+                              cm->getShardKeyPattern(),
+                              ChunkRange(chunk->getMin(), chunk->getMax()));
 
-        log() << "splitting chunk [" << redact(chunk->getMin().toString()) << ","
-              << redact(chunk->getMax().toString()) << ")"
-              << " in collection " << nss.ns() << " on shard " << chunk->getShardId();
+        log() << "Splitting chunk "
+              << redact(ChunkRange(chunk->getMin(), chunk->getMax()).toString())
+              << " in collection " << nss.ns() << " on shard " << chunk->getShardId() << " at key "
+              << redact(splitPoint);
 
-        BSONObj res;
-        if (middle.isEmpty()) {
-            uassertStatusOK(chunk->split(txn, Chunk::atMedian, nullptr));
-        } else {
-            uassertStatusOK(shardutil::splitChunkAtMultiplePoints(txn,
-                                                                  chunk->getShardId(),
-                                                                  nss,
-                                                                  info->getShardKeyPattern(),
-                                                                  info->getVersion(),
-                                                                  chunk->getMin(),
-                                                                  chunk->getMax(),
-                                                                  chunk->getLastmod(),
-                                                                  {middle}));
-        }
+        uassertStatusOK(
+            shardutil::splitChunkAtMultiplePoints(opCtx,
+                                                  chunk->getShardId(),
+                                                  nss,
+                                                  cm->getShardKeyPattern(),
+                                                  cm->getVersion(),
+                                                  ChunkRange(chunk->getMin(), chunk->getMax()),
+                                                  {splitPoint}));
 
-        // Proactively refresh the chunk manager. Not really necessary, but this way it's
-        // immediately up-to-date the next time it's used.
-        info->reload(txn);
+        Grid::get(opCtx)->catalogCache()->onStaleConfigError(std::move(routingInfo));
 
         return true;
     }
 
-} splitCollectionCmd;
+} splitChunk;
 
 }  // namespace
 }  // namespace mongo

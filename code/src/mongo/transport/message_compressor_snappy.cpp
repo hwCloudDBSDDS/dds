@@ -30,12 +30,13 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/base/data_range_cursor.h"
 #include "mongo/base/init.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/transport/message_compressor_registry.h"
 #include "mongo/transport/message_compressor_snappy.h"
 
-#include "third_party/snappy-1.1.3/snappy.h"
+#include <snappy.h>
 
 namespace mongo {
 
@@ -48,7 +49,10 @@ std::size_t SnappyMessageCompressor::getMaxCompressedSize(size_t inputSize) {
 
 StatusWith<std::size_t> SnappyMessageCompressor::compressData(ConstDataRange input,
                                                               DataRange output) {
-    size_t outLength;
+    size_t outLength = output.length();
+    if (output.length() < getMaxCompressedSize(input.length())) {
+        return {ErrorCodes::BadValue, "Output too small for max size of compressed input"};
+    }
     snappy::RawCompress(input.data(), input.length(), const_cast<char*>(output.data()), &outLength);
 
     counterHitCompress(input.length(), outLength);
@@ -57,10 +61,13 @@ StatusWith<std::size_t> SnappyMessageCompressor::compressData(ConstDataRange inp
 
 StatusWith<std::size_t> SnappyMessageCompressor::decompressData(ConstDataRange input,
                                                                 DataRange output) {
-    bool ret =
-        snappy::RawUncompress(input.data(), input.length(), const_cast<char*>(output.data()));
+    size_t expectedLength = 0;
+    if (!snappy::GetUncompressedLength(input.data(), input.length(), &expectedLength) ||
+        expectedLength != output.length()) {
+        return {ErrorCodes::BadValue, "Compressed message was invalid or corrupted"};
+    }
 
-    if (!ret) {
+    if (!snappy::RawUncompress(input.data(), input.length(), const_cast<char*>(output.data()))) {
         return Status{ErrorCodes::BadValue, "Compressed message was invalid or corrupted"};
     }
 

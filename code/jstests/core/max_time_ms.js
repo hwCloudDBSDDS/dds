@@ -1,4 +1,12 @@
 // Tests query/command option $maxTimeMS.
+//
+// @tags: [
+//   # This test attempts to perform read operations after having enabled the maxTimeAlwaysTimeOut
+//   # failpoint. The former operations may be routed to a secondary in the replica set, whereas the
+//   # latter must be routed to the primary.
+//   assumes_read_preference_unchanged,
+//   requires_collmod_command,
+// ]
 
 var t = db.max_time_ms;
 var exceededTimeLimit = 50;  // ErrorCodes::ExceededTimeLimit
@@ -387,6 +395,10 @@ assert(res.ok == 1,
 res = t.runCommand("collMod", {usePowerOf2Sizes: true, maxTimeMS: 60 * 1000});
 assert(res.ok == 1,
        "expected collmod with maxtime to succeed, ok=" + res.ok + ", code=" + res.code);
+
+// "createIndexes" command.
+assert.commandWorked(
+    t.runCommand("createIndexes", {indexes: [{key: {x: 1}, name: "x_1"}], maxTimeMS: 60 * 1000}));
 
 //
 // Test maxTimeMS for parallelCollectionScan

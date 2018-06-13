@@ -82,6 +82,13 @@ DocumentSource::GetNextResult DocumentSourceMatch::getNext() {
         if (_expression->matchesBSON(toMatch)) {
             return nextInput;
         }
+
+        // For performance reasons, a streaming stage must not keep references to documents across
+        // calls to getNext(). Such stages must retrieve a result from their child and then release
+        // it (or return it) before asking for another result. Failing to do so can result in extra
+        // work, since the Document/Value library must copy data on write when that data has a
+        // refcount above one.
+        nextInput.releaseDocument();
     }
 
     return nextInput;
@@ -360,6 +367,8 @@ void DocumentSourceMatch::joinMatchWith(intrusive_ptr<DocumentSourceMatch> other
     StatusWithMatchExpression status = uassertStatusOK(
         MatchExpressionParser::parse(_predicate, ExtensionsCallbackNoop(), pExpCtx->getCollator()));
     _expression = std::move(status.getValue());
+    _dependencies = DepsTracker(_dependencies.getMetadataAvailable());
+    getDependencies(&_dependencies);
 }
 
 pair<intrusive_ptr<DocumentSourceMatch>, intrusive_ptr<DocumentSourceMatch>>
@@ -370,7 +379,7 @@ DocumentSourceMatch::splitSourceBy(const std::set<std::string>& fields) {
     invariant(newExpr.first || newExpr.second);
 
     if (!newExpr.first) {
-        // The entire $match dependends on 'fields'.
+        // The entire $match depends on 'fields'.
         _expression = std::move(newExpr.second);
         return {nullptr, this};
     } else if (!newExpr.second) {
@@ -399,7 +408,7 @@ DocumentSourceMatch::splitSourceBy(const std::set<std::string>& fields) {
 boost::intrusive_ptr<DocumentSourceMatch> DocumentSourceMatch::descendMatchOnPath(
     MatchExpression* matchExpr,
     const std::string& descendOn,
-    intrusive_ptr<ExpressionContext> expCtx) {
+    const intrusive_ptr<ExpressionContext>& expCtx) {
     expression::mapOver(matchExpr, [&descendOn](MatchExpression* node, std::string path) -> void {
         // Cannot call this method on a $match including a $elemMatch.
         invariant(node->matchType() != MatchExpression::ELEM_MATCH_OBJECT &&
@@ -451,7 +460,6 @@ intrusive_ptr<DocumentSourceMatch> DocumentSourceMatch::create(
     BSONObj filter, const intrusive_ptr<ExpressionContext>& expCtx) {
     uassertNoDisallowedClauses(filter);
     intrusive_ptr<DocumentSourceMatch> match(new DocumentSourceMatch(filter, expCtx));
-    match->injectExpressionContext(expCtx);
     return match;
 }
 
@@ -486,10 +494,6 @@ void DocumentSourceMatch::addDependencies(DepsTracker* deps) const {
             deps->fields.insert(path);
         }
     });
-}
-
-void DocumentSourceMatch::doInjectExpressionContext() {
-    _expression->setCollator(pExpCtx->getCollator());
 }
 
 DocumentSourceMatch::DocumentSourceMatch(const BSONObj& query,

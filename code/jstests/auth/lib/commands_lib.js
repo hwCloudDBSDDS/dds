@@ -622,11 +622,20 @@ var authCommandsLib = {
           teardown: function(db) {
               db.foo.drop();
           },
-          testcases: [{
-              runOnDb: firstDbName,
-              roles: {clusterMonitor: 1, clusterAdmin: 1, root: 1, __system: 1},
-              privileges: [{resource: {anyResource: true}, actions: ["indexStats"]}]
-          }]
+          testcases: [
+              {
+                runOnDb: firstDbName,
+                roles: roles_monitoring,
+                privileges:
+                    [{resource: {db: firstDbName, collection: "foo"}, actions: ["indexStats"]}]
+              },
+              {
+                runOnDb: secondDbName,
+                roles: roles_monitoring,
+                privileges:
+                    [{resource: {db: secondDbName, collection: "foo"}, actions: ["indexStats"]}]
+              }
+          ]
         },
         {
           testname: "aggregate_lookup",
@@ -2692,7 +2701,6 @@ var authCommandsLib = {
         {
           testname: "getDiagnosticData",
           command: {getDiagnosticData: 1},
-          skipSharded: true,
           testcases: [
               {
                 runOnDb: adminDbName,
@@ -2701,6 +2709,10 @@ var authCommandsLib = {
                     {resource: {cluster: true}, actions: ["serverStatus"]},
                     {resource: {cluster: true}, actions: ["replSetGetStatus"]},
                     {resource: {db: "local", collection: "oplog.rs"}, actions: ["collStats"]},
+                    {
+                      resource: {cluster: true},
+                      actions: ["connPoolStats"]
+                    },  // Only needed against mongos
                 ]
               },
               {runOnDb: firstDbName, roles: {}},
@@ -3016,12 +3028,17 @@ var authCommandsLib = {
         {
           testname: "insert_system_users",
           command: {insert: "system.users", documents: [{data: 5}]},
+          setup: function(db) {
+              // Ensure unique indexes consistently cause insertion failure
+              db.system.users.insert({data: 5});
+          },
           testcases: [
               {
                 runOnDb: "admin",
                 roles: {"root": 1, "__system": 1, "restore": 1},
                 privileges:
                     [{resource: {db: "admin", collection: "system.users"}, actions: ["insert"]}],
+                expectFail: true,
               },
           ]
         },

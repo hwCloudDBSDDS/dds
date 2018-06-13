@@ -174,6 +174,7 @@ func makeFieldSelector(fields string) bson.M {
 // It always returns Limit if there is a limit, assuming that in general
 // limits will less then the total possible.
 // If there is a query and no limit then it returns 0, because it's too expensive to count the query.
+// If the collection is a view then it returns 0, because it is too expensive to count the view.
 // Otherwise it returns the count minus the skip
 func (exp *MongoExport) getCount() (c int, err error) {
 	session, err := exp.SessionProvider.GetSession()
@@ -187,7 +188,17 @@ func (exp *MongoExport) getCount() (c int, err error) {
 	if exp.InputOpts != nil && exp.InputOpts.Query != "" {
 		return 0, nil
 	}
-	q := session.DB(exp.ToolOptions.Namespace.DB).C(exp.ToolOptions.Namespace.Collection).Find(nil)
+	mgoCollection := session.DB(exp.ToolOptions.Namespace.DB).C(exp.ToolOptions.Namespace.Collection)
+
+	collInfo, err := db.GetCollectionInfo(mgoCollection)
+	if err != nil {
+		return 0, err
+	}
+	if collInfo.IsView() {
+		return 0, nil
+	}
+
+	q := mgoCollection.Find(nil)
 	c, err = q.Count()
 	if err != nil {
 		return 0, err
@@ -233,15 +244,23 @@ func (exp *MongoExport) getCursor() (*mgo.Iter, *mgo.Session, error) {
 		}
 	}
 
-	flags := 0
-	if len(query) == 0 && exp.InputOpts != nil &&
-		exp.InputOpts.ForceTableScan != true && exp.InputOpts.Sort == "" {
-		flags = flags | db.Snapshot
-	}
-
 	session, err := exp.SessionProvider.GetSession()
 	if err != nil {
 		return nil, nil, err
+	}
+	collection := session.DB(exp.ToolOptions.Namespace.DB).C(exp.ToolOptions.Namespace.Collection)
+
+	// figure out if we're exporting a view
+	collInfo, err := db.GetCollectionInfo(collection)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	flags := 0
+	// don't snapshot if we've been asked not to,
+	// or if we cannot because  we are querying, sorting, or if the collection is a view
+	if !exp.InputOpts.ForceTableScan && len(query) == 0 && exp.InputOpts != nil && exp.InputOpts.Sort == "" && !collInfo.IsView() {
+		flags = flags | db.Snapshot
 	}
 
 	skip := 0
@@ -265,9 +284,7 @@ func (exp *MongoExport) getCursor() (*mgo.Iter, *mgo.Session, error) {
 	}
 
 	// build the query
-	q := session.DB(exp.ToolOptions.Namespace.DB).
-		C(exp.ToolOptions.Namespace.Collection).Find(query).Sort(sortFields...).
-		Skip(skip).Limit(limit)
+	q := collection.Find(query).Sort(sortFields...).Skip(skip).Limit(limit)
 
 	if len(exp.OutputOpts.Fields) > 0 {
 		q.Select(makeFieldSelector(exp.OutputOpts.Fields))

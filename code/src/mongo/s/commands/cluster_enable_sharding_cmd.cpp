@@ -39,9 +39,8 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
-#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
-#include "mongo/s/config.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/log.h"
 
@@ -87,7 +86,7 @@ public:
         return cmdObj.firstElement().str();
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const std::string& dbname_unused,
                      BSONObj& cmdObj,
                      int options,
@@ -100,20 +99,19 @@ public:
             return false;
         }
 
-        if (dbname == "admin" || dbname == "config" || dbname == "local") {
+        if (dbname == NamespaceString::kAdminDb || dbname == NamespaceString::kConfigDb ||
+            dbname == NamespaceString::kLocalDb) {
             errmsg = "can't shard " + dbname + " database";
             return false;
         }
 
-        Status status = grid.catalogClient(txn)->enableSharding(txn, dbname);
-        if (status.isOK()) {
-            audit::logEnableSharding(Client::getCurrent(), dbname);
-        }
+        uassertStatusOK(Grid::get(opCtx)->catalogClient(opCtx)->enableSharding(opCtx, dbname));
+        audit::logEnableSharding(Client::getCurrent(), dbname);
 
         // Make sure to force update of any stale metadata
-        grid.catalogCache()->invalidate(dbname);
+        Grid::get(opCtx)->catalogCache()->purgeDatabase(dbname);
 
-        return appendCommandStatus(result, status);
+        return true;
     }
 
 } enableShardingCmd;

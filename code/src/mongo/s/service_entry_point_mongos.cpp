@@ -32,27 +32,26 @@
 
 #include "mongo/s/service_entry_point_mongos.h"
 
-#include <vector>
-
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/dbmessage.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/s/client/shard_connection.h"
-#include "mongo/s/commands/request.h"
-#include "mongo/stdx/thread.h"
+#include "mongo/s/cluster_last_error_info.h"
+#include "mongo/s/commands/strategy.h"
 #include "mongo/transport/service_entry_point_utils.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/transport_layer.h"
-#include "mongo/util/exit.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/message.h"
-#include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/thread_idle_callback.h"
-#include "mongo/util/quick_exit.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+
+using transport::TransportLayer;
 
 namespace {
 
@@ -68,9 +67,6 @@ BSONObj buildErrReply(const DBException& ex) {
 
 }  // namespace
 
-using transport::Session;
-using transport::TransportLayer;
-
 ServiceEntryPointMongos::ServiceEntryPointMongos(TransportLayer* tl) : _tl(tl) {}
 
 void ServiceEntryPointMongos::startSession(transport::SessionHandle session) {
@@ -80,18 +76,20 @@ void ServiceEntryPointMongos::startSession(transport::SessionHandle session) {
 }
 
 void ServiceEntryPointMongos::_sessionLoop(const transport::SessionHandle& session) {
-    Message message;
     int64_t counter = 0;
 
     while (true) {
         // Release any cached egress connections for client back to pool before destroying
         auto guard = MakeGuard(ShardConnection::releaseMyConnections);
 
-        message.reset();
+        Message message;
 
-        // 1. Source a Message from the client
+        // Source a Message from the client
         {
-            auto status = session->sourceMessage(&message).wait();
+            auto status = [&] {
+                MONGO_IDLE_THREAD_BLOCK;
+                return session->sourceMessage(&message).wait();
+            }();
 
             if (ErrorCodes::isInterruption(status.code()) ||
                 ErrorCodes::isNetworkError(status.code())) {
@@ -106,37 +104,79 @@ void ServiceEntryPointMongos::_sessionLoop(const transport::SessionHandle& sessi
             uassertStatusOK(status);
         }
 
-        // 2. Build a sharding request
-        Request r(message);
         auto txn = cc().makeOperationContext();
 
+        const int32_t msgId = message.header().getId();
+
+        const NetworkOp op = message.operation();
+
+        // This exception will not be returned to the caller, but will be logged and will close the
+        // connection
+        uassert(ErrorCodes::IllegalOperation,
+                str::stream() << "Message type " << op << " is not supported.",
+                op > dbMsg);
+
+        // Start a new LastError session. Any exceptions thrown from here onwards will be returned
+        // to the caller (if the type of the message permits it).
+        ClusterLastErrorInfo::get(txn->getClient()).newRequest();
+        LastError::get(txn->getClient()).startRequest();
+
+        DbMessage dbm(message);
+
+        NamespaceString nss;
+
         try {
-            r.init(txn.get());
-            r.process(txn.get());
-        } catch (const AssertionException& ex) {
-            LOG(ex.isUserAssertion() ? 1 : 0) << "Assertion failed"
-                                              << " while processing "
-                                              << networkOpToString(message.operation()) << " op"
-                                              << " for " << r.getnsIfPresent() << causedBy(ex);
-            if (r.expectResponse()) {
-                message.header().setId(r.id());
-                replyToQuery(ResultFlag_ErrSet, session, message, buildErrReply(ex));
+
+            if (dbm.messageShouldHaveNs()) {
+                nss = NamespaceString(StringData(dbm.getns()));
+
+                uassert(ErrorCodes::InvalidNamespace,
+                        str::stream() << "Invalid ns [" << nss.ns() << "]",
+                        nss.isValid());
+
+                uassert(ErrorCodes::IllegalOperation,
+                        "Can't use 'local' database through mongos",
+                        nss.db() != NamespaceString::kLocalDb);
             }
 
-            // We *always* populate the last error for now
-            LastError::get(cc()).setLastError(ex.getCode(), ex.what());
+            AuthorizationSession::get(txn->getClient())->startRequest(txn.get());
+
+            LOG(3) << "Request::process begin ns: " << nss << " msg id: " << msgId
+                   << " op: " << networkOpToString(op);
+
+            switch (op) {
+                case dbQuery:
+                    if (nss.isCommand() || nss.isSpecialCommand()) {
+                        Strategy::clientCommandOp(txn.get(), nss, &dbm);
+                    } else {
+                        Strategy::queryOp(txn.get(), nss, &dbm);
+                    }
+                    break;
+                case dbGetMore:
+                    Strategy::getMore(txn.get(), nss, &dbm);
+                    break;
+                case dbKillCursors:
+                    Strategy::killCursors(txn.get(), &dbm);
+                    break;
+                default:
+                    Strategy::writeOp(txn.get(), &dbm);
+                    break;
+            }
+
+            LOG(3) << "Request::process end ns: " << nss << " msg id: " << msgId
+                   << " op: " << networkOpToString(op);
+
         } catch (const DBException& ex) {
-            log() << "Exception thrown"
-                  << " while processing " << networkOpToString(message.operation()) << " op"
-                  << " for " << r.getnsIfPresent() << causedBy(ex);
+            LOG(1) << "Exception thrown"
+                   << " while processing " << networkOpToString(op) << " op"
+                   << " for " << nss.ns() << causedBy(ex);
 
-            if (r.expectResponse()) {
-                message.header().setId(r.id());
+            if (op == dbQuery || op == dbGetMore) {
                 replyToQuery(ResultFlag_ErrSet, session, message, buildErrReply(ex));
             }
 
             // We *always* populate the last error for now
-            LastError::get(cc()).setLastError(ex.getCode(), ex.what());
+            LastError::get(txn->getClient()).setLastError(ex.getCode(), ex.what());
         }
 
         if ((counter++ & 0xf) == 0) {

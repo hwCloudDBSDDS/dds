@@ -72,6 +72,10 @@ if (typeof _threadInject != "undefined") {
         this._add("t.remove( " + tojson(obj) + " )");
     };
 
+    EventGenerator.prototype.addCurrentOp = function() {
+        this._add("db.currentOp()");
+    };
+
     EventGenerator.prototype.addUpdate = function(objOld, objNew) {
         this._add("t.update( " + tojson(objOld) + ", " + tojson(objNew) + " )");
     };
@@ -101,7 +105,11 @@ if (typeof _threadInject != "undefined") {
         var collectionName = args.shift();
         var host = args.shift();
         var m = new Mongo(host);
-        var t = m.getDB("test")[collectionName];
+
+        // We define 'db' and 't' as local variables so that calling eval() on the stringified
+        // JavaScript expression 'args[i][1]' can take advantage of using them.
+        var db = m.getDB("test");
+        var t = db[collectionName];
         for (var i in args) {
             sleep(args[i][0]);
             eval(args[i][1]);
@@ -161,10 +169,8 @@ if (typeof _threadInject != "undefined") {
             "indexh.js",
             "evald.js",
             "evalf.js",
-            "killop.js",
             "run_program1.js",
             "notablescan.js",
-            "drop2.js",
             "dropdb_race.js",
             "bench_test1.js",
             "padding.js",
@@ -173,7 +179,6 @@ if (typeof _threadInject != "undefined") {
             // this has a chance to see the message
             "connections_opened.js",  // counts connections, globally
             "opcounters_write_cmd.js",
-            "currentop.js",                   // SERVER-8673, plus rwlock yielding issues
             "set_param1.js",                  // changes global state
             "geo_update_btree2.js",           // SERVER-11132 test disables table scans
             "update_setOnInsert.js",          // SERVER-9982
@@ -192,11 +197,13 @@ if (typeof _threadInject != "undefined") {
 
         // some tests can't be run in parallel with each other
         var serialTestsArr = [
+            // These tests use fsyncLock.
             parallelFilesDir + "/fsync.js",
-            parallelFilesDir + "/auth1.js",
+            parallelFilesDir + "/currentop.js",
+            parallelFilesDir + "/killop_drop_collection.js",
 
             // These tests expect the profiler to be on or off at specific points. They should not
-            // be run in parallel with tests that peform fsyncLock. User operations skip writing to
+            // be run in parallel with tests that perform fsyncLock. User operations skip writing to
             // the system.profile collection while the server is fsyncLocked.
             //
             // The profiler tests can be run in parallel with each other as they use test-specific

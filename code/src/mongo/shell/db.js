@@ -331,7 +331,7 @@ var DB;
         } catch (e) {
             // we expect the command to not return a response, as the server will shut down
             // immediately.
-            if (e.message.indexOf("error doing query: failed") >= 0) {
+            if (isNetworkError(e)) {
                 print('server should be down...');
                 return;
             }
@@ -730,12 +730,14 @@ var DB;
             throw _getErrorWithCode(ret, "getlasterror failed: " + tojson(res));
         return res.err;
     };
-    DB.prototype.getLastErrorObj = function(w, wtimeout) {
+    DB.prototype.getLastErrorObj = function(w, wtimeout, j) {
         var cmd = {getlasterror: 1};
         if (w) {
             cmd.w = w;
             if (wtimeout)
                 cmd.wtimeout = wtimeout;
+            if (j != null)
+                cmd.j = j;
         }
         var res = this.runCommand(cmd);
 
@@ -1228,7 +1230,7 @@ var DB;
     /////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    var _defaultWriteConcern = {w: 'majority', wtimeout: 5 * 60 * 1000};
+    var _defaultWriteConcern = {w: 'majority', wtimeout: 10 * 60 * 1000};
 
     function getUserObjString(userObj) {
         var pwd = userObj.pwd;

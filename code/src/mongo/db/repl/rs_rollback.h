@@ -28,10 +28,10 @@
 
 #pragma once
 
-#include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
-#include "mongo/base/status_with.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/record_id.h"
+#include "mongo/db/repl/optime.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/util/time_support.h"
 
@@ -44,12 +44,30 @@ class OperationContext;
 namespace repl {
 
 class OplogInterface;
-class OpTime;
 class ReplicationCoordinator;
 class RollbackSource;
+class StorageInterface;
 
 /**
- * Initiates the rollback process.
+ * Entry point to rollback process.
+ * Set state to ROLLBACK while we are in this function. This prevents serving reads, even from
+ * the oplog. This can fail if we are elected PRIMARY, in which case we better not do any
+ * rolling back. If we successfully enter ROLLBACK we will only exit this function fatally or
+ * after transition to RECOVERING.
+ *
+ * 'sleepSecsFn' is an optional testing-only argument for overriding mongo::sleepsecs().
+ */
+
+void rollback(OperationContext* opCtx,
+              const OplogInterface& localOplog,
+              const RollbackSource& rollbackSource,
+              int requiredRBID,
+              ReplicationCoordinator* replCoord,
+              StorageInterface* storageInterface,
+              stdx::function<void(int)> sleepSecsFn = [](int secs) { sleepsecs(secs); });
+
+/**
+ * Initiates the rollback process after transition to ROLLBACK.
  * This function assumes the preconditions for undertaking rollback have already been met;
  * we have ops in our oplog that our sync source does not have, and we are not currently
  * PRIMARY.
@@ -58,7 +76,7 @@ class RollbackSource;
  * - undo operations by fetching all documents affected, then replaying
  *   the sync source's oplog until we reach the time in the oplog when we fetched the last
  *   document.
- * This function can throw std::exception on failures.
+ * This function can throw exceptions on failures.
  * This function runs a command on the sync source to detect if the sync source rolls back
  * while our rollback is in progress.
  *
@@ -67,23 +85,82 @@ class RollbackSource;
  * @param rollbackSource interface for sync source:
  *            provides oplog; and
  *            supports fetching documents and copying collections.
+ * @param requiredRBID Rollback ID we are required to have throughout rollback.
  * @param replCoord Used to track the rollback ID and to change the follower state
+ * @param storageInterface Used to update minValid.
  *
- * Failures: Most failures are returned as a status but some failures throw an std::exception.
+ * If requiredRBID is supplied, we error if the upstream node has a different RBID (ie it rolled
+ * back) after fetching any information from it.
+ *
+ * Failures: If a Status with code UnrecoverableRollbackError is returned, the caller must exit
+ * fatally. All other errors should be considered recoverable regardless of whether reported as a
+ * status or exception.
  */
-
-using SleepSecondsFn = stdx::function<void(Seconds)>;
-
 Status syncRollback(OperationContext* txn,
                     const OplogInterface& localOplog,
                     const RollbackSource& rollbackSource,
+                    int requiredRBID,
                     ReplicationCoordinator* replCoord,
-                    const SleepSecondsFn& sleepSecondsFn);
+                    StorageInterface* storageInterface);
 
-Status syncRollback(OperationContext* txn,
-                    const OplogInterface& localOplog,
-                    const RollbackSource& rollbackSource,
-                    ReplicationCoordinator* replCoord);
+/**
+ * This namespace contains internal details of the rollback system. It is only exposed in a header
+ * for unittesting. Nothing here should be used outside of rs_rollback.cpp or its unittest.
+ */
+namespace rollback_internal {
 
+struct DocID {
+    BSONObj ownedObj;
+    const char* ns;
+    BSONElement _id;
+    bool operator<(const DocID& other) const;
+    bool operator==(const DocID& other) const;
+
+    static DocID minFor(const char* ns) {
+        auto obj = BSON("" << MINKEY);
+        return {obj, ns, obj.firstElement()};
+    }
+
+    static DocID maxFor(const char* ns) {
+        auto obj = BSON("" << MAXKEY);
+        return {obj, ns, obj.firstElement()};
+    }
+};
+
+struct FixUpInfo {
+    // note this is a set -- if there are many $inc's on a single document we need to rollback,
+    // we only need to refetch it once.
+    std::set<DocID> docsToRefetch;
+
+    // Key is collection namespace. Value is name of index to drop.
+    std::multimap<std::string, std::string> indexesToDrop;
+
+    std::set<std::string> collectionsToDrop;
+    std::set<std::string> collectionsToResyncData;
+    std::set<std::string> collectionsToResyncMetadata;
+
+    OpTime commonPoint;
+    RecordId commonPointOurDiskloc;
+
+    int rbid;  // remote server's current rollback sequence #
+
+    void removeAllDocsToRefetchFor(const std::string& collection);
+    void removeRedundantOperations();
+};
+
+// Indicates that rollback cannot complete and the server must abort.
+class RSFatalException : public std::exception {
+public:
+    RSFatalException(std::string m = "replica set fatal exception") : msg(m) {}
+    virtual const char* what() const throw() {
+        return msg.c_str();
+    }
+
+private:
+    std::string msg;
+};
+
+Status updateFixUpInfoFromLocalOplogEntry(FixUpInfo& fixUpInfo, const BSONObj& ourObj);
+}  // namespace rollback_internal
 }  // namespace repl
 }  // namespace mongo

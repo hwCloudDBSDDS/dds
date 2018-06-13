@@ -48,8 +48,8 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/repl/bgsync.h"
-#include "mongo/db/repl/data_replicator.h"
 #include "mongo/db/repl/initial_sync.h"
+#include "mongo/db/repl/initial_syncer.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplogreader.h"
 #include "mongo/db/repl/repl_client_info.h"
@@ -102,7 +102,8 @@ void truncateAndResetOplog(OperationContext* txn,
     // We must clear the sync source blacklist after calling stop()
     // because the bgsync thread, while running, may update the blacklist.
     replCoord->resetMyLastOpTimes();
-    bgsync->stop();
+    bgsync->stop(true);
+    bgsync->startProducerIfStopped();
     bgsync->clearBuffer(txn);
 
     replCoord->clearSyncSourceBlacklist();
@@ -352,7 +353,7 @@ Status _initialSync(OperationContext* txn, BackgroundSync* bgsync) {
                 params.idIndexSpec = idIndex.Obj();
             } else {
                 const NamespaceString nss(options.fromDB, params.collectionName);
-                auto indexSpecs = r.conn()->getIndexSpecs(nss.ns());
+                auto indexSpecs = r.conn()->getIndexSpecs(nss.ns(), QueryOption_SlaveOk);
                 params.idIndexSpec = Cloner::getIdIndexSpec(indexSpecs);
             }
 

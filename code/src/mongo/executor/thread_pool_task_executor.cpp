@@ -34,6 +34,7 @@
 
 #include <boost/optional.hpp>
 #include <iterator>
+#include <utility>
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/disallow_copying.h"
@@ -291,7 +292,6 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWorkAt(
         if (cbState->canceled.load()) {
             return;
         }
-        invariant(now() >= when);
         stdx::unique_lock<stdx::mutex> lk(_mutex);
         if (cbState->canceled.load()) {
             return;
@@ -505,13 +505,25 @@ void ThreadPoolTaskExecutor::runCallback(std::shared_ptr<CallbackState> cbStateA
                           ? Status({ErrorCodes::CallbackCanceled, "Callback canceled"})
                           : Status::OK());
     invariant(!cbStateArg->isFinished.load());
-    cbStateArg->callback(std::move(args));
+    {
+        // After running callback function, clear 'cbStateArg->callback' to release any resources
+        // that might be held by this function object.
+        // Swap 'cbStateArg->callback' with temporary copy before running callback for exception
+        // safety.
+        TaskExecutor::CallbackFn callback;
+        std::swap(cbStateArg->callback, callback);
+        callback(std::move(args));
+    }
     cbStateArg->isFinished.store(true);
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     _poolInProgressQueue.erase(cbStateArg->iter);
     if (cbStateArg->finishedCondition) {
         cbStateArg->finishedCondition->notify_all();
     }
+}
+
+void ThreadPoolTaskExecutor::dropConnections(const HostAndPort& hostAndPort) {
+    _net->dropConnections(hostAndPort);
 }
 
 }  // namespace executor

@@ -15,18 +15,13 @@
 int
 __wt_page_modify_alloc(WT_SESSION_IMPL *session, WT_PAGE *page)
 {
-	WT_CONNECTION_IMPL *conn;
+	WT_DECL_RET;
 	WT_PAGE_MODIFY *modify;
-
-	conn = S2C(session);
 
 	WT_RET(__wt_calloc_one(session, &modify));
 
-	/*
-	 * Select a spinlock for the page; let the barrier immediately below
-	 * keep things from racing too badly.
-	 */
-	modify->page_lock = ++conn->page_lock_cnt % WT_PAGE_LOCKS;
+	/* Initialize the spinlock for the page. */
+	WT_ERR(__wt_spin_init(session, &modify->page_lock, "btree page"));
 
 	/*
 	 * Multiple threads of control may be searching and deciding to modify
@@ -37,8 +32,8 @@ __wt_page_modify_alloc(WT_SESSION_IMPL *session, WT_PAGE *page)
 	if (__wt_atomic_cas_ptr(&page->modify, NULL, modify))
 		__wt_cache_page_inmem_incr(session, page, sizeof(*modify));
 	else
-		__wt_free(session, modify);
-	return (0);
+err:		__wt_free(session, modify);
+	return (ret);
 }
 
 /*
@@ -47,7 +42,8 @@ __wt_page_modify_alloc(WT_SESSION_IMPL *session, WT_PAGE *page)
  */
 int
 __wt_row_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
-    WT_ITEM *key, WT_ITEM *value, WT_UPDATE *upd_arg, bool is_remove)
+    WT_ITEM *key, WT_ITEM *value,
+    WT_UPDATE *upd_arg, bool is_remove, bool exclusive)
 {
 	WT_DECL_RET;
 	WT_INSERT *ins;
@@ -85,9 +81,8 @@ __wt_row_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 	if (cbt->compare == 0) {
 		if (cbt->ins == NULL) {
 			/* Allocate an update array as necessary. */
-			WT_PAGE_ALLOC_AND_SWAP(session,
-			    page, mod->mod_row_update,
-			    upd_entry, page->pg_row_entries);
+			WT_PAGE_ALLOC_AND_SWAP(session, page,
+			    mod->mod_row_update, upd_entry, page->entries);
 
 			/* Set the WT_UPDATE array reference. */
 			upd_entry = &mod->mod_row_update[cbt->slot];
@@ -133,7 +128,7 @@ __wt_row_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 
 		/* Serialize the update. */
 		WT_ERR(__wt_update_serial(
-		    session, page, upd_entry, &upd, upd_size));
+		    session, page, upd_entry, &upd, upd_size, exclusive));
 	} else {
 		/*
 		 * Allocate the insert array as necessary.
@@ -147,10 +142,10 @@ __wt_row_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 		 * slot.  That's hard, so we set a flag.
 		 */
 		WT_PAGE_ALLOC_AND_SWAP(session, page,
-		    mod->mod_row_insert, ins_headp, page->pg_row_entries + 1);
+		    mod->mod_row_insert, ins_headp, page->entries + 1);
 
 		ins_slot = F_ISSET(cbt, WT_CBT_SEARCH_SMALLEST) ?
-		    page->pg_row_entries: cbt->slot;
+		    page->entries: cbt->slot;
 		ins_headp = &mod->mod_row_insert[ins_slot];
 
 		/* Allocate the WT_INSERT_HEAD structure as necessary. */
@@ -208,7 +203,7 @@ __wt_row_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 		/* Insert the WT_INSERT structure. */
 		WT_ERR(__wt_insert_serial(
 		    session, page, cbt->ins_head, cbt->ins_stack,
-		    &ins, ins_size, skipdepth));
+		    &ins, ins_size, skipdepth, exclusive));
 	}
 
 	if (logged)

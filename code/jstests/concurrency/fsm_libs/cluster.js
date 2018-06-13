@@ -40,6 +40,7 @@ var Cluster = function(options) {
             'sameDB',
             'setupFunctions',
             'sharded.enabled',
+            'sharded.enableAutoSplit',
             'sharded.enableBalancer',
             'sharded.numMongos',
             'sharded.numShards',
@@ -81,6 +82,14 @@ var Cluster = function(options) {
 
         options.sharded.enabled = options.sharded.enabled || false;
         assert.eq('boolean', typeof options.sharded.enabled);
+
+        if (typeof options.sharded.enableAutoSplit !== 'undefined') {
+            assert(options.sharded.enabled,
+                   "Must have sharded.enabled be true if 'sharded.enableAutoSplit' is specified");
+        }
+
+        options.sharded.enableAutoSplit = options.sharded.enableAutoSplit || false;
+        assert.eq('boolean', typeof options.sharded.enableAutoSplit);
 
         if (typeof options.sharded.enableBalancer !== 'undefined') {
             assert(options.sharded.enabled,
@@ -181,7 +190,6 @@ var Cluster = function(options) {
 
     this.setup = function setup() {
         var verbosityLevel = 0;
-        const REPL_SET_INITIATE_TIMEOUT_MS = 5 * 60 * 1000;
 
         if (initialized) {
             throw new Error('cluster has already been initialized');
@@ -193,7 +201,10 @@ var Cluster = function(options) {
                 shards: options.sharded.numShards,
                 mongos: options.sharded.numMongos,
                 verbose: verbosityLevel,
-                other: {enableBalancer: options.sharded.enableBalancer}
+                other: {
+                    enableAutoSplit: options.sharded.enableAutoSplit,
+                    enableBalancer: options.sharded.enableBalancer,
+                }
             };
 
             // TODO: allow 'options' to specify an 'rs' config
@@ -205,11 +216,7 @@ var Cluster = function(options) {
                     oplogSize: 1024,
                     verbose: verbosityLevel
                 };
-                shardConfig.rsOptions = {
-                    // Specify a longer timeout for replSetInitiate, to ensure that
-                    // slow hardware has sufficient time for file pre-allocation.
-                    initiateTimeout: REPL_SET_INITIATE_TIMEOUT_MS,
-                };
+                shardConfig.rsOptions = {};
             }
 
             st = new ShardingTest(shardConfig);
@@ -260,10 +267,7 @@ var Cluster = function(options) {
             var rst = new ReplSetTest(replSetConfig);
             rst.startSet();
 
-            // Send the replSetInitiate command and wait for initialization, with an increased
-            // timeout. This should provide sufficient time for slow hardware, where files may need
-            // to be pre-allocated.
-            rst.initiate(null, null, REPL_SET_INITIATE_TIMEOUT_MS);
+            rst.initiate();
             rst.awaitSecondaryNodes();
 
             conn = rst.getPrimary();
@@ -439,7 +443,7 @@ var Cluster = function(options) {
             } else {
                 // If the shard is a standalone mongod, the format of st.shard0.name in ShardingTest
                 // is "localhost:20006".
-                cluster.shards[i] = [shard.name];
+                cluster.shards[shard.shardName] = [shard.name];
             }
             ++i;
             shard = st['shard' + i];
@@ -461,6 +465,10 @@ var Cluster = function(options) {
 
     this.isBalancerEnabled = function isBalancerEnabled() {
         return this.isSharded() && options.sharded.enableBalancer;
+    };
+
+    this.isAutoSplitEnabled = function isAutoSplitEnabled() {
+        return this.isSharded() && options.sharded.enableAutoSplit;
     };
 
     this.validateAllCollections = function validateAllCollections(phase) {
@@ -564,6 +572,25 @@ var Cluster = function(options) {
                                       (data[config.host] = this.recordConfigServerData(config)));
 
         return data;
+    };
+
+    this.isRunningWiredTigerLSM = function isRunningWiredTigerLSM() {
+        var adminDB = this.getDB('admin');
+
+        if (this.isSharded()) {
+            // Get the storage engine the sharded cluster is configured to use from one of the
+            // shards since mongos won't report it.
+            adminDB = st.shard0.getDB('admin');
+        }
+
+        var res = adminDB.runCommand({getCmdLineOpts: 1});
+        assert.commandWorked(res, 'failed to get command line options');
+
+        var wiredTigerOptions = res.parsed.storage.wiredTiger || {};
+        var wiredTigerCollectionConfig = wiredTigerOptions.collectionConfig || {};
+        var wiredTigerConfigString = wiredTigerCollectionConfig.configString || '';
+
+        return wiredTigerConfigString === 'type=lsm';
     };
 };
 

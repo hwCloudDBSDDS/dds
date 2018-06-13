@@ -58,6 +58,7 @@ using std::cout;
 using std::endl;
 using std::string;
 
+
 MongodGlobalParams mongodGlobalParams;
 
 extern DiagLog _diaglog;
@@ -350,10 +351,12 @@ Status addMongodOptions(moe::OptionSection* options) {
 
     // Deprecated option that we don't want people to use for performance reasons
     storage_options
-        .addOptionChaining(
-            "nopreallocj", "nopreallocj", moe::Switch, "don't preallocate journal files")
+        .addOptionChaining("storage.mmapv1.journal.nopreallocj",
+                           "nopreallocj",
+                           moe::Switch,
+                           "don't preallocate journal files")
         .hidden()
-        .setSources(moe::SourceAllLegacy);
+        .setSources(moe::SourceAll);
 
 #if defined(__linux__)
     general_options.addOptionChaining(
@@ -683,14 +686,13 @@ Status validateMongodOptions(const moe::Environment& params) {
             }
         }
 
-        bool isClusterRoleShard = false;
+        bool isClusterRoleShard = params.count("shardsvr");
         if (params.count("sharding.clusterRole")) {
             auto clusterRole = params["sharding.clusterRole"].as<std::string>();
-            isClusterRoleShard = (clusterRole == "shardsvr");
+            isClusterRoleShard = isClusterRoleShard || (clusterRole == "shardsvr");
         }
 
-        if ((isClusterRoleShard || params.count("shardsvr")) &&
-            !params.count("sharding._overrideShardIdentity")) {
+        if (isClusterRoleShard && !params.count("sharding._overrideShardIdentity")) {
             return Status(
                 ErrorCodes::BadValue,
                 "shardsvr cluster role with queryableBackupMode requires _overrideShardIdentity");
@@ -1091,8 +1093,8 @@ Status storeMongodOptions(const moe::Environment& params) {
     if (params.count("storage.mmapv1.journal.debugFlags")) {
         mmapv1GlobalOptions.journalOptions = params["storage.mmapv1.journal.debugFlags"].as<int>();
     }
-    if (params.count("nopreallocj")) {
-        mmapv1GlobalOptions.preallocj = !params["nopreallocj"].as<bool>();
+    if (params.count("storage.mmapv1.journal.nopreallocj")) {
+        mmapv1GlobalOptions.preallocj = !params["storage.mmapv1.journal.nopreallocj"].as<bool>();
     }
 
     if (params.count("net.http.RESTInterfaceEnabled")) {
@@ -1324,6 +1326,21 @@ Status storeMongodOptions(const moe::Environment& params) {
         warning() << "32-bit servers don't have journaling enabled by default. "
                   << "Please use --journal if you want durability.";
         log() << endl;
+    }
+
+    bool isClusterRoleShard = params.count("shardsvr");
+    bool isClusterRoleConfig = params.count("configsvr");
+    if (params.count("sharding.clusterRole")) {
+        auto clusterRole = params["sharding.clusterRole"].as<std::string>();
+        isClusterRoleShard = isClusterRoleShard || (clusterRole == "shardsvr");
+        isClusterRoleConfig = isClusterRoleConfig || (clusterRole == "configsvr");
+    }
+
+    if ((isClusterRoleShard || isClusterRoleConfig) && skipShardingConfigurationChecks) {
+        auto clusterRoleStr = isClusterRoleConfig ? "--configsvr" : "--shardsvr";
+        return Status(ErrorCodes::BadValue,
+                      str::stream() << "Can not specify " << clusterRoleStr
+                                    << " and set skipShardingConfigurationChecks=true");
     }
 
     setGlobalReplSettings(replSettings);

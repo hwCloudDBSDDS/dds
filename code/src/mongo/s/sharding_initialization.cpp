@@ -49,11 +49,11 @@
 #include "mongo/rpc/metadata/config_server_metadata.h"
 #include "mongo/rpc/metadata/metadata_hook.h"
 #include "mongo/s/balancer_configuration.h"
-#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/catalog/dist_lock_catalog_impl.h"
 #include "mongo/s/catalog/replset_dist_lock_manager.h"
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
 #include "mongo/s/catalog/sharding_catalog_manager_impl.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/client/sharding_network_connection_hook.h"
@@ -74,6 +74,7 @@ MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolHostTimeoutMS,
                                       int,
                                       ConnectionPool::kDefaultHostTimeout.count());
 MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolMaxSize, int, -1);
+MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolMaxConnecting, int, -1);
 MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolMinSize,
                                       int,
                                       static_cast<int>(ConnectionPool::kDefaultMinConns));
@@ -174,9 +175,36 @@ Status initializeGlobalShardingState(OperationContext* txn,
     connPoolOptions.maxConnections = (ShardingTaskExecutorPoolMaxSize != -1)
         ? ShardingTaskExecutorPoolMaxSize
         : ConnectionPool::kDefaultMaxConns;
+    connPoolOptions.maxConnecting = (ShardingTaskExecutorPoolMaxConnecting != -1)
+        ? ShardingTaskExecutorPoolMaxConnecting
+        : ConnectionPool::kDefaultMaxConnecting;
     connPoolOptions.minConnections = ShardingTaskExecutorPoolMinSize;
     connPoolOptions.refreshRequirement = Milliseconds(ShardingTaskExecutorPoolRefreshRequirementMS);
     connPoolOptions.refreshTimeout = Milliseconds(ShardingTaskExecutorPoolRefreshTimeoutMS);
+
+    if (connPoolOptions.refreshRequirement <= connPoolOptions.refreshTimeout) {
+        auto newRefreshTimeout = connPoolOptions.refreshRequirement - Milliseconds(1);
+        warning() << "ShardingTaskExecutorPoolRefreshRequirementMS ("
+                  << connPoolOptions.refreshRequirement
+                  << ") set below ShardingTaskExecutorPoolRefreshTimeoutMS ("
+                  << connPoolOptions.refreshTimeout
+                  << "). Adjusting ShardingTaskExecutorPoolRefreshTimeoutMS to "
+                  << newRefreshTimeout;
+        connPoolOptions.refreshTimeout = newRefreshTimeout;
+    }
+
+    if (connPoolOptions.hostTimeout <=
+        connPoolOptions.refreshRequirement + connPoolOptions.refreshTimeout) {
+        auto newHostTimeout =
+            connPoolOptions.refreshRequirement + connPoolOptions.refreshTimeout + Milliseconds(1);
+        warning() << "ShardingTaskExecutorPoolHostTimeoutMS (" << connPoolOptions.hostTimeout
+                  << ") set below ShardingTaskExecutorPoolRefreshRequirementMS ("
+                  << connPoolOptions.refreshRequirement
+                  << ") + ShardingTaskExecutorPoolRefreshTimeoutMS ("
+                  << connPoolOptions.refreshTimeout
+                  << "). Adjusting ShardingTaskExecutorPoolHostTimeoutMS to " << newHostTimeout;
+        connPoolOptions.hostTimeout = newHostTimeout;
+    }
 
     auto network =
         executor::makeNetworkInterface("NetworkInterfaceASIO-ShardRegistry",

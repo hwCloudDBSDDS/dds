@@ -13,21 +13,28 @@
  *	Allocate and initialize a condition variable.
  */
 int
-__wt_cond_alloc(WT_SESSION_IMPL *session,
-    const char *name, bool is_signalled, WT_CONDVAR **condp)
+__wt_cond_alloc(WT_SESSION_IMPL *session, const char *name, WT_CONDVAR **condp)
 {
 	WT_CONDVAR *cond;
 	WT_DECL_RET;
 
 	WT_RET(__wt_calloc_one(session, &cond));
-
 	WT_ERR(pthread_mutex_init(&cond->mtx, NULL));
 
-	/* Initialize the condition variable to permit self-blocking. */
+#ifdef HAVE_PTHREAD_COND_MONOTONIC
+	{
+	pthread_condattr_t condattr;
+
+	WT_ERR(pthread_condattr_init(&condattr));
+	WT_ERR(pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC));
+	WT_ERR(pthread_cond_init(&cond->cond, &condattr));
+	}
+#else
 	WT_ERR(pthread_cond_init(&cond->cond, NULL));
+#endif
 
 	cond->name = name;
-	cond->waiters = is_signalled ? -1 : 0;
+	cond->waiters = 0;
 
 	*condp = cond;
 	return (0);
@@ -42,8 +49,8 @@ err:	__wt_free(session, cond);
  * out period expires, let the caller know.
  */
 void
-__wt_cond_wait_signal(
-    WT_SESSION_IMPL *session, WT_CONDVAR *cond, uint64_t usecs, bool *signalled)
+__wt_cond_wait_signal(WT_SESSION_IMPL *session, WT_CONDVAR *cond,
+    uint64_t usecs, bool (*run_func)(WT_SESSION_IMPL *), bool *signalled)
 {
 	struct timespec ts;
 	WT_DECL_RET;
@@ -62,8 +69,44 @@ __wt_cond_wait_signal(
 	WT_ERR(pthread_mutex_lock(&cond->mtx));
 	locked = true;
 
+	/*
+	 * It's possible to race with threads waking us up. That's not a problem
+	 * if there are multiple wakeups because the next wakeup will get us, or
+	 * if we're only pausing for a short period. It's a problem if there's
+	 * only a single wakeup, our waker is likely waiting for us to exit.
+	 * After acquiring the mutex (so we're guaranteed to be awakened by any
+	 * future wakeup call), optionally check if we're OK to keep running.
+	 * This won't ensure our caller won't just loop and call us again, but
+	 * at least it's not our fault.
+	 *
+	 * Assert we're not waiting longer than a second if not checking the
+	 * run status.
+	 */
+	WT_ASSERT(session, run_func != NULL || usecs <= WT_MILLION);
+	if (run_func != NULL && !run_func(session))
+		goto skipping;
+
 	if (usecs > 0) {
-		__wt_epoch(session, &ts);
+		/*
+		 * Get the current time as the basis for calculating when the
+		 * wait should end.  Prefer a monotonic clock source to avoid
+		 * unexpectedly long sleeps when the system clock is adjusted.
+		 *
+		 * Failing that, query the time directly and don't attempt to
+		 * correct for the clock moving backwards, which would result
+		 * in a sleep that is too long by however much the clock is
+		 * updated.  This isn't as good as a monotonic clock source but
+		 * makes the window of vulnerability smaller (i.e., the
+		 * calculated time is only incorrect if the system clock
+		 * changes in between us querying it and waiting).
+		 */
+#ifdef HAVE_PTHREAD_COND_MONOTONIC
+		WT_SYSCALL_RETRY(clock_gettime(CLOCK_MONOTONIC, &ts), ret);
+		if (ret != 0)
+			WT_PANIC_MSG(session, ret, "clock_gettime");
+#else
+		__wt_epoch_raw(session, &ts);
+#endif
 		ts.tv_sec += (time_t)
 		    (((uint64_t)ts.tv_nsec + WT_THOUSAND * usecs) / WT_BILLION);
 		ts.tv_nsec = (long)
@@ -81,7 +124,7 @@ __wt_cond_wait_signal(
 	    ret == ETIME ||
 #endif
 	    ret == ETIMEDOUT) {
-		*signalled = false;
+skipping:	*signalled = false;
 		ret = 0;
 	}
 
@@ -107,10 +150,13 @@ __wt_cond_signal(WT_SESSION_IMPL *session, WT_CONDVAR *cond)
 	__wt_verbose(session, WT_VERB_MUTEX, "signal %s", cond->name);
 
 	/*
-	 * Our callers are often setting flags to cause a thread to exit. Add
-	 * a barrier to ensure the flags are seen by the threads.
+	 * Our callers often set flags to cause a thread to exit. Add a barrier
+	 * to ensure exit flags are seen by the sleeping threads, otherwise we
+	 * can wake up a thread, it immediately goes back to sleep, and we'll
+	 * hang. Use a full barrier (we may not write before waiting on thread
+	 * join).
 	 */
-	WT_WRITE_BARRIER();
+	WT_FULL_BARRIER();
 
 	/*
 	 * Fast path if we are in (or can enter), a state where the next waiter
@@ -134,7 +180,7 @@ err:
  * __wt_cond_destroy --
  *	Destroy a condition variable.
  */
-int
+void
 __wt_cond_destroy(WT_SESSION_IMPL *session, WT_CONDVAR **condp)
 {
 	WT_CONDVAR *cond;
@@ -142,11 +188,15 @@ __wt_cond_destroy(WT_SESSION_IMPL *session, WT_CONDVAR **condp)
 
 	cond = *condp;
 	if (cond == NULL)
-		return (0);
+		return;
 
-	ret = pthread_cond_destroy(&cond->cond);
-	WT_TRET(pthread_mutex_destroy(&cond->mtx));
+	if ((ret = pthread_cond_destroy(&cond->cond)) != 0)
+		WT_PANIC_MSG(
+		    session, ret, "pthread_cond_destroy: %s", cond->name);
+
+	if ((ret = pthread_mutex_destroy(&cond->mtx)) != 0)
+		WT_PANIC_MSG(
+		    session, ret, "pthread_mutex_destroy: %s", cond->name);
+
 	__wt_free(session, *condp);
-
-	return (ret);
 }

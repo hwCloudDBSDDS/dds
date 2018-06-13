@@ -40,15 +40,26 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
 
-void FTDCController::setEnabled(bool enabled) {
+Status FTDCController::setEnabled(bool enabled) {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
+
+    if (_path.empty()) {
+        return Status(ErrorCodes::FTDCPathNotSet,
+                      str::stream() << "FTDC cannot be enabled without setting the set parameter "
+                                       "'diagnosticDataCollectionDirectoryPath' first.");
+    }
+
     _configTemp.enabled = enabled;
+    _condvar.notify_one();
+
+    return Status::OK();
 }
 
 void FTDCController::setPeriod(Milliseconds millis) {
@@ -80,6 +91,23 @@ void FTDCController::setMaxSamplesPerInterimMetricChunk(size_t size) {
     _configTemp.maxSamplesPerInterimMetricChunk = size;
     _condvar.notify_one();
 }
+
+Status FTDCController::setDirectory(const boost::filesystem::path& path) {
+    stdx::lock_guard<stdx::mutex> lock(_mutex);
+
+    if (!_path.empty()) {
+        return Status(ErrorCodes::FTDCPathAlreadySet,
+                      str::stream() << "FTDC path has already been set to '" << _path.string()
+                                    << "'. It cannot be changed.");
+    }
+
+    _path = path;
+
+    // Do not notify for the change since it has to be enabled via setEnabled.
+
+    return Status::OK();
+}
+
 
 void FTDCController::addPeriodicCollector(std::unique_ptr<FTDCCollectorInterface> collector) {
     {
@@ -177,6 +205,7 @@ void FTDCController::doLoop() {
             // Wait for the next run or signal to shutdown
             {
                 stdx::unique_lock<stdx::mutex> lock(_mutex);
+                MONGO_IDLE_THREAD_BLOCK;
 
                 // We ignore spurious wakeups by just doing an iteration of the loop
                 auto status = _condvar.wait_until(lock, next_time.toSystemTimePoint());
@@ -201,7 +230,7 @@ void FTDCController::doLoop() {
             }
 
             // TODO: consider only running this thread if we are enabled
-            // for now, we just keep an idle thread as it is simplier
+            // for now, we just keep an idle thread as it is simpler
             if (_config.enabled) {
                 // Delay initialization of FTDCFileManager until we are sure the user has enabled
                 // FTDC

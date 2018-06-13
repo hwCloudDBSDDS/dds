@@ -35,6 +35,7 @@
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/time_support.h"
 
@@ -132,6 +133,7 @@ private:
      * _Task::kill() is invoked.
      */
     void deadlineMonitorThread() {
+        setThreadName("DeadlineMonitor");
         stdx::unique_lock<stdx::mutex> lk(_deadlineMutex);
         Date_t lastInterruptCycle = Date_t::now();
         while (!_inShutdown) {
@@ -139,16 +141,17 @@ private:
             const Date_t now = Date_t::now();
             const auto interruptInterval = Milliseconds{getScriptingEngineInterruptInterval()};
 
-            if ((interruptInterval.count() > 0) && (now - lastInterruptCycle > interruptInterval)) {
+            if (now - lastInterruptCycle > interruptInterval) {
                 for (const auto& task : _tasks) {
-                    if (task.second > now)
-                        task.first->interrupt();
+                    if (task.first->isKillPending())
+                        task.first->kill();
                 }
                 lastInterruptCycle = now;
             }
 
             // wait for a task to be added or a deadline to expire
             if (_nearestDeadlineWallclock > now) {
+                MONGO_IDLE_THREAD_BLOCK;
                 if (_nearestDeadlineWallclock == Date_t::max()) {
                     if ((interruptInterval.count() > 0) &&
                         (_nearestDeadlineWallclock - now > interruptInterval)) {

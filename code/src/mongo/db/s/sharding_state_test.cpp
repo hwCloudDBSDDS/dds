@@ -30,6 +30,7 @@
 
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/client/replica_set_monitor.h"
+#include "mongo/db/client.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
@@ -39,6 +40,8 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context_noop.h"
 #include "mongo/db/storage/storage_options.h"
+#include "mongo/s/catalog/dist_lock_manager_mock.h"
+#include "mongo/s/catalog/sharding_catalog_client_impl.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/sharding_mongod_test_fixture.h"
 
@@ -54,11 +57,17 @@ public:
         return &_shardingState;
     }
 
+    std::string shardName() const {
+        return _shardName.toString();
+    }
+
 protected:
     // Used to write to set up local collections before exercising server logic.
     std::unique_ptr<DBDirectClient> _dbDirectClient;
 
     void setUp() override {
+        _shardName = ShardId("a");
+
         serverGlobalParams.clusterRole = ClusterRole::None;
         ShardingMongodTestFixture::setUp();
 
@@ -76,6 +85,7 @@ protected:
             auto configTargeter =
                 RemoteCommandTargeterMock::get(shardRegistry()->getConfigShard()->getTargeter());
             configTargeter->setConnectionStringReturnValue(configConnStr);
+            configTargeter->setFindHostReturnValue(configConnStr.getServers()[0]);
 
             return Status::OK();
         });
@@ -96,20 +106,32 @@ protected:
         ShardingMongodTestFixture::tearDown();
     }
 
+    std::unique_ptr<DistLockManager> makeDistLockManager(
+        std::unique_ptr<DistLockCatalog> distLockCatalog) override {
+        return stdx::make_unique<DistLockManagerMock>(nullptr);
+    }
+
+    std::unique_ptr<ShardingCatalogClient> makeShardingCatalogClient(
+        std::unique_ptr<DistLockManager> distLockManager) override {
+        invariant(distLockManager);
+        return stdx::make_unique<ShardingCatalogClientImpl>(std::move(distLockManager));
+    }
+
 private:
     ShardingState _shardingState;
+    ShardId _shardName;
 };
 
 TEST_F(ShardingStateTest, ValidShardIdentitySucceeds) {
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(OID::gen());
 
     ASSERT_OK(shardingState()->initializeFromShardIdentity(operationContext(), shardIdentity));
     ASSERT_TRUE(shardingState()->enabled());
-    ASSERT_EQ("a", shardingState()->getShardName());
+    ASSERT_EQ(shardName(), shardingState()->getShardName());
     ASSERT_EQ("config/a:1,b:2", shardingState()->getConfigServer(operationContext()).toString());
 }
 
@@ -117,7 +139,7 @@ TEST_F(ShardingStateTest, InitWhilePreviouslyInErrorStateWillStayInErrorState) {
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(OID::gen());
 
     shardingState()->setGlobalInitMethodForTest(
@@ -152,7 +174,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithMatchingShardIdentitySucceeds) {
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(clusterID);
 
     ASSERT_OK(shardingState()->initializeFromShardIdentity(operationContext(), shardIdentity));
@@ -160,7 +182,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithMatchingShardIdentitySucceeds) {
     ShardIdentityType shardIdentity2;
     shardIdentity2.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity2.setShardName("a");
+    shardIdentity2.setShardName(shardName());
     shardIdentity2.setClusterId(clusterID);
 
     shardingState()->setGlobalInitMethodForTest(
@@ -171,7 +193,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithMatchingShardIdentitySucceeds) {
     ASSERT_OK(shardingState()->initializeFromShardIdentity(operationContext(), shardIdentity2));
 
     ASSERT_TRUE(shardingState()->enabled());
-    ASSERT_EQ("a", shardingState()->getShardName());
+    ASSERT_EQ(shardName(), shardingState()->getShardName());
     ASSERT_EQ("config/a:1,b:2", shardingState()->getConfigServer(operationContext()).toString());
 }
 
@@ -180,7 +202,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithSameReplSetNameSucceeds) {
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(clusterID);
 
     ASSERT_OK(shardingState()->initializeFromShardIdentity(operationContext(), shardIdentity));
@@ -188,7 +210,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithSameReplSetNameSucceeds) {
     ShardIdentityType shardIdentity2;
     shardIdentity2.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "b:2,c:3", "config"));
-    shardIdentity2.setShardName("a");
+    shardIdentity2.setShardName(shardName());
     shardIdentity2.setClusterId(clusterID);
 
     shardingState()->setGlobalInitMethodForTest(
@@ -199,7 +221,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithSameReplSetNameSucceeds) {
     ASSERT_OK(shardingState()->initializeFromShardIdentity(operationContext(), shardIdentity2));
 
     ASSERT_TRUE(shardingState()->enabled());
-    ASSERT_EQ("a", shardingState()->getShardName());
+    ASSERT_EQ(shardName(), shardingState()->getShardName());
     ASSERT_EQ("config/a:1,b:2", shardingState()->getConfigServer(operationContext()).toString());
 }
 
@@ -208,7 +230,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithDifferentReplSetNameFails) {
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(clusterID);
 
     ASSERT_OK(shardingState()->initializeFromShardIdentity(operationContext(), shardIdentity));
@@ -216,7 +238,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithDifferentReplSetNameFails) {
     ShardIdentityType shardIdentity2;
     shardIdentity2.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "configRS"));
-    shardIdentity2.setShardName("a");
+    shardIdentity2.setShardName(shardName());
     shardIdentity2.setClusterId(clusterID);
 
     shardingState()->setGlobalInitMethodForTest(
@@ -228,7 +250,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithDifferentReplSetNameFails) {
     ASSERT_EQ(ErrorCodes::InconsistentShardIdentity, status);
 
     ASSERT_TRUE(shardingState()->enabled());
-    ASSERT_EQ("a", shardingState()->getShardName());
+    ASSERT_EQ(shardName(), shardingState()->getShardName());
     ASSERT_EQ("config/a:1,b:2", shardingState()->getConfigServer(operationContext()).toString());
 }
 
@@ -237,7 +259,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithDifferentShardNameFails) {
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(clusterID);
 
     ASSERT_OK(shardingState()->initializeFromShardIdentity(operationContext(), shardIdentity));
@@ -257,7 +279,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithDifferentShardNameFails) {
     ASSERT_EQ(ErrorCodes::InconsistentShardIdentity, status);
 
     ASSERT_TRUE(shardingState()->enabled());
-    ASSERT_EQ("a", shardingState()->getShardName());
+    ASSERT_EQ(shardName(), shardingState()->getShardName());
     ASSERT_EQ("config/a:1,b:2", shardingState()->getConfigServer(operationContext()).toString());
 }
 
@@ -265,7 +287,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithDifferentClusterIdFails) {
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(OID::gen());
 
     ASSERT_OK(shardingState()->initializeFromShardIdentity(operationContext(), shardIdentity));
@@ -273,7 +295,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithDifferentClusterIdFails) {
     ShardIdentityType shardIdentity2;
     shardIdentity2.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity2.setShardName("a");
+    shardIdentity2.setShardName(shardName());
     shardIdentity2.setClusterId(OID::gen());
 
     shardingState()->setGlobalInitMethodForTest(
@@ -285,7 +307,7 @@ TEST_F(ShardingStateTest, InitializeAgainWithDifferentClusterIdFails) {
     ASSERT_EQ(ErrorCodes::InconsistentShardIdentity, status);
 
     ASSERT_TRUE(shardingState()->enabled());
-    ASSERT_EQ("a", shardingState()->getShardName());
+    ASSERT_EQ(shardName(), shardingState()->getShardName());
     ASSERT_EQ("config/a:1,b:2", shardingState()->getConfigServer(operationContext()).toString());
 }
 
@@ -327,7 +349,7 @@ TEST_F(ShardingStateTest,
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(OID::gen());
     ASSERT_OK(shardIdentity.validate());
     serverGlobalParams.overrideShardIdentity = shardIdentity.toBSON();
@@ -375,7 +397,7 @@ TEST_F(ShardingStateTest,
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(OID::gen());
     ASSERT_OK(shardIdentity.validate());
     serverGlobalParams.overrideShardIdentity = shardIdentity.toBSON();
@@ -415,7 +437,7 @@ TEST_F(ShardingStateTest,
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(OID::gen());
     ASSERT_OK(shardIdentity.validate());
     serverGlobalParams.overrideShardIdentity = shardIdentity.toBSON();
@@ -485,7 +507,7 @@ TEST_F(ShardingStateTest,
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(OID::gen());
     ASSERT_OK(shardIdentity.validate());
     BSONObj validShardIdentity = shardIdentity.toBSON();
@@ -545,7 +567,7 @@ TEST_F(ShardingStateTest,
     ShardIdentityType shardIdentity;
     shardIdentity.setConfigsvrConnString(
         ConnectionString(ConnectionString::SET, "a:1,b:2", "config"));
-    shardIdentity.setShardName("a");
+    shardIdentity.setShardName(shardName());
     shardIdentity.setClusterId(OID::gen());
     ASSERT_OK(shardIdentity.validate());
     BSONObj validShardIdentity = shardIdentity.toBSON();

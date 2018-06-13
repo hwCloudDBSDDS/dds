@@ -41,7 +41,7 @@ namespace mongo {
 
 class BSONObj;
 class Document;
-struct ExpressionContext;
+class ExpressionContext;
 
 namespace parsed_aggregation_projection {
 
@@ -69,7 +69,7 @@ private:
      * For example, a user is not allowed to specify {'a': 1, 'a.b': 1}, or some similar conflicting
      * paths.
      */
-    Status ensurePathDoesNotConflictOrThrow(StringData path);
+    Status ensurePathDoesNotConflictOrThrow(const std::string& path);
 
     /**
      * Returns the relevant error if an invalid projection specification is detected.
@@ -99,9 +99,40 @@ private:
     // The original object. Used to generate more helpful error messages.
     const BSONObj& _rawObj;
 
+    // Custom comparator that orders fieldpath strings by path prefix first, then by field.
+    struct PathPrefixComparator {
+        static constexpr char dot = '.';
+
+        // Returns true if the lhs value should sort before the rhs, false otherwise.
+        bool operator()(const std::string& lhs, const std::string& rhs) const {
+            for (size_t pos = 0, len = std::min(lhs.size(), rhs.size()); pos < len; ++pos) {
+                auto &lchar = lhs[pos], &rchar = rhs[pos];
+                if (lchar == rchar) {
+                    continue;
+                }
+
+                // Consider the path delimiter '.' as being less than all other characters, so that
+                // paths sort directly before any paths they prefix and directly after any paths
+                // which prefix them.
+                if (lchar == dot) {
+                    return true;
+                } else if (rchar == dot) {
+                    return false;
+                }
+
+                // Otherwise, default to normal character comparison.
+                return lchar < rchar;
+            }
+
+            // If we get here, then we have reached the end of lhs and/or rhs and all of their path
+            // segments up to this point match. If lhs is shorter than rhs, then lhs prefixes rhs
+            // and should sort before it.
+            return lhs.size() < rhs.size();
+        }
+    };
+
     // Tracks which paths we've seen to ensure no two paths conflict with each other.
-    // Can be a vector since we iterate through it.
-    std::vector<std::string> _seenPaths;
+    std::set<std::string, PathPrefixComparator> _seenPaths;
 };
 
 /**
@@ -117,7 +148,8 @@ public:
      *
      * Throws a UserException if 'spec' is an invalid projection specification.
      */
-    static std::unique_ptr<ParsedAggregationProjection> create(const BSONObj& spec);
+    static std::unique_ptr<ParsedAggregationProjection> create(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx, const BSONObj& spec);
 
     virtual ~ParsedAggregationProjection() = default;
 
@@ -132,17 +164,13 @@ public:
      * inclusions and exclusions. 'variablesParseState' is used by any contained expressions to
      * track which variables are defined so that they can later be referenced at execution time.
      */
-    virtual void parse(const BSONObj& spec) = 0;
+    virtual void parse(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                       const BSONObj& spec) = 0;
 
     /**
      * Optimize any expressions contained within this projection.
      */
     virtual void optimize() {}
-
-    /**
-     * Inject the ExpressionContext into any expressions contained within this projection.
-     */
-    virtual void injectExpressionContext(const boost::intrusive_ptr<ExpressionContext>& expCtx) {}
 
     /**
      * Add any dependencies needed by this projection or any sub-expressions to 'deps'.

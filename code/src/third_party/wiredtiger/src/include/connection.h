@@ -107,7 +107,7 @@ struct __wt_named_extractor {
  * Allocate some additional slots for internal sessions so the user cannot
  * configure too few sessions for us to run.
  */
-#define	WT_EXTRA_INTERNAL_SESSIONS	10
+#define	WT_EXTRA_INTERNAL_SESSIONS	20
 
 /*
  * WT_CONN_CHECK_PANIC --
@@ -123,15 +123,19 @@ struct __wt_named_extractor {
  * main queue and the hashed queue.
  */
 #define	WT_CONN_DHANDLE_INSERT(conn, dhandle, bucket) do {		\
+	WT_ASSERT(session,						\
+	    F_ISSET(session, WT_SESSION_LOCKED_HANDLE_LIST_WRITE));	\
 	TAILQ_INSERT_HEAD(&(conn)->dhqh, dhandle, q);			\
 	TAILQ_INSERT_HEAD(&(conn)->dhhash[bucket], dhandle, hashq);	\
-	++conn->dhandle_count;						\
+	++(conn)->dhandle_count;					\
 } while (0)
 
 #define	WT_CONN_DHANDLE_REMOVE(conn, dhandle, bucket) do {		\
+	WT_ASSERT(session,						\
+	    F_ISSET(session, WT_SESSION_LOCKED_HANDLE_LIST_WRITE));	\
 	TAILQ_REMOVE(&(conn)->dhqh, dhandle, q);			\
 	TAILQ_REMOVE(&(conn)->dhhash[bucket], dhandle, hashq);		\
-	--conn->dhandle_count;						\
+	--(conn)->dhandle_count;					\
 } while (0)
 
 /*
@@ -163,28 +167,13 @@ struct __wt_connection_impl {
 
 	WT_SPINLOCK api_lock;		/* Connection API spinlock */
 	WT_SPINLOCK checkpoint_lock;	/* Checkpoint spinlock */
-	WT_SPINLOCK dhandle_lock;	/* Data handle list spinlock */
 	WT_SPINLOCK fh_lock;		/* File handle queue spinlock */
 	WT_SPINLOCK metadata_lock;	/* Metadata update spinlock */
 	WT_SPINLOCK reconfig_lock;	/* Single thread reconfigure */
 	WT_SPINLOCK schema_lock;	/* Schema operation spinlock */
-	WT_SPINLOCK table_lock;		/* Table creation spinlock */
+	WT_RWLOCK table_lock;		/* Table list lock */
 	WT_SPINLOCK turtle_lock;	/* Turtle file spinlock */
-
-	/*
-	 * We distribute the btree page locks across a set of spin locks. Don't
-	 * use too many: they are only held for very short operations, each one
-	 * is 64 bytes, so 256 will fill the L1 cache on most CPUs.
-	 *
-	 * Use a prime number of buckets rather than assuming a good hash
-	 * (Reference Sedgewick, Algorithms in C, "Hash Functions").
-	 *
-	 * Note: this can't be an array, we impose cache-line alignment and gcc
-	 * doesn't support that for arrays smaller than the alignment.
-	 */
-#define	WT_PAGE_LOCKS		17
-	WT_SPINLOCK *page_lock;	        /* Btree page spinlocks */
-	u_int	     page_lock_cnt;	/* Next spinlock to use */
+	WT_RWLOCK dhandle_lock;		/* Data handle list lock */
 
 					/* Connection queue */
 	TAILQ_ENTRY(__wt_connection_impl) q;
@@ -255,12 +244,6 @@ struct __wt_connection_impl {
 
 	size_t     session_scratch_max;	/* Max scratch memory per session */
 
-	/*
-	 * WiredTiger allocates space for a fixed number of hazard pointers
-	 * in each thread of control.
-	 */
-	uint32_t   hazard_max;		/* Hazard array size */
-
 	WT_CACHE  *cache;		/* Page cache */
 	volatile uint64_t cache_size;	/* Cache size (either statically
 					   configured or the current size
@@ -268,7 +251,7 @@ struct __wt_connection_impl {
 
 	WT_TXN_GLOBAL txn_global;	/* Global transaction state */
 
-	WT_RWLOCK *hot_backup_lock;	/* Hot backup serialization */
+	WT_RWLOCK hot_backup_lock;	/* Hot backup serialization */
 	bool hot_backup;		/* Hot backup in progress */
 	char **hot_backup_list;		/* Hot backup file list */
 
@@ -307,6 +290,15 @@ struct __wt_connection_impl {
 	uint32_t	 evict_threads_max;/* Max eviction threads */
 	uint32_t	 evict_threads_min;/* Min eviction threads */
 
+	uint32_t         evict_tune_datapts_needed;/* Data needed to tune */
+	struct timespec  evict_tune_last_action_time;/* Time of last action */
+	struct timespec  evict_tune_last_time;	/* Time of last check */
+	uint32_t         evict_tune_num_points;	/* Number of values tried */
+	uint64_t	 evict_tune_pgs_last;	/* Number of pages evicted */
+	uint64_t	 evict_tune_pg_sec_max;	/* Max throughput encountered */
+	bool             evict_tune_stable;	/* Are we stable? */
+	uint32_t	 evict_tune_workers_best;/* Best performing value */
+
 #define	WT_STATLOG_FILENAME	"WiredTigerStat.%d.%H"
 	WT_SESSION_IMPL *stat_session;	/* Statistics log session */
 	wt_thread_t	 stat_tid;	/* Statistics log thread */
@@ -322,9 +314,10 @@ struct __wt_connection_impl {
 #define	WT_CONN_LOG_ARCHIVE		0x01	/* Archive is enabled */
 #define	WT_CONN_LOG_ENABLED		0x02	/* Logging is enabled */
 #define	WT_CONN_LOG_EXISTED		0x04	/* Log files found */
-#define	WT_CONN_LOG_RECOVER_DONE	0x08	/* Recovery completed */
-#define	WT_CONN_LOG_RECOVER_ERR		0x10	/* Error if recovery required */
-#define	WT_CONN_LOG_ZERO_FILL		0x20	/* Manually zero files */
+#define	WT_CONN_LOG_RECOVER_DIRTY	0x08	/* Recovering unclean */
+#define	WT_CONN_LOG_RECOVER_DONE	0x10	/* Recovery completed */
+#define	WT_CONN_LOG_RECOVER_ERR		0x20	/* Error if recovery required */
+#define	WT_CONN_LOG_ZERO_FILL		0x40	/* Manually zero files */
 	uint32_t	 log_flags;	/* Global logging configuration */
 	WT_CONDVAR	*log_cond;	/* Log server wait mutex */
 	WT_SESSION_IMPL *log_session;	/* Log server session */
@@ -332,11 +325,11 @@ struct __wt_connection_impl {
 	bool		 log_tid_set;	/* Log server thread set */
 	WT_CONDVAR	*log_file_cond;	/* Log file thread wait mutex */
 	WT_SESSION_IMPL *log_file_session;/* Log file thread session */
-	wt_thread_t	 log_file_tid;	/* Log file thread thread */
+	wt_thread_t	 log_file_tid;	/* Log file thread */
 	bool		 log_file_tid_set;/* Log file thread set */
 	WT_CONDVAR	*log_wrlsn_cond;/* Log write lsn thread wait mutex */
 	WT_SESSION_IMPL *log_wrlsn_session;/* Log write lsn thread session */
-	wt_thread_t	 log_wrlsn_tid;	/* Log write lsn thread thread */
+	wt_thread_t	 log_wrlsn_tid;	/* Log write lsn thread */
 	bool		 log_wrlsn_tid_set;/* Log write lsn thread set */
 	WT_LOG		*log;		/* Logging structure */
 	WT_COMPRESSOR	*log_compressor;/* Logging compressor */

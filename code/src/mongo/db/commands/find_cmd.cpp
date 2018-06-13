@@ -329,7 +329,7 @@ public:
         std::unique_ptr<PlanExecutor> exec = std::move(statusWithPlanExecutor.getValue());
 
         {
-            stdx::lock_guard<Client>(*txn->getClient());
+            stdx::lock_guard<Client> lk(*txn->getClient());
             CurOp::get(txn)->setPlanSummary_inlock(Explain::getPlanSummary(exec.get()));
         }
 
@@ -408,7 +408,11 @@ public:
             cursorExec->saveState();
             cursorExec->detachFromOperationContext();
 
-            cursor->setLeftoverMaxTimeMicros(txn->getRemainingMaxTimeMicros());
+            // We assume that cursors created through a DBDirectClient are always used from their
+            // original OperationContext, so we do not need to move time to and from the cursor.
+            if (!txn->getClient()->isInDirectClient()) {
+                cursor->setLeftoverMaxTimeMicros(txn->getRemainingMaxTimeMicros());
+            }
             cursor->setPos(numResults);
 
             // Fill out curop based on the results.

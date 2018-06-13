@@ -57,6 +57,7 @@ using repl::UnreplicatedWritesBlock;
 constexpr StringData FeatureCompatibilityVersion::k32IncompatibleIndexName;
 constexpr StringData FeatureCompatibilityVersion::kCollection;
 constexpr StringData FeatureCompatibilityVersion::kCommandName;
+constexpr StringData FeatureCompatibilityVersion::kDatabase;
 constexpr StringData FeatureCompatibilityVersion::kParameterName;
 constexpr StringData FeatureCompatibilityVersion::kVersionField;
 
@@ -220,6 +221,12 @@ void FeatureCompatibilityVersion::set(OperationContext* txn, StringData version)
                     repl::ReplicationCoordinator::get(txn->getServiceContext())
                         ->canAcceptWritesFor(nss));
 
+            // If the "admin.system.version" collection has not been created yet, explicitly create
+            // it to hold the v=2 index.
+            if (!autoDB.getDb()->getCollection(nss)) {
+                uassertStatusOK(repl::StorageInterface::get(txn)->createCollection(txn, nss, {}));
+            }
+
             IndexBuilder builder(k32IncompatibleIndexSpec, false);
             auto status = builder.buildInForeground(txn, autoDB.getDb());
             uassertStatusOK(status);
@@ -227,7 +234,7 @@ void FeatureCompatibilityVersion::set(OperationContext* txn, StringData version)
             MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
                 WriteUnitOfWork wuow(txn);
                 getGlobalServiceContext()->getOpObserver()->onCreateIndex(
-                    txn, autoDB.getDb()->getSystemIndexesName(), k32IncompatibleIndexSpec);
+                    txn, autoDB.getDb()->getSystemIndexesName(), k32IncompatibleIndexSpec, false);
                 wuow.commit();
             }
             MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "FeatureCompatibilityVersion::set", nss.ns());
@@ -241,12 +248,8 @@ void FeatureCompatibilityVersion::set(OperationContext* txn, StringData version)
         client.runCommand(nss.db().toString(),
                           makeUpdateCommand(version, WriteConcernOptions::Majority),
                           updateResult);
-        uassertStatusOK(getStatusFromCommandResult(updateResult));
-        uassertStatusOK(getWriteConcernStatusFromCommandResult(updateResult));
+        uassertStatusOK(getStatusFromWriteCommandReply(updateResult));
 
-        // We then update the value of the featureCompatibilityVersion server parameter.
-        serverGlobalParams.featureCompatibility.version.store(
-            ServerGlobalParams::FeatureCompatibility::Version::k34);
     } else if (version == FeatureCompatibilityVersionCommandParser::kVersion32) {
         // We update the featureCompatibilityVersion document stored in the "admin.system.version"
         // collection. We do this before dropping the v=2 index in order to maintain the invariant
@@ -255,7 +258,7 @@ void FeatureCompatibilityVersion::set(OperationContext* txn, StringData version)
         // concern to this update because we're going to do so anyway for the "dropIndexes" command.
         BSONObj updateResult;
         client.runCommand(nss.db().toString(), makeUpdateCommand(version, BSONObj()), updateResult);
-        uassertStatusOK(getStatusFromCommandResult(updateResult));
+        uassertStatusOK(getStatusFromWriteCommandReply(updateResult));
 
         // We then drop the v=2 index on the "admin.system.version" collection to enable 3.2
         // secondaries to sync from this mongod.
@@ -271,10 +274,6 @@ void FeatureCompatibilityVersion::set(OperationContext* txn, StringData version)
             uassertStatusOK(status);
         }
         uassertStatusOK(getWriteConcernStatusFromCommandResult(dropIndexesResult));
-
-        // We then update the value of the featureCompatibilityVersion server parameter.
-        serverGlobalParams.featureCompatibility.version.store(
-            ServerGlobalParams::FeatureCompatibility::Version::k32);
     }
 }
 
@@ -304,13 +303,20 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* txn,
             ScopedTransaction transaction(txn, MODE_IX);
             AutoGetOrCreateDb autoDB(txn, nss.db(), MODE_X);
 
+            // We reached this point because the only database that exists on the server is "local"
+            // and we have just created an empty "admin" database.
+            // Therefore, it is safe to create the "admin.system.version" collection.
+            invariant(autoDB.justCreated());
+            uassertStatusOK(storageInterface->createCollection(txn, nss, {}));
+
             IndexBuilder builder(k32IncompatibleIndexSpec, false);
             auto status = builder.buildInForeground(txn, autoDB.getDb());
             uassertStatusOK(status);
         }
 
         // We then insert the featureCompatibilityVersion document into the "admin.system.version"
-        // collection. We do this after creating the v=2 index in order to maintain the invariant
+        // collection. The server parameter will be updated on commit by the op observer.
+        // We do this after creating the v=2 index in order to maintain the invariant
         // that if the featureCompatibilityVersion is 3.4, then 'k32IncompatibleIndexSpec' index
         // exists on the "admin.system.version" collection. If we happened to fail to insert the
         // document when starting up, then on a subsequent start-up we'd no longer consider the data
@@ -321,14 +327,10 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* txn,
             BSON("_id" << FeatureCompatibilityVersion::kParameterName
                        << FeatureCompatibilityVersion::kVersionField
                        << FeatureCompatibilityVersionCommandParser::kVersion34)));
-
-        // We then update the value of the featureCompatibilityVersion server parameter.
-        serverGlobalParams.featureCompatibility.version.store(
-            ServerGlobalParams::FeatureCompatibility::Version::k34);
     }
 }
 
-void FeatureCompatibilityVersion::onInsertOrUpdate(const BSONObj& doc) {
+void FeatureCompatibilityVersion::onInsertOrUpdate(OperationContext* opCtx, const BSONObj& doc) {
     auto idElement = doc["_id"];
     if (idElement.type() != BSONType::String ||
         idElement.String() != FeatureCompatibilityVersion::kParameterName) {
@@ -337,10 +339,11 @@ void FeatureCompatibilityVersion::onInsertOrUpdate(const BSONObj& doc) {
     auto newVersion = uassertStatusOK(FeatureCompatibilityVersion::parse(doc));
     log() << "setting featureCompatibilityVersion to "
           << getFeatureCompatibilityVersionString(newVersion);
-    serverGlobalParams.featureCompatibility.version.store(newVersion);
+    opCtx->recoveryUnit()->onCommit(
+        [newVersion]() { serverGlobalParams.featureCompatibility.version.store(newVersion); });
 }
 
-void FeatureCompatibilityVersion::onDelete(const BSONObj& doc) {
+void FeatureCompatibilityVersion::onDelete(OperationContext* opCtx, const BSONObj& doc) {
     auto idElement = doc["_id"];
     if (idElement.type() != BSONType::String ||
         idElement.String() != FeatureCompatibilityVersion::kParameterName) {
@@ -348,8 +351,19 @@ void FeatureCompatibilityVersion::onDelete(const BSONObj& doc) {
     }
     log() << "setting featureCompatibilityVersion to "
           << FeatureCompatibilityVersionCommandParser::kVersion32;
-    serverGlobalParams.featureCompatibility.version.store(
-        ServerGlobalParams::FeatureCompatibility::Version::k32);
+    opCtx->recoveryUnit()->onCommit([]() {
+        serverGlobalParams.featureCompatibility.version.store(
+            ServerGlobalParams::FeatureCompatibility::Version::k32);
+    });
+}
+
+void FeatureCompatibilityVersion::onDropCollection(OperationContext* opCtx) {
+    log() << "setting featureCompatibilityVersion to "
+          << FeatureCompatibilityVersionCommandParser::kVersion32;
+    opCtx->recoveryUnit()->onCommit([]() {
+        serverGlobalParams.featureCompatibility.version.store(
+            ServerGlobalParams::FeatureCompatibility::Version::k32);
+    });
 }
 
 /**

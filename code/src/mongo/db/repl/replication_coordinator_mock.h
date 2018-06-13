@@ -30,7 +30,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/db/repl/replica_set_config.h"
+#include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/platform/atomic_word.h"
 
@@ -128,11 +128,9 @@ public:
 
     virtual bool setFollowerMode(const MemberState& newState);
 
-    virtual bool isWaitingForApplierToDrain();
+    virtual ApplierState getApplierState();
 
-    virtual bool isCatchingUp();
-
-    virtual void signalDrainComplete(OperationContext*);
+    virtual void signalDrainComplete(OperationContext*, long long);
 
     virtual Status waitForDrainFinish(Milliseconds timeout) override;
 
@@ -151,11 +149,13 @@ public:
 
     void appendConnectionStats(executor::ConnectionPoolStats* stats) const override;
 
-    virtual ReplicaSetConfig getConfig() const;
+    virtual ReplSetConfig getConfig() const;
 
     virtual void processReplSetGetConfig(BSONObjBuilder* result);
 
-    virtual void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata);
+    virtual void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata) override;
+
+    virtual void advanceCommitPoint(const OpTime& committedOptime) override;
 
     virtual void cancelAndRescheduleElectionTimeout() override;
 
@@ -212,7 +212,8 @@ public:
     virtual void resetLastOpTimesFromOplog(OperationContext* txn);
 
     virtual bool shouldChangeSyncSource(const HostAndPort& currentSource,
-                                        const rpc::ReplSetMetadata& metadata);
+                                        const rpc::ReplSetMetadata& replMetadata,
+                                        boost::optional<rpc::OplogQueryMetadata> oqMetadata);
 
     virtual OpTime getLastCommittedOpTime() const;
 
@@ -220,7 +221,8 @@ public:
                                               const ReplSetRequestVotesArgs& args,
                                               ReplSetRequestVotesResponse* response);
 
-    void prepareReplMetadata(const OpTime& lastOpTimeFromClient,
+    void prepareReplMetadata(const BSONObj& metadataRequestObj,
+                             const OpTime& lastOpTimeFromClient,
                              BSONObjBuilder* builder) const override;
 
     virtual Status processHeartbeatV1(const ReplSetHeartbeatArgsV1& args,
@@ -240,7 +242,9 @@ public:
 
     virtual void forceSnapshotCreation() override;
 
-    virtual void onSnapshotCreate(OpTime timeOfSnapshot, SnapshotName name);
+    virtual void createSnapshot(OperationContext* txn,
+                                OpTime timeOfSnapshot,
+                                SnapshotName name) override;
 
     virtual void dropAllSnapshots() override;
 
@@ -262,12 +266,14 @@ public:
     /**
      * Sets the return value for calls to getConfig.
      */
-    void setGetConfigReturnValue(ReplicaSetConfig returnValue);
+    void setGetConfigReturnValue(ReplSetConfig returnValue);
 
     /**
      * Always allow writes even if this node is not master. Used by sharding unit tests.
      */
     void alwaysAllowWrites(bool allowWrites);
+
+    virtual Status abortCatchupIfNeeded() override;
 
 private:
     AtomicUInt64 _snapshotNameGenerator;
@@ -275,7 +281,7 @@ private:
     MemberState _memberState;
     OpTime _myLastDurableOpTime;
     OpTime _myLastAppliedOpTime;
-    ReplicaSetConfig _getConfigReturnValue;
+    ReplSetConfig _getConfigReturnValue;
     bool _alwaysAllowWrites = false;
 };
 

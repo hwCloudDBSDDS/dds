@@ -94,7 +94,7 @@ DatabasesCloner::~DatabasesCloner() {
 std::string DatabasesCloner::toString() const {
     LockGuard lk(_mutex);
     return str::stream() << "initial sync --"
-                         << " active:" << _active << " status:" << _status.toString()
+                         << " active:" << _isActive_inlock() << " status:" << _status.toString()
                          << " source:" << _source.toString()
                          << " db cloners completed:" << _stats.databasesCloned
                          << " db count:" << _databaseCloners.size();
@@ -112,6 +112,23 @@ void DatabasesCloner::join() {
 }
 
 void DatabasesCloner::shutdown() {
+    {
+        LockGuard lock(_mutex);
+        switch (_state) {
+            case State::kPreStart:
+                // Transition directly from PreStart to Complete if not started yet.
+                _state = State::kComplete;
+                return;
+            case State::kRunning:
+                _state = State::kShuttingDown;
+                break;
+            case State::kShuttingDown:
+            case State::kComplete:
+                // Nothing to do if we are already in ShuttingDown or Complete state.
+                return;
+        }
+    }
+
     if (auto listDatabaseScheduler = _getListDatabasesScheduler()) {
         listDatabaseScheduler->shutdown();
     }
@@ -120,18 +137,15 @@ void DatabasesCloner::shutdown() {
     for (auto&& cloner : databaseCloners) {
         cloner->shutdown();
     }
-
-    LockGuard lk(_mutex);
-    if (!_active) {
-        return;
-    }
-    _active = false;
-    _setStatus_inlock({ErrorCodes::CallbackCanceled, "Initial Sync Cancelled."});
 }
 
 bool DatabasesCloner::isActive() {
     LockGuard lk(_mutex);
-    return _active;
+    return _isActive_inlock();
+}
+
+bool DatabasesCloner::_isActive_inlock() const {
+    return State::kRunning == _state || State::kShuttingDown == _state;
 }
 
 Status DatabasesCloner::getStatus() {
@@ -167,21 +181,31 @@ void DatabasesCloner::Stats::append(BSONObjBuilder* builder) const {
     }
 }
 
-Status DatabasesCloner::startup() {
-    UniqueLock lk(_mutex);
-    invariant(!_active);
-    _active = true;
+Status DatabasesCloner::startup() noexcept {
+    LockGuard lk(_mutex);
+
+    switch (_state) {
+        case State::kPreStart:
+            _state = State::kRunning;
+            break;
+        case State::kRunning:
+            return Status(ErrorCodes::InternalError, "databases cloner already started");
+        case State::kShuttingDown:
+            return Status(ErrorCodes::ShutdownInProgress, "databases cloner shutting down");
+        case State::kComplete:
+            return Status(ErrorCodes::ShutdownInProgress, "databases cloner completed");
+    }
 
     if (!_status.isOK() && _status.code() != ErrorCodes::NotYetInitialized) {
         return _status;
     }
 
-    _status = Status::OK();
-
-    // Schedule listDatabase command which will kick off the database cloner per result db.
+    // Schedule listDatabase command which will kick off the database cloner per result db. We only
+    // retrieve database names since computing & fetching all database stats can be costly on the
+    // remote node when there are a large number of collections.
     Request listDBsReq(_source,
                        "admin",
-                       BSON("listDatabases" << true),
+                       BSON("listDatabases" << true << "nameOnly" << true),
                        rpc::ServerSelectionMetadata(true, boost::none).toBSON(),
                        nullptr);
     _listDBsScheduler = stdx::make_unique<RemoteCommandRetryScheduler>(
@@ -192,17 +216,57 @@ Status DatabasesCloner::startup() {
             numInitialSyncListDatabasesAttempts,
             executor::RemoteCommandRequest::kNoTimeout,
             RemoteCommandRetryScheduler::kAllRetriableErrors));
-    auto s = _listDBsScheduler->startup();
-    if (!s.isOK()) {
-        _fail_inlock(&lk, s);
+    _status = _listDBsScheduler->startup();
+
+    if (!_status.isOK()) {
+        _state = State::kComplete;
+        return _status;
     }
 
-    return _status;
+    return Status::OK();
 }
 
 void DatabasesCloner::setScheduleDbWorkFn_forTest(const CollectionCloner::ScheduleDbWorkFn& work) {
     LockGuard lk(_mutex);
     _scheduleDbWorkFn = work;
+}
+
+StatusWith<std::vector<BSONElement>> DatabasesCloner::parseListDatabasesResponse_forTest(
+    BSONObj dbResponse) {
+    return _parseListDatabasesResponse(dbResponse);
+}
+
+void DatabasesCloner::setAdminAsFirst_forTest(std::vector<BSONElement>& dbsArray) {
+    _setAdminAsFirst(dbsArray);
+}
+
+StatusWith<std::vector<BSONElement>> DatabasesCloner::_parseListDatabasesResponse(
+    BSONObj dbResponse) {
+    if (!dbResponse.hasField("databases")) {
+        return Status(ErrorCodes::BadValue,
+                      "The 'listDatabases' response does not contain a 'databases' field.");
+    }
+    BSONElement response = dbResponse["databases"];
+    try {
+        return response.Array();
+    } catch (const MsgAssertionException& e) {
+        return Status(ErrorCodes::BadValue,
+                      "The 'listDatabases' response is unable to be transformed into an array.");
+    }
+}
+
+void DatabasesCloner::_setAdminAsFirst(std::vector<BSONElement>& dbsArray) {
+    auto adminIter = std::find_if(dbsArray.begin(), dbsArray.end(), [](BSONElement elem) {
+        if (!elem.isABSONObj()) {
+            return false;
+        }
+        auto bsonObj = elem.Obj();
+        std::string databaseName = bsonObj.getStringField("name");
+        return (databaseName == "admin");
+    });
+    if (adminIter != dbsArray.end()) {
+        std::iter_swap(adminIter, dbsArray.begin());
+    }
 }
 
 void DatabasesCloner::_onListDatabaseFinish(const CommandCallbackArgs& cbd) {
@@ -213,22 +277,42 @@ void DatabasesCloner::_onListDatabaseFinish(const CommandCallbackArgs& cbd) {
 
     UniqueLock lk(_mutex);
     if (!respStatus.isOK()) {
-        LOG(1) << "listDatabases failed: " << respStatus;
+        LOG(1) << "'listDatabases' failed: " << respStatus;
         _fail_inlock(&lk, respStatus);
         return;
     }
 
-    const auto respBSON = cbd.response.data;
-    // There should not be any cloners yet
+    // There should not be any cloners yet.
     invariant(_databaseCloners.size() == 0);
-    const auto dbsElem = respBSON["databases"].Obj();
-    BSONForEach(arrayElement, dbsElem) {
+    const auto respBSON = cbd.response.data;
+
+    auto databasesArray = _parseListDatabasesResponse(respBSON);
+    if (!databasesArray.isOK()) {
+        LOG(1) << "'listDatabases' returned a malformed response: "
+               << databasesArray.getStatus().toString();
+        _fail_inlock(&lk, databasesArray.getStatus());
+        return;
+    }
+
+    auto dbsArray = databasesArray.getValue();
+    // Ensure that the 'admin' database is the first element in the array of databases so that it
+    // will be the first to be cloned. This allows users to authenticate against a database while
+    // initial sync is occurring.
+    _setAdminAsFirst(dbsArray);
+
+    for (BSONElement arrayElement : dbsArray) {
         const BSONObj dbBSON = arrayElement.Obj();
 
         // Check to see if we want to exclude this db from the clone.
         if (!_includeDbFn(dbBSON)) {
-            LOG(1) << "excluding db: " << dbBSON;
+            LOG(1) << "Excluding database from the 'listDatabases' response: " << dbBSON;
             continue;
+        }
+
+        if (!dbBSON.hasField("name")) {
+            LOG(1) << "Excluding database due to the 'listDatabases' response not containing a "
+                      "'name' field for this entry: "
+                   << dbBSON;
         }
 
         const std::string dbName = dbBSON["name"].str();
@@ -295,7 +379,6 @@ void DatabasesCloner::_onListDatabaseFinish(const CommandCallbackArgs& cbd) {
         // add cloner to list.
         _databaseCloners.push_back(dbCloner);
     }
-
     if (_databaseCloners.size() == 0) {
         if (_status.isOK()) {
             _succeed_inlock(&lk);
@@ -366,34 +449,48 @@ void DatabasesCloner::_onEachDBCloneFinish(const Status& status, const std::stri
 
 void DatabasesCloner::_fail_inlock(UniqueLock* lk, Status status) {
     LOG(3) << "DatabasesCloner::_fail_inlock called";
-    if (!_active) {
+    if (!_isActive_inlock()) {
         return;
     }
 
     _setStatus_inlock(status);
     // TODO: shutdown outstanding work, like any cloners active
+    invariant(_finishFn);
     auto finish = _finishFn;
+    _finishFn = {};
     lk->unlock();
 
     LOG(3) << "DatabasesCloner - calling _finishFn with status: " << _status;
     finish(status);
 
+    // Release any resources that might be held by the '_finishFn' (moved to 'finish') function
+    // object.
+    finish = OnFinishFn();
+
     lk->lock();
-    _active = false;
+    invariant(_state != State::kComplete);
+    _state = State::kComplete;
 }
 
 void DatabasesCloner::_succeed_inlock(UniqueLock* lk) {
     LOG(3) << "DatabasesCloner::_succeed_inlock called";
     const auto status = Status::OK();
     _setStatus_inlock(status);
+    invariant(_finishFn);
     auto finish = _finishFn;
+    _finishFn = OnFinishFn();
     lk->unlock();
 
     LOG(3) << "DatabasesCloner - calling _finishFn with status OK";
     finish(status);
 
+    // Release any resources that might be held by the '_finishFn' (moved to 'finish') function
+    // object.
+    finish = OnFinishFn();
+
     lk->lock();
-    _active = false;
+    invariant(_state != State::kComplete);
+    _state = State::kComplete;
 }
 
 void DatabasesCloner::_setStatus_inlock(Status s) {

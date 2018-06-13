@@ -58,11 +58,28 @@ class BackgroundSync {
     MONGO_DISALLOW_COPYING(BackgroundSync);
 
 public:
+    /**
+     *   Stopped -> Starting -> Running
+     *      ^          |            |
+     *      |__________|____________|
+     *
+     * In normal cases: Stopped -> Starting -> Running -> Stopped.
+     * It is also possible to transition directly from Starting to Stopped.
+     *
+     * We need a separate Starting state since part of the startup process involves reading from
+     * disk and we want to do that disk I/O in the bgsync thread, rather than whatever thread calls
+     * start().
+     */
+    enum class ProducerState { Starting, Running, Stopped };
+
     BackgroundSync(ReplicationCoordinatorExternalState* replicationCoordinatorExternalState,
                    std::unique_ptr<OplogBuffer> oplogBuffer);
 
     // stop syncing (when this node becomes a primary, e.g.)
-    void stop();
+    // During stepdown, the last fetched optime is not reset in order to keep track of the lastest
+    // optime in the buffer. However, the last fetched optime has to be reset after initial sync or
+    // rollback.
+    void stop(bool resetLastFetchedOptime);
 
     /**
      * Starts oplog buffer, task executor and producer thread, in that order.
@@ -85,8 +102,6 @@ public:
      */
     bool inShutdown() const;
 
-    bool isStopped() const;
-
     // starts the sync target notifying thread
     void notifierThread();
 
@@ -106,11 +121,6 @@ public:
     void clearBuffer(OperationContext* txn);
 
     /**
-     * Cancel existing find/getMore commands on the sync source's oplog collection.
-     */
-    void cancelFetcher();
-
-    /**
      * Returns true if any of the following is true:
      * 1) We are shutting down;
      * 2) We are primary;
@@ -119,7 +129,11 @@ public:
      */
     bool shouldStopFetching() const;
 
-    // Testing related stuff
+    ProducerState getState() const;
+    // Starts the producer if it's stopped. Otherwise, let it keep running.
+    void startProducerIfStopped();
+
+    // Adds a fake oplog entry to buffer. Used for testing only.
     void pushTestOpToBuffer(OperationContext* txn, const BSONObj& op);
 
 private:
@@ -134,36 +148,22 @@ private:
     void _run();
     // Production thread inner loop.
     void _runProducer();
-    void _produce(OperationContext* txn);
-
-    /**
-     * Signals to the applier that we have no new data,
-     * and are in sync with the applier at this point.
-     *
-     * NOTE: Used after rollback and during draining to transition to Primary role;
-     */
-    void _signalNoNewDataForApplier(OperationContext* txn);
+    void _produce();
 
     /**
      * Checks current background sync state before pushing operations into blocking queue and
      * updating metrics. If the queue is full, might block.
+     *
+     * requiredRBID is reset to empty after the first call.
      */
-    void _enqueueDocuments(Fetcher::Documents::const_iterator begin,
-                           Fetcher::Documents::const_iterator end,
-                           const OplogFetcher::DocumentsInfo& info);
-
-    /**
-     * Executes a rollback.
-     * 'getConnection' returns a connection to the sync source.
-     */
-    void _rollback(OperationContext* txn,
-                   const HostAndPort& source,
-                   stdx::function<DBClientBase*()> getConnection);
+    Status _enqueueDocuments(Fetcher::Documents::const_iterator begin,
+                             Fetcher::Documents::const_iterator end,
+                             const OplogFetcher::DocumentsInfo& info);
 
     // restart syncing
     void start(OperationContext* txn);
 
-    long long _readLastAppliedHash(OperationContext* txn);
+    OpTimeWithHash _readLastAppliedOpTimeWithHash(OperationContext* txn);
 
     // Production thread
     std::unique_ptr<OplogBuffer> _oplogBuffer;
@@ -174,32 +174,49 @@ private:
     // A pointer to the replication coordinator external state.
     ReplicationCoordinatorExternalState* _replicationCoordinatorExternalState;
 
-    // _mutex protects all of the class variables declared below.
-    mutable stdx::mutex _mutex;
+    /**
+      * All member variables are labeled with one of the following codes indicating the
+      * synchronization rules for accessing them:
+      *
+      * (PR) Completely private to BackgroundSync. Can be read or written to from within the main
+      *      BackgroundSync thread without synchronization. Shouldn't be accessed outside of this
+      *      thread.
+      *
+      * (S)  Self-synchronizing; access in any way from any context.
+      *
+      * (M)  Reads and writes guarded by _mutex
+      *
+     */
 
-    OpTime _lastOpTimeFetched;
+    // Protects member data of BackgroundSync.
+    // Never hold the BackgroundSync mutex when trying to acquire the ReplicationCoordinator mutex.
+    mutable stdx::mutex _mutex;  // (S)
 
-    // lastFetchedHash is used to match ops to determine if we need to rollback, when
-    // a secondary.
-    long long _lastFetchedHash = 0LL;
+    OpTime _lastOpTimeFetched;  // (M)
+
+    // lastFetchedHash is used to match ops to determine if we need to rollback, when a secondary.
+    long long _lastFetchedHash = 0LL;  // (M)
 
     // Thread running producerThread().
-    std::unique_ptr<stdx::thread> _producerThread;
+    std::unique_ptr<stdx::thread> _producerThread;  // (M)
 
     // Set to true if shutdown() has been called.
-    bool _inShutdown = false;
+    bool _inShutdown = false;  // (M)
 
-    // if producer thread should not be running
-    bool _stopped = true;
+    // Flag that marks whether a node's oplog has no common point with any
+    // potential sync sources.
+    bool _tooStale = false;  // (PR)
 
-    HostAndPort _syncSourceHost;
+    ProducerState _state = ProducerState::Starting;  // (M)
+
+    HostAndPort _syncSourceHost;  // (M)
 
     // Current sync source resolver validating sync source candidates.
-    // Owned by us.
-    std::unique_ptr<SyncSourceResolver> _syncSourceResolver;
+    // Pointer may be read on any thread that locks _mutex or unlocked on the BGSync thread. It can
+    // only be written to by the BGSync thread while holding _mutex.
+    std::unique_ptr<SyncSourceResolver> _syncSourceResolver;  // (M)
 
     // Current oplog fetcher tailing the oplog on the sync source.
-    // Owned by us.
     std::unique_ptr<OplogFetcher> _oplogFetcher;
 };
 

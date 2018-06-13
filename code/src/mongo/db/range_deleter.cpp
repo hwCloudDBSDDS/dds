@@ -39,6 +39,7 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/write_concern_options.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -353,15 +354,12 @@ bool RangeDeleter::deleteNow(OperationContext* txn,
     taskDetails.stats.queueEndTS = jsTime();
 
     taskDetails.stats.deleteStartTS = jsTime();
-    bool result = _env->deleteRange(txn, taskDetails, &taskDetails.stats.deletedDocCount, errMsg);
-
+    bool result = _env->deleteRange(txn,
+                                    taskDetails,
+                                    &taskDetails.stats.deletedDocCount,
+                                    taskDetails.stats.waitForReplDurationMs,
+                                    errMsg);
     taskDetails.stats.deleteEndTS = jsTime();
-
-    if (result) {
-        taskDetails.stats.waitForReplStartTS = jsTime();
-        result = _waitForMajority(txn, errMsg);
-        taskDetails.stats.waitForReplEndTS = jsTime();
-    }
 
     {
         stdx::lock_guard<stdx::mutex> sl(_queueMutex);
@@ -423,8 +421,11 @@ void RangeDeleter::doWork() {
         {
             stdx::unique_lock<stdx::mutex> sl(_queueMutex);
             while (_taskQueue.empty()) {
-                _taskQueueNotEmptyCV.wait_for(
-                    sl, Milliseconds(kNotEmptyTimeoutMillis).toSystemDuration());
+                {
+                    MONGO_IDLE_THREAD_BLOCK;
+                    _taskQueueNotEmptyCV.wait_for(
+                        sl, Milliseconds(kNotEmptyTimeoutMillis).toSystemDuration());
+                }
 
                 if (stopRequested()) {
                     log() << "stopping range deleter worker" << endl;
@@ -481,8 +482,11 @@ void RangeDeleter::doWork() {
         {
             auto txn = client->makeOperationContext();
             nextTask->stats.deleteStartTS = jsTime();
-            bool delResult =
-                _env->deleteRange(txn.get(), *nextTask, &nextTask->stats.deletedDocCount, &errMsg);
+            bool delResult = _env->deleteRange(txn.get(),
+                                               *nextTask,
+                                               &nextTask->stats.deletedDocCount,
+                                               nextTask->stats.waitForReplDurationMs,
+                                               &errMsg);
             nextTask->stats.deleteEndTS = jsTime();
 
             if (delResult) {

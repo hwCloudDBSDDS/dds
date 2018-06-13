@@ -168,8 +168,6 @@ public:
     void onDropCollection(OperationContext* txn, const NamespaceString& collectionName);
 
 private:
-    friend class CollectionRangeDeleter;
-
     /**
      * Checks whether the shard version of the operation matches that of the collection.
      *
@@ -192,7 +190,7 @@ private:
     const NamespaceString _nss;
 
     // Contains all the metadata associated with this collection.
-    MetadataManager _metadataManager;
+    std::shared_ptr<MetadataManager> _metadataManager;
 
     // If this collection is serving as a source shard for chunk migration, this value will be
     // non-null. To write this value there needs to be X-lock on the collection in order to

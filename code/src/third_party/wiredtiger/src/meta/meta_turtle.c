@@ -47,7 +47,7 @@ __metadata_init(WT_SESSION_IMPL *session)
 	 * We're single-threaded, but acquire the schema lock regardless: the
 	 * lower level code checks that it is appropriately synchronized.
 	 */
-	WT_WITH_SCHEMA_LOCK(session, ret,
+	WT_WITH_SCHEMA_LOCK(session,
 	    ret = __wt_schema_create(session, WT_METAFILE_URI, NULL));
 
 	return (ret);
@@ -220,9 +220,8 @@ __wt_turtle_init(WT_SESSION_IMPL *session)
 
 		/* Create the turtle file. */
 		WT_RET(__metadata_config(session, &metaconf));
-		WT_WITH_TURTLE_LOCK(session, ret,
-		    ret = __wt_turtle_update(
-		    session, WT_METAFILE_URI, metaconf));
+		WT_WITH_TURTLE_LOCK(session, ret =
+		    __wt_turtle_update(session, WT_METAFILE_URI, metaconf));
 		WT_ERR(ret);
 	}
 
@@ -243,9 +242,12 @@ __wt_turtle_read(WT_SESSION_IMPL *session, const char *key, char **valuep)
 	WT_DECL_ITEM(buf);
 	WT_DECL_RET;
 	WT_FSTREAM *fs;
-	bool exist, match;
+	bool exist;
 
 	*valuep = NULL;
+
+	/* Require single-threading. */
+	WT_ASSERT(session, F_ISSET(session, WT_SESSION_LOCKED_TURTLE));
 
 	/*
 	 * Open the turtle file; there's one case where we won't find the turtle
@@ -259,22 +261,19 @@ __wt_turtle_read(WT_SESSION_IMPL *session, const char *key, char **valuep)
 		    __metadata_config(session, valuep) : WT_NOTFOUND);
 	WT_RET(__wt_fopen(session, WT_METADATA_TURTLE, 0, WT_STREAM_READ, &fs));
 
-	/* Search for the key. */
 	WT_ERR(__wt_scr_alloc(session, 512, &buf));
-	for (match = false;;) {
+
+	/* Search for the key. */
+	do {
 		WT_ERR(__wt_getline(session, fs, buf));
 		if (buf->size == 0)
 			WT_ERR(WT_NOTFOUND);
-		if (strcmp(key, buf->data) == 0)
-			match = true;
+	} while (strcmp(key, buf->data) != 0);
 
-		/* Key matched: read the subsequent line for the value. */
-		WT_ERR(__wt_getline(session, fs, buf));
-		if (buf->size == 0)
-			WT_ERR(__wt_illegal_value(session, WT_METADATA_TURTLE));
-		if (match)
-			break;
-	}
+	/* Key matched: read the subsequent line for the value. */
+	WT_ERR(__wt_getline(session, fs, buf));
+	if (buf->size == 0)
+		WT_ERR(WT_NOTFOUND);
 
 	/* Copy the value for the caller. */
 	WT_ERR(__wt_strdup(session, buf->data, valuep));
@@ -284,7 +283,12 @@ err:	WT_TRET(__wt_fclose(session, &fs));
 
 	if (ret != 0)
 		__wt_free(session, *valuep);
-	return (ret);
+
+	/*
+	 * A file error or a missing key/value pair in the turtle file means
+	 * something has gone horribly wrong -- we're done.
+	 */
+	return (ret == 0 ? 0 : __wt_illegal_value(session, WT_METADATA_TURTLE));
 }
 
 /*
@@ -300,6 +304,9 @@ __wt_turtle_update(WT_SESSION_IMPL *session, const char *key, const char *value)
 	const char *version;
 
 	fs = NULL;
+
+	/* Require single-threading. */
+	WT_ASSERT(session, F_ISSET(session, WT_SESSION_LOCKED_TURTLE));
 
 	/*
 	 * Create the turtle setup file: we currently re-write it from scratch
@@ -323,5 +330,9 @@ __wt_turtle_update(WT_SESSION_IMPL *session, const char *key, const char *value)
 err:	WT_TRET(__wt_fclose(session, &fs));
 	WT_TRET(__wt_remove_if_exists(session, WT_METADATA_TURTLE_SET, false));
 
-	return (ret);
+	/*
+	 * An error updating the turtle file means something has gone horribly
+	 * wrong -- we're done.
+	 */
+	return (ret == 0 ? 0 : __wt_illegal_value(session, WT_METADATA_TURTLE));
 }

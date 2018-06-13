@@ -35,8 +35,8 @@
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/replace.hpp>
 
-#include "mongo/crypto/crypto.h"
 #include "mongo/crypto/mechanism_scram.h"
+#include "mongo/crypto/sha1_block.h"
 #include "mongo/db/auth/sasl_options.h"
 #include "mongo/platform/random.h"
 #include "mongo/util/base64.h"
@@ -198,6 +198,12 @@ StatusWith<bool> SaslSCRAMSHA1ServerConversation::_firstStep(std::vector<string>
         _creds.scram.serverKey = scramCreds[scram::serverKeyFieldName].String();
     }
 
+    if (!_creds.scram.isValid()) {
+        return Status(ErrorCodes::AuthenticationFailed,
+                      "Unable to perform SCRAM-SHA-1 authentication for a user with missing "
+                      "or invalid SCRAM credentials");
+    }
+
     // Generate server-first-message
     // Create text-based nonce as base64 encoding of a binary blob of length multiple of 3
     const int nonceLenQWords = 3;
@@ -280,61 +286,25 @@ StatusWith<bool> SaslSCRAMSHA1ServerConversation::_secondStep(const std::vector<
     // ClientSignature := HMAC(StoredKey, AuthMessage)
     // ClientKey := ClientSignature XOR ClientProof
     // ServerSignature := HMAC(ServerKey, AuthMessage)
+    invariant(_creds.scram.isValid());
 
-    unsigned int hashLen = 0;
-    unsigned char clientSignature[scram::hashSize];
-
-    std::string decodedStoredKey = base64::decode(_creds.scram.storedKey);
-    // ClientSignature := HMAC(StoredKey, AuthMessage)
-    fassert(18662,
-            crypto::hmacSha1(reinterpret_cast<const unsigned char*>(decodedStoredKey.c_str()),
-                             scram::hashSize,
-                             reinterpret_cast<const unsigned char*>(_authMessage.c_str()),
-                             _authMessage.size(),
-                             clientSignature,
-                             &hashLen));
-
-    fassert(18658, hashLen == scram::hashSize);
-
-    try {
-        clientProof = base64::decode(clientProof);
-    } catch (const DBException& ex) {
-        return StatusWith<bool>(ex.toStatus());
-    }
-    const unsigned char* decodedClientProof =
-        reinterpret_cast<const unsigned char*>(clientProof.c_str());
-
-    // ClientKey := ClientSignature XOR ClientProof
-    unsigned char clientKey[scram::hashSize];
-    for (size_t i = 0; i < scram::hashSize; i++) {
-        clientKey[i] = clientSignature[i] ^ decodedClientProof[i];
-    }
-
-    // StoredKey := H(ClientKey)
-    unsigned char computedStoredKey[scram::hashSize];
-    fassert(18659, crypto::sha1(clientKey, scram::hashSize, computedStoredKey));
-
-    if (memcmp(decodedStoredKey.c_str(), computedStoredKey, scram::hashSize) != 0) {
+    if (!scram::verifyClientProof(
+            base64::decode(clientProof), base64::decode(_creds.scram.storedKey), _authMessage)) {
         return StatusWith<bool>(ErrorCodes::AuthenticationFailed,
                                 mongoutils::str::stream()
                                     << "SCRAM-SHA-1 authentication failed, storedKey mismatch");
     }
 
     // ServerSignature := HMAC(ServerKey, AuthMessage)
-    unsigned char serverSignature[scram::hashSize];
     std::string decodedServerKey = base64::decode(_creds.scram.serverKey);
-    fassert(18660,
-            crypto::hmacSha1(reinterpret_cast<const unsigned char*>(decodedServerKey.c_str()),
-                             scram::hashSize,
-                             reinterpret_cast<const unsigned char*>(_authMessage.c_str()),
-                             _authMessage.size(),
-                             serverSignature,
-                             &hashLen));
-
-    fassert(18661, hashLen == scram::hashSize);
+    SHA1Block serverSignature =
+        SHA1Block::computeHmac(reinterpret_cast<const unsigned char*>(decodedServerKey.c_str()),
+                               decodedServerKey.size(),
+                               reinterpret_cast<const unsigned char*>(_authMessage.c_str()),
+                               _authMessage.size());
 
     StringBuilder sb;
-    sb << "v=" << base64::encode(reinterpret_cast<char*>(serverSignature), scram::hashSize);
+    sb << "v=" << serverSignature.toString();
     *outputData = sb.str();
 
     return StatusWith<bool>(false);

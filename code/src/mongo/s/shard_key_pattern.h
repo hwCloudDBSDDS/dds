@@ -91,6 +91,8 @@ public:
 
     const KeyPattern& getKeyPattern() const;
 
+    const std::vector<FieldRef*>& getKeyPatternFields() const;
+
     const BSONObj& toBSON() const;
 
     std::string toString() const;
@@ -223,8 +225,9 @@ public:
 
 private:
     // Ordered, parsed paths
-    const OwnedPointerVector<FieldRef> _keyPatternPaths;
+    OwnedPointerVector<FieldRef> _keyPatternPaths;
 
-    const KeyPattern _keyPattern;
+    KeyPattern _keyPattern;
 };
-}
+
+}  // namespace mongo

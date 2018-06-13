@@ -35,7 +35,7 @@ __wt_direct_io_size_check(WT_SESSION_IMPL *session,
 	 * units of its happy place.
 	 */
 	if (FLD_ISSET(conn->direct_io,
-	   WT_DIRECT_IO_CHECKPOINT | WT_DIRECT_IO_DATA)) {
+	    WT_DIRECT_IO_CHECKPOINT | WT_DIRECT_IO_DATA)) {
 		align = (int64_t)conn->buffer_alignment;
 		if (align != 0 && (cval.val < align || cval.val % align != 0))
 			WT_RET_MSG(session, EINVAL,
@@ -273,7 +273,7 @@ err:	__wt_free(session, cgconf);
 	__wt_buf_free(session, &fmt);
 	__wt_buf_free(session, &namebuf);
 
-	__wt_schema_release_table(session, table);
+	WT_TRET(__wt_schema_release_table(session, table));
 	return (ret);
 }
 
@@ -540,7 +540,7 @@ err:	__wt_free(session, idxconf);
 	__wt_buf_free(session, &fmt);
 	__wt_buf_free(session, &namebuf);
 
-	__wt_schema_release_table(session, table);
+	WT_TRET(__wt_schema_release_table(session, table));
 	return (ret);
 }
 
@@ -601,7 +601,8 @@ __create_table(WT_SESSION_IMPL *session,
 		if (ncolgroups == 0) {
 			cgsize = strlen("colgroup:") + strlen(tablename) + 1;
 			WT_ERR(__wt_calloc_def(session, cgsize, &cgname));
-			snprintf(cgname, cgsize, "colgroup:%s", tablename);
+			WT_ERR(__wt_snprintf(
+			    cgname, cgsize, "colgroup:%s", tablename));
 			WT_ERR(__create_colgroup(
 			    session, cgname, exclusive, config));
 		}
@@ -614,7 +615,7 @@ err:		if (table != NULL) {
 		}
 	}
 	if (table != NULL)
-		__wt_schema_release_table(session, table);
+		WT_TRET(__wt_schema_release_table(session, table));
 	__wt_free(session, cgname);
 	__wt_free(session, tableconf);
 	return (ret);

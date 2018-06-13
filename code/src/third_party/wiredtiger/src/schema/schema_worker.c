@@ -49,7 +49,7 @@ __wt_schema_worker(WT_SESSION_IMPL *session,
 			 * any open file handles, including checkpoints.
 			 */
 			if (FLD_ISSET(open_flags, WT_DHANDLE_EXCLUSIVE)) {
-				WT_WITH_HANDLE_LIST_LOCK(session,
+				WT_WITH_HANDLE_LIST_WRITE_LOCK(session,
 				    ret = __wt_conn_dhandle_close_all(
 				    session, uri, false));
 				WT_ERR(ret);
@@ -64,22 +64,20 @@ __wt_schema_worker(WT_SESSION_IMPL *session,
 		}
 	} else if (WT_PREFIX_MATCH(uri, "colgroup:")) {
 		WT_ERR(__wt_schema_get_colgroup(
-		    session, uri, false, NULL, &colgroup));
+		    session, uri, false, &table, &colgroup));
 		WT_ERR(__wt_schema_worker(session,
 		    colgroup->source, file_func, name_func, cfg, open_flags));
+		WT_ERR(__wt_schema_release_table(session, table));
 	} else if (WT_PREFIX_SKIP(tablename, "index:")) {
 		idx = NULL;
-		WT_ERR(__wt_schema_get_index(session, uri, false, NULL, &idx));
+		WT_ERR(__wt_schema_get_index(
+		    session, uri, false, &table, &idx));
 		WT_ERR(__wt_schema_worker(session, idx->source,
 		    file_func, name_func, cfg, open_flags));
+		WT_ERR(__wt_schema_release_table(session, table));
 	} else if (WT_PREFIX_MATCH(uri, "lsm:")) {
-		/*
-		 * LSM compaction is handled elsewhere, but if we get here
-		 * trying to compact files, don't descend into an LSM tree.
-		 */
-		if (file_func != __wt_compact)
-			WT_ERR(__wt_lsm_tree_worker(session,
-			    uri, file_func, name_func, cfg, open_flags));
+		WT_ERR(__wt_lsm_tree_worker(session,
+		    uri, file_func, name_func, cfg, open_flags));
 	} else if (WT_PREFIX_SKIP(tablename, "table:")) {
 		WT_ERR(__wt_schema_get_table(session,
 		    tablename, strlen(tablename), false, &table));
@@ -115,15 +113,12 @@ __wt_schema_worker(WT_SESSION_IMPL *session,
 		}
 	} else if ((dsrc = __wt_schema_get_source(session, uri)) != NULL) {
 		wt_session = (WT_SESSION *)session;
-		if (file_func == __wt_compact && dsrc->compact != NULL)
-			WT_ERR(dsrc->compact(
-			    dsrc, wt_session, uri, (WT_CONFIG_ARG *)cfg));
-		else if (file_func == __wt_salvage && dsrc->salvage != NULL)
+		if (file_func == __wt_salvage && dsrc->salvage != NULL)
 			WT_ERR(dsrc->salvage(
-			   dsrc, wt_session, uri, (WT_CONFIG_ARG *)cfg));
+			    dsrc, wt_session, uri, (WT_CONFIG_ARG *)cfg));
 		else if (file_func == __wt_verify && dsrc->verify != NULL)
 			WT_ERR(dsrc->verify(
-			   dsrc, wt_session, uri, (WT_CONFIG_ARG *)cfg));
+			    dsrc, wt_session, uri, (WT_CONFIG_ARG *)cfg));
 		else if (file_func == __wt_checkpoint)
 			;
 		else if (file_func == __wt_checkpoint_get_handles)
@@ -136,6 +131,6 @@ __wt_schema_worker(WT_SESSION_IMPL *session,
 		WT_ERR(__wt_bad_object_type(session, uri));
 
 err:	if (table != NULL)
-		__wt_schema_release_table(session, table);
+		WT_TRET(__wt_schema_release_table(session, table));
 	return (ret);
 }

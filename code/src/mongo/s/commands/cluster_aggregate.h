@@ -37,11 +37,11 @@
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_merge_cursors.h"
 #include "mongo/s/commands/strategy.h"
-#include "mongo/s/config.h"
 
 namespace mongo {
 
 class OperationContext;
+class ShardId;
 
 /**
  * Methods for running aggregation across a sharded cluster.
@@ -82,14 +82,15 @@ private:
     // could be different from conn->getServerAddress() for connections that map to
     // multiple servers such as for replica sets. These also take care of registering
     // returned cursors.
-    static BSONObj aggRunCommand(DBClientBase* conn,
+    static BSONObj aggRunCommand(OperationContext* txn,
+                                 DBClientBase* conn,
                                  const Namespaces& namespaces,
                                  BSONObj cmd,
                                  int queryOptions);
 
     static Status aggPassthrough(OperationContext* txn,
                                  const Namespaces& namespaces,
-                                 std::shared_ptr<DBConfig> conf,
+                                 const ShardId& shardId,
                                  BSONObj cmd,
                                  BSONObjBuilder* result,
                                  int queryOptions);

@@ -76,7 +76,7 @@
 #include "mongo/db/json.h"
 #include "mongo/db/log_process_details.h"
 #include "mongo/db/mongod_options.h"
-#include "mongo/db/op_observer.h"
+#include "mongo/db/op_observer_impl.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/range_deleter_service.h"
@@ -103,10 +103,10 @@
 #include "mongo/db/startup_warnings_mongod.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/stats/snapshots.h"
+#include "mongo/db/storage/encryption_hooks.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
-#include "mongo/db/storage/wiredtiger/wiredtiger_customization_hooks.h"
 #include "mongo/db/ttl.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/executor/network_interface_factory.h"
@@ -122,10 +122,11 @@
 #include "mongo/transport/transport_layer_legacy.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/cmdline_utils/censor_cmdline.h"
-#include "mongo/util/concurrency/task.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/exception_filter_win32.h"
 #include "mongo/util/exit.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/fast_clock_source_factory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/listen.h"
@@ -167,6 +168,7 @@ extern int diagLogging;
 namespace {
 
 const NamespaceString startupLogCollectionName("local.startup_log");
+const NamespaceString kSystemReplSetCollection("local.system.replset");
 
 #ifdef _WIN32
 ntservice::NtServiceDefaultStrings defaultServiceStrings = {
@@ -256,12 +258,9 @@ void checkForIdIndexes(OperationContext* txn, Database* db) {
  *          --replset.
  */
 unsigned long long checkIfReplMissingFromCommandLine(OperationContext* txn) {
-    // This is helpful for the query below to work as you can't open files when readlocked
-    ScopedTransaction transaction(txn, MODE_X);
-    Lock::GlobalWrite lk(txn->lockState());
     if (!repl::getGlobalReplicationCoordinator()->getSettings().usingReplSets()) {
         DBDirectClient c(txn);
-        return c.count("local.system.replset");
+        return c.count(kSystemReplSetCollection.ns());
     }
     return 0;
 }
@@ -387,6 +386,17 @@ void repairDatabasesAndCheckVersion(OperationContext* txn) {
 
     const repl::ReplSettings& replSettings = repl::getGlobalReplicationCoordinator()->getSettings();
 
+    if (!storageGlobalParams.readOnly) {
+        // We open the "local" database before calling checkIfReplMissingFromCommandLine() to ensure
+        // the in-memory catalog entries for the 'kSystemReplSetCollection' collection have been
+        // populated if the collection exists. If the "local" database didn't exist at this point
+        // yet, then it will be created. If the mongod is running in a read-only mode, then it is
+        // fine to not open the "local" database and populate the catalog entries because we won't
+        // attempt to drop the temporary collections anyway.
+        Lock::DBLock dbLock(txn->lockState(), kSystemReplSetCollection.db(), MODE_X);
+        dbHolder().openDb(txn, kSystemReplSetCollection.db());
+    }
+
     // On replica set members we only clear temp collections on DBs other than "local" during
     // promotion to primary. On pure slaves, they are only cleared when the oplog tells them
     // to. The local DB is special because it is not replicated.  See SERVER-10927 for more
@@ -511,6 +521,8 @@ void _initWireSpec() {
     spec.isInternalClient = true;
 }
 
+MONGO_FP_DECLARE(shutdownAtStartup);
+
 ExitCode _initAndListen(int listenPort) {
     Client::initThread("initandlisten");
 
@@ -518,7 +530,7 @@ ExitCode _initAndListen(int listenPort) {
     auto globalServiceContext = getGlobalServiceContext();
 
     globalServiceContext->setFastClockSource(FastClockSourceFactory::create(Milliseconds(10)));
-    globalServiceContext->setOpObserver(stdx::make_unique<OpObserver>());
+    globalServiceContext->setOpObserver(stdx::make_unique<OpObserverImpl>());
 
     DBDirectClientFactory::get(globalServiceContext)
         .registerImplementation([](OperationContext* txn) {
@@ -584,7 +596,7 @@ ExitCode _initAndListen(int listenPort) {
     getGlobalServiceContext()->initializeGlobalStorageEngine();
 
 #ifdef MONGO_CONFIG_WIREDTIGER_ENABLED
-    if (WiredTigerCustomizationHooks::get(getGlobalServiceContext())->restartRequired()) {
+    if (EncryptionHooks::get(getGlobalServiceContext())->restartRequired()) {
         exitCleanly(EXIT_CLEAN);
     }
 #endif
@@ -692,7 +704,11 @@ ExitCode _initAndListen(int listenPort) {
         Status status = authindex::verifySystemIndexes(startupOpCtx.get());
         if (!status.isOK()) {
             log() << redact(status);
-            exitCleanly(EXIT_NEED_UPGRADE);
+            if (status.code() == ErrorCodes::AuthSchemaIncompatible) {
+                exitCleanly(EXIT_NEED_UPGRADE);
+            } else {
+                quickExit(EXIT_FAILURE);
+            }
         }
 
         // SERVER-14090: Verify that auth schema version is schemaVersion26Final.
@@ -740,7 +756,7 @@ ExitCode _initAndListen(int listenPort) {
     if (!storageGlobalParams.readOnly) {
         logStartup(startupOpCtx.get());
 
-        startFTDC();
+        startMongoDFTDC();
 
         getDeleter()->startWorkers();
 
@@ -815,6 +831,12 @@ ExitCode _initAndListen(int listenPort) {
     }
 #endif
 
+    if (MONGO_FAIL_POINT(shutdownAtStartup)) {
+        log() << "starting clean exit via failpoint";
+        exitCleanly(EXIT_CLEAN);
+    }
+
+    MONGO_IDLE_THREAD_BLOCK;
     return waitForShutdown();
 }
 
@@ -1090,7 +1112,7 @@ static void shutdownTask() {
 #endif
 
     // Shutdown Full-Time Data Capture
-    stopFTDC();
+    stopMongoDFTDC();
 
     if (txn) {
         ShardingState::get(txn)->shutDown(txn);
@@ -1107,9 +1129,9 @@ static void shutdownTask() {
     // of this function to prevent any operations from running that need a lock.
     //
     DefaultLockerImpl* globalLocker = new DefaultLockerImpl();
-    LockResult result = globalLocker->lockGlobalBegin(MODE_X);
+    LockResult result = globalLocker->lockGlobalBegin(MODE_X, Milliseconds::max());
     if (result == LOCK_WAITING) {
-        result = globalLocker->lockGlobalComplete(UINT_MAX);
+        result = globalLocker->lockGlobalComplete(Milliseconds::max());
     }
 
     invariant(LOCK_OK == result);

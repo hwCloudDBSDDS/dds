@@ -50,6 +50,7 @@ public:
     static constexpr StringData k32IncompatibleIndexName = "incompatible_with_version_32"_sd;
     static constexpr StringData kCollection = "admin.system.version"_sd;
     static constexpr StringData kCommandName = "setFeatureCompatibilityVersion"_sd;
+    static constexpr StringData kDatabase = "admin"_sd;
     static constexpr StringData kParameterName = "featureCompatibilityVersion"_sd;
     static constexpr StringData kVersionField = "version"_sd;
 
@@ -75,16 +76,22 @@ public:
 
     /**
      * Examines a document inserted or updated in admin.system.version. If it is the
-     * featureCompatibilityVersion document, validates the document and updates the server
-     * parameter.
+     * featureCompatibilityVersion document, validates the document and on commit, updates
+     * the server parameter.
      */
-    static void onInsertOrUpdate(const BSONObj& doc);
+    static void onInsertOrUpdate(OperationContext* opCtx, const BSONObj& doc);
 
     /**
      * Examines the _id of a document removed from admin.system.version. If it is the
      * featureCompatibilityVersion document, resets the server parameter to its default value (3.2).
+     * on commit.
      */
-    static void onDelete(const BSONObj& doc);
+    static void onDelete(OperationContext* opCtx, const BSONObj& doc);
+
+    /**
+     * Resets the server parameter to its default value (3.2) on commit.
+     */
+    static void onDropCollection(OperationContext* opCtx);
 };
 
 }  // namespace mongo

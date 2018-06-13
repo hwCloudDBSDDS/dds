@@ -224,7 +224,7 @@ public:
                     {
                         // Set the namespace of the curop back to the view namespace so ctx records
                         // stats on this view namespace on destruction.
-                        stdx::lock_guard<Client>(*txn->getClient());
+                        stdx::lock_guard<Client> lk(*txn->getClient());
                         curOp->setNS_inlock(origNss.ns());
                     }
                     return retVal;
@@ -301,20 +301,16 @@ public:
 
         const bool hasOwnMaxTime = txn->hasDeadline();
 
-        if (!hasOwnMaxTime) {
+        // We assume that cursors created through a DBDirectClient are always used from their
+        // original OperationContext, so we do not need to move time to and from the cursor.
+        if (!hasOwnMaxTime && !txn->getClient()->isInDirectClient()) {
             // There is no time limit set directly on this getMore command. If the cursor is
             // awaitData, then we supply a default time of one second. Otherwise we roll over
             // any leftover time from the maxTimeMS of the operation that spawned this cursor,
             // applying it to this getMore.
             if (isCursorAwaitData(cursor)) {
-                uassert(40117,
-                        "Illegal attempt to set operation deadline within DBDirectClient",
-                        !txn->getClient()->isInDirectClient());
                 txn->setDeadlineAfterNowBy(Seconds{1});
             } else if (cursor->getLeftoverMaxTimeMicros() < Microseconds::max()) {
-                uassert(40118,
-                        "Illegal attempt to set operation deadline within DBDirectClient",
-                        !txn->getClient()->isInDirectClient());
                 txn->setDeadlineAfterNowBy(cursor->getLeftoverMaxTimeMicros());
             }
         }
@@ -331,7 +327,7 @@ public:
 
         auto planSummary = Explain::getPlanSummary(exec);
         {
-            stdx::lock_guard<Client>(*txn->getClient());
+            stdx::lock_guard<Client> lk(*txn->getClient());
             curOp->setPlanSummary_inlock(planSummary);
 
             // Ensure that the original query or command object is available in the slow query log,

@@ -38,16 +38,12 @@
 
 namespace mongo {
 
-class BSONObj;
-
 class AScopedConnection;
-class ClusterCursorManager;
+class CachedCollectionRoutingInfo;
+class CachedDatabaseInfo;
 class DBClientBase;
 class DBClientCursor;
-
-namespace executor {
-class TaskExecutor;
-}  // namespace executor
+class OperationContext;
 
 /**
  * DEPRECATED - do not use in any new code. All new code must use the TaskExecutor interface
@@ -135,5 +131,28 @@ int getUniqueCodeFromCommandResults(const std::vector<Strategy::CommandResult>& 
  * Utility function to return an empty result set from a command.
  */
 bool appendEmptyResultSet(BSONObjBuilder& result, Status status, const std::string& ns);
+
+/**
+ * Returns the set of collections for the specified database, which have been marked as sharded.
+ * Goes directly to the config server's metadata, without checking the local cache so it should not
+ * be used in frequently called code paths.
+ *
+ * Throws exception on errors.
+ */
+std::vector<NamespaceString> getAllShardedCollectionsForDb(OperationContext* txn,
+                                                           StringData dbName);
+
+/**
+ * Abstracts the common pattern of refreshing a collection and checking if it is sharded used across
+ * multiple commands.
+ */
+CachedCollectionRoutingInfo getShardedCollection(OperationContext* opCtx,
+                                                 const NamespaceString& nss);
+
+/**
+ * If the specified database exists already, loads it in the cache (if not already there) and
+ * returns it. Otherwise, if it does not exist, this call will implicitly create it as non-sharded.
+ */
+StatusWith<CachedDatabaseInfo> createShardDatabase(OperationContext* opCtx, StringData dbName);
 
 }  // namespace mongo

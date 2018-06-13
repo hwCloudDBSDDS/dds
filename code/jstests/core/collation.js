@@ -590,6 +590,8 @@
         assert.eq(0, coll.find({str: "FOO"}).itcount());
         assert.eq(0, coll.find({str: "FOO"}).collation({locale: "en_US"}).itcount());
         assert.eq(1, coll.find({str: "FOO"}).collation({locale: "en_US", strength: 2}).itcount());
+        assert.eq(
+            1, coll.find({str: {$ne: "FOO"}}).collation({locale: "en_US", strength: 2}).itcount());
 
         // Find should return correct results when collation specified and compatible index exists.
         assert.commandWorked(
@@ -598,6 +600,11 @@
         assert.eq(0, coll.find({str: "FOO"}).collation({locale: "en_US"}).hint({str: 1}).itcount());
         assert.eq(1,
                   coll.find({str: "FOO"})
+                      .collation({locale: "en_US", strength: 2})
+                      .hint({str: 1})
+                      .itcount());
+        assert.eq(1,
+                  coll.find({str: {$ne: "FOO"}})
                       .collation({locale: "en_US", strength: 2})
                       .hint({str: 1})
                       .itcount());
@@ -647,6 +654,7 @@
     assert.writeOK(coll.insert({str: "bar"}));
     assert.eq(3, coll.find({str: {$in: ["foo", "bar"]}}).itcount());
     assert.eq(2, coll.find({str: "foo"}).itcount());
+    assert.eq(1, coll.find({str: {$ne: "foo"}}).itcount());
     assert.eq([{str: "bar"}, {str: "foo"}, {str: "FOO"}],
               coll.find({}, {_id: 0, str: 1}).sort({str: 1}).toArray());
 
@@ -2005,32 +2013,6 @@
         assert.eq(originalCollectionInfos[0].options.collation,
                   clonedCollectionInfos[0].options.collation);
         assert.eq([{_id: "FOO"}], clonedColl.find({_id: "foo"}).toArray());
-    }
-
-    // Test that the collection created with the "convertToCapped" command inherits the default
-    // collation of the corresponding collection. We skip running this command in a sharded cluster
-    // because it isn't supported by mongos.
-    if (!isMongos) {
-        coll.drop();
-
-        // Create a collection with a non-simple default collation.
-        assert.commandWorked(
-            db.runCommand({create: coll.getName(), collation: {locale: "en", strength: 2}}));
-        const originalCollectionInfos = db.getCollectionInfos({name: coll.getName()});
-        assert.eq(originalCollectionInfos.length, 1, tojson(originalCollectionInfos));
-
-        assert.writeOK(coll.insert({_id: "FOO"}));
-        assert.writeOK(coll.insert({_id: "bar"}));
-        assert.eq([{_id: "FOO"}],
-                  coll.find({_id: "foo"}).toArray(),
-                  "query should have performed a case-insensitive match");
-
-        assert.commandWorked(db.runCommand({convertToCapped: coll.getName(), size: 4096}));
-        const cappedCollectionInfos = db.getCollectionInfos({name: coll.getName()});
-        assert.eq(cappedCollectionInfos.length, 1, tojson(cappedCollectionInfos));
-        assert.eq(originalCollectionInfos[0].options.collation,
-                  cappedCollectionInfos[0].options.collation);
-        assert.eq([{_id: "FOO"}], coll.find({_id: "foo"}).toArray());
     }
 
     // Test that the find command's min/max options respect the collation.

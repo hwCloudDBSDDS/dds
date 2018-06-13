@@ -48,7 +48,7 @@ namespace repl {
 class HeartbeatResponseAction;
 class OpTime;
 class ReplSetHeartbeatArgs;
-class ReplicaSetConfig;
+class ReplSetConfig;
 class TagSubgroup;
 class LastVote;
 struct MemberState;
@@ -166,10 +166,13 @@ public:
      * ("syncSourceHasSyncSource" is false), and only has data up to "myLastOpTime", returns true.
      *
      * "now" is used to skip over currently blacklisted sync sources.
+     *
+     * TODO (SERVER-27668): Make OplogQueryMetadata non-optional in mongodb 3.8.
      */
     virtual bool shouldChangeSyncSource(const HostAndPort& currentSource,
                                         const OpTime& myLastOpTime,
-                                        const rpc::ReplSetMetadata& metadata,
+                                        const rpc::ReplSetMetadata& replMetadata,
+                                        boost::optional<rpc::OplogQueryMetadata> oqMetadata,
                                         Date_t now) const = 0;
 
     /**
@@ -292,7 +295,7 @@ public:
      * newConfig.isInitialized() should be true, though implementations may accept
      * configurations where this is not true, for testing purposes.
      */
-    virtual void updateConfig(const ReplicaSetConfig& newConfig,
+    virtual void updateConfig(const ReplSetConfig& newConfig,
                               int selfIndex,
                               Date_t now,
                               const OpTime& lastOpApplied) = 0;
@@ -403,15 +406,14 @@ public:
      *      C2. If C1 holds, then there must exist at least one electable secondary node in the
      *      majority set M.
      *
-     * If C1 and C2 hold, a step down occurs and this method returns true. Else, the step down
+     * C1 should already be checked in ReplicationCoordinator. This method checks C2.
+     *
+     * If C2 holds, a step down occurs and this method returns true. Else, the step down
      * fails and this method returns false.
      *
      * NOTE: It is illegal to call this method if the node is not a primary.
      */
-    virtual bool stepDown(Date_t until,
-                          bool force,
-                          const OpTime& lastOpApplied,
-                          const OpTime& lastOpCommitted) = 0;
+    virtual bool stepDown(Date_t until, bool force, const OpTime& lastOpApplied) = 0;
 
     /**
      * Sometimes a request to step down comes in (like via a heartbeat), but we don't have the
@@ -435,11 +437,19 @@ public:
     virtual void setMyHeartbeatMessage(const Date_t now, const std::string& s) = 0;
 
     /**
-     * Prepares a BSONObj describing the current term, primary, and lastOp information.
+     * Prepares a ReplSetMetadata object describing the current term, primary, and lastOp
+     * information.
      */
-    virtual void prepareReplMetadata(rpc::ReplSetMetadata* metadata,
-                                     const OpTime& lastVisibleOpTime,
-                                     const OpTime& lastCommittedOpTime) const = 0;
+    virtual rpc::ReplSetMetadata prepareReplSetMetadata(
+        const OpTime& lastVisibleOpTime, const OpTime& lastCommittedOpTime) const = 0;
+
+    /**
+     * Prepares an OplogQueryMetadata object describing the current sync source, rbid, primary,
+     * lastOpApplied, and lastOpCommitted.
+     */
+    virtual rpc::OplogQueryMetadata prepareOplogQueryMetadata(const OpTime& lastCommittedOpTime,
+                                                              const OpTime& lastAppliedOpTime,
+                                                              int rbid) const = 0;
 
     /**
      * Writes into 'output' all the information needed to generate a summary of the current
@@ -474,13 +484,30 @@ public:
     /**
      * Transitions to the candidate role if the node is electable.
      */
-    virtual Status becomeCandidateIfElectable(const Date_t now, const OpTime& lastOpApplied) = 0;
+    virtual Status becomeCandidateIfElectable(const Date_t now,
+                                              const OpTime& lastOpApplied,
+                                              bool isPriorityTakeover) = 0;
 
     /**
      * Updates the storage engine read committed support in the TopologyCoordinator options after
      * creation.
      */
     virtual void setStorageEngineSupportsReadCommitted(bool supported) = 0;
+
+    /**
+     * Reset the booleans to record the last heartbeat restart.
+     */
+    virtual void restartHeartbeats() = 0;
+
+    /**
+     * Scans through all members that are 'up' and return the latest known optime, if we have
+     * received (successful or failed) heartbeats from all nodes since heartbeat restart.
+     *
+     * Returns boost::none if any node hasn't responded to a heartbeat since we last restarted
+     * heartbeats.
+     * Returns OpTime(Timestamp(0, 0), 0), the smallest OpTime in PV1, if other nodes are all down.
+     */
+    virtual boost::optional<OpTime> latestKnownOpTimeSinceHeartbeatRestart() const = 0;
 
 protected:
     TopologyCoordinator() {}

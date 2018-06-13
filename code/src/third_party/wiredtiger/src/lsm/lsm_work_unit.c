@@ -172,7 +172,7 @@ __wt_lsm_work_switch(
 	*entryp = NULL;
 
 	if (entry->lsm_tree->need_switch) {
-		WT_WITH_SCHEMA_LOCK(session, ret,
+		WT_WITH_SCHEMA_LOCK(session,
 		    ret = __wt_lsm_tree_switch(session, entry->lsm_tree));
 		/* Failing to complete the switch is fine */
 		if (ret == EBUSY) {
@@ -230,7 +230,7 @@ __wt_lsm_work_bloom(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 		if (__wt_atomic_cas32(&chunk->bloom_busy, 0, 1)) {
 			if (!F_ISSET(chunk, WT_LSM_CHUNK_BLOOM)) {
 				ret = __lsm_bloom_create(
-				    session, lsm_tree, chunk, (u_int)i);
+				    session, lsm_tree, chunk, i);
 				/*
 				 * Record if we were successful so that we can
 				 * later push a merge work unit.
@@ -265,9 +265,9 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 {
 	WT_DECL_RET;
 	WT_TXN_ISOLATION saved_isolation;
-	bool flush_set;
+	bool flush_set, release_btree;
 
-	flush_set = false;
+	flush_set = release_btree = false;
 
 	/*
 	 * If the chunk is already checkpointed, make sure it is also evicted.
@@ -276,7 +276,7 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	if (F_ISSET(chunk, WT_LSM_CHUNK_ONDISK) &&
 	    !F_ISSET(chunk, WT_LSM_CHUNK_STABLE) &&
 	    !chunk->evicted) {
-		WT_WITH_HANDLE_LIST_LOCK(session,
+		WT_WITH_HANDLE_LIST_WRITE_LOCK(session,
 		    ret = __lsm_discard_handle(session, chunk->uri, NULL));
 		if (ret == 0)
 			chunk->evicted = 1;
@@ -318,19 +318,18 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	 * We can wait here for checkpoints and fsyncs to complete, which can
 	 * take a long time.
 	 */
-	if ((ret = __wt_session_get_btree(
-	    session, chunk->uri, NULL, NULL, 0)) == 0) {
-		/*
-		 * Set read-uncommitted: we have already checked that all of the
-		 * updates in this chunk are globally visible, use the cheapest
-		 * possible check in reconciliation.
-		 */
-		saved_isolation = session->txn.isolation;
-		session->txn.isolation = WT_ISO_READ_UNCOMMITTED;
-		ret = __wt_cache_op(session, WT_SYNC_WRITE_LEAVES);
-		session->txn.isolation = saved_isolation;
-		WT_TRET(__wt_session_release_btree(session));
-	}
+	WT_ERR(__wt_session_get_btree(session, chunk->uri, NULL, NULL, 0));
+	release_btree = true;
+
+	/*
+	 * Set read-uncommitted: we have already checked that all of the updates
+	 * in this chunk are globally visible, use the cheapest possible check
+	 * in reconciliation.
+	 */
+	saved_isolation = session->txn.isolation;
+	session->txn.isolation = WT_ISO_READ_UNCOMMITTED;
+	ret = __wt_cache_op(session, WT_SYNC_WRITE_LEAVES);
+	session->txn.isolation = saved_isolation;
 	WT_ERR(ret);
 
 	__wt_verbose(session, WT_VERB_LSM, "LSM worker checkpointing %s",
@@ -346,13 +345,15 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	 * time, and our checkpoint operation should be very quick.
 	 */
 	WT_ERR(__wt_meta_track_on(session));
-	WT_WITH_CHECKPOINT_LOCK(session, ret,
-	    WT_WITH_SCHEMA_LOCK(session, ret,
-		ret = __wt_schema_worker(
-		session, chunk->uri, __wt_checkpoint, NULL, NULL, 0)));
+	WT_WITH_CHECKPOINT_LOCK(session,
+	    WT_WITH_SCHEMA_LOCK(session,
+		ret = __wt_checkpoint(session, NULL)));
 	WT_TRET(__wt_meta_track_off(session, false, ret != 0));
 	if (ret != 0)
 		WT_ERR_MSG(session, ret, "LSM checkpoint");
+
+	release_btree = false;
+	WT_ERR(__wt_session_release_btree(session));
 
 	/* Now the file is written, get the chunk size. */
 	WT_ERR(__wt_lsm_tree_set_chunk_size(session, chunk));
@@ -364,7 +365,7 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	/* Lock the tree, mark the chunk as on disk and update the metadata. */
 	__wt_lsm_tree_writelock(session, lsm_tree);
 	F_SET(chunk, WT_LSM_CHUNK_ONDISK);
-	ret = __wt_lsm_meta_write(session, lsm_tree);
+	ret = __wt_lsm_meta_write(session, lsm_tree, NULL);
 	++lsm_tree->dsk_gen;
 
 	/* Update the throttle time. */
@@ -375,16 +376,6 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 
 	WT_PUBLISH(chunk->flushing, 0);
 	flush_set = false;
-
-	/*
-	 * Clear the no-eviction flag so the primary can be evicted and
-	 * eventually closed.  Only do this once the checkpoint has succeeded:
-	 * otherwise, accessing the leaf page during the checkpoint can trigger
-	 * forced eviction.
-	 */
-	WT_ERR(__wt_session_get_btree(session, chunk->uri, NULL, NULL, 0));
-	__wt_btree_lsm_switch_primary(session, false);
-	WT_ERR(__wt_session_release_btree(session));
 
 	/* Make sure we aren't pinning a transaction ID. */
 	__wt_txn_release_snapshot(session);
@@ -402,6 +393,8 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 
 err:	if (flush_set)
 		WT_PUBLISH(chunk->flushing, 0);
+	if (release_btree)
+		WT_TRET(__wt_session_release_btree(session));
 
 	return (ret);
 }
@@ -469,7 +462,7 @@ __lsm_bloom_create(WT_SESSION_IMPL *session,
 	/* Ensure the bloom filter is in the metadata. */
 	__wt_lsm_tree_writelock(session, lsm_tree);
 	F_SET(chunk, WT_LSM_CHUNK_BLOOM);
-	ret = __wt_lsm_meta_write(session, lsm_tree);
+	ret = __wt_lsm_meta_write(session, lsm_tree, NULL);
 	++lsm_tree->dsk_gen;
 	__wt_lsm_tree_writeunlock(session, lsm_tree);
 
@@ -517,8 +510,8 @@ __lsm_drop_file(WT_SESSION_IMPL *session, const char *uri)
 	 *
 	 * This will fail with EBUSY if the file is still in use.
 	 */
-	WT_WITH_HANDLE_LIST_LOCK(session,
-	   ret = __lsm_discard_handle(session, uri, WT_CHECKPOINT));
+	WT_WITH_HANDLE_LIST_WRITE_LOCK(session,
+	    ret = __lsm_discard_handle(session, uri, WT_CHECKPOINT));
 	WT_RET(ret);
 
 	/*
@@ -526,7 +519,7 @@ __lsm_drop_file(WT_SESSION_IMPL *session, const char *uri)
 	 * results in the hot backup lock being taken when it updates the
 	 * metadata (which would be too late to prevent our drop).
 	 */
-	WT_WITH_SCHEMA_LOCK(session, ret,
+	WT_WITH_SCHEMA_LOCK(session,
 	    ret = __wt_schema_drop(session, uri, drop_cfg));
 
 	if (ret == 0)
@@ -610,7 +603,8 @@ __wt_lsm_free_chunks(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 			if (drop_ret == EBUSY) {
 				++skipped;
 				continue;
-			} else if (drop_ret != ENOENT)
+			}
+			if (drop_ret != ENOENT)
 				WT_ERR(drop_ret);
 
 			flush_metadata = true;
@@ -621,7 +615,8 @@ __wt_lsm_free_chunks(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 			if (drop_ret == EBUSY) {
 				++skipped;
 				continue;
-			} else if (drop_ret != ENOENT)
+			}
+			if (drop_ret != ENOENT)
 				WT_ERR(drop_ret);
 			flush_metadata = true;
 		}
@@ -659,7 +654,7 @@ __wt_lsm_free_chunks(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 err:	/* Flush the metadata unless the system is in panic */
 	if (flush_metadata && ret != WT_PANIC) {
 		__wt_lsm_tree_writelock(session, lsm_tree);
-		WT_TRET(__wt_lsm_meta_write(session, lsm_tree));
+		WT_TRET(__wt_lsm_meta_write(session, lsm_tree, NULL));
 		__wt_lsm_tree_writeunlock(session, lsm_tree);
 	}
 	__lsm_unpin_chunks(session, &cookie);

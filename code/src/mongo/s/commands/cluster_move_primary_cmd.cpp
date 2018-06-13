@@ -43,11 +43,12 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/type_database.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/commands/cluster_commands_common.h"
 #include "mongo/s/commands/sharded_command_processing.h"
-#include "mongo/s/config.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/set_shard_version_request.h"
 #include "mongo/util/log.h"
@@ -96,7 +97,7 @@ public:
         return cmdObj.firstElement().str();
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const std::string& dbname_unused,
                      BSONObj& cmdObj,
                      int options,
@@ -109,20 +110,20 @@ public:
             return false;
         }
 
-        if (dbname == "admin" || dbname == "config" || dbname == "local") {
+        if (dbname == NamespaceString::kAdminDb || dbname == NamespaceString::kConfigDb ||
+            dbname == NamespaceString::kLocalDb) {
             errmsg = "can't move primary for " + dbname + " database";
             return false;
         }
 
+        auto const catalogClient = Grid::get(opCtx)->catalogClient(opCtx);
+        auto const catalogCache = Grid::get(opCtx)->catalogCache();
+        auto const shardRegistry = Grid::get(opCtx)->shardRegistry();
+
         // Flush all cached information. This can't be perfect, but it's better than nothing.
-        grid.catalogCache()->invalidate(dbname);
+        catalogCache->purgeDatabase(dbname);
 
-        auto status = grid.catalogCache()->getDatabase(txn, dbname);
-        if (!status.isOK()) {
-            return appendCommandStatus(result, status.getStatus());
-        }
-
-        shared_ptr<DBConfig> config = status.getValue();
+        auto dbInfo = uassertStatusOK(catalogCache->getDatabase(opCtx, dbname));
 
         const string to = cmdObj["to"].valuestrsafe();
         if (!to.size()) {
@@ -130,58 +131,48 @@ public:
             return false;
         }
 
-        auto toShardStatus = grid.shardRegistry()->getShard(txn, to);
-        if (!toShardStatus.isOK()) {
-            string msg(str::stream() << "Could not move database '" << dbname << "' to shard '"
-                                     << to
-                                     << "' because the shard does not exist");
-            log() << msg;
-            return appendCommandStatus(result, Status(ErrorCodes::ShardNotFound, msg));
-        }
-        auto toShard = toShardStatus.getValue();
+        const auto fromShard = uassertStatusOK(shardRegistry->getShard(opCtx, dbInfo.primaryId()));
+        const auto toShard = [&]() {
+            auto toShardStatus = shardRegistry->getShard(opCtx, to);
+            if (!toShardStatus.isOK()) {
+                const std::string msg(
+                    str::stream() << "Could not move database '" << dbname << "' to shard '" << to
+                                  << "' due to "
+                                  << toShardStatus.getStatus().reason());
+                log() << msg;
+                uasserted(toShardStatus.getStatus().code(), msg);
+            }
 
-        auto fromShard =
-            uassertStatusOK(grid.shardRegistry()->getShard(txn, config->getPrimaryId()));
+            return toShardStatus.getValue();
+        }();
 
-        if (fromShard->getId() == toShard->getId()) {
-            errmsg = "it is already the primary";
-            return false;
-        }
+        uassert(ErrorCodes::IllegalOperation,
+                "it is already the primary",
+                fromShard->getId() != toShard->getId());
 
         log() << "Moving " << dbname << " primary from: " << fromShard->toString()
               << " to: " << toShard->toString();
 
-        string whyMessage(str::stream() << "Moving primary shard of " << dbname);
-        auto scopedDistLock = grid.catalogClient(txn)->getDistLockManager()->lock(
-            txn, dbname + "-movePrimary", whyMessage, DistLockManager::kDefaultLockTimeout);
+        const std::string whyMessage(str::stream() << "Moving primary shard of " << dbname);
+        auto scopedDistLock = uassertStatusOK(catalogClient->getDistLockManager()->lock(
+            opCtx, dbname + "-movePrimary", whyMessage, DistLockManager::kDefaultLockTimeout));
 
-        if (!scopedDistLock.isOK()) {
-            return appendCommandStatus(result, scopedDistLock.getStatus());
-        }
-
-        set<string> shardedColls;
-        config->getAllShardedCollections(shardedColls);
+        const auto shardedColls = getAllShardedCollectionsForDb(opCtx, dbname);
 
         // Record start in changelog
-        BSONObj moveStartDetails =
-            _buildMoveEntry(dbname, fromShard->toString(), toShard->toString(), shardedColls);
-
-        auto catalogClient = grid.catalogClient(txn);
-        catalogClient->logChange(txn,
-                                 "movePrimary.start",
-                                 dbname,
-                                 moveStartDetails,
-                                 ShardingCatalogClient::kMajorityWriteConcern);
-
-        BSONArrayBuilder barr;
-        barr.append(shardedColls);
+        catalogClient->logChange(
+            opCtx,
+            "movePrimary.start",
+            dbname,
+            _buildMoveLogEntry(dbname, fromShard->toString(), toShard->toString(), shardedColls),
+            ShardingCatalogClient::kMajorityWriteConcern);
 
         ScopedDbConnection toconn(toShard->getConnString());
 
         {
             // Make sure the target node is sharding aware.
             auto ssvRequest = SetShardVersionRequest::makeForInitNoPersist(
-                grid.shardRegistry()->getConfigServerConnectionString(),
+                shardRegistry->getConfigServerConnectionString(),
                 toShard->getId(),
                 toShard->getConnString());
             BSONObj res;
@@ -194,33 +185,52 @@ public:
         // TODO ERH - we need a clone command which replays operations from clone start to now
         //            can just use local.oplog.$main
         BSONObj cloneRes;
-        bool worked = toconn->runCommand(
-            dbname.c_str(),
-            BSON("clone" << fromShard->getConnString().toString() << "collsToIgnore" << barr.arr()
-                         << bypassDocumentValidationCommandOption()
-                         << true
-                         << "writeConcern"
-                         << txn->getWriteConcern().toBSON()),
-            cloneRes);
-        toconn.done();
-
-        if (!worked) {
-            log() << "clone failed" << redact(cloneRes);
-            errmsg = "clone failed";
-            return false;
-        }
         bool hasWCError = false;
-        if (auto wcErrorElem = cloneRes["writeConcernError"]) {
-            appendWriteConcernErrorToCmdResponse(toShard->getId(), wcErrorElem, result);
-            hasWCError = true;
+
+        {
+            BSONArrayBuilder barr;
+            for (const auto& shardedColl : shardedColls) {
+                barr.append(shardedColl.ns());
+            }
+
+            const bool worked = toconn->runCommand(
+                dbname,
+                BSON("clone" << fromShard->getConnString().toString() << "collsToIgnore"
+                             << barr.arr()
+                             << bypassDocumentValidationCommandOption()
+                             << true
+                             << "writeConcern"
+                             << opCtx->getWriteConcern().toBSON()),
+                cloneRes);
+            toconn.done();
+
+            if (!worked) {
+                log() << "clone failed" << redact(cloneRes);
+                errmsg = "clone failed";
+                return false;
+            }
+
+            if (auto wcErrorElem = cloneRes["writeConcernError"]) {
+                appendWriteConcernErrorToCmdResponse(toShard->getId(), wcErrorElem, result);
+                hasWCError = true;
+            }
         }
+
+        // Update the new primary in the config server metadata
+        {
+            auto dbt = uassertStatusOK(catalogClient->getDatabase(opCtx, dbname)).value;
+            dbt.setPrimary(toShard->getId());
+
+            uassertStatusOK(catalogClient->updateDatabase(opCtx, dbname, dbt));
+        }
+
+        // Ensure the next attempt to retrieve the database or any of its collections will do a full
+        // reload
+        catalogCache->purgeDatabase(dbname);
 
         const string oldPrimary = fromShard->getConnString().toString();
 
         ScopedDbConnection fromconn(fromShard->getConnString());
-
-        config->setPrimary(txn, toShard->getId());
-        config->reload(txn);
 
         if (shardedColls.empty()) {
             // TODO: Collections can be created in the meantime, and we should handle in the future.
@@ -229,7 +239,7 @@ public:
 
             try {
                 BSONObj dropDBInfo;
-                fromconn->dropDatabase(dbname.c_str(), txn->getWriteConcern(), &dropDBInfo);
+                fromconn->dropDatabase(dbname.c_str(), opCtx->getWriteConcern(), &dropDBInfo);
                 if (!hasWCError) {
                     if (auto wcErrorElem = dropDBInfo["writeConcernError"]) {
                         appendWriteConcernErrorToCmdResponse(
@@ -250,7 +260,6 @@ public:
             warning() << "movePrimary legacy mongod behavior detected. "
                       << "User must manually remove unsharded collections in database " << dbname
                       << " on " << oldPrimary;
-
         } else {
             // We moved some unsharded collections, but not all
             BSONObjIterator it(cloneRes["clonedColls"].Obj());
@@ -263,7 +272,7 @@ public:
                               << oldPrimary;
                         BSONObj dropCollInfo;
                         fromconn->dropCollection(
-                            el.String(), txn->getWriteConcern(), &dropCollInfo);
+                            el.String(), opCtx->getWriteConcern(), &dropCollInfo);
                         if (!hasWCError) {
                             if (auto wcErrorElem = dropCollInfo["writeConcernError"]) {
                                 appendWriteConcernErrorToCmdResponse(
@@ -289,40 +298,36 @@ public:
         result << "primary" << toShard->toString();
 
         // Record finish in changelog
-        BSONObj moveFinishDetails =
-            _buildMoveEntry(dbname, oldPrimary, toShard->toString(), shardedColls);
+        catalogClient->logChange(
+            opCtx,
+            "movePrimary",
+            dbname,
+            _buildMoveLogEntry(dbname, oldPrimary, toShard->toString(), shardedColls),
+            ShardingCatalogClient::kMajorityWriteConcern);
 
-        catalogClient->logChange(txn,
-                                 "movePrimary",
-                                 dbname,
-                                 moveFinishDetails,
-                                 ShardingCatalogClient::kMajorityWriteConcern);
         return true;
     }
 
 private:
-    static BSONObj _buildMoveEntry(const string db,
-                                   const string from,
-                                   const string to,
-                                   set<string> shardedColls) {
+    static BSONObj _buildMoveLogEntry(const std::string& db,
+                                      const std::string& from,
+                                      const std::string& to,
+                                      const std::vector<NamespaceString>& shardedColls) {
         BSONObjBuilder details;
         details.append("database", db);
         details.append("from", from);
         details.append("to", to);
 
         BSONArrayBuilder collB(details.subarrayStart("shardedCollections"));
-        {
-            set<string>::iterator it;
-            for (it = shardedColls.begin(); it != shardedColls.end(); ++it) {
-                collB.append(*it);
-            }
+        for (const auto& shardedColl : shardedColls) {
+            collB.append(shardedColl.ns());
         }
         collB.done();
 
         return details.obj();
     }
 
-} movePrimary;
+} clusterMovePrimaryCmd;
 
 }  // namespace
 }  // namespace mongo

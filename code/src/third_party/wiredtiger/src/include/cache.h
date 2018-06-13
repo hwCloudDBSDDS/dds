@@ -16,6 +16,17 @@
 #define	WT_EVICT_WALK_BASE	300	/* Pages tracked across file visits */
 #define	WT_EVICT_WALK_INCR	100	/* Pages added each walk */
 
+#define	WT_EVICT_MAX_TREES	1000	/* Maximum walk points */
+
+/* Ways to position when starting an eviction walk. */
+typedef enum {
+	WT_EVICT_WALK_NEXT,
+	WT_EVICT_WALK_PREV,
+	WT_EVICT_WALK_RAND_NEXT,
+	WT_EVICT_WALK_RAND_PREV
+} WT_EVICT_WALK_START;
+#define	WT_EVICT_WALK_START_NUM	(WT_EVICT_WALK_RAND_PREV + 1)
+
 /*
  * WT_EVICT_ENTRY --
  *	Encapsulation of an eviction candidate.
@@ -81,7 +92,7 @@ struct __wt_cache {
 	uint64_t worker_evicts;		/* Pages evicted by worker threads */
 
 	uint64_t evict_max_page_size;	/* Largest page seen at eviction */
-#ifdef	HAVE_DIAGNOSTIC
+#if defined(HAVE_DIAGNOSTIC) || defined(HAVE_VERBOSE)
 	struct timespec stuck_ts;	/* Stuck timestamp */
 #endif
 
@@ -122,7 +133,8 @@ struct __wt_cache {
 	 */
 	WT_SPINLOCK evict_pass_lock;	/* Eviction pass lock */
 	WT_SESSION_IMPL *walk_session;	/* Eviction pass session */
-	WT_DATA_HANDLE *evict_file_next;/* LRU next file to search */
+	WT_DATA_HANDLE *walk_tree;	/* LRU walk current tree */
+	uint32_t walk_progress, walk_target;/* Progress in current tree */
 
 	WT_SPINLOCK evict_queue_lock;	/* Eviction current queue lock */
 	WT_EVICT_QUEUE evict_queues[WT_EVICT_QUEUE_MAX];
@@ -185,9 +197,9 @@ struct __wt_cache {
 	uint32_t flags;
 };
 
-#define	WT_WITH_PASS_LOCK(session, ret, op) do {			\
+#define	WT_WITH_PASS_LOCK(session, op) do {				\
 	WT_ASSERT(session, !F_ISSET(session, WT_SESSION_LOCKED_PASS));	\
-	WT_WITH_LOCK(session, ret,					\
+	WT_WITH_LOCK_WAIT(session,					\
 	    &cache->evict_pass_lock, WT_SESSION_LOCKED_PASS, op);	\
 } while (0)
 

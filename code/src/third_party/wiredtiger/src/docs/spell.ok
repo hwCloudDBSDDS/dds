@@ -50,6 +50,7 @@ LDFLAGS
 LIBS
 LLVM
 LOGREC
+LRU
 LRVv
 LSB
 LSM
@@ -167,6 +168,7 @@ dNLen
 dNOff
 dT
 dataN
+database's
 dataitem
 dataset
 datasets
@@ -235,6 +237,7 @@ fput
 freelist
 fsync
 ftruncate
+fvisibility
 gcc
 gdbm
 ge

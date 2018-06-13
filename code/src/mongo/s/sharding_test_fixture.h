@@ -98,9 +98,9 @@ protected:
 
     executor::TaskExecutor* executor() const;
 
-    const transport::SessionHandle& getTransportSession() const;
-
     DistLockManagerMock* distLock() const;
+
+    ServiceContext* serviceContext() const;
 
     OperationContext* operationContext() const;
 
@@ -205,7 +205,6 @@ protected:
                           long long expectedTerm) const;
 
 private:
-    std::unique_ptr<ServiceContext> _service;
     ServiceContext::UniqueClient _client;
     ServiceContext::UniqueOperationContext _opCtx;
     transport::TransportLayerMock* _transportLayer;

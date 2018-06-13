@@ -336,6 +336,19 @@ const StringMap<BSONObj::MatchType> queryOperatorMap{
     {"bitsAnyClear", BSONObj::opBITS_ANY_CLEAR},
 };
 
+// Compares two string elements using a simple binary compare.
+int compareElementStringValues(const BSONElement& leftStr, const BSONElement& rightStr) {
+    // we use memcmp as we allow zeros in UTF8 strings
+    int lsz = leftStr.valuestrsize();
+    int rsz = rightStr.valuestrsize();
+    int common = std::min(lsz, rsz);
+    int res = memcmp(leftStr.valuestr(), rightStr.valuestr(), common);
+    if (res)
+        return res;
+    // longer std::string is the greater one
+    return lsz - rsz;
+}
+
 }  // namespace
 
 int BSONElement::getGtLtOp(int def) const {
@@ -943,20 +956,13 @@ int compareElementValues(const BSONElement& l,
         case jstOID:
             return memcmp(l.value(), r.value(), OID::kOIDSize);
         case Code:
+            return compareElementStringValues(l, r);
         case Symbol:
         case String: {
             if (comparator) {
                 return comparator->compare(l.valueStringData(), r.valueStringData());
             } else {
-                // we use memcmp as we allow zeros in UTF8 strings
-                int lsz = l.valuestrsize();
-                int rsz = r.valuestrsize();
-                int common = std::min(lsz, rsz);
-                int res = memcmp(l.valuestr(), r.valuestr(), common);
-                if (res)
-                    return res;
-                // longer std::string is the greater one
-                return lsz - rsz;
+                return compareElementStringValues(l, r);
             }
         }
         case Object:
@@ -993,16 +999,10 @@ int compareElementValues(const BSONElement& l,
             if (cmp)
                 return cmp;
 
-            return l.codeWScopeObject().woCompare(
-                // woCompare parameters: r, ordering, considerFieldName, comparator.
-                // r: the BSONObj to compare with.
-                // ordering: the sort directions for each key.
-                // considerFieldName: whether field names should be considered in comparison.
-                // comparator: used for all string comparisons, if non-null.
-                r.codeWScopeObject(),
-                BSONObj(),
-                true,
-                comparator);
+            // When comparing the scope object, we should consider field names. Special string
+            // comparison semantics do not apply to strings nested inside the CodeWScope scope
+            // object, so we do not pass through the string comparator.
+            return l.codeWScopeObject().woCompare(r.codeWScopeObject(), BSONObj(), true);
         }
         default:
             verify(false);

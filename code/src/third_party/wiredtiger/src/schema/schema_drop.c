@@ -30,7 +30,7 @@ __drop_file(
 
 	WT_RET(__wt_schema_backup_check(session, filename));
 	/* Close all btree handles associated with this file. */
-	WT_WITH_HANDLE_LIST_LOCK(session,
+	WT_WITH_HANDLE_LIST_WRITE_LOCK(session,
 	    ret = __wt_conn_dhandle_close_all(session, uri, force));
 	WT_RET(ret);
 
@@ -67,6 +67,7 @@ __drop_colgroup(
 	    session, uri, force, &table, &colgroup)) == 0) {
 		table->cg_complete = false;
 		WT_TRET(__wt_schema_drop(session, colgroup->source, cfg));
+		WT_TRET(__wt_schema_release_table(session, table));
 	}
 
 	WT_TRET(__wt_metadata_remove(session, uri));
@@ -75,7 +76,7 @@ __drop_colgroup(
 
 /*
  * __drop_index --
- *	WT_SESSION::drop for a colgroup.
+ *	WT_SESSION::drop for an index.
  */
 static int
 __drop_index(
@@ -85,11 +86,12 @@ __drop_index(
 	WT_DECL_RET;
 	WT_TABLE *table;
 
-	/* If we can get the colgroup, detach it from the table. */
+	/* If we can get the index, detach it from the table. */
 	if ((ret = __wt_schema_get_index(
 	    session, uri, force, &table, &idx)) == 0) {
 		table->idx_complete = false;
 		WT_TRET(__wt_schema_drop(session, idx->source, cfg));
+		WT_TRET(__wt_schema_release_table(session, table));
 	}
 
 	WT_TRET(__wt_metadata_remove(session, uri));
@@ -136,7 +138,7 @@ __drop_table(WT_SESSION_IMPL *session, const char *uri, const char *cfg[])
 		if ((idx = table->indices[i]) == NULL)
 			continue;
 		/*
-		 * Drop the column group before updating the metadata to avoid
+		 * Drop the index before updating the metadata to avoid
 		 * the metadata for the table becoming inconsistent if we can't
 		 * get exclusive access.
 		 */
@@ -151,7 +153,7 @@ __drop_table(WT_SESSION_IMPL *session, const char *uri, const char *cfg[])
 	WT_ERR(__wt_metadata_remove(session, uri));
 
 err:	if (table != NULL)
-		__wt_schema_release_table(session, table);
+		WT_TRET(__wt_schema_release_table(session, table));
 	return (ret);
 }
 
