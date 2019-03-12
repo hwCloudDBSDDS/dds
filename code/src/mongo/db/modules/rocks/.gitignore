@@ -1,0 +1,5 @@
+*.pyc
+*.sln
+*.suo
+*.ncb
+*.vcproj*

@@ -1,0 +1,231 @@
+Import("env")
+
+dynamic_syslibdeps = []
+conf = Configure(env)
+
+if conf.CheckLibWithHeader("lz4", ["lz4.h","lz4hc.h"], "C", "LZ4_versionNumber();", autoadd=False ):
+    dynamic_syslibdeps.append("lz4")
+
+conf.Finish()
+
+env.Library(
+    target= 'storage_rocks_base',
+    source= [
+        'src/rocks_compaction_scheduler.cpp',
+        'src/rocks_counter_manager.cpp',
+        'src/rocks_global_options.cpp',
+        'src/rocks_engine.cpp',
+        'src/rocks_record_store.cpp',
+        'src/rocks_recovery_unit.cpp',
+        'src/rocks_index.cpp',
+        'src/rocks_durability_manager.cpp',
+        'src/rocks_transaction.cpp',
+        'src/rocks_snapshot_manager.cpp',
+        'src/rocks_util.cpp',
+        'src/Chunk/IndexedRecordStorage.cpp',
+        'src/Chunk/ChunkRocksDBInstance.cpp',
+        'src/mongo_rocks_result_handling.cpp',
+        'src/Chunk/PartitionedRocksEngine.cpp',
+        'src/Chunk/ChunkRocksRecordStore.cpp',        
+        'src/Chunk/chunk_rocks_index.cpp',
+        'src/GlobalConfig.cpp',
+        #'src/gc_manager.cpp',
+        'src/more_db_recovery_unit.cpp',
+        'src/more_db_counter_manager.cpp',
+        'src/config/config_reader.cpp',
+        'src/Chunk/base_crc.cc',
+        'src/Chunk/maas_shared_resource_manager.cpp'
+        ],
+    LIBDEPS= [
+        'trans_log_store_base',
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/db/catalog/collection_options',
+        '$BUILD_DIR/mongo/db/concurrency/write_conflict_exception',
+        '$BUILD_DIR/mongo/db/index/index_descriptor',
+        '$BUILD_DIR/mongo/db/storage/bson_collection_catalog_entry',
+        '$BUILD_DIR/mongo/db/storage/index_entry_comparison',
+        '$BUILD_DIR/mongo/db/storage/journal_listener',
+        '$BUILD_DIR/mongo/db/storage/key_string',
+        '$BUILD_DIR/mongo/db/storage/oplog_hack',
+        '$BUILD_DIR/mongo/util/background_job',
+        '$BUILD_DIR/mongo/util/processinfo',
+        '$BUILD_DIR/third_party/shim_snappy',
+        #'$BUILD_DIR/mongo/s/commands/cluster_write',
+        ],
+    SYSLIBDEPS=["rocksdb",
+                "z",
+                "bz2"] #z and bz2 are dependencies for rocks
+               + dynamic_syslibdeps
+    )
+
+env.Library(
+    target= 'storage_rocks',
+    source= [
+        'src/rocks_init.cpp',
+        'src/rocks_options_init.cpp',
+        'src/rocks_parameters.cpp',
+        'src/rocks_record_store_mongod.cpp',
+        'src/rocks_server_status.cpp',
+        ],
+    LIBDEPS= [
+        'storage_rocks_base',
+        '$BUILD_DIR/mongo/db/storage/kv/kv_engine'
+        ],
+    LIBDEPS_DEPENDENTS=['$BUILD_DIR/mongo/db/serveronly']
+    )
+
+env.Library(
+    target= 'storage_rocks_mock',
+    source= [
+        'src/rocks_record_store_mock.cpp',
+        ],
+    LIBDEPS= [
+        'storage_rocks_base',
+        ]
+    )
+
+env.Library(
+    target= 'trans_log_store_base',
+    source= [
+        'src/Chunk/TransLogRecordStore.cpp',
+        'src/Chunk/i_shared_resource_manager.cpp',
+        'src/Chunk/base_crc.cc',
+       #'src/mongo_rocks_result_handling.cpp',
+        ],
+     LIBDEPS= [
+        '$BUILD_DIR/mongo/db/server_options_core',
+        '$BUILD_DIR/mongo/util/net/hostandport',
+        '$BUILD_DIR/mongo/client/connection_string',
+        '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/util/fail_point',
+        '$BUILD_DIR/mongo/bson/util/bson_extract',
+        '$BUILD_DIR/mongo/util/decorable',
+        '$BUILD_DIR/mongo/transport/transport_layer_manager',
+        '$BUILD_DIR/mongo/util/concurrency/spin_lock',
+        '$BUILD_DIR/mongo/s/shard_id',
+        '$BUILD_DIR/mongo/s/common',
+        ],
+     SYSLIBDEPS=["rocksdb",
+                "z",
+                "bz2"] #z and bz2 are dependencies for rocks
+                + dynamic_syslibdeps
+    )
+
+env.CppUnitTest(
+   target='storage_rocks_index_test',
+   source=['src/rocks_index_test.cpp'
+           ],
+   LIBDEPS=[
+        'storage_rocks_mock',
+        '$BUILD_DIR/mongo/db/storage/sorted_data_interface_test_harness'
+        ]
+   )
+
+
+env.CppUnitTest(
+   target='storage_rocks_record_store_test',
+   source=['src/rocks_record_store_test.cpp'
+           ],
+   LIBDEPS=[
+        'storage_rocks_mock',
+        '$BUILD_DIR/mongo/db/storage/record_store_test_harness'
+        ]
+   )
+
+env.CppUnitTest(
+   target='storage_rocks_engine_test',
+   source=['src/rocks_engine_test.cpp'
+           ],
+   LIBDEPS=[
+        'storage_rocks_mock',
+        '$BUILD_DIR/mongo/db/storage/kv/kv_engine_test_harness',
+        '$BUILD_DIR/mongo/db/storage/storage_options'
+        ]
+   )
+
+env.CppUnitTest(
+   target='storage_rocks_chunk_test',
+   source=['src/Chunk/rocks_chunk_test.cpp'],
+   LIBDEPS=[
+       "$BUILD_DIR/mongo/s/common",
+       "$BUILD_DIR/mongo/db/storage/key_string",
+       '$BUILD_DIR/mongo/db/storage/storage_options',
+       'storage_rocks_base',
+       'trans_log_store_base',
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/db/catalog/collection_options',
+        '$BUILD_DIR/mongo/db/concurrency/write_conflict_exception',
+        '$BUILD_DIR/mongo/db/index/index_descriptor',
+        '$BUILD_DIR/mongo/db/storage/bson_collection_catalog_entry',
+        '$BUILD_DIR/mongo/db/storage/index_entry_comparison',
+        '$BUILD_DIR/mongo/db/storage/journal_listener',
+        '$BUILD_DIR/mongo/db/storage/key_string',
+        '$BUILD_DIR/mongo/db/storage/oplog_hack',
+        '$BUILD_DIR/mongo/util/background_job',
+        '$BUILD_DIR/mongo/util/processinfo',
+        '$BUILD_DIR/third_party/shim_snappy',
+        #'$BUILD_DIR/mongo/s/commands/cluster_write'
+        ],
+    SYSLIBDEPS=[
+        ] # TODO: fix to dependency before check-in
+   )
+env.CppUnitTest(
+   target='trans_log_record_store_test',
+   source=['src/Chunk/trans_log_record_store_test.cpp'
+           ],
+   LIBDEPS=[
+       'trans_log_store_base',
+       '$BUILD_DIR/mongo/db/storage/storage_options'
+        ],
+     SYSLIBDEPS=["rocksdb",
+                "z",
+                "bz2"] #z and bz2 are dependencies for rocks
+               + dynamic_syslibdeps
+   )
+
+env.CppUnitTest(
+   target='trans_log_record_store_real_test',
+   source=['src/Chunk/trans_log_record_store_real_test.cpp',
+           ],
+   LIBDEPS=[
+       'trans_log_store_base',
+       '$BUILD_DIR/mongo/db/storage/storage_options'
+        ],
+         SYSLIBDEPS=["rocksdb",
+                "z",
+                "bz2"] #z and bz2 are dependencies for rocks
+               + dynamic_syslibdeps
+   )
+
+env.CppUnitTest(
+   target='trans_log_shared_resource_manager_test',
+   source=['src/Chunk/i_shared_resource_manager_test.cpp'
+           ],
+   LIBDEPS=[
+        'trans_log_store_base',
+        '$BUILD_DIR/mongo/db/storage/storage_options'
+        ],
+    SYSLIBDEPS=["rocksdb",
+                "z",
+                "bz2"] #z and bz2 are dependencies for rocks
+               + dynamic_syslibdeps # TODO: fix to dependency before check-in
+   )
+env.CppUnitTest(
+   target='gc_test',
+   source=['src/gc_manager_test.cpp'
+           ],
+   LIBDEPS=[
+       'storage_rocks_base',
+       'storage_rocks',
+         'storage_rocks_base',
+       #'/usr1/gc/index/src/mongo-r3.4.0/build/opt/mongo/s/libcommon.a',   # TODO: Fix dependencies
+       'storage_rocks',
+       '$BUILD_DIR/mongo/db/storage/storage_options'
+        ],
+    SYSLIBDEPS=[
+    ]
+   )
+
+
