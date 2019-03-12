@@ -14,7 +14,7 @@
 
     // You cannot create a view that starts with 'system.'.
     assert.commandFailedWithCode(viewsDB.runCommand({create: "system.views", viewOn: "collection"}),
-                                 ErrorCodes.InvalidNamespace,
+                                 ErrorCodes.NamespaceExists,
                                  "Created an illegal view named 'system.views'");
 
     // We don't run this check on MMAPv1 as it automatically creates a system.indexes collection

@@ -96,7 +96,10 @@
  * c0, c1, ... {Mongo} - same as config0, config1, ...
  * configRS - If the config servers are a replset, this will contain the config ReplSetTest object
  */
+var __counter_st = 0;
 var ShardingTest = function(params) {
+
+    __counter_st++;
 
     if (!(this instanceof ShardingTest)) {
         return new ShardingTest(params);
@@ -315,14 +318,12 @@ var ShardingTest = function(params) {
         if (primaryShard) {
             shardConnectionString = primaryShard.host;
             var rsName = shardConnectionString.substring(0, shardConnectionString.indexOf("/"));
-            var hostPort = shardConnectionString.substring(shardConnectionString.indexOf("/")+1);
+            var hostPort = shardConnectionString.substring(shardConnectionString.indexOf("/") + 1);
             for (var i = 0; i < this._connections.length; i++) {
                 var c = this._connections[i];
                 if (connectionURLTheSame(shardConnectionString, c.name) ||
-                    connectionURLTheSame(rsName, c.name) ||
-                    connectionURLTheSame(hostPort, c.name))
+                    connectionURLTheSame(rsName, c.name) || connectionURLTheSame(hostPort, c.name))
                     return c;
-                
             }
         }
 
@@ -398,9 +399,6 @@ var ShardingTest = function(params) {
         for (var i = 0; i < _alldbpaths.length; i++) {
             resetDbpath(MongoRunner.dataPath + _alldbpaths[i]);
         }
-
-        //todo, remove shared dir
-        resetDbpath("/test");
 
         var timeMillis = new Date().getTime() - _startTime.getTime();
 
@@ -698,7 +696,7 @@ var ShardingTest = function(params) {
             if (result.ok)
                 break;
 
-            sleep(5 * 1000);
+            // sleep(5 * 1000);
         }
 
         printjson(result);
@@ -937,10 +935,16 @@ var ShardingTest = function(params) {
     };
 
     // ShardingTest initialization
+    var path = MongoRunner.dataPath.substr(0, 14) + "data\/";
+    print("shardingTest re start clear dir dbpath: " + path);
+    resetDbpath(path);
 
     assert(isObject(params), 'ShardingTest configuration must be a JSON object');
 
     var testName = params.name || "test";
+    if (MongoRunner.testName) {
+        testName = MongoRunner.testName;
+    }
     var otherParams = Object.merge(params, params.other || {});
 
     var numShards = otherParams.hasOwnProperty('shards') ? otherParams.shards : 2;
@@ -1065,7 +1069,8 @@ var ShardingTest = function(params) {
     allocatePort(1);
     allocatePort(1);
     allocatePort(1);
-    _configdb = rstOptions.name + "/localhost:" + _port1 + ",localhost:" + _port2 + ",localhost:" + _port3;
+    _configdb =
+        rstOptions.name + "/localhost:" + _port1 + ",localhost:" + _port2 + ",localhost:" + _port3;
 
     var startOptions = {
         pathOpts: pathOpts,
@@ -1074,7 +1079,7 @@ var ShardingTest = function(params) {
         configsvr: "",
         noJournalPrealloc: otherParams.nopreallocj,
         storageEngine: "rocksdb",
-        //configdb: rstOptions.name + "/localhost:10000,localhost:10001,localhost:10002"
+        // configdb: rstOptions.name + "/localhost:10000,localhost:10001,localhost:10002"
         configdb: _configdb
     };
 
@@ -1093,7 +1098,9 @@ var ShardingTest = function(params) {
 
     rstOptions.nodes = nodeOptions;
     rstOptions.nodes = 3;
-
+    if (MongoRunner.logFlag) {
+        startOptions.logFile = "./resmoke_log/" + this._testName + "." + __counter_st;
+    }
     // Start the config server's replica set
     this.configRS = new ReplSetTest(rstOptions);
     this.configRS.startSet(startOptions);
@@ -1246,7 +1253,10 @@ var ShardingTest = function(params) {
     for (var i = 0; i < numMongos; i++) {
         const options = mongosOptions[i];
         options.configdb = this._configDB;
-
+        if (MongoRunner.logFlag) {
+            options.logFile =
+                "./resmoke_log/" + this._testName + "." + __counter_st + "." + "mongos" + i + ".log";
+        }
         if (otherParams.useBridge) {
             var bridgeOptions =
                 Object.merge(otherParams.bridgeOptions, options.bridgeOptions || {});
@@ -1284,7 +1294,6 @@ var ShardingTest = function(params) {
 
     // Start the MongoD servers (shards)
     for (var i = 0; i < numShards; i++) {
-        
         /*if (otherParams.rs || otherParams["rs" + i]) {
             var setName = testName + "-rs" + i;
 
@@ -1343,11 +1352,14 @@ var ShardingTest = function(params) {
                 pathOpts: Object.merge(pathOpts, {shard: i}),
                 dbpath: "$testName$shard",
                 shardsvr: '',
-                storageEngine:'rocksdb',
+                storageEngine: 'rocksdb',
                 keyFile: keyFile,
-                //bind_ip: getHostName()
+                // bind_ip: getHostName()
             };
-
+            if (MongoRunner.logFlag) {
+               options.logFile = "./resmoke_log/" + this._testName + "." + __counter_st + "." + "shard" +
+                                i + ".log";
+            }
             if (jsTestOptions().shardMixedBinVersions) {
                 if (!otherParams.shardOptions) {
                     otherParams.shardOptions = {};
@@ -1361,16 +1373,13 @@ var ShardingTest = function(params) {
                         MongoRunner.versionIterator(["latest", "last-stable"], true);
                 }
             }
-            
-            if (options.useHostname)
-            {
+
+            if (options.useHostname) {
                 options.bind_ip = getHostName();
-            }
-            else
-            {
+            } else {
                 options.bind_ip = "localhost";
             }
-            
+
             if (otherParams.shardOptions && otherParams.shardOptions.binVersion) {
                 otherParams.shardOptions.binVersion =
                     MongoRunner.versionIterator(otherParams.shardOptions.binVersion);
@@ -1418,7 +1427,7 @@ var ShardingTest = function(params) {
     }
 
     // Do replication on replica sets if required
-    
+
     /*for (var i = 0; i < numShards; i++) {
         if (!otherParams.rs && !otherParams["rs" + i]) {
             continue;

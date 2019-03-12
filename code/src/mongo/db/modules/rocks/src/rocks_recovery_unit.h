@@ -32,15 +32,15 @@
 #include <map>
 #include <stack>
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
 #include <boost/scoped_ptr.hpp>
 #include <boost/shared_ptr.hpp>
 
 #include <rocksdb/slice.h>
-#include <rocksdb/write_batch.h>
 #include <rocksdb/utilities/write_batch_with_index.h>
+#include <rocksdb/write_batch.h>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/owned_pointer_vector.h"
@@ -50,10 +50,10 @@
 #include "mongo/stdx/mutex.h"
 
 #include "rocks_compaction_scheduler.h"
-#include "rocks_transaction.h"
 #include "rocks_counter_manager.h"
-#include "rocks_snapshot_manager.h"
 #include "rocks_durability_manager.h"
+#include "rocks_snapshot_manager.h"
+#include "rocks_transaction.h"
 
 namespace rocksdb {
     class DB;
@@ -65,7 +65,7 @@ namespace rocksdb {
     class Iterator;
 }
 
-namespace IndexService {    
+namespace IndexService {
     class ChunkRocksDBInstance;
 }
 
@@ -86,6 +86,7 @@ namespace mongo {
 
     class RocksRecoveryUnit : public RecoveryUnit {
         MONGO_DISALLOW_COPYING(RocksRecoveryUnit);
+
     public:
         RocksRecoveryUnit(RocksSnapshotManager* snapshotManager, ChunkRocksDBInstance* db);
         virtual ~RocksRecoveryUnit();
@@ -101,7 +102,7 @@ namespace mongo {
 
         Status setReadFromMajorityCommittedSnapshot() final;
 
-        void clearReadFromMajorityCommittedSnapshot() final;
+        void clearSnapshotInfo() final;
 
         bool isReadingFromMajorityCommittedSnapshot() const final {
             return _readFromMajorityCommittedSnapshot;
@@ -122,23 +123,27 @@ namespace mongo {
         virtual rocksdb::WriteBatchWithIndex* writeBatch();
 
         const rocksdb::Snapshot* getPreparedSnapshot();
-        void dbReleaseSnapshot(const rocksdb::Snapshot* snapshot);
 
         // Returns snapshot, creating one if needed. Considers _readFromMajorityCommittedSnapshot.
         virtual const rocksdb::Snapshot* snapshot();
 
-        virtual bool hasSnapshot() { return _snapshot != nullptr || _snapshotHolder.get() != nullptr; }
+        virtual bool hasSnapshot() {
+            return _snapshot != nullptr || _snapshotHolder.get() != nullptr;
+        }
 
         virtual RocksTransaction* transaction() { return &_transaction; }
 
-        virtual rocksdb::Status Get(const rocksdb::Slice& key, std::string* value, rocksdb::ColumnFamilyHandle* cf = nullptr);
+        virtual rocksdb::Status Get(const rocksdb::Slice& key, std::string* value,
+                                    rocksdb::ColumnFamilyHandle* cf = nullptr);
 
-        RocksIterator* NewIterator(std::string prefix, bool isOplog = false, rocksdb::ColumnFamilyHandle* cf = nullptr);
+        RocksIterator* NewIterator(std::string prefix, bool isOplog = false,
+                                   rocksdb::ColumnFamilyHandle* cf = nullptr);
 
-        static RocksIterator* NewIteratorNoSnapshot(rocksdb::DB* db, std::string prefix, rocksdb::ColumnFamilyHandle* cf = nullptr);
+        static RocksIterator* NewIteratorNoSnapshot(rocksdb::DB* db, std::string prefix,
+                                                    rocksdb::ColumnFamilyHandle* cf = nullptr);
 
         virtual void incrementCounter(const rocksdb::Slice& counterKey,
-                              std::atomic<long long>* counter, long long delta);
+                                      std::atomic<long long>* counter, long long delta);
 
         virtual long long getDeltaCounter(const rocksdb::Slice& counterKey);
 
@@ -153,8 +158,8 @@ namespace mongo {
             std::atomic<long long>* _value;
             long long _delta;
             Counter() : Counter(nullptr, 0) {}
-            Counter(std::atomic<long long>* value, long long delta) : _value(value),
-                                                                      _delta(delta) {}
+            Counter(std::atomic<long long>* value, long long delta)
+                : _value(value), _delta(delta) {}
         };
 
         typedef std::unordered_map<std::string, Counter> CounterMap;
@@ -169,20 +174,19 @@ namespace mongo {
 
         rocksdb::DB* getDB() const;
 
-        void getChunkVersion(OperationContext* txn, 
-                             const ChunkRocksDBInstance* db,
+        void getChunkVersion(OperationContext* txn, const ChunkRocksDBInstance* db,
                              mongo::ChunkVersion& expectedChunkVersion,
                              mongo::ChunkVersion& actualChunkVersion);
 
-//    private:
+        //    private:
         virtual void _releaseSnapshot();
 
         virtual void _commit(OperationContext* txn);
 
-        void decCountOfActive(bool isSplitOnGoing,  ChunkRocksDBInstance* db);
-        void addCountOfActive(bool isSplitOnGoing,  ChunkRocksDBInstance* db);
+        void decCountOfActive(bool isSplitOnGoing, ChunkRocksDBInstance* db);
+        void addCountOfActive(bool isSplitOnGoing, ChunkRocksDBInstance* db);
 
-        void throwExceptionIfWriteBatchBelongsToChildSide(OperationContext* txn, 
+        void throwExceptionIfWriteBatchBelongsToChildSide(OperationContext* txn,
                                                           rocksdb::WriteBatchWithIndex* writeBatch,
                                                           ChunkRocksDBInstance* db,
                                                           bool isSplitOnGoing);
@@ -191,8 +195,8 @@ namespace mongo {
 
         virtual void _abort();
 
-        rocksdb::ColumnFamilyHandle* ResolveColumnFamily(rocksdb::ColumnFamilyHandle* columnFamily)
-        {
+        rocksdb::ColumnFamilyHandle* ResolveColumnFamily(
+            rocksdb::ColumnFamilyHandle* columnFamily) {
             return columnFamily == nullptr ? getDB()->DefaultColumnFamily() : columnFamily;
         }
 
@@ -203,7 +207,7 @@ namespace mongo {
         typedef OwnedPointerVector<Change> Changes;
         Changes _changes;
 
-        RocksSnapshotManager* _snapshotManager;          // not owned
+        RocksSnapshotManager* _snapshotManager;  // not owned
         ChunkRocksDBInstance* _db;
 
         RocksTransaction _transaction;
@@ -211,7 +215,7 @@ namespace mongo {
         rocksdb::WriteBatchWithIndex _writeBatch;
 
         // bare because we need to call ReleaseSnapshot when we're done with this
-        const rocksdb::Snapshot* _snapshot; // owned
+        const rocksdb::Snapshot* _snapshot;  // owned
 
         // snapshot that got prepared in prepareForCreateSnapshot
         // it is consumed by getPreparedSnapshot()
@@ -232,8 +236,8 @@ namespace mongo {
         bool _readFromMajorityCommittedSnapshot = false;
         bool _areWriteUnitOfWorksBanned = false;
 
-        OperationContext* _txn;
-        stdx::mutex  _mutex;
+        OperationContext* _txn = nullptr;
+        stdx::mutex _mutex;
         friend class ChunkRocksDBInstance;
-    };    
+    };
 }

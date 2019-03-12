@@ -55,6 +55,7 @@ public:
     static const StringData kExplainName;
     static const StringData kAllowDiskUseName;
     static const StringData kChunkIdName;
+    static const StringData kShardVersionName;
 
     static const long long kDefaultBatchSize;
 

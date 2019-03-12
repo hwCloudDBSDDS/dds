@@ -35,24 +35,25 @@
 #include <list>
 #include <set>
 
+#include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/s/catalog/catalog_cache.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/commands/checkView.h"
 #include "mongo/s/commands/cluster_commands_common.h"
 #include "mongo/s/commands/sharded_command_processing.h"
+#include "mongo/s/config.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/sharding_raii.h"
 #include "mongo/util/log.h"
-#include "mongo/s/catalog/type_chunk.h"
-#include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/s/config.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
-#include "mongo/s/catalog/catalog_cache.h"
-#include "mongo/bson/bsonobjbuilder.h"
 
 namespace mongo {
 
-struct CollModRQ{
+struct CollModRQ {
     BSONElement collValidator = {};
     BSONElement collValidationAction = {};
     BSONElement collValidationLevel = {};
@@ -92,8 +93,6 @@ bool RunOnAllShardsCommand::run(OperationContext* txn,
                                 int options,
                                 std::string& errmsg,
                                 BSONObjBuilder& output) {
-    LOG(0) << "RunOnAllShardsCommand db: " << dbName << " cmd:" << cmdObj;
-
     if (_implicitCreateDb) {
         uassertStatusOK(ScopedShardDatabase::getOrCreate(txn, dbName));
     }
@@ -101,31 +100,42 @@ bool RunOnAllShardsCommand::run(OperationContext* txn,
     std::vector<ShardId> shardIds;
     getShardIds(txn, dbName, cmdObj, shardIds);
 
+    bool isExist = false;
+    if (dbName != parseNs(dbName, cmdObj)) {
+        auto isviewStatus = isView(txn, dbName, nss);
+        if (!isviewStatus.isOK()) {
+            return appendCommandStatus(output, isviewStatus.getStatus());
+        }
+        isExist = uassertStatusOK(isviewStatus);
+    }
     std::list<std::shared_ptr<Future::CommandResult>> futures;
-    if( dbName == parseNs(dbName, cmdObj) ){
+    if (dbName == parseNs(dbName, cmdObj) || isExist) {
         for (const ShardId& shardId : shardIds) {
             const auto shardStatus = grid.shardRegistry()->getShard(txn, shardId);
             if (!shardStatus.isOK()) {
                 continue;
             }
 
-            futures.push_back(Future::spawnCommand(shardStatus.getValue()->getConnString().toString(),
-                                               dbName,
-                                               cmdObj,
-                                               0,
-                                               NULL,
-                                               _useShardConn));
+            futures.push_back(
+                Future::spawnCommand(shardStatus.getValue()->getConnString().toString(),
+                                     shardStatus.getValue()->getId().toString(),
+                                     dbName,
+                                     cmdObj,
+                                     0,
+                                     NULL,
+                                     _useShardConn));
         }
-    }else{
+    } else {
         std::vector<ChunkType> Chunks;
-        uassertStatusOK(grid.catalogClient(txn)->getChunks(txn,
-                                           BSON(ChunkType::ns(nss.ns())),
-                                           BSONObj(),
-                                           boost::none,
-                                           &Chunks,
-                                           nullptr,
-                                           repl::ReadConcernLevel::kMajorityReadConcern));
-     
+        uassertStatusOK(
+            grid.catalogClient(txn)->getChunks(txn,
+                                               BSON(ChunkType::ns(nss.ns())),
+                                               BSONObj(),
+                                               boost::none,
+                                               &Chunks,
+                                               nullptr,
+                                               repl::ReadConcernLevel::kMajorityReadConcern));
+
         auto status = grid.catalogCache()->getDatabase(txn, dbName);
         if (!status.isOK()) {
             if (status == ErrorCodes::NamespaceNotFound) {
@@ -135,20 +145,22 @@ bool RunOnAllShardsCommand::run(OperationContext* txn,
             return appendCommandStatus(output, status.getStatus());
         }
         auto conf = status.getValue();
-        for (ChunkType &chunk : Chunks) {
+        for (ChunkType& chunk : Chunks) {
             BSONObjBuilder newCmd;
             const auto shardStatus = grid.shardRegistry()->getShard(txn, chunk.getShard());
             if (!shardStatus.isOK()) {
                 continue;
             }
             newCmd.appendElements(cmdObj);
-            newCmd.append("chunkId",chunk.getName());
-            futures.push_back(Future::spawnCommand(shardStatus.getValue()->getConnString().toString(),
-                                               dbName,
-                                               newCmd.obj(),
-                                               0,
-                                               NULL,
-                                               _useShardConn));
+            newCmd.append("chunkId", chunk.getName());
+            futures.push_back(
+                Future::spawnCommand(shardStatus.getValue()->getConnString().toString(),
+                                     shardStatus.getValue()->getId().toString(),
+                                     dbName,
+                                     newCmd.obj(),
+                                     0,
+                                     NULL,
+                                     _useShardConn));
         }
     }
     std::vector<ShardAndReply> results;
@@ -174,7 +186,7 @@ bool RunOnAllShardsCommand::run(OperationContext* txn,
             // success :)
             BSONObj result = res->result();
             results.emplace_back(shardIdsIt->toString(), result);
-            subobj.append(res->getServer(), result);
+            subobj.append(res->getShardId(), result);
 
             if (!hasWCError) {
                 if ((wcErrorElem = result["writeConcernError"])) {
@@ -201,17 +213,17 @@ bool RunOnAllShardsCommand::run(OperationContext* txn,
             if (errmsgObj.eoo() || errmsgObj.String().empty()) {
                 // it was fixed!
                 results.emplace_back(shardIdsIt->toString(), result);
-                subobj.append(res->getServer(), result);
+                subobj.append(res->getShardId(), result);
                 continue;
             }
         }
 
         // Handle "errmsg".
         if (!result["errmsg"].eoo()) {
-            errors.appendAs(result["errmsg"], res->getServer());
+            errors.appendAs(result["errmsg"], res->getShardId());
         } else {
             // Can happen if message is empty, for some reason
-            errors.append(res->getServer(),
+            errors.append(res->getShardId(),
                           str::stream() << "result without error message returned : " << result);
         }
 
@@ -223,7 +235,7 @@ bool RunOnAllShardsCommand::run(OperationContext* txn,
             commonErrCode = 0;
         }
         results.emplace_back(shardIdsIt->toString(), result);
-        subobj.append(res->getServer(), result);
+        subobj.append(res->getShardId(), result);
     }
 
     subobj.done();
@@ -247,118 +259,122 @@ bool RunOnAllShardsCommand::run(OperationContext* txn,
     }
 
     aggregateResults(results, output);
-    //update configServer collections
+
+    // update configServer collections
     auto collmod = cmdObj.getField("collMod");
     BSONElement indexName;
     BSONObj keyPattern;
     bool flag = false;
-    if( !collmod.eoo()){
+    if (!collmod.eoo()) {
         CollModRQ cmr;
-        for (BSONElement e : cmdObj){
+        for (BSONElement e : cmdObj) {
             if (str::equals("collMod", e.fieldName())) {
-                continue;  
-            }else if(str::equals("validator", e.fieldName())){
-                 flag = true;
-                 cmr.collValidator = e;
-            }else if(str::equals("validationLevel", e.fieldName())){
-                 flag = true;
-                 cmr.collValidationLevel = e;
-            }else if(str::equals("validationAction", e.fieldName())){
-                 flag = true;
-                 cmr.collValidationAction = e;
-            }else if(str::equals("index", e.fieldName())){ //we ensure that coll is not view
-                 BSONObj indexObj = e.Obj();
-                 BSONElement nameElem = indexObj["name"];
-                 BSONElement keyPatternElem = indexObj["keyPattern"];
-                 if(nameElem){
-                     indexName = nameElem;
-                 }
-                 if (keyPatternElem){
-                     keyPattern = keyPatternElem.embeddedObject();
-                 }
-                 cmr.indexExpireAfterSeconds = indexObj["expireAfterSeconds"];
-                 
-            }else{
-                 const StringData name = e.fieldNameStringData();
-                 if (name == "noPadding"){
-                     cmr.noPadding = e;
-                 }
+                continue;
+            } else if (str::equals("validator", e.fieldName())) {
+                flag = true;
+                cmr.collValidator = e;
+            } else if (str::equals("validationLevel", e.fieldName())) {
+                flag = true;
+                cmr.collValidationLevel = e;
+            } else if (str::equals("validationAction", e.fieldName())) {
+                flag = true;
+                cmr.collValidationAction = e;
+            } else if (str::equals("index", e.fieldName())) {  // we ensure that coll is not view
+                BSONObj indexObj = e.Obj();
+                BSONElement nameElem = indexObj["name"];
+                BSONElement keyPatternElem = indexObj["keyPattern"];
+                if (nameElem) {
+                    indexName = nameElem;
+                }
+                if (keyPatternElem) {
+                    keyPattern = keyPatternElem.embeddedObject();
+                }
+                cmr.indexExpireAfterSeconds = indexObj["expireAfterSeconds"];
+
+            } else {
+                const StringData name = e.fieldNameStringData();
+                if (name == "noPadding") {
+                    cmr.noPadding = e;
+                }
             }
-       }
-       auto status = Grid::get(txn)->catalogClient(txn)->getCollection(txn,nss.ns());
-       if (status.isOK()) {
+        }
+        auto status = Grid::get(txn)->catalogClient(txn)->getCollection(txn, nss.ns());
+        if (status.isOK()) {
             CollectionType coll = status.getValue().value;
             BSONObjBuilder newOptions;
             BSONObj option = coll.getOptions();
             BSONObj index = coll.getIndex();
-            if (!cmr.collValidator.eoo()){
+            if (!cmr.collValidator.eoo()) {
                 option = option.removeField("validator");
                 newOptions.append(cmr.collValidator);
             }
-            if (!cmr.collValidationAction.eoo()){
+            if (!cmr.collValidationAction.eoo()) {
                 option = option.removeField("validationAction");
                 newOptions.append(cmr.collValidationAction);
-            }else{
-                if( option.getObjectField("validationAction").isEmpty() && flag){
-                     newOptions.append("validationAction","strict");
+            } else {
+                if (option.getObjectField("validationAction").isEmpty() && flag) {
+                    newOptions.append("validationAction", "strict");
                 }
             }
-            if(!cmr.collValidationLevel.eoo()){
+            if (!cmr.collValidationLevel.eoo()) {
                 option = option.removeField("validationLevel");
                 newOptions.append(cmr.collValidationLevel);
-            }else{
-                if(option.getObjectField("validationLevel").isEmpty() && flag ){
-                      newOptions.append("validationLevel","error");
+            } else {
+                if (option.getObjectField("validationLevel").isEmpty() && flag) {
+                    newOptions.append("validationLevel", "error");
                 }
             }
-            if(!cmr.indexExpireAfterSeconds.eoo()){
-                 BSONElement& newExpireSecs = cmr.indexExpireAfterSeconds;
-                 if (!indexName.eoo()){
-                     BSONObjIterator indexspecs(index);
-                     BSONArrayBuilder indexArrayBuilder;
-                     while(indexspecs.more()){
-                         BSONObj existingIndex = indexspecs.next().Obj();
-                         BSONObjBuilder build;
-                         if( existingIndex["name"].toString() == indexName.toString() ){
-                             build.appendElements(existingIndex.removeField("expireAfterSeconds"));
-                             build.append(newExpireSecs);
-                             indexArrayBuilder.append(build.obj());
-                         }else{
-                             indexArrayBuilder.append(existingIndex);  
-                         }
-                     }
-                     coll.setIndex(indexArrayBuilder.arr());
-                 }else{
-                     BSONObjIterator indexspecs(index);
-                     BSONArrayBuilder indexArrayBuilder;
-                     while(indexspecs.more()){
-                         BSONObj existingIndex = indexspecs.next().Obj();
-                         BSONObjBuilder build;
-                         LOG(0)<<"existingIndex :"<<existingIndex["key"].toString()<<","<<keyPattern.toString();
-                         if( existingIndex.getObjectField("key").toString() == keyPattern.toString() ){
-                             build.appendElements(existingIndex.removeField("expireAfterSeconds"));
-                             build.append(newExpireSecs);
-                             indexArrayBuilder.append(build.obj());
-                         }else{
-                             indexArrayBuilder.append(existingIndex);
-                         }
-                     }
-                     coll.setIndex(indexArrayBuilder.arr());
-                 }
+            if (!cmr.indexExpireAfterSeconds.eoo()) {
+                BSONElement& newExpireSecs = cmr.indexExpireAfterSeconds;
+                if (!indexName.eoo()) {
+                    BSONObjIterator indexspecs(index);
+                    BSONArrayBuilder indexArrayBuilder;
+                    while (indexspecs.more()) {
+                        BSONObj existingIndex = indexspecs.next().Obj();
+                        BSONObjBuilder build;
+                        if (existingIndex["name"].toString() == indexName.toString()) {
+                            build.appendElements(existingIndex.removeField("expireAfterSeconds"));
+                            build.append(newExpireSecs);
+                            indexArrayBuilder.append(build.obj());
+                        } else {
+                            indexArrayBuilder.append(existingIndex);
+                        }
+                    }
+                    coll.setIndex(indexArrayBuilder.arr());
+                } else {
+                    BSONObjIterator indexspecs(index);
+                    BSONArrayBuilder indexArrayBuilder;
+                    while (indexspecs.more()) {
+                        BSONObj existingIndex = indexspecs.next().Obj();
+                        BSONObjBuilder build;
+                        if (existingIndex.getObjectField("key").toString() ==
+                            keyPattern.toString()) {
+                            build.appendElements(existingIndex.removeField("expireAfterSeconds"));
+                            build.append(newExpireSecs);
+                            indexArrayBuilder.append(build.obj());
+                        } else {
+                            indexArrayBuilder.append(existingIndex);
+                        }
+                    }
+                    coll.setIndex(indexArrayBuilder.arr());
+                }
             }
-            if(!cmr.noPadding.eoo()){
+            if (!cmr.noPadding.eoo()) {
                 const StringData name = cmr.noPadding.fieldNameStringData();
                 const bool newSetting = cmr.noPadding.trueValue();
-                if( newSetting ){
-                    newOptions.appendNumber("flags",2);
-                }else{
-                    newOptions.appendNumber("flags",0);
+                if (option.hasField("flags")) {
+                    option = option.removeField("flags");
                 }
-            } 
+                if (newSetting) {
+                    newOptions.appendNumber("flags", 2);
+                } else {
+                    newOptions.appendNumber("flags", 0);
+                }
+            }
             newOptions.appendElements(option);
             coll.setOptions(newOptions.obj());
-            uassertStatusOK(grid.catalogClient(txn)->updateCollection(txn,nss.ns(),coll));  
-       }
+            uassertStatusOK(grid.catalogClient(txn)->updateCollection(txn, nss.ns(), coll));
+        }
     }
     return true;
 }

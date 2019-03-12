@@ -34,9 +34,9 @@ var DB;
         return new DBCollection(this._mongo, this, name, this._name + "." + name);
     };
 
-    DB.prototype.rocksStats = function(num){
-        return this.runCommand({rocksStats:1, num:num});
-    }
+    DB.prototype.rocksStats = function(num) {
+        return this.runCommand({rocksStats: 1, num: num});
+    };
 
     DB.prototype.commandHelp = function(name) {
         var c = {};
@@ -1346,7 +1346,7 @@ var DB;
     };
 
     DB.prototype.changeUserPassword = function(username, password, writeConcern) {
-        this.updateUser(username, {pwd: password}, writeConcern);
+        this.updateUser(username, {pwd: password, passwordDigestor: 'server'}, writeConcern);
     };
 
     DB.prototype.logout = function() {

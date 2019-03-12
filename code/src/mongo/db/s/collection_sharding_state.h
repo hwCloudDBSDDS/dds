@@ -84,6 +84,7 @@ public:
     static CollectionShardingState* get(OperationContext* txn, const NamespaceString& nss);
     static CollectionShardingState* get(OperationContext* txn, const std::string& ns);
 
+    ScopedCollectionMetadata getMetadata_inlock();
     /**
      * Returns the chunk metadata for the collection.
      */
@@ -168,6 +169,11 @@ public:
     void onDropCollection(OperationContext* txn, const NamespaceString& collectionName);
 
     void updateChunkInfo(OperationContext* txn, const ChunkType& chunkType);
+
+    std::pair<std::shared_ptr<Notification<Status>>, bool> prepareRefresh(
+        const ChunkVersion& expectedVersion, ScopedCollectionMetadata& currentMetadata);
+
+    void setRefreshNotification(Status status);
 
 private:
     friend class CollectionRangeDeleter;

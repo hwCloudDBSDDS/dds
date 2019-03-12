@@ -73,6 +73,8 @@ MessagingPort::MessagingPort(std::shared_ptr<Socket> sock)
     : _x509PeerInfo(), _connectionId(), _tag(), _psock(std::move(sock)) {
     SockAddr sa = _psock->remoteAddr();
     _remoteParsed = HostAndPort(sa.getAddr(), sa.getPort());
+    SockAddr lsa = _psock->localAddr();
+    _localParsed = HostAndPort(lsa.getAddr(), lsa.getPort());
 }
 
 void MessagingPort::setTimeout(Milliseconds millis) {
@@ -216,6 +218,10 @@ SockAddr MessagingPort::remoteAddr() const {
 
 SockAddr MessagingPort::localAddr() const {
     return _psock->localAddr();
+}
+
+HostAndPort MessagingPort::local() const {
+    return _localParsed;
 }
 
 void MessagingPort::setX509PeerInfo(SSLPeerInfo x509PeerInfo) {

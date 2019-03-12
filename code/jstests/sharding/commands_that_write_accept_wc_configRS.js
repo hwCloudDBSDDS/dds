@@ -61,12 +61,22 @@ load('jstests/multiVersion/libs/auth_helpers.js');
             localDB.getSiblingDB('admin').system.version.update(
                 {_id: "authSchema"}, {"currentVersion": 3}, {upsert: true});
 
-            db.createUser({user: 'user1', pwd: 'pass', roles: jsTest.basicUserRoles});
-            assert(db.auth({mechanism: 'MONGODB-CR', user: 'user1', pwd: 'pass'}));
+            db.createUser({
+                user: 'user1',
+                pwd: 'WEak@2password',
+                roles: jsTest.basicUserRoles,
+                passwordDigestor: "server"
+            });
+            assert(db.auth({mechanism: 'MONGODB-CR', user: 'user1', pwd: 'WEak@2password'}));
             db.logout();
 
-            localDB.createUser({user: 'user2', pwd: 'pass', roles: jsTest.basicUserRoles});
-            assert(localDB.auth({mechanism: 'MONGODB-CR', user: 'user2', pwd: 'pass'}));
+            localDB.createUser({
+                user: 'user2',
+                pwd: 'WEak@2password',
+                roles: jsTest.basicUserRoles,
+                passwordDigestor: "server"
+            });
+            assert(localDB.auth({mechanism: 'MONGODB-CR', user: 'user2', pwd: 'WEak@2password'}));
             localDB.logout();
         },
         confirmFunc: function() {
@@ -120,10 +130,15 @@ load('jstests/multiVersion/libs/auth_helpers.js');
     });
 
     commands.push({
-        req: {createUser: 'username', pwd: 'password', roles: jsTest.basicUserRoles},
+        req: {
+            createUser: 'username',
+            pwd: 'WEak@2password',
+            roles: jsTest.basicUserRoles,
+            passwordDigestor: "server"
+        },
         setupFunc: function() {},
         confirmFunc: function() {
-            assert(db.auth("username", "password"), "auth failed");
+            assert(db.auth("username", "WEak@2password"), "auth failed");
         },
         requiresMajority: true,
         runsOnShards: false,
@@ -132,12 +147,22 @@ load('jstests/multiVersion/libs/auth_helpers.js');
     });
 
     commands.push({
-        req: {updateUser: 'username', pwd: 'password2', roles: jsTest.basicUserRoles},
+        req: {
+            updateUser: 'username',
+            pwd: 'password2',
+            roles: jsTest.basicUserRoles,
+            passwordDigestor: "server"
+        },
         setupFunc: function() {
-            db.runCommand({createUser: 'username', pwd: 'password', roles: jsTest.basicUserRoles});
+            db.runCommand({
+                createUser: 'username',
+                pwd: 'WEak@2password',
+                roles: jsTest.basicUserRoles,
+                passwordDigestor: "server"
+            });
         },
         confirmFunc: function() {
-            assert(!db.auth("username", "password"), "auth should have failed");
+            assert(!db.auth("username", "WEak@2password"), "auth should have failed");
             assert(db.auth("username", "password2"), "auth failed");
         },
         requiresMajority: true,
@@ -148,11 +173,16 @@ load('jstests/multiVersion/libs/auth_helpers.js');
     commands.push({
         req: {dropUser: 'tempUser'},
         setupFunc: function() {
-            db.runCommand({createUser: 'tempUser', pwd: 'password', roles: jsTest.basicUserRoles});
-            assert(db.auth("tempUser", "password"), "auth failed");
+            db.runCommand({
+                createUser: 'tempUser',
+                pwd: 'WEak@2password',
+                roles: jsTest.basicUserRoles,
+                passwordDigestor: "server"
+            });
+            assert(db.auth("tempUser", "WEak@2password"), "auth failed");
         },
         confirmFunc: function() {
-            assert(!db.auth("tempUser", "password"), "auth should have failed");
+            assert(!db.auth("tempUser", "WEak@2password"), "auth should have failed");
         },
         requiresMajority: true,
         runsOnShards: false,

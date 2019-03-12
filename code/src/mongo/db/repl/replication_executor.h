@@ -204,6 +204,8 @@ public:
      */
     void waitForDBWork_forTest();
 
+    uint32_t getTaskCountInNetwork() const override;
+
 private:
     class Callback;
     class Event;

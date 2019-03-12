@@ -127,14 +127,14 @@ public:
 
     const std::string& getExtendIPs() const {
         return _extendIPs.get();
-    } 
-    
+    }
+
     void setProcessIdentity(const std::string& processIdentity);
 
     const std::string& getProcessIdentity() const {
         return _processIdentity.get();
     }
-    
+
 private:
     // Convention: (M)andatory, (O)ptional, (S)pecial rule.
 

@@ -221,8 +221,7 @@ Status validateElementInfo(Buffer* buffer,
             uint8_t val;
             if (!buffer->readNumber(&val))
                 return makeError("invalid bson", idElem);
-            if ((val != 0) && (val != 1))
-            {
+            if ((val != 0) && (val != 1)) {
                 uassert(ErrorCodes::BadValue, "bson_validate.cpp boolean check fail", 0);
                 return makeError("invalid boolean value", idElem);
             }

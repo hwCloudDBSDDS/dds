@@ -28,7 +28,7 @@
     // Primary should step down long enough for election to occur on secondary.
     var config = assert.commandWorked(primary.adminCommand({replSetGetConfig: 1})).config;
     var electionTimeoutMillis = config.settings.electionTimeoutMillis;
-    var stepDownGuardMillis = electionTimeoutMillis * 2;
+    var stepDownGuardMillis = electionTimeoutMillis*5*2;
     var stepDownException = assert.throws(function() {
         var result = primary.adminCommand({replSetStepDown: stepDownGuardMillis / 1000});
         print('replSetStepDown did not throw exception but returned: ' + tojson(result));

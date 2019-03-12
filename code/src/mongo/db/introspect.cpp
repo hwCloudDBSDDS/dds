@@ -186,7 +186,7 @@ Status createProfileCollection(OperationContext* txn, Database* db) {
 
     CollectionOptions collectionOptions;
     collectionOptions.capped = true;
-    collectionOptions.cappedSize = 1024 * 1024;
+    collectionOptions.cappedSize = serverGlobalParams.profileSizeMB * 1024 * 1024;
 
     WriteUnitOfWork wunit(txn);
     bool shouldReplicateWrites = txn->writesAreReplicated();

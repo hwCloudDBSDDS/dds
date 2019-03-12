@@ -45,13 +45,14 @@ Status dropIndexes(OperationContext* txn,
                    BSONObjBuilder* result);
 
 Status dropIndexesOnCfgSrv(OperationContext* txn,
-                   const string& dbname,
-                   const NamespaceString& ns,
-                   const BSONObj& idxDescriptor,
-                   BSONObjBuilder& result);
+                           const string& dbname,
+                           const NamespaceString& ns,
+                           const BSONObj& idxDescriptor,
+                           BSONObjBuilder& result,
+                           bool update = false);
 Status reIndexesOnCfgSrv(OperationContext* txn,
-                   const string& dbname,
-                   const NamespaceString& nss,
-                   const BSONObj& idxDescriptor,
-                   BSONObjBuilder& result);
+                         const string& dbname,
+                         const NamespaceString& nss,
+                         const BSONObj& idxDescriptor,
+                         BSONObjBuilder& result);
 }  // namespace mongo

@@ -43,7 +43,6 @@ class ClusterCursorManager;
 class OperationContext;
 class ServiceContext;
 class ShardRegistry;
-
 namespace executor {
 class NetworkInterface;
 class TaskExecutorPool;
@@ -86,6 +85,12 @@ public:
      * @return true if shards and config servers are allowed to use 'localhost' in address
      */
     bool allowLocalHost() const;
+
+    /**
+     * This is only used on shard server, when run command which need to use grid, we must make sure
+     * it is initialized
+     */
+    bool initialized() const;
 
     /**
      * Deprecated. This is only used on mongos, and once addShard is solely handled by the configs,
@@ -166,7 +171,6 @@ private:
     std::unique_ptr<ShardRegistry> _shardRegistry;
     std::unique_ptr<ClusterCursorManager> _cursorManager;
     std::unique_ptr<BalancerConfiguration> _balancerConfig;
-
     // Executor pool for scheduling work and remote commands to shards and config servers. Each
     // contained executor has a connection hook set on it for sending/receiving sharding metadata.
     std::unique_ptr<executor::TaskExecutorPool> _executorPool;
@@ -186,6 +190,7 @@ private:
     // it can be deleted.
     // Can 'localhost' be used in shard addresses?
     bool _allowLocalShard{true};
+    bool _initialized{false};
 };
 
 // Reference to the global Grid instance. Do not use in new code. Use one of the Grid::get methods

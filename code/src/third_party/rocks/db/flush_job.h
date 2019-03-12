@@ -70,7 +70,7 @@ class FlushJob {
   // Require db_mutex held.
   // Once PickMemTable() is called, either Run() or Cancel() has to be call.
   void PickMemTable();
-  // jerousrb modify for split-feature
+  // split-feature: support split DB
   Status Run(SequenceNumber& max_encoded_seq, FileMetaData* file_meta = nullptr);
   void Cancel();
   TableProperties GetTableProperties() const { return table_properties_; }

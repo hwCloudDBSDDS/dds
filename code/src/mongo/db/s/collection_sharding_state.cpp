@@ -150,12 +150,18 @@ CollectionShardingState* CollectionShardingState::get(OperationContext* txn,
 }
 
 ScopedCollectionMetadata CollectionShardingState::getMetadata() {
+    stdx::lock_guard<stdx::mutex> scopedLock(_metadataManager._managerLock);
+    return getMetadata_inlock();
+}
+
+ScopedCollectionMetadata CollectionShardingState::getMetadata_inlock() {
     return _metadataManager.getActiveMetadata();
 }
 
 void CollectionShardingState::refreshMetadata(OperationContext* txn,
                                               std::unique_ptr<CollectionMetadata> newMetadata) {
-    invariant(txn->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_X));
+    invariant(txn->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_X) ||
+              txn->lockState()->isDbLockedForMode(_nss.db(), MODE_X));
 
     _metadataManager.refreshActiveMetadata(std::move(newMetadata));
 }
@@ -235,7 +241,6 @@ void CollectionShardingState::onInsertOp(OperationContext* txn, const BSONObj& i
         _nss == NamespaceString::kConfigCollectionNamespace) {
         if (auto idElem = insertedDoc["_id"]) {
             if (idElem.str() == ShardIdentityType::IdName) {
-                log() << "CollectionShardingState::onInsertOp insert doc bson is" << insertedDoc; 
                 auto shardIdentityDoc = uassertStatusOK(ShardIdentityType::fromBSON(insertedDoc));
                 uassertStatusOK(shardIdentityDoc.validate());
                 txn->recoveryUnit()->registerChange(
@@ -411,13 +416,12 @@ bool CollectionShardingState::_checkChunkVersionOk(OperationContext* txn,
             _sourceMgr->getMigrationCriticalSectionSignal());
         return false;
     }
-
     // shardversion == chunkversion, so they have to be exactly the same
     if (expectedChunkVersion->equals(*actualChunkVersion)) {
         return true;
     }
 
-    log()<<"expected:"<<*expectedChunkVersion<<" actual:"<<*actualChunkVersion;
+    index_log() << "expected:" << *expectedChunkVersion << " actual:" << *actualChunkVersion;
     //
     // Figure out exactly why not compatible, send appropriate error message
     // The versions themselves are returned in the error, so not needed in messages here
@@ -459,26 +463,54 @@ bool CollectionShardingState::_checkChunkVersionOk(OperationContext* txn,
     MONGO_UNREACHABLE;
 }
 
-void CollectionShardingState::updateChunkInfo(OperationContext* txn, const ChunkType& chunkType)
-{
-    log() << "CollectionShardingState::updateChunkInfo()-> newChunkType: " << chunkType << 
-        "; version: " << chunkType.getVersion();
- 
+void CollectionShardingState::updateChunkInfo(OperationContext* txn, const ChunkType& chunkType) {
     if (!getMetadata()) {
-        log() << "CollectionShardingState::updateChunkInfo()-> invalid";
+        index_log() << "CollectionShardingState::updateChunkInfo()-> invalid";
         return;
     }
-    log() << "CollectionShardingState::updateChunkInfo()-> minKey: " << getMetadata()->getMinKey()
-        << "; maxkey: " << getMetadata()->getMaxKey() << "; collectionVersion: " << getMetadata()->getCollVersion()
-        << "; shardVersion: " << getMetadata()->getShardVersion();
 
-    //invariant(chunkType.getMin() == getMetadata()->getMinKey());
+    // invariant(chunkType.getMin() == getMetadata()->getMinKey());
     if (getMetadata()->getShardVersion() == chunkType.getVersion()) {
         return;
     }
 
-    //invariant(chunkType.getMax() != getMetadata()->getMaxKey());
+    // invariant(chunkType.getMax() != getMetadata()->getMaxKey());
     _metadataManager.updateChunkInfo(txn, chunkType);
 }
 
+std::pair<std::shared_ptr<Notification<Status>>, bool> CollectionShardingState::prepareRefresh(
+    const ChunkVersion& expectedVersion, ScopedCollectionMetadata& currentMetadata) {
+    stdx::lock_guard<stdx::mutex> scopedLock(_metadataManager._managerLock);
+
+    ChunkVersion collectionShardVersion;
+
+    currentMetadata = getMetadata_inlock();
+    if (currentMetadata) {
+        collectionShardVersion = currentMetadata->getShardVersion();
+    }
+
+    if (collectionShardVersion.epoch() == expectedVersion.epoch() &&
+        collectionShardVersion >= expectedVersion) {
+        // Don't need to remotely reload if we're in the same epoch and the requested version is
+        // smaller than the one we know about. This means that the remote side is behind.
+        return {nullptr, false};
+    }
+
+    bool doRefreshJob = false;
+    auto refreshNotification = _metadataManager.refreshCompletionNotification;
+    if (!refreshNotification) {
+        refreshNotification = (_metadataManager.refreshCompletionNotification =
+                                   std::make_shared<Notification<Status>>());
+        doRefreshJob = true;
+    }
+
+    return {refreshNotification, doRefreshJob};
+}
+
+void CollectionShardingState::setRefreshNotification(Status status) {
+    stdx::lock_guard<stdx::mutex> scopedLock(_metadataManager._managerLock);
+    _metadataManager.refreshCompletionNotification->set(status);
+    _metadataManager.refreshCompletionNotification = nullptr;
+    return;
+}
 }  // namespace mongo

@@ -11,8 +11,12 @@ load('./jstests/libs/cleanup_orphaned_util.js');
 (function() {
     "use strict";
 
-    var staticMongod = MongoRunner.runMongod({});  // For startParallelOps.
     var st = new ShardingTest({shards: 2, other: {separateConfig: true}});
+    var staticMongod = MongoRunner.runMongod({
+        'shardsvr': "",
+        "configdb": st.configRS.getURL(),
+        "bind_ip": getHostName()
+    });  // For startParallelOps.
 
     var mongos = st.s0, admin = mongos.getDB('admin'),
         shards = mongos.getCollection('config.shards').find().toArray(), dbName = 'foo',

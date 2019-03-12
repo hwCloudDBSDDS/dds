@@ -91,6 +91,8 @@ public:
      */
     TaskExecutor* getArbitraryExecutor();
 
+    TaskExecutor* getIdleExecutor();
+
     /**
      * Returns a pointer to the pool's fixed executor. Every call to this method will return the
      * same executor. Invalid to call if the fixed executor has not been initialized with

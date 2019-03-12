@@ -29,8 +29,13 @@
     db.dropDatabase();
 
     try {
-        db.createUser({user: username, pwd: "password", roles: jsTest.basicUserRoles});
-        db.auth(username, "password");
+        db.createUser({
+            user: username,
+            pwd: "WEak@2password",
+            roles: jsTest.basicUserRoles,
+            passwordDigestor: "server"
+        });
+        db.auth(username, "WEak@2password");
 
         // With pre-created system.profile (capped)
         db.runCommand({profile: 0});

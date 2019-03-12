@@ -1,11 +1,12 @@
 (function() {
     'use strict';
 
-    var s = new ShardingTest({name: "add_shard1", shards: 1, useHostname: false});
-
+    var s = new ShardingTest({name: "add_shard1", shards: 1, useHostname: true});
     // Create a shard and add a database; if the database is not duplicated the mongod should accept
     // it as shard
-    var conn1 = MongoRunner.runMongod({'shardsvr': ""});
+
+    var conn1 = MongoRunner.runMongod(
+        {'shardsvr': "", "configdb": s.configRS.getURL(), "bind_ip": getHostName()});
     var db1 = conn1.getDB("testDB");
 
     var numObjs = 3;
@@ -17,8 +18,8 @@
     assert.eq(null, configDB.databases.findOne({_id: 'testDB'}));
 
     var newShard = "myShard";
-    assert.commandWorked(
-        s.admin.runCommand({addshard: "localhost:" + conn1.port, name: newShard, maxSize: 1024}));
+    assert.commandWorked(s.admin.runCommand(
+        {addshard: getHostName() + ":" + conn1.port, name: newShard, maxSize: 1024}));
 
     assert.neq(null, configDB.databases.findOne({_id: 'testDB'}));
 
@@ -26,7 +27,8 @@
     assert.eq(1024, newShardDoc.maxSize);
 
     // a mongod with an existing database name should not be allowed to become a shard
-    var conn2 = MongoRunner.runMongod({'shardsvr': ""});
+    var conn2 = MongoRunner.runMongod(
+        {'shardsvr': "", "configdb": s.configRS.getURL(), "bind_ip": getHostName()});
 
     var db2 = conn2.getDB("otherDB");
     assert.writeOK(db2.foo.save({a: 1}));

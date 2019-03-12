@@ -208,6 +208,9 @@ public:
                                                      const BSONObj& query,
                                                      const BSONObj& sort,
                                                      const boost::optional<long long> limit);
+
+    static void fixupNewDoc(const BSONObj& doc, BSONObj& newDoc, bool addDataPath);
+
     /**
      * Builds an index on a config server collection.
      * Creates the collection if it doesn't yet exist.  Does not error if the index already exists,

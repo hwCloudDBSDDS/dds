@@ -321,14 +321,14 @@ TEST_F(DBTest, CompactedDB) {
   ASSERT_OK(ReadOnlyReopen(options));
   Status s = Put("new", "value");
   ASSERT_EQ(s.ToString(),
-            "Not implemented: Not supported operation in read only mode.");
+            "Rocksdb Not implemented: Not supported operation in read only mode.");
   ASSERT_EQ(DummyString(kFileSize / 2, '1'), Get("aaa"));
   Close();
   options.max_open_files = -1;
   ASSERT_OK(ReadOnlyReopen(options));
   s = Put("new", "value");
   ASSERT_EQ(s.ToString(),
-            "Not implemented: Not supported in compacted db mode.");
+            "Rocksdb Not implemented: Not supported in compacted db mode.");
   ASSERT_EQ(DummyString(kFileSize / 2, '1'), Get("aaa"));
   Close();
   Reopen(options);
@@ -346,7 +346,7 @@ TEST_F(DBTest, CompactedDB) {
   // Fallback to read-only DB
   s = Put("new", "value");
   ASSERT_EQ(s.ToString(),
-            "Not implemented: Not supported operation in read only mode.");
+            "Rocksdb Not implemented: Not supported operation in read only mode.");
   Close();
 
   // Full compaction
@@ -364,7 +364,7 @@ TEST_F(DBTest, CompactedDB) {
   ASSERT_OK(ReadOnlyReopen(options));
   s = Put("new", "value");
   ASSERT_EQ(s.ToString(),
-            "Not implemented: Not supported in compacted db mode.");
+            "Rocksdb Not implemented: Not supported in compacted db mode.");
   ASSERT_EQ("NOT_FOUND", Get("abc"));
   ASSERT_EQ(DummyString(kFileSize / 2, 'a'), Get("aaa"));
   ASSERT_EQ(DummyString(kFileSize / 2, 'b'), Get("bbb"));
@@ -403,7 +403,7 @@ TEST_F(DBTest, CompactedDB) {
   ASSERT_OK(ReadOnlyReopen(options));
   s = Put("new", "value");
   ASSERT_EQ(s.ToString(),
-            "Not implemented: Not supported operation in read only mode.");
+            "Rocksdb Not implemented: Not supported operation in read only mode.");
 }
 
 TEST_F(DBTest, LevelLimitReopen) {
@@ -421,7 +421,7 @@ TEST_F(DBTest, LevelLimitReopen) {
   Status s = TryReopenWithColumnFamilies({"default", "pikachu"}, options);
   ASSERT_EQ(s.IsInvalidArgument(), true);
   ASSERT_EQ(s.ToString(),
-            "Invalid argument: db has more levels than options.num_levels");
+            "Rocksdb Invalid argument: db has more levels than options.num_levels");
 
   options.num_levels = 10;
   options.max_bytes_for_level_multiplier_additional.resize(10, 1);
@@ -2065,7 +2065,7 @@ TEST_F(DBTest, DBOpen_Change_NumLevels) {
   options.create_if_missing = false;
   options.num_levels = 2;
   Status s = TryReopenWithColumnFamilies({"default", "pikachu"}, options);
-  ASSERT_TRUE(strstr(s.ToString().c_str(), "Invalid argument") != nullptr);
+  ASSERT_TRUE(strstr(s.ToString().c_str(), "Rocksdb Invalid argument") != nullptr);
   ASSERT_TRUE(db_ == nullptr);
 }
 

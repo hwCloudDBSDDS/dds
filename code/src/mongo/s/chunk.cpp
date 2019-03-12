@@ -128,7 +128,7 @@ bool Chunk::_maxIsInf() const {
     return 0 == _manager->getShardKeyPattern().getKeyPattern().globalMax().woCompare(getMax());
 }
 
-BSONObj Chunk::_getExtremeKey(OperationContext* txn, bool doSplitAtLower) const {
+/*BSONObj Chunk::_getExtremeKey(OperationContext* txn, bool doSplitAtLower) const {
     Query q;
     if (doSplitAtLower) {
         q.sort(_manager->getShardKeyPattern().toBSON());
@@ -159,8 +159,8 @@ BSONObj Chunk::_getExtremeKey(OperationContext* txn, bool doSplitAtLower) const 
         // make the lower half of the split end up with a single document.
         unique_ptr<DBClientCursor> cursor = conn->query(_manager->getns(),
                                                         q,
-                                                        1, /* nToReturn */
-                                                        1 /* nToSkip */);
+                                                        1, // nToReturn
+                                                        1 // nToSkip );
 
         uassert(28736,
                 str::stream() << "failed to initialize cursor during auto split due to "
@@ -199,7 +199,8 @@ std::vector<BSONObj> Chunk::_determineSplitPoints(OperationContext* txn, bool at
             splitPoints.push_back(medianKey);
         }
     } else {
-        uint64_t chunkSize = _manager->getCurrentDesiredChunkSize();
+        invariant(false);
+        uint64_t chunkSize = 1024;  //_manager->getCurrentDesiredChunkSize();
 
         // Note: One split point for every 1/2 chunk size.
         const uint64_t chunkBytesWritten = getBytesWritten();
@@ -313,152 +314,35 @@ StatusWith<boost::optional<ChunkRange>> Chunk::split(OperationContext* txn,
     *resultingSplits = splitPoints.size();
     return splitStatus.getValue();
 }
-
+*/
 uint64_t Chunk::getBytesWritten() const {
     return _dataWritten;
 }
 
-void Chunk::addBytesWritten(uint64_t bytesWrittenIncrement) {
+/*void Chunk::addBytesWritten(uint64_t bytesWrittenIncrement) {
     _dataWritten += bytesWrittenIncrement;
 }
 
 void Chunk::setBytesWritten(uint64_t newBytesWritten) {
     _dataWritten = newBytesWritten;
-}
+}*/
 
 bool Chunk::splitIfShould(OperationContext* txn, long dataWritten) {
     // TODO: we donnt support splitting right now, after implementation of split, recover this
     return true;
-    #if 0
-    LastError::Disabled d(&LastError::get(cc()));
-
-    addBytesWritten(dataWritten);
-
-    const uint64_t chunkBytesWritten = getBytesWritten();
-
-    try {
-        uint64_t splitThreshold = _manager->getCurrentDesiredChunkSize();
-
-        if (_minIsInf() || _maxIsInf()) {
-            splitThreshold = static_cast<uint64_t>((double)splitThreshold * 0.9);
-        }
-
-        if (chunkBytesWritten < splitThreshold / splitTestFactor) {
-            return false;
-        }
-
-        if (!_manager->_splitHeuristics._splitTickets.tryAcquire()) {
-            LOG(1) << "won't auto split because not enough tickets: " << _manager->getns();
-            return false;
-        }
-
-        TicketHolderReleaser releaser(&(_manager->_splitHeuristics._splitTickets));
-
-        const auto balancerConfig = Grid::get(txn)->getBalancerConfiguration();
-
-        Status refreshStatus = balancerConfig->refreshAndCheck(txn);
-        if (!refreshStatus.isOK()) {
-            warning() << "Unable to refresh balancer settings" << causedBy(refreshStatus);
-            return false;
-        }
-
-        bool shouldAutoSplit = balancerConfig->getShouldAutoSplit();
-        if (!shouldAutoSplit) {
-            return false;
-        }
-
-        LOG(1) << "about to initiate autosplit: " << *this << " dataWritten: " << chunkBytesWritten
-               << " splitThreshold: " << splitThreshold;
-
-        size_t splitCount = 0;
-        auto splitStatus = split(txn, Chunk::autoSplitInternal, &splitCount);
-        if (!splitStatus.isOK()) {
-            // Split would have issued a message if we got here. This means there wasn't enough data
-            // to split, so don't want to try again until we have considerably more data.
-            setBytesWritten(0);
-            return false;
-        }
-
-        if (_maxIsInf() || _minIsInf()) {
-            // we don't want to reset _dataWritten since we kind of want to check the other side
-            // right away
-        } else {
-            // we're splitting, so should wait a bit
-            setBytesWritten(0);
-        }
-
-        bool shouldBalance = balancerConfig->shouldBalanceForAutoSplit();
-
-        if (shouldBalance) {
-            auto collStatus = grid.catalogClient(txn)->getCollection(txn, _manager->getns());
-            if (!collStatus.isOK()) {
-                warning() << "Auto-split for " << _manager->getns()
-                          << " failed to load collection metadata"
-                          << causedBy(collStatus.getStatus());
-                return false;
-            }
-
-            shouldBalance = collStatus.getValue().value.getAllowBalance();
-        }
-
-        const auto suggestedMigrateChunk = std::move(splitStatus.getValue());
-
-        log() << "autosplitted " << _manager->getns() << " shard: " << toString() << " into "
-              << (splitCount + 1) << " (splitThreshold " << splitThreshold << ")"
-              << (suggestedMigrateChunk ? "" : (string) " (migrate suggested" +
-                          (shouldBalance ? ")" : ", but no migrations allowed)"));
-
-        // Top chunk optimization - try to move the top chunk out of this shard to prevent the hot
-        // spot from staying on a single shard. This is based on the assumption that succeeding
-        // inserts will fall on the top chunk.
-        if (suggestedMigrateChunk && shouldBalance) {
-            const NamespaceString nss(_manager->getns());
-
-            // We need to use the latest chunk manager (after the split) in order to have the most
-            // up-to-date view of the chunk we are about to move
-            auto scopedCM = uassertStatusOK(ScopedChunkManager::getExisting(txn, nss));
-            auto suggestedChunk = scopedCM.cm()->findIntersectingChunkWithSimpleCollation(
-                txn, suggestedMigrateChunk->getMin());
-
-            ChunkType chunkToMove;
-            chunkToMove.setNS(nss.ns());
-            chunkToMove.setShard(suggestedChunk->getShardId());
-            chunkToMove.setMin(suggestedChunk->getMin());
-            chunkToMove.setMax(suggestedChunk->getMax());
-            chunkToMove.setVersion(suggestedChunk->getLastmod());
-
-            Status rebalanceStatus = configsvr_client::rebalanceChunk(txn, chunkToMove);
-            if (!rebalanceStatus.isOK()) {
-                msgassertedNoTraceWithStatus(10412, rebalanceStatus);
-            }
-
-            _manager->reload(txn);
-        }
-
-        return true;
-    } catch (const DBException& e) {
-        // TODO: Make this better - there are lots of reasons a split could fail
-        // Random so that we don't sync up with other failed splits
-        setBytesWritten(mkDataWritten());
-
-        // if the collection lock is taken (e.g. we're migrating), it is fine for the split to fail.
-        warning() << "could not autosplit collection " << _manager->getns() << causedBy(e);
-        return false;
-    }
-    #endif
 }
 
-ConnectionString Chunk::_getShardConnectionString(OperationContext* txn) const {
+/*ConnectionString Chunk::_getShardConnectionString(OperationContext* txn) const {
     const auto shard = uassertStatusOK(grid.shardRegistry()->getShard(txn, getShardId()));
     return shard->getConnString();
-}
+}*/
 
-void Chunk::appendShortVersion(const char* name, BSONObjBuilder& b) const {
+/*void Chunk::appendShortVersion(const char* name, BSONObjBuilder& b) const {
     BSONObjBuilder bb(b.subobjStart(name));
     bb.append(ChunkType::min(), _min);
     bb.append(ChunkType::max(), _max);
     bb.done();
-}
+}*/
 
 bool Chunk::operator==(const Chunk& s) const {
     return _min.woCompare(s._min) == 0 && _max.woCompare(s._max) == 0;
@@ -466,9 +350,10 @@ bool Chunk::operator==(const Chunk& s) const {
 
 string Chunk::toString() const {
     stringstream ss;
-    ss << ChunkType::ns() << ": " << _manager->getns() << ", " << ChunkType::shard() << ": "
-       << _shardId << ", " << ChunkType::DEPRECATED_lastmod() << ": " << _lastmod.toString() << ", "
-       << ChunkType::min() << ": " << _min << ", " << ChunkType::max() << ": " << _max;
+    ss << ChunkType::name() << ": " << _chunkId << ", " << ChunkType::ns() << ": "
+       << _manager->getns() << ", " << ChunkType::shard() << ": " << _shardId << ", "
+       << ChunkType::DEPRECATED_lastmod() << ": " << _lastmod.toString() << ", " << ChunkType::min()
+       << ": " << _min << ", " << ChunkType::max() << ": " << _max;
     return ss.str();
 }
 

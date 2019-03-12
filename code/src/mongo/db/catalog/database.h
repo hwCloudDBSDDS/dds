@@ -40,10 +40,10 @@
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/views/view.h"
 #include "mongo/db/views/view_catalog.h"
-#include "mongo/util/mongoutils/str.h"
-#include "mongo/util/string_map.h"
 #include "mongo/s/assign_chunk_request.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/string_map.h"
 
 namespace mongo {
 
@@ -54,6 +54,7 @@ class ExtentManager;
 class IndexCatalog;
 class NamespaceDetails;
 class OperationContext;
+class ChunkRocksDBInstance;
 
 /**
  * Represents a logical database containing Collections.
@@ -161,16 +162,16 @@ public:
                                  bool createDefaultIndexes = true,
                                  const BSONObj& idIndex = BSONObj());
 
-    Status mockAssignChunk(OperationContext* txn, 
+    Status mockAssignChunk(OperationContext* txn,
                            StringData ns,
-                           CollectionOptions options, 
+                           CollectionOptions options,
                            bool createDefaultIndexes,
                            const BSONObj& idIndex);
 
     Status assignChunk(OperationContext* txn,
-                        StringData ns,
-                        BSONObj cmdObj,
-                        const AssignChunkRequest& assignChunkRequest);
+                       StringData ns,
+                       BSONObj cmdObj,
+                       const AssignChunkRequest& assignChunkRequest);
 
 
     Status createView(OperationContext* txn, StringData viewName, const CollectionOptions& options);
@@ -184,8 +185,15 @@ public:
         return getCollection(ns.ns(), including_assigning);
     }
 
+    std::size_t getCollectionCount() {
+        return _collections.size();
+    }
+
     void listCollections(std::vector<Collection*>& out) const;
-    Status toUpdateChunkMetadata(OperationContext* txn,StringData ns,BSONArray &indexes);
+    Status toUpdateChunkMetadata(OperationContext* txn, StringData ns, BSONArray& indexes);
+    /*
+       get all user collections
+    */
     void listCollectionNSs(std::vector<NamespaceString>& out) const;
 
     /**
@@ -231,7 +239,9 @@ public:
         return _viewsName;
     }
 
-    void assignChunkFinalize(OperationContext* txn, StringData ns, const AssignChunkRequest& assignChunkRequest);
+    Status assignChunkFinalize(OperationContext* txn,
+                               StringData ns,
+                               const AssignChunkRequest& assignChunkRequest);
 
 private:
     /**
@@ -266,9 +276,8 @@ private:
     const std::string _viewsName;    // "dbname.system.views"
 
     int _profile;  // 0=off.
-
+    // std::unique_ptr<ChunkRocksDBInstance> _chunkDbInstance;
     CollectionMap _collections;
-    mutable stdx::mutex  _collectionsMutex;
 
     DurableViewCatalogImpl _durableViews;  // interface for system.views operations
     ViewCatalog _views;                    // in-memory representation of _durableViews
@@ -279,6 +288,7 @@ private:
 };
 
 void dropAllDatabasesExceptLocal(OperationContext* txn);
+
 
 /**
  * Creates the namespace 'ns' in the database 'db' according to 'options'. If 'createDefaultIndexes'
@@ -292,7 +302,6 @@ Status userCreateNS(OperationContext* txn,
                     BSONObj options,
                     bool createDefaultIndexes = true,
                     const BSONObj& idIndex = BSONObj());
-
 
 
 }  // namespace mongo

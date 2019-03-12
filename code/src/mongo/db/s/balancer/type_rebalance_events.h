@@ -29,15 +29,16 @@
 #pragma once
 
 #include "mongo/bson/bsonobj.h"
+#include "mongo/db/s/balancer/balance_event_engine.h"
 #include "mongo/db/s/balancer/balancer_policy.h"
-#include "mongo/db/s/balancer/state_machine.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/client/shard.h"
 
 namespace mongo {
-class StateMachine;
+class BalanceEventEngine;
 class IRebalanceEvent;
-// This class represents the layout and contents of documents contained in the config.rebalanceevents
+// This class represents the layout and contents of documents contained in the
+// config.rebalanceevents
 // collection. All manipulation of documents coming from that collection should be done with this
 // class.
 class RebalanceEventType {
@@ -50,7 +51,7 @@ public:
     static const BSONField<int> eventType;
     static const BSONField<BSONObj> eventData;
 
-    // The rebalance modules encapsulates reblance information in StateMachineInfo objects,
+    // The rebalance modules encapsulates reblance information in BalanceEventEngineInfo objects,
     // so this facilitates conversion to a config.migrations entry format.
     explicit RebalanceEventType(IRebalanceEvent* info);
 
@@ -67,18 +68,23 @@ public:
     // Uniquely identifies a statemachine.
     const std::string& getEventId() const;
 
-    // Type of statemachine, real type is StateMachine::Type
+    // Type of statemachine, real type is BalanceEventEngine::Type
     int getEventType() const;
 
     // Returns the internal data of statemachine
     const BSONObj& getEventData() const;
+
+    bool operator==(const RebalanceEventType& e) const {
+        return ((_eventData.woCompare(e.getEventData()) == 0) && (_eventId == e.getEventId()) &&
+                (_eventType == e.getEventType()));
+    }
 
 private:
     RebalanceEventType();
 
     // All required fields for config.rebalanceevents
     std::string _eventId;
-    int _eventType;
+    int _eventType = 0;
     BSONObj _eventData;
 };
 

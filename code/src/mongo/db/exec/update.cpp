@@ -49,7 +49,6 @@
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
-
 namespace mongo {
 
 using std::string;
@@ -498,7 +497,6 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
     bool docWasModified = false;
 
     Status status = Status::OK();
-
     if (!driver->needMatchDetails()) {
         // If we don't need match details, avoid doing the rematch
         status = driver->update(StringData(), &_doc, &logObj, &updatedFields, &docWasModified);
@@ -596,7 +594,6 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
 
             newRecordId = recordId;
         } else {
-            // The updates were not in place. Apply them through the file manager.
             newObj = _doc.getObject();
             uassert(17419,
                     str::stream() << "Resulting document after update is larger than "
@@ -626,8 +623,7 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
         }
 
         invariant(oldObj.snapshotId() == getOpCtx()->recoveryUnit()->getSnapshotId());
-
-            wunit.commit();
+        wunit.commit();
 
         // If the document moved, we might see it again in a collection scan (maybe it's
         // a document after our current document).
@@ -647,6 +643,7 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
     if (docWasModified || request->isExplain()) {
         _specificStats.nModified++;
     }
+
     return newObj;
 }
 
@@ -762,8 +759,10 @@ void UpdateStage::doInsert() {
         const bool enforceQuota = !request->isGod();
         uassertStatusOK(_collection->insertDocument(
             getOpCtx(), newObj, _params.opDebug, enforceQuota, request->isFromMigration()));
+
         // Technically, we should save/restore state here, but since we are going to return
         // immediately after, it would just be wasted work.
+
         wunit.commit();
     }
     MONGO_WRITE_CONFLICT_RETRY_LOOP_END(getOpCtx(), "upsert", _collection->ns().ns());
@@ -826,6 +825,7 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
     // If we're here, then we still have to ask for results from the child and apply
     // updates to them. We should only get here if the collection exists.
     invariant(_collection);
+
     // It is possible that after an update was applied, a WriteConflictException
     // occurred and prevented us from returning ADVANCED with the requested version
     // of the document.
@@ -852,8 +852,8 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
         _idRetrying = WorkingSet::INVALID_ID;
     }
 
-    if (PlanStage::ADVANCED == status) {
 
+    if (PlanStage::ADVANCED == status) {
         // Need to get these things from the result returned by the child.
         RecordId recordId;
 
@@ -898,6 +898,7 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
             if (shouldRestartUpdateIfNoLongerMatches(_params)) {
                 throw WriteConflictException();
             }
+
             return PlanStage::NEED_TIME;
         }
 
@@ -927,7 +928,6 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
             memberFreer.Dismiss();  // Keep this member around so we can retry updating it.
             return prepareToRetryWSM(id, out);
         }
-
         // Set member's obj to be the doc we want to return.
         if (_params.request->shouldReturnAnyDocs()) {
             if (_params.request->shouldReturnNewDocs()) {
@@ -963,7 +963,6 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
                 memberFreer.Dismiss();
             }
             *out = WorkingSet::INVALID_ID;
-
             return NEED_YIELD;
         }
 
@@ -1044,8 +1043,10 @@ const SpecificStats* UpdateStage::getSpecificStats() const {
     return &_specificStats;
 }
 
-const UpdateStats* UpdateStage::getUpdateStats(const PlanExecutor* exec) {
-    invariant(exec->getRootStage()->isEOF());
+const UpdateStats* UpdateStage::getUpdateStats(const PlanExecutor* exec, bool ignoreErr) {
+    if (!ignoreErr) {
+        invariant(exec->getRootStage()->isEOF());
+    }
     invariant(exec->getRootStage()->stageType() == STAGE_UPDATE);
     UpdateStage* updateStage = static_cast<UpdateStage*>(exec->getRootStage());
     return static_cast<const UpdateStats*>(updateStage->getSpecificStats());

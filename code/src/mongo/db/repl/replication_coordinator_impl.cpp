@@ -83,6 +83,7 @@
 #include "mongo/util/stacktrace.h"
 #include "mongo/util/time_support.h"
 #include "mongo/util/timer.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
 #include "mongo/util/util_extend/default_parameters.h"
 
 namespace mongo {
@@ -133,7 +134,10 @@ BSONObj incrementConfigVersionByRandom(BSONObj config) {
 const Seconds kNoopWriterPeriod(10);
 
 const Milliseconds kDefaultRetryInterval(500);
+
 }  // namespace
+
+uint32_t ReplicationCoordinatorImpl::_cluesterFaultCount = 0;
 
 BSONObj ReplicationCoordinatorImpl::SlaveInfo::toBSON() const {
     BSONObjBuilder bo;
@@ -244,7 +248,7 @@ void ReplicationCoordinatorImpl::WaiterList::signalAndRemoveIf_inlock(
         if (it == _list.end()) {
             break;
         }
-        LOG(3) << "signal waiter " << *(*it) << " at " << Date_t::now();
+        index_LOG(3) << "signal waiter " << *(*it) << " at " << Date_t::now();
         (*it)->notify();
         std::swap(*it, _list.back());
         _list.pop_back();
@@ -253,7 +257,7 @@ void ReplicationCoordinatorImpl::WaiterList::signalAndRemoveIf_inlock(
 
 void ReplicationCoordinatorImpl::WaiterList::signalAndRemoveAll_inlock() {
     for (auto& waiter : _list) {
-        LOG(3) << "signal waiter " << *waiter << " at " << Date_t::now();
+        index_LOG(3) << "signal waiter " << *waiter << " at " << Date_t::now();
         waiter->notify();
     }
     _list.clear();
@@ -443,10 +447,10 @@ bool ReplicationCoordinatorImpl::_startLoadLocalConfig(OperationContext* txn) {
     ReplicaSetConfig localConfig;
     Status status = localConfig.initialize(cfg.getValue());
     if (!status.isOK()) {
-        error() << "Locally stored replica set configuration does not parse; See "
-                   "http://www.mongodb.org/dochub/core/recover-replica-set-from-invalid-config "
-                   "for information on how to recover from this. Got \""
-                << status << "\" while parsing " << cfg.getValue();
+        index_err() << "Locally stored replica set configuration does not parse; See "
+                       "http://www.mongodb.org/dochub/core/recover-replica-set-from-invalid-config "
+                       "for information on how to recover from this. Got \""
+                    << status << "\" while parsing " << cfg.getValue();
         fassertFailedNoTrace(28545);
     }
 
@@ -493,10 +497,11 @@ void ReplicationCoordinatorImpl::_finishLoadLocalConfig(
                       << myIndex.getStatus() << "\" while validating " << localConfig.toBSON();
             myIndex = StatusWith<int>(-1);
         } else {
-            error() << "Locally stored replica set configuration is invalid; See "
-                       "http://www.mongodb.org/dochub/core/recover-replica-set-from-invalid-config"
-                       " for information on how to recover from this. Got \""
-                    << myIndex.getStatus() << "\" while validating " << localConfig.toBSON();
+            index_err()
+                << "Locally stored replica set configuration is invalid; See "
+                   "http://www.mongodb.org/dochub/core/recover-replica-set-from-invalid-config"
+                   " for information on how to recover from this. Got \""
+                << myIndex.getStatus() << "\" while validating " << localConfig.toBSON();
             fassertFailedNoTrace(28544);
         }
     }
@@ -616,11 +621,12 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* txn,
             lk.lock();
 
             if (status == ErrorCodes::CallbackCanceled) {
-                log() << "Initial Sync has been cancelled: " << status.getStatus();
+                index_log() << "Initial Sync has been cancelled: " << status.getStatus();
                 return;
             } else if (!status.isOK()) {
                 if (_inShutdown) {
-                    log() << "Initial Sync failed during shutdown due to " << status.getStatus();
+                    index_log() << "Initial Sync failed during shutdown due to "
+                                << status.getStatus();
                     return;
                 } else {
                     error() << "Initial sync failed, shutting down now. Restart the server to "
@@ -773,7 +779,7 @@ Status ReplicationCoordinatorImpl::waitForMemberState(MemberState expectedState,
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     auto pred = [this, expectedState]() { return _memberState == expectedState; };
-    if (!_memberStateChange.wait_for(lk, timeout.toSystemDuration(), pred)) {
+    if (!_memberStateChange.wait_for(lk, timeout.toSteadyDuration(), pred)) {
         return Status(ErrorCodes::ExceededTimeLimit,
                       str::stream() << "Timed out waiting for state to become "
                                     << expectedState.toString()
@@ -916,8 +922,9 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* txn) {
     }
     lk.unlock();
 
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "onDrainComplete");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("onDrainComplete");
     _externalState->onDrainComplete(txn);
 
     ScopedTransaction transaction(txn, MODE_X);
@@ -941,8 +948,9 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* txn) {
     _canAcceptNonLocalWrites = true;
 
     lk.unlock();
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "onTransitionToPrimary");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("onTransitionToPrimary");
     _setFirstOpTimeOfMyTerm(_externalState->onTransitionToPrimary(txn, isV1ElectionProtocol()));
     lk.lock();
 
@@ -953,8 +961,8 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* txn) {
     log() << "transition to primary complete; database writes are now permitted" << rsLog;
     _externalState->startNoopWriter(_getMyLastAppliedOpTime_inlock());
     getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteProcessEnd();
-    log() << "Time from secondary to primary: " 
-        << getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->toString();
+    index_log() << "Time from secondary to primary: "
+                << getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->toString();
     getGlobalServiceContext()->cancelProcessStageTime("secondaryToPrimary");
 }
 
@@ -965,7 +973,7 @@ Status ReplicationCoordinatorImpl::waitForDrainFinish(Milliseconds timeout) {
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     auto pred = [this]() { return !_isCatchingUp && !_isWaitingForDrainToComplete; };
-    if (!_drainFinishedCond.wait_for(lk, timeout.toSystemDuration(), pred)) {
+    if (!_drainFinishedCond.wait_for(lk, timeout.toSteadyDuration(), pred)) {
         return Status(ErrorCodes::ExceededTimeLimit,
                       "Timed out waiting to finish draining applier buffer");
     }
@@ -1128,9 +1136,7 @@ void ReplicationCoordinatorImpl::setMyHeartbeatMessage(const std::string& msg) {
 }
 
 void ReplicationCoordinatorImpl::setMyLastAppliedOpTimeForward(const OpTime& opTime) {
-
     stdx::unique_lock<stdx::mutex> lock(_mutex);
-
     if (opTime > _getMyLastAppliedOpTime_inlock()) {
         const bool allowRollback = false;
         _setMyLastAppliedOpTime_inlock(opTime, allowRollback);
@@ -1688,9 +1694,9 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     WaiterInfoGuard waitInfo(
         &_replicationWaiterList, txn->getOpID(), opTime, &writeConcern, &condVar);
 
-    LOG(3) << "awaitReplication: waiting for replication " << waitInfo.waiter << " until "
-        << wTimeoutDate;
-        
+    index_LOG(3) << "awaitReplication: waiting for replication " << waitInfo.waiter << " until "
+                 << wTimeoutDate;
+
     while (!_doneWaitingForReplication_inlock(opTime, minSnapshot, writeConcern)) {
 
         if (_inShutdown) {
@@ -2034,14 +2040,14 @@ Status ReplicationCoordinatorImpl::processReplSetGetStatus(
 
     Status result(ErrorCodes::InternalError, "didn't set status in prepareStatusResponse");
     _topCoord->prepareStatusResponse(
-        TopologyCoordinator::ReplSetStatusArgs{
-            _replExecutor.now(),
-            static_cast<unsigned>(time(0) - serverGlobalParams.started),
-            getMyLastAppliedOpTime(),
-            getMyLastDurableOpTime(),
-            getLastCommittedOpTime(),
-            getCurrentCommittedSnapshotOpTime(),
-            initialSyncProgress},
+        TopologyCoordinator::ReplSetStatusArgs{_replExecutor.now(),
+                                               static_cast<unsigned>(durationCount<Seconds>(
+                                                   Date_t::now() - serverGlobalParams.started)),
+                                               getMyLastAppliedOpTime(),
+                                               getMyLastDurableOpTime(),
+                                               getLastCommittedOpTime(),
+                                               getCurrentCommittedSnapshotOpTime(),
+                                               initialSyncProgress},
         response,
         &result);
     return result;
@@ -2320,7 +2326,7 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* txn,
     Status status = newConfig.initialize(
         newConfigObj, oldConfig.getProtocolVersion() == 1, oldConfig.getReplicaSetId());
     if (!status.isOK()) {
-        error() << "replSetReconfig got " << status << " while parsing " << newConfigObj;
+        index_err() << "replSetReconfig got " << status << " while parsing " << newConfigObj;
         return Status(ErrorCodes::InvalidReplicaSetConfig, status.reason());
         ;
     }
@@ -2328,15 +2334,15 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* txn,
         str::stream errmsg;
         errmsg << "Attempting to reconfigure a replica set with name " << newConfig.getReplSetName()
                << ", but command line reports " << _settings.ourSetName() << "; rejecting";
-        error() << std::string(errmsg);
+        index_err() << std::string(errmsg);
         return Status(ErrorCodes::InvalidReplicaSetConfig, errmsg);
     }
 
     StatusWith<int> myIndex = validateConfigForReconfig(
         _externalState.get(), oldConfig, newConfig, txn->getServiceContext(), args.force);
     if (!myIndex.isOK()) {
-        error() << "replSetReconfig got " << myIndex.getStatus() << " while validating "
-                << newConfigObj;
+        index_err() << "replSetReconfig got " << myIndex.getStatus() << " while validating "
+                    << newConfigObj;
         return Status(ErrorCodes::NewReplicaSetConfigurationIncompatible,
                       myIndex.getStatus().reason());
     }
@@ -2347,14 +2353,14 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* txn,
     if (!args.force) {
         status = checkQuorumForReconfig(&_replExecutor, newConfig, myIndex.getValue());
         if (!status.isOK()) {
-            error() << "replSetReconfig failed; " << status;
+            index_err() << "replSetReconfig failed; " << status;
             return status;
         }
     }
 
     status = _externalState->storeLocalConfigDocument(txn, newConfig.toBSON());
     if (!status.isOK()) {
-        error() << "replSetReconfig failed to store config document; " << status;
+        index_err() << "replSetReconfig failed to store config document; " << status;
         return status;
     }
 
@@ -2468,22 +2474,22 @@ Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* txn,
     ReplicaSetConfig newConfig;
     Status status = newConfig.initializeForInitiate(configObj, true);
     if (!status.isOK()) {
-        error() << "replSet initiate got " << status << " while parsing " << configObj;
+        index_err() << "replSet initiate got " << status << " while parsing " << configObj;
         return Status(ErrorCodes::InvalidReplicaSetConfig, status.reason());
     }
     if (newConfig.getReplSetName() != _settings.ourSetName()) {
         str::stream errmsg;
         errmsg << "Attempting to initiate a replica set with name " << newConfig.getReplSetName()
                << ", but command line reports " << _settings.ourSetName() << "; rejecting";
-        error() << std::string(errmsg);
+        index_err() << std::string(errmsg);
         return Status(ErrorCodes::InvalidReplicaSetConfig, errmsg);
     }
 
     StatusWith<int> myIndex =
         validateConfigForInitiate(_externalState.get(), newConfig, txn->getServiceContext());
     if (!myIndex.isOK()) {
-        error() << "replSet initiate got " << myIndex.getStatus() << " while validating "
-                << configObj;
+        index_err() << "replSet initiate got " << myIndex.getStatus() << " while validating "
+                    << configObj;
         return Status(ErrorCodes::InvalidReplicaSetConfig, myIndex.getStatus().reason());
     }
 
@@ -2493,14 +2499,14 @@ Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* txn,
     status = checkQuorumForInitiate(&_replExecutor, newConfig, myIndex.getValue());
 
     if (!status.isOK()) {
-        error() << "replSetInitiate failed; " << status;
+        index_err() << "replSetInitiate failed; " << status;
         return status;
     }
 
     status = _externalState->initializeReplSetStorage(txn, newConfig.toBSON());
     if (!status.isOK()) {
-        error() << "replSetInitiate failed to store config document or create the oplog; "
-                << status;
+        index_err() << "replSetInitiate failed to store config document or create the oplog; "
+                    << status;
         return status;
     }
 
@@ -2564,16 +2570,23 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock() {
         _opTimeWaiterList.signalAndRemoveAll_inlock();
         // _isCatchingUp and _isWaitingForDrainToComplete could be cleaned up asynchronously
         // by freshness scan.
-        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato newState is "
+        index_log()
+            << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato newState is "
             << newState.toString();
-        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato newState removed is "
+        index_log()
+            << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato newState "
+               "removed is "
             << std::to_string(newState.removed());
-        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato newState rollback  is "
+        index_log()
+            << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato newState "
+               "rollback  is "
             << std::to_string(newState.rollback());
-        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato _memberState is "
-            << std::to_string(_memberState.primary());
-        log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato _memberState is "
-            << _memberState.toString();
+        index_log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato "
+                       "_memberState is "
+                    << std::to_string(_memberState.primary());
+        index_log() << "ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinato "
+                       "_memberState is "
+                    << _memberState.toString();
 
 
         _canAcceptNonLocalWrites = false;
@@ -2706,8 +2719,9 @@ void ReplicationCoordinatorImpl::_performPostMemberStateUpdateAction(
 }
 
 void ReplicationCoordinatorImpl::_scanOpTimeForCatchUp_inlock() {
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "scanOpTimeForCatchUp");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("scanOpTimeForCatchUp");
     auto scanner = std::make_shared<FreshnessScanner>();
     auto scanStartTime = _replExecutor.now();
     auto evhStatus =
@@ -2734,8 +2748,9 @@ void ReplicationCoordinatorImpl::_scanOpTimeForCatchUp_inlock() {
 void ReplicationCoordinatorImpl::_catchUpOplogToLatest_inlock(const FreshnessScanner& scanner,
                                                               Milliseconds timeout,
                                                               long long originalTerm) {
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "catchUpOplogToLatest");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("catchUpOplogToLatest");
     // On stepping down, the node doesn't update its term immediately due to SERVER-21425.
     // Term is also checked in case the catchup timeout is so long that the node becomes primary
     // again.
@@ -2791,8 +2806,9 @@ void ReplicationCoordinatorImpl::_catchUpOplogToLatest_inlock(const FreshnessSca
 }
 
 void ReplicationCoordinatorImpl::_finishCatchUpOplog_inlock(bool startToDrain) {
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "finishCatchUpOplog");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("finishCatchUpOplog");
     invariant(_isCatchingUp);
     _isCatchingUp = false;
     // If the node steps down during the catch-up, we don't go into drain mode.
@@ -3259,7 +3275,7 @@ Status ReplicationCoordinatorImpl::processReplSetRequestVotes(
 
         Status status = _externalState->storeLocalLastVoteDocument(txn, lastVote);
         if (!status.isOK()) {
-            error() << "replSetRequestVotes failed to store LastVote document; " << status;
+            index_err() << "replSetRequestVotes failed to store LastVote document; " << status;
             return status;
         }
     }
@@ -3347,7 +3363,8 @@ void ReplicationCoordinatorImpl::summarizeAsHtml(ReplSetHtmlSummary* output) {
 
     // TODO(dannenberg) consider putting both optimes into the htmlsummary.
     output->setSelfOptime(getMyLastAppliedOpTime());
-    output->setSelfUptime(time(0) - serverGlobalParams.started);
+    output->setSelfUptime(static_cast<unsigned int>(
+        durationCount<Seconds>(Date_t::now() - serverGlobalParams.started)));
     output->setNow(_replExecutor.now());
 
     _topCoord->summarizeAsHtml(output);
@@ -3701,22 +3718,20 @@ Status ReplicationCoordinatorImpl::checkIfIAmPrimary() {
 
     if (!_settings.usingReplSets()) {
         return Status(ErrorCodes::NoReplicationEnabled,
-            "Config servers are not running with --replSet");
+                      "Config servers are not running with --replSet");
     }
 
     if (_selfIndex == -1) {
-        return Status(ErrorCodes::InternalError,
-            "I am not in the current replset configuration");
+        return Status(ErrorCodes::InternalError, "I am not in the current replset configuration");
     }
 
     if (!_rsConfig.isInitialized() || _rsConfigState != kConfigSteady) {
         return Status(ErrorCodes::InternalError,
-            "I still have not finished initializing replication system");
+                      "I still have not finished initializing replication system");
     }
 
     if (!_memberState.primary()) {
-        return Status(ErrorCodes::InternalError,
-            "I am not a primary");
+        return Status(ErrorCodes::InternalError, "I am not a primary");
     }
 
     return Status::OK();

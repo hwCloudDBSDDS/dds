@@ -50,7 +50,7 @@ class Job(object):
             # Set the interrupt flag so that other jobs do not start running more tests.
             interrupt_flag.set()
             # Drain the queue to unblock the main thread.
-            Job._drain_queue(queue)
+            #Job._drain_queue(queue)
 
     def _run(self, queue, interrupt_flag):
         """
@@ -70,7 +70,6 @@ class Job(object):
                 self._execute_test(test)
             finally:
                 queue.task_done()
-
         for hook in self.hooks:
             hook.after_suite(self.report)
 

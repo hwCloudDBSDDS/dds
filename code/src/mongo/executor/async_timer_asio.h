@@ -29,9 +29,9 @@
 #pragma once
 
 #include <asio.hpp>
-#include <asio/system_timer.hpp>
 
 #include "mongo/executor/async_timer_interface.h"
+#include "mongo/stdx/chrono.h"
 
 namespace mongo {
 namespace executor {
@@ -46,7 +46,7 @@ public:
 
 private:
     asio::io_service::strand* const _strand;
-    asio::system_timer _timer;
+    asio::basic_waitable_timer<stdx::chrono::steady_clock> _timer;
 };
 
 class AsyncTimerFactoryASIO final : public AsyncTimerFactoryInterface {

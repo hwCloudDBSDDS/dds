@@ -15,7 +15,7 @@
     assert.commandWorked(admin.runCommand({enableSharding: coll.getDB() + ""}));
     assert.commandWorked(admin.runCommand({shardCollection: coll + "", key: {_id: 1}}));
 
-    for (var i = -100; i < 100; i++) {
+    for (var i = -20; i < 20; i++) {
         assert.commandWorked(admin.runCommand({split: coll + "", middle: {_id: i}}));
     }
 

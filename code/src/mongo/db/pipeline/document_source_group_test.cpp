@@ -1158,20 +1158,6 @@ public:
         add<Dependencies>();
         add<StringConstantIdAndAccumulatorExpressions>();
         add<ArrayConstantAccumulatorExpression>();
-#if 0
-        // Disabled tests until SERVER-23318 is implemented.
-        add<StreamingOptimization>();
-        add<StreamingWithMultipleIdFields>();
-        add<NoOptimizationIfMissingDoubleSort>();
-        add<NoOptimizationWithRawRoot>();
-        add<NoOptimizationIfUsingExpressions>();
-        add<StreamingWithMultipleLevels>();
-        add<StreamingWithConstant>();
-        add<StreamingWithEmptyId>();
-        add<StreamingWithRootSubfield>();
-        add<StreamingWithConstantAndFieldPath>();
-        add<StreamingWithFieldRepeated>();
-#endif
     }
 };
 

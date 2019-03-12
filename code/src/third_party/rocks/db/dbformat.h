@@ -212,7 +212,7 @@ class InternalKey {
   std::string* rep() { return &rep_; }
 
   // Assuming that *rep() contains a user key, this method makes internal key
-  // out of it in-place. This saves a memcpy compared to Set()/SetFrom().
+  // out of it in-place. This saves a memorycpy compared to Set()/SetFrom().
   void ConvertFromUserKey(SequenceNumber s, ValueType t) {
     AppendInternalKeyFooter(&rep_, s, t);
   }
@@ -335,11 +335,11 @@ class IterKey {
     if (IsKeyPinned() /* key is not in buf_ */) {
       // Copy the key from external memory to buf_ (copy shared_len bytes)
       EnlargeBufferIfNeeded(total_size);
-      memcpy(buf_, key_, shared_len);
+      CommonMemCopy(buf_, shared_len, key_, shared_len);
     } else if (total_size > buf_size_) {
       // Need to allocate space, delete previous space
       char* p = new char[total_size];
-      memcpy(p, key_, shared_len);
+      CommonMemCopy(p, shared_len, key_, shared_len);
 
       if (buf_ != space_) {
         delete[] buf_;
@@ -349,7 +349,7 @@ class IterKey {
       buf_size_ = total_size;
     }
 
-    memcpy(buf_ + shared_len, non_shared_data, non_shared_len);
+    CommonMemCopy(buf_ + shared_len, non_shared_len, non_shared_data, non_shared_len);
     key_ = buf_;
     key_size_ = total_size;
   }
@@ -359,7 +359,7 @@ class IterKey {
     if (copy) {
       // Copy key to buf_
       EnlargeBufferIfNeeded(size);
-      memcpy(buf_, key.data(), size);
+      CommonMemCopy(buf_, size, key.data(), size);
       key_ = buf_;
     } else {
       // Update key_ to point to external memory
@@ -384,7 +384,7 @@ class IterKey {
     assert(IsKeyPinned() == true);
 
     Reserve(key_size_);
-    memcpy(buf_, key_, key_size_);
+    CommonMemCopy(buf_, key_size_, key_, key_size_);
     key_ = buf_;
   }
 
@@ -406,9 +406,9 @@ class IterKey {
     size_t usize = user_key.size();
     EnlargeBufferIfNeeded(psize + usize + sizeof(uint64_t));
     if (psize > 0) {
-      memcpy(buf_, key_prefix.data(), psize);
+      CommonMemCopy(buf_, psize, key_prefix.data(), psize);
     }
-    memcpy(buf_ + psize, user_key.data(), usize);
+    CommonMemCopy(buf_ + psize, usize, user_key.data(), usize);
     EncodeFixed64(buf_ + usize + psize, PackSequenceAndType(s, value_type));
 
     key_ = buf_;
@@ -439,7 +439,7 @@ class IterKey {
     auto size = key.size();
     EnlargeBufferIfNeeded(size + static_cast<size_t>(VarintLength(size)));
     char* ptr = EncodeVarint32(buf_, static_cast<uint32_t>(size));
-    memcpy(ptr, key.data(), size);
+    CommonMemCopy(ptr, size, key.data(), size);
     key_ = buf_;
   }
 

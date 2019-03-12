@@ -365,9 +365,8 @@ void KVCatalog::init(OperationContext* opCtx) {
         string ns = obj["ns"].String();
         string ident = obj["ident"].String();
         _idents[ns] = Entry(ident, record->id);
-        LOG(1) << "[metadata][kvcatalog_init] " 
-               << "ns: " << ns
-               << ", ident: " << ident;
+        index_LOG(1) << "[metadata][kvcatalog_init] "
+                     << "ns: " << ns << ", ident: " << ident;
     }
 
     if (!_featureTracker) {
@@ -393,8 +392,7 @@ Status KVCatalog::newCollection(OperationContext* opCtx,
                                 StringData ns,
                                 const CollectionOptions& options) {
     invariant(opCtx->lockState() == NULL ||
-              (opCtx->lockState()->isDbLockedForMode(nsToDatabaseSubstring(ns), MODE_IX) &&
-               opCtx->lockState()->isCollectionLockedForMode(ns, MODE_X)));
+              opCtx->lockState()->isDbLockedForMode(nsToDatabaseSubstring(ns), MODE_X));
 
     std::unique_ptr<Lock::ResourceLock> rLk;
     if (!_isRsThreadSafe && opCtx->lockState()) {
@@ -425,8 +423,8 @@ Status KVCatalog::newCollection(OperationContext* opCtx,
 
     StatusWith<RecordId> res = _rs->insertRecord(opCtx, obj.objdata(), obj.objsize(), false);
     if (!res.isOK()) {
-       LOG(1) << "insertRecord to mdb_catalog failed, obj: " << obj << ".";
-       return res.getStatus();
+        index_LOG(1) << "insertRecord to mdb_catalog failed, obj: ";
+        return res.getStatus();
     }
 
     old = Entry(ident, res.getValue());
@@ -580,8 +578,7 @@ Status KVCatalog::renameCollection(OperationContext* opCtx,
 
 Status KVCatalog::dropCollection(OperationContext* opCtx, StringData ns) {
     invariant(opCtx->lockState() == NULL ||
-              (opCtx->lockState()->isDbLockedForMode(nsToDatabaseSubstring(ns), MODE_IX) &&
-               opCtx->lockState()->isCollectionLockedForMode(ns, MODE_X)));
+              opCtx->lockState()->isDbLockedForMode(nsToDatabaseSubstring(ns), MODE_X));
     std::unique_ptr<Lock::ResourceLock> rLk;
     if (!_isRsThreadSafe && opCtx->lockState()) {
         rLk.reset(new Lock::ResourceLock(opCtx->lockState(), resourceIdCatalogMetadata, MODE_X));

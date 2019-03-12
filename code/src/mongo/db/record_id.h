@@ -43,7 +43,7 @@
 
 namespace mongo {
 
-#ifdef STANDARD_MONGO_DB    //  Need to make some unified interface in the future
+#ifdef STANDARD_MONGO_DB  //  Need to make some unified interface in the future
 
 /**
  * The key that uniquely identifies a Record in a Collection or RecordStore.
@@ -135,13 +135,11 @@ private:
     int64_t _repr;
 
 public:
-    void AppendTo(BSONObjBuilder& buider, const StringData& fieldName) const
-    {
+    void AppendTo(BSONObjBuilder& buider, const StringData& fieldName) const {
         buider.append(it->first, static_cast<long long>(repr()));
     }
 
-    std::string ToString() const
-    {
+    std::string ToString() const {
         return std::toString(_repr);
     }
 };
@@ -154,6 +152,7 @@ public:
 class RecordId {
 protected:
     RecordId(RecordIdVariant&& recordVar) : _repr(recordVar) {}
+
 public:
     /**
      * Constructs a Null RecordId.
@@ -169,7 +168,7 @@ public:
     RecordId(int high, int low) : _repr((uint64_t(high) << 32) | uint32_t(low)) {}
 
 
-    RecordId(const void *data, int len) : _repr(data, len) {}
+    RecordId(const void* data, int len) : _repr(data, len) {}
 
     /**
      * A RecordId that compares less than all ids that represent documents in a collection.
@@ -211,12 +210,12 @@ public:
      */
     struct Hasher {
         size_t operator()(const RecordId& rid) const {
-            size_t hash = 0;            
-            if(rid.repr().IsConvertableToInt64())
+            size_t hash = 0;
+            if (rid.repr().IsConvertableToInt64())
                 // TODO consider better hashes
-                boost::hash_combine(hash, rid.repr().ToInt64());            
+                boost::hash_combine(hash, rid.repr().ToInt64());
             else
-                boost::hash_range(hash, rid.repr().Data(), rid.repr().Data()+rid.repr().Size());            
+                boost::hash_range(hash, rid.repr().Data(), rid.repr().Data() + rid.repr().Size());
 
             return hash;
         }
@@ -224,33 +223,31 @@ public:
 
     /// members for Sorter
     struct SorterDeserializeSettings {};  // unused
-    void serializeForSorter(BufBuilder& buf) const {        
+    void serializeForSorter(BufBuilder& buf) const {
         buf.appendChar(_repr.type);
-        if(_repr.type == RecordIdVariant::ObjectType::Int64)
-        {
+        if (_repr.type == RecordIdVariant::ObjectType::Int64) {
             buf.appendNum(_repr.intNum);
             return;
         }
-            
-        if(_repr.IsData())
-        {
+
+        if (_repr.IsData()) {
             buf.appendNum(_repr.Size());
             buf.appendBuf(_repr.Data(), _repr.Size());
-        }            
+        }
     }
 
     static RecordId deserializeForSorter(BufReader& buf, const SorterDeserializeSettings&) {
         auto type = (RecordIdVariant::ObjectType)buf.read<char>();
-        if(type == RecordIdVariant::ObjectType::Int64)
+        if (type == RecordIdVariant::ObjectType::Int64)
             return RecordId(buf.read<LittleEndian<int64_t>>());
 
-        if(type == RecordIdVariant::ObjectType::Minimum)
+        if (type == RecordIdVariant::ObjectType::Minimum)
             return min();
 
-        if(type == RecordIdVariant::ObjectType::Minimum)
+        if (type == RecordIdVariant::ObjectType::Minimum)
             return max();
 
-        if(type == RecordIdVariant::ObjectType::Null)
+        if (type == RecordIdVariant::ObjectType::Null)
             return RecordId();
 
         //
@@ -276,42 +273,32 @@ private:
     RecordIdVariant _repr;
 
 public:
-    void AppendTo(BSONObjBuilder& builder, const StringData& fieldName) const
-    {
-        if(_repr.IsConvertableToInt64())
-        {
+    void AppendTo(BSONObjBuilder& builder, const StringData& fieldName) const {
+        if (_repr.IsConvertableToInt64()) {
             builder.append(fieldName, _repr.ToInt64());
             return;
         }
 
-        builder.appendBinData(fieldName,
-            _repr.Size(),
-            BinDataType::BinDataGeneral,
-            _repr.Data()
-            );
+        builder.appendBinData(fieldName, _repr.Size(), BinDataType::BinDataGeneral, _repr.Data());
     }
 
-    RecordId(const BSONElement& bson)
-    {
-        if(bson.type() == BSONType::NumberLong)
-        {
+    RecordId(const BSONElement& bson) {
+        if (bson.type() == BSONType::NumberLong) {
             _repr = RecordIdVariant(bson.Long());
             return;
         }
 
-        if(bson.type() == BSONType::BinData)
-        {
+        if (bson.type() == BSONType::BinData) {
             int size = 0;
             const char* data = bson.binData(size);
             _repr = RecordIdVariant(data, bson.valuestrsize());
             return;
         }
 
-        invariant(false);                
+        invariant(false);
     }
 
-    std::string ToString() const
-    {
+    std::string ToString() const {
         return _repr.ToString();
     }
 };

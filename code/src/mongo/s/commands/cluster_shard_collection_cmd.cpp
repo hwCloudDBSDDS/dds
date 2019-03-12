@@ -38,6 +38,7 @@
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/connpool.h"
+#include "mongo/client/global_conn_pool.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
@@ -52,8 +53,10 @@
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/chunk_manager.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/commands/checkView.h"
 #include "mongo/s/commands/cluster_write.h"
 #include "mongo/s/config.h"
 #include "mongo/s/config_server_client.h"
@@ -61,9 +64,9 @@
 #include "mongo/s/migration_secondary_throttle_options.h"
 #include "mongo/s/shard_util.h"
 #include "mongo/util/log.h"
-#include "mongo/s/catalog/type_collection.h"
 #include "mongo/util/timer.h"
-#include "mongo/client/global_conn_pool.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/util/util_extend/config_reader.h"
 
 namespace mongo {
 
@@ -120,7 +123,7 @@ public:
                      int options,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
-        LOG(1)<<"[shardCollections] cmd; "<<cmdObj;
+        index_LOG(1) << "[MONGOS] shardCollection";
         bool newCollection = false;
         Timer t;
         const NamespaceString nss(parseNs(dbname, cmdObj));
@@ -131,9 +134,18 @@ public:
                 str::stream() << "sharding not enabled for db " << nss.db(),
                 config->isShardingEnabled());
 
-        if(cmdObj.hasField(StringData("isRetry")) &&
-            config->getCollTabType(nss.ns()) == CollectionType::TableType::kSharded){
-            return true;
+        if (cmdObj.hasField(StringData("isRetry"))) {
+            auto collStatus = Grid::get(txn)->catalogClient(txn)->getCollection(txn, nss.ns());
+            if (collStatus.isOK()) {
+                index_log() << "[MONGOS] retry shardCollection: " << nss.ns();
+                CollectionType collTypeTo = collStatus.getValue().value;
+                if (collTypeTo.getTabType() == CollectionType::TableType::kSharded &&
+                    collTypeTo.getCreated()) {
+                    index_log() << "[MONGOS] retry shardCollection: " << nss.ns()
+                                << "; Collection already sharded";
+                    return true;
+                }
+            }
         }
 
         uassert(ErrorCodes::IllegalOperation,
@@ -203,42 +215,58 @@ public:
         grid.shardRegistry()->getAllShardIds(&shardIds);
         int numShards = shardIds.size();
 
+        // Cannot have more than 8192 initial chunks per shard. Setting a maximum of 1,000,000
+        // chunks in total to limit the amount of memory this command consumes so there is less
+        // danger of an OOM error.
+        size_t max_init_cks_num_one_coll_per_ss =
+            ConfigReader::getInstance()->getDecimalNumber<size_t>(
+                "PublicOptions", "max_init_cks_num_one_coll_per_ss");
+
+        int maxNumInitialChunksForShards = numShards * 8192;
+        const int maxNumInitialChunksTotal = 1000 * 1000;
+        int numChunks = cmdObj["numInitialChunks"].numberInt();
+        if (max_init_cks_num_one_coll_per_ss > 0) {
+            maxNumInitialChunksForShards = numShards * max_init_cks_num_one_coll_per_ss;
+        }
+        if (numChunks > maxNumInitialChunksForShards || numChunks > maxNumInitialChunksTotal) {
+            errmsg = str::stream()
+                << "numInitialChunks cannot be more than either: " << maxNumInitialChunksForShards
+                << " or " << maxNumInitialChunksTotal;
+            return false;
+        }
+
         ConnectionString shardConnString;
         {
-            LOG(2) << "primaryId : " << config->getPrimaryId();
+            index_LOG(2) << "[MONGOS] shardCollection, primaryId : " << config->getPrimaryId();
             auto status = grid.shardRegistry()->getShard(txn, config->getPrimaryId());
-            if (status.getStatus() == ErrorCodes::ShardNotFound){
-               grid.catalogCache()->invalidate(nss.db().toString()); 
-               config = uassertStatusOK(grid.catalogCache()->getDatabase(txn, nss.db().toString()));
-            }            
+            if (status.getStatus() == ErrorCodes::ShardNotFound) {
+                grid.catalogCache()->invalidate(nss.db().toString());
+                config =
+                    uassertStatusOK(grid.catalogCache()->getDatabase(txn, nss.db().toString()));
+            }
             const auto shard =
                 uassertStatusOK(grid.shardRegistry()->getShard(txn, config->getPrimaryId()));
             shardConnString = shard->getConnString();
         }
+        bool primaryChanged = false;
+        DBClientBase* conn_temp;
         try {
-            globalConnPool.get(shardConnString, 0);
-        } catch (AssertionException& e){
-            LOG(2) << "create conn failed cause by " << e.toStatus();
+            conn_temp = globalConnPool.get(shardConnString, 0);
+        } catch (AssertionException& e) {
+            primaryChanged = true;
+            index_LOG(0) << "[MONGOS] shardCollection, create conn failed cause by "
+                         << e.toStatus();
             grid.catalogCache()->invalidate(nss.db().toString());
             config = uassertStatusOK(grid.catalogCache()->getDatabase(txn, nss.db().toString()));
             const auto shard =
                 uassertStatusOK(grid.shardRegistry()->getShard(txn, config->getPrimaryId()));
             shardConnString = shard->getConnString();
         }
-        ScopedDbConnection conn(shardConnString);
-        // Cannot have more than 8192 initial chunks per shard. Setting a maximum of 1,000,000
-        // chunks in total to limit the amount of memory this command consumes so there is less
-        // danger of an OOM error.
-        const int maxNumInitialChunksForShards = numShards * 8192;
-        const int maxNumInitialChunksTotal = 1000 * 1000;  // Arbitrary limit to memory consumption
-        int numChunks = cmdObj["numInitialChunks"].numberInt();
-        if (numChunks > maxNumInitialChunksForShards || numChunks > maxNumInitialChunksTotal) {
-            errmsg = str::stream()
-                << "numInitialChunks cannot be more than either: " << maxNumInitialChunksForShards
-                << ", 8192 * number of shards; or " << maxNumInitialChunksTotal;
-            return false;
+        if (!primaryChanged) {
+            globalConnPool.release(shardConnString.toString(), conn_temp);
         }
-        
+        ScopedDbConnection conn(shardConnString);
+
         CollectionType coll;
         auto collStatus = grid.catalogClient(txn)->getCollection(txn, nss.ns());
         if (collStatus == ErrorCodes::NamespaceNotFound) {
@@ -249,16 +277,14 @@ public:
                                          str::stream() << "implicit creation of "
                                                       << nss.ns()
                                                       << " is not supported"});*/
-            log()<<"cluster_shard_collection_cmd not find collection, and this is new collection, ns:"<< nss;
-        }
-        else if (!collStatus.isOK()) {
-            
+            index_log() << "[MONGOS] cannot find collection, and this is new ns: " << nss;
+        } else if (!collStatus.isOK()) {
+            index_log() << "[MONGOS] shardCollection getCollection error ";
+            conn.done();
             return appendCommandStatus(result, collStatus.getStatus());
-        }
-        else
-        {
+        } else {
             coll = collStatus.getValue().value;
-            if (coll.getDropped()) {
+            if (coll.getDropped() || !coll.getCreated()) {
                 newCollection = true;
             }
         }
@@ -268,25 +294,24 @@ public:
         {
             list<BSONObj> all;
             if (!newCollection) {
-                shared_ptr<ChunkManager> chunkMgr = config->getChunkManagerIfExists(txn, nss.ns(), true);
+                shared_ptr<ChunkManager> chunkMgr = config->getChunkManager(txn, nss.ns(), true);
                 if (chunkMgr && chunkMgr->numChunks() > 0) {
                     auto chunkMap = chunkMgr->getChunkMap();
                     ChunkMap::iterator it = chunkMap.begin();
                     ChunkId chunkId = it->second->getChunkId();
-                    all = conn->getCollectionInfos(config->name(), BSON("name" << nss.coll()+"$"+chunkId.toString()));
+                    all = conn->getCollectionInfos(
+                        config->name(), BSON("name" << nss.coll() + "$" + chunkId.toString()));
                 }
-            }
-            else {
-                all =  conn->getCollectionInfos(config->name(), BSON("name" << nss.coll()));
+            } else {
+                all = conn->getCollectionInfos(config->name(), BSON("name" << nss.coll()));
             }
             if (!all.empty()) {
                 res = all.front().getOwned();
             }
         }
         BSONObj defaultCollation;
-        
-        if (!res.isEmpty())
-        {
+
+        if (!res.isEmpty()) {
             // Check that namespace is not a view.
             {
                 std::string namespaceType;
@@ -383,6 +408,7 @@ public:
         // find the collection first, if not exist, return error
         BSONObj usefulIndex;
         bool usefulIndexUniq = false;
+        string usefulIndexName;
         // 1.  Verify consistency with existing unique indexes
         ShardKeyPattern proposedShardKey(proposedKey);
         {
@@ -427,6 +453,7 @@ public:
                     }
                     usefulIndex = currentKey;
                     usefulIndexUniq = idx["unique"].trueValue();
+                    usefulIndexName = idx["name"].str();
                     hasUsefulIndexForKey = true;
                     break;
                 }
@@ -462,13 +489,17 @@ public:
                         errmsg = str::stream() << "can't shard collection " << nss.ns() << ", "
                                                << proposedKey << " index not unique, "
                                                << "and unique index explicitly specified";
+                        conn.done();
                         return false;
                     }
                 }
             }
         }
 
-        if (hasUsefulIndexForKey) {
+        if (hasUsefulIndexForKey && newCollection) {
+            index_warning() << "[MONGOS] pre shardCollection for " << nss.ns()
+                            << " has not completely yet.";
+        } else if (hasUsefulIndexForKey) {
             // Check 2.iii and 2.iv. Make sure no null entries in the sharding index
             // and that there is a useful, non-multikey index available
 
@@ -486,27 +517,46 @@ public:
             if (conn->count(nss.ns()) != 0) {
                 errmsg = str::stream() << "please create an index that starts with the "
                                        << "shard key before sharding.";
-               result.append("proposedKey", proposedKey);
-               result.append("curIndexes", indexes);
-               conn.done();
-               return false;
+                result.append("proposedKey", proposedKey);
+                result.append("curIndexes", indexes);
+                conn.done();
+                return false;
             }
-        } 
+        }
 
-        if (!hasUsefulIndexForKey && !newCollection) {
-            errmsg = str::stream() << "collection " << nss.ns() << " has no useful index for shard key "
+        /*if (!hasUsefulIndexForKey && !newCollection) {
+            errmsg = str::stream() << "collection " << nss.ns() << " has no useful index for shard
+        key "
                                    << proposedKey <<", current index: "<< coll.getIndex();
             //return false; //support implicitly create collection.
-        }
+        }*/
 
         bool isEmpty = false;
-        if (newCollection) {
+        /*if (newCollection) {
             isEmpty = true;
-        }
-        else {
+        } else {
             isEmpty = (conn->count(nss.ns()) == 0);
+        }*/
+        {
+            isEmpty = (conn->count(nss.ns()) == 0);
+            std::string shortTmpName = str::stream() << "tmp.shardCollection." << nss.coll();
+            std::string longTmpName = str::stream() << nss.db() << "." << shortTmpName;
+            isEmpty = (isEmpty && (conn->count(longTmpName) == 0));
         }
-        //bool isEmpty = true;
+
+        conn.done();
+        // append isEmpty
+        BSONObjBuilder builder;
+        builder.appendElements(cmdObj);
+        builder.append("isEmpty", isEmpty);
+        if (!newCollection && hasUsefulIndexForKey) {
+            builder.append("usefulIndex", usefulIndex);
+            builder.append("usefulIndexUniq", usefulIndexUniq);
+            builder.append("usefulIndexName", usefulIndexName);
+        }
+        BSONObj cmd_Obj = builder.obj();
+
+        // bool isEmpty = true;
 
         // Pre-splitting:
         // For new collections which use hashed shard keys, we can can pre-split the
@@ -569,103 +619,39 @@ public:
                                                        "when the collection is not empty.")});
         }
 
-        LOG(1) << "CMD: shardcollection: " << cmdObj;
+        index_LOG(1) << "[MONGOS] shardcollection: start to run";
 
         audit::logShardCollection(Client::getCurrent(), nss.ns(), proposedKey, careAboutUnique);
-        
-        if (newCollection) {
+
+        // if (newCollection) {
+        {
             BSONObj defaultCollation;
             Status status = grid.catalogClient(txn)->shardCollection(txn,
-                                                                 nss.ns(),
-                                                                 proposedShardKey,
-                                                                 defaultCollation,
-                                                                 careAboutUnique,
-                                                                 initSplits,
-                                                                 std::set<ShardId>{},
-                                                                 cmdObj);
+                                                                     nss.ns(),
+                                                                     proposedShardKey,
+                                                                     defaultCollation,
+                                                                     careAboutUnique,
+                                                                     initSplits,
+                                                                     std::set<ShardId>{},
+                                                                     cmd_Obj);
             if (!status.isOK()) {
+                // if can not create shardKey index,but the collection have been created,so need
+                // to update route
+                index_err() << "[MONGOS] catalogClient(txn)->shardCollection run failed "
+                            << status.toString();
+                auto config =
+                    uassertStatusOK(grid.catalogCache()->getDatabase(txn, nss.db().toString()));
+                config->reload(txn);
+                // config->getChunkManager(txn, nss.ns(), true /* force */);
                 return appendCommandStatus(result, status);
             }
-
-        }
-        else {
-            string collTemp = nss.coll() + "_temp";
-            string tempErrmsg;
-            BSONObjBuilder tempResult;
-            string collDB = nss.db().toString();
-            NamespaceString tempNss = NamespaceString(StringData(collDB + '.' + collTemp));
-            
-            bool ok = false;
-            bool failed = false;
-            Command* renameCollCmd = Command::findCommand("renameCollection");
-            BSONObjBuilder rnCollCmdBuilder;
-            rnCollCmdBuilder.append("renameCollection", nss.ns());
-            rnCollCmdBuilder.append("to", tempNss.ns());
-            BSONObj rnCollCmdObj = rnCollCmdBuilder.done();
-            try {
-                ok = renameCollCmd->run(txn, collDB, rnCollCmdObj, options, tempErrmsg, tempResult);
-            }catch (const DBException& e) { 
-                failed = true;
-            }
-
-            if( !ok || failed)
-            {
-                log() << "fail when rename collection 1";
-                return false;
-            }
-            
-            BSONObj defaultCollation;
-            BSONObjBuilder cmdBuilder;
-            cmdBuilder.appendElements(cmdObj);
-            
-            if (hasUsefulIndexForKey) {
-                cmdBuilder.append("usefulIndex", usefulIndex);
-                cmdBuilder.append("usefulIndexUniq", usefulIndexUniq);
-            }
-            if (!isEmpty) {
-                cmdBuilder.append("hasData", true);
-            }
-            
-            Status status = grid.catalogClient(txn)->shardCollection(txn,
-                                                         nss.ns(),
-                                                         proposedShardKey,
-                                                         defaultCollation,
-                                                         careAboutUnique,
-                                                         initSplits,
-                                                         std::set<ShardId>{},
-                                                         cmdBuilder.done());
-
-            ok = false;
-            failed = false;
-            BSONObjBuilder rnCollCmdBuilder2;
-            rnCollCmdBuilder2.append("renameCollection", tempNss.ns());
-            rnCollCmdBuilder2.append("to", nss.ns()); 
-            rnCollCmdBuilder2.append("enableSharded", true);
-            rnCollCmdBuilder2.append("withoutCreate", true);
-            rnCollCmdBuilder2.append("noDrop", true);
-            if (isEmpty) {
-                rnCollCmdBuilder2.append("noCopy", true);
-            }
-            BSONObj rnCollCmdObj2 = rnCollCmdBuilder2.done();
-            try {
-                ok = renameCollCmd->run(txn, collDB, rnCollCmdObj2, options, tempErrmsg, tempResult);
-            }catch (const DBException& e) { 
-                failed = true;
-            }   
-
-            if( !ok || failed)
-            {   
-                log() << "fail when rename collection 2";
-                return false;
-            } 
-            
         }
         // Make sure the cached metadata for the collection knows that we are now sharded
         config = uassertStatusOK(grid.catalogCache()->getDatabase(txn, nss.db().toString()));
         config->reload(txn);
         config->getChunkManager(txn, nss.ns(), true /* force */);
         result << "collectionsharded" << nss.ns();
-        result << "millis " <<t.millis();
+        result << "millis " << t.millis();
         return true;
     }
 

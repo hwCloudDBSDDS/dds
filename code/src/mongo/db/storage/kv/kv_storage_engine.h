@@ -33,11 +33,11 @@
 #include <map>
 #include <string>
 
+#include "mongo/db/server_options.h"
 #include "mongo/db/storage/journal_listener.h"
 #include "mongo/db/storage/kv/kv_catalog.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/storage_engine.h"
-#include "mongo/db/server_options.h"
 
 #include "mongo/stdx/mutex.h"
 
@@ -101,9 +101,25 @@ public:
 
     virtual void resetEngineStats() override;
 
-    virtual void getEngineStats( std::vector<std::string> & vs) override;
+    virtual void getEngineStats(std::vector<std::string>& vs) override;
 
     virtual void setStorageEngineLogLevel(int level) override;
+
+    virtual Status prepareSnapshot(BSONObj& cmdObj, BSONObjBuilder& result) override;
+
+    virtual Status compact() override;
+
+    virtual Status endSnapshot() override;
+
+    virtual Status rmCollectionDir(OperationContext* txn, const std::string& path) override;
+
+    virtual void stopGC() override;
+
+    virtual void setGCInfo(const std::string& ns, const std::string& dataPath) override;
+
+    virtual Status destroyRocksDB(const std::string& nss) override;
+
+    virtual Status reNameNss(const std::string& srcName, const std::string& destName) override;
 
     // ------ kv ------
 
@@ -120,6 +136,10 @@ public:
     const KVCatalog* getCatalog() const {
         return _catalog.get();
     }
+
+    virtual Status openChunkDbInstance(OperationContext* txn,
+                                       StringData ns,
+                                       const mongo::CollectionOptions& options) override;
 
 private:
     class RemoveDBChange;

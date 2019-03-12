@@ -42,12 +42,12 @@ namespace mongo {
 
 void ProgressMeter::reset(unsigned long long total, int secondsBetween, int checkInterval) {
     _total = total;
-    _secondsBetween = secondsBetween;
+    _secondsBetween = Seconds(secondsBetween);
     _checkInterval = checkInterval;
 
     _done = 0;
     _hits = 0;
-    _lastTime = (int)time(0);
+    _lastTime = Date_t::now();
 
     _active = true;
 }
@@ -55,7 +55,6 @@ void ProgressMeter::reset(unsigned long long total, int secondsBetween, int chec
 
 bool ProgressMeter::hit(int n) {
     if (!_active) {
-        warning() << "hit an inactive ProgressMeter";
         return false;
     }
 
@@ -64,7 +63,7 @@ bool ProgressMeter::hit(int n) {
     if (_hits % _checkInterval)
         return false;
 
-    int t = (int)time(0);
+    Date_t t = Date_t::now();
     if (t - _lastTime < _secondsBetween)
         return false;
 

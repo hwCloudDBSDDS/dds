@@ -454,6 +454,7 @@ public:
         // Ensure log and profiler include the number of results returned in this getMore's response
         // batch.
         curOp->debug().nreturned = numResults;
+        index_LOG(2) << "[GETMORE] return " << numResults << " records, ns: " << origNss;
 
         if (respondWithId) {
             cursorFreer.Dismiss();

@@ -123,13 +123,19 @@ struct ReadPreferenceSetting {
      *     position).
      */
     ReadPreferenceSetting(ReadPreference pref, TagSet tags, Milliseconds maxStalenessMS);
+    ReadPreferenceSetting(ReadPreference pref,
+                          TagSet tags,
+                          Milliseconds maxStalenessMS,
+                          bool customerMeta);
     ReadPreferenceSetting(ReadPreference pref, Milliseconds maxStalenessMS);
     ReadPreferenceSetting(ReadPreference pref, TagSet tags);
+    ReadPreferenceSetting(ReadPreference pref, TagSet tags, bool customerMeta);
     explicit ReadPreferenceSetting(ReadPreference pref);
 
     inline bool equals(const ReadPreferenceSetting& other) const {
         return (pref == other.pref) && (tags == other.tags) &&
-            (maxStalenessMS == other.maxStalenessMS) && (minOpTime == other.minOpTime);
+            (maxStalenessMS == other.maxStalenessMS) && (minOpTime == other.minOpTime) &&
+            (customerMeta == other.customerMeta);
     }
 
     /**
@@ -162,6 +168,11 @@ struct ReadPreferenceSetting {
      * The minimal value maxStalenessMS can have. It MUST be ReplicaSetMonitor::kRefreshPeriod * 2
      */
     static const Milliseconds kMinimalMaxStalenessValue;
+
+    // it is used to bring customer info from mongos to shard or config,
+    // when this vaule is true, the _appendMetadataForCommand will use another
+    // metadata into cmd.
+    bool customerMeta;
 };
 
 }  // namespace mongo

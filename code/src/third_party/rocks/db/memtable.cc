@@ -36,6 +36,7 @@
 #include "util/perf_context_imp.h"
 #include "util/statistics.h"
 #include "util/stop_watch.h"
+#include "common/common.h"
 
 namespace rocksdb {
 
@@ -286,6 +287,9 @@ class MemTableIterator : public InternalIterator {
       Slice key_slice = GetLengthPrefixedSlice(iter_->key());
       Slice value_slice = GetLengthPrefixedSlice(key_slice.data() + key_slice.size());
       ParsedInternalKey ikey;
+      //if(ParseInternalKey(key_slice, &ikey) && range_checker_->DoesRecordBelongToChunk(ikey.user_key, value_slice)){
+      //  break;
+      //}
       if(ParseInternalKey(key_slice, &ikey)){
         if((!IsNeedCheckValueType(ikey.type)) || range_checker_->DoesRecordBelongToChunk(ikey.user_key, value_slice)){
           break;
@@ -305,6 +309,9 @@ class MemTableIterator : public InternalIterator {
       Slice key_slice = GetLengthPrefixedSlice(iter_->key());
       Slice value_slice = GetLengthPrefixedSlice(key_slice.data() + key_slice.size());
       ParsedInternalKey ikey;
+      //if(ParseInternalKey(key_slice, &ikey) && range_checker_->DoesRecordBelongToChunk(ikey.user_key, value_slice)){
+      //  break;
+      //}
       if(ParseInternalKey(key_slice, &ikey)){
         if((!IsNeedCheckValueType(ikey.type)) || range_checker_->DoesRecordBelongToChunk(ikey.user_key, value_slice)){
           break;
@@ -484,14 +491,14 @@ void MemTable::Add(SequenceNumber s, ValueType type,
   KeyHandle handle = table->Allocate(encoded_len, &buf);
 
   char* p = EncodeVarint32(buf, internal_key_size);
-  memcpy(p, key.data(), key_size);
+  CommonMemCopy(p, key_size, key.data(), key_size);
   Slice key_slice(p, key_size);
   p += key_size;
   uint64_t packed = PackSequenceAndType(s, type);
   EncodeFixed64(p, packed);
   p += 8;
   p = EncodeVarint32(p, val_size);
-  memcpy(p, value.data(), val_size);
+  CommonMemCopy(p, val_size, value.data(), val_size);
   assert((unsigned)(p + val_size - buf) == (unsigned)encoded_len);
   if (!allow_concurrent) {
     // Extract prefix for insert with hint.
@@ -791,7 +798,7 @@ void MemTable::Update(SequenceNumber seq,
           char* p = EncodeVarint32(const_cast<char*>(key_ptr) + key_length,
                                    new_size);
           WriteLock wl(GetLock(lkey.user_key()));
-          memcpy(p, value.data(), value.size());
+          CommonMemCopy(p, value.size(), value.data(), value.size());
           assert((unsigned)((p + value.size()) - entry) ==
                  (unsigned)(VarintLength(key_length) + key_length +
                             VarintLength(value.size()) + value.size()));
@@ -856,7 +863,7 @@ bool MemTable::UpdateCallback(SequenceNumber seq,
                                        new_prev_size);
               if (VarintLength(new_prev_size) < VarintLength(prev_size)) {
                 // shift the value buffer as well.
-                memcpy(p, prev_buffer, new_prev_size);
+                CommonMemCopy(p, new_prev_size, prev_buffer, new_prev_size);
               }
             }
             RecordTick(moptions_.statistics, NUMBER_KEYS_UPDATED);

@@ -44,12 +44,17 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/util_extend/config_reader.h"
 
 namespace mongo {
 namespace {
 
 // Maximum number of retries for network and replication notMaster errors (per host).
 const int kMaxNumFailedHostRetryAttempts = 3;
+
+const int kMaxNumConcurrentFind = ConfigReader::getInstance()
+                      ->getDecimalNumber<int>("PublicOptions", "max_concurrent_find_num");
+
 
 }  // namespace
 
@@ -337,52 +342,117 @@ Status AsyncResultsMerger::askForNextBatch_inlock(size_t remoteIndex) {
  * 3. Remotes that reached maximum retries will be in 'exhausted' state.
  */
 StatusWith<executor::TaskExecutor::EventHandle> AsyncResultsMerger::nextEvent() {
-    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    int sentnum = 0;   
+    {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        sentnum = _remotes.size();
+        _sentNum = 0;
+        std::set<ShardId> shard;
+        for (size_t i = 0; i < _remotes.size(); ++i) {
+            _remotes[i].sent = false;    
+            if (!_remotes[i].hasNext() && !_remotes[i].exhausted() && !_remotes[i].cbHandle.isValid()){
+                _sentNum++;
+            }
 
-    if (_lifecycleState != kAlive) {
-        // Can't schedule further network operations if the ARM is being killed.
-        return Status(ErrorCodes::IllegalOperation,
-                      "nextEvent() called on a killed AsyncResultsMerger");
-    }
-
-    if (_currentEvent.isValid()) {
-        // We can't make a new event if there's still an unsignaled one, as every event must
-        // eventually be signaled.
-        return Status(ErrorCodes::IllegalOperation,
-                      "nextEvent() called before an outstanding event was signaled");
-    }
-
-    // Schedule remote work on hosts for which we need more results.
-    for (size_t i = 0; i < _remotes.size(); ++i) {
-        auto& remote = _remotes[i];
-
-        // It is illegal to call this method if there is an error received from any shard.
-        invariant(remote.status.isOK());
-
-        if (!remote.hasNext() && !remote.exhausted() && !remote.cbHandle.isValid()) {
-            // If we already have established a cursor with this remote, and there is no outstanding
-            // request for which we have a valid callback handle, then schedule work to retrieve the
-            // next batch.
-            auto nextBatchStatus = askForNextBatch_inlock(i);
-            if (!nextBatchStatus.isOK()) {
-                return nextBatchStatus;
+            if (_remotes[i].shardId) {
+                shard.insert(*(_remotes[i].shardId));
             }
         }
+        _maxSentNum  =  kMaxNumConcurrentFind * shard.size();
     }
 
-    auto eventStatus = _executor->makeEvent();
-    if (!eventStatus.isOK()) {
-        return eventStatus;
-    }
-    auto eventToReturn = eventStatus.getValue();
-    _currentEvent = eventToReturn;
+    index_LOG(2) << "nextEvent remotes num: " << sentnum;
+    do{
+        stdx::unique_lock<stdx::mutex> lk(_mutex);
+        
+        if (_lifecycleState != kAlive) {
+            // Can't schedule further network operations if the ARM is being killed.
+            index_err() << "_lifecycleState != kAlive : " << (int)_lifecycleState ;
+            return Status(ErrorCodes::IllegalOperation,
+                "nextEvent() called on a killed AsyncResultsMerger");
+        }
 
-    // It's possible that after we told the caller we had no ready results but before the call to
-    // this method, new results became available. In this case we have to signal the event right
-    // away so that the caller will not block.
-    signalCurrentEventIfReady_inlock();
+        if (_currentEvent.isValid()) {
+            // We can't make a new event if there's still an unsignaled one, as every event must
+            // eventually be signaled.
+            index_err() << "_currentEvent.isValid() " ;
+            return Status(ErrorCodes::IllegalOperation,
+                "nextEvent() called before an outstanding event was signaled");
+        }
 
-    return eventToReturn;
+        // Schedule remote work on hosts for which we need more results.
+        for (size_t i = 0; i < _remotes.size(); ++i) {
+            auto& remote = _remotes[i];
+            if (!remote.status.isOK()) {
+                index_err() << "; !remote.status.isOK(): " << remote.toString();
+                return remote.status;
+            }
+
+            if (remote.sent) {
+                continue;
+            }
+
+            if (!remote.hasNext() && !remote.exhausted() && !remote.cbHandle.isValid()) {
+                // If we already have established a cursor with this remote, and there is no outstanding
+                // request for which we have a valid callback handle, then schedule work to retrieve the
+                // next batch.
+                if (remote.shardId) {
+                    auto it = _findingShard.find(*(remote.shardId));
+                    if (it == _findingShard.end()) {
+                        _findingShard[*(remote.shardId)] = 1;
+                    } else if(kMaxNumConcurrentFind > it->second) {
+                        _findingShard[*(remote.shardId)] += 1;
+                    } else {
+                        continue;
+                    }
+                } else {
+                    index_warning() << "remote.shardId not exit, remote;";
+                    index_warning() << "remote is: " << remote.toString();
+                }
+       
+                auto nextBatchStatus = askForNextBatch_inlock(i);
+                if (!nextBatchStatus.isOK()) {
+                    index_err() << "!nextBatchStatus.isOK(): " << nextBatchStatus << "; remote: " << 
+                        remote.toString();
+                    return nextBatchStatus;
+                }
+                _maxSentNum--;
+            } else {
+                //nothing to do
+            }
+
+            remote.sent = true;
+            sentnum--;
+
+            if (_maxSentNum == 0) {
+                break;
+            }
+        }
+
+        if (0 == sentnum) {
+            auto eventStatus = _executor->makeEvent();
+            if (!eventStatus.isOK()) {
+                index_err() << "makeEvent error: " << eventStatus.getStatus();
+                return eventStatus;
+            }
+            auto eventToReturn = eventStatus.getValue();
+            _currentEvent = eventToReturn;
+
+            // It's possible that after we told the caller we had no ready results but before the call to
+            // this method, new results became available. In this case we have to signal the event right
+            // away so that the caller will not block.
+            signalCurrentEventIfReady_inlock();
+            return eventToReturn;
+        }
+
+        if(stdx::cv_status::timeout == _condVar.wait_for(lk, Milliseconds(100).toSteadyDuration())) {
+            index_warning() << "find wait cv timeout";
+        }
+    } while(sentnum > 0);  
+
+    invariant(false);
+    return Status(ErrorCodes::IllegalOperation,
+        "invariant false only for build");
 }
 
 StatusWith<CursorResponse> AsyncResultsMerger::parseCursorResponse(const BSONObj& responseObj,
@@ -411,6 +481,19 @@ void AsyncResultsMerger::handleBatchResponse(
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
     auto& remote = _remotes[remoteIndex];
+    if (remote.shardId) {
+        auto it = _findingShard.find(*(remote.shardId));
+        if (it == _findingShard.end()) {
+            //nothing to do
+        } else {
+            invariant(it->second >= 1);
+            _findingShard[*(remote.shardId)] -= 1;
+        }
+    } else {
+        index_warning() << "shardId not init: " << remote.toString();
+    }
+    _sentNum--;
+    _maxSentNum++;
 
     // Clear the callback handle. This indicates that we are no longer waiting on a response from
     // 'remote'.
@@ -419,7 +502,9 @@ void AsyncResultsMerger::handleBatchResponse(
     // If we're in the process of shutting down then there's no need to process the batch.
     if (_lifecycleState != kAlive) {
         invariant(_lifecycleState == kKillStarted);
-
+        
+        index_warning() << "_lifecycleState != kAlive " << (int)_lifecycleState << "; remote: "
+            << remote.toString();
         // Make sure to wake up anyone waiting on '_currentEvent' if we're shutting down.
         signalCurrentEventIfReady_inlock();
 
@@ -441,17 +526,27 @@ void AsyncResultsMerger::handleBatchResponse(
             // If the event handle is invalid, then the executor is in the middle of shutting down,
             // and we can't schedule any more work for it to complete.
             if (_killCursorsScheduledEvent.isValid()) {
-                scheduleKillCursors_inlock();
+                scheduleKillCursors_inlock(false);
                 _executor->signalEvent(_killCursorsScheduledEvent);
             }
 
             _lifecycleState = kKillComplete;
         }
 
+        _condVar.notify_all();
         return;
     }
 
     // Early return from this point on signal anyone waiting on an event, if ready() is true.
+    
+    auto guardSem = MakeGuard([&] {
+        if (_sentNum == 0 && !ready_inlock() && _currentEvent.isValid()) {
+            _executor->signalEvent(_currentEvent);
+            _currentEvent = executor::TaskExecutor::EventHandle();
+        }
+        _condVar.notify_all();
+    });
+
     ScopeGuard signaller = MakeGuard(&AsyncResultsMerger::signalCurrentEventIfReady_inlock, this);
 
     StatusWith<CursorResponse> cursorResponseStatus(
@@ -464,6 +559,7 @@ void AsyncResultsMerger::handleBatchResponse(
         // message will include an expanded view definition and collection namespace which we need
         // to store. This allows for a second attempt at the read directly against the underlying
         // collection.
+        index_err() << "!cursorResponseStatus.isOK(): " << cursorResponseStatus.getStatus();
         if (cursorResponseStatus.getStatus() ==
             ErrorCodes::CommandOnShardedViewNotSupportedOnMongod) {
             auto& responseObj = cbData.response.data;
@@ -509,20 +605,21 @@ void AsyncResultsMerger::handleBatchResponse(
                 invariant(remote.shardId);
                 invariant(remote.docBuffer.empty());
 
-                LOG(1) << "Initial cursor establishment failed with retriable error and will be "
-                          "retried"
-                       << causedBy(redact(cursorResponseStatus.getStatus()));
+                index_LOG(1)
+                    << "[ARM] Initial cursor establishment failed with retriable error and will be "
+                       "retried"
+                    << causedBy(redact(cursorResponseStatus.getStatus()));
 
                 ++remote.retryCount;
                 remote.status = Status::OK();  // Reset status so it can be retried.
 
                 // Signal the merger thread to make it retry this remote again.
-                if (_currentEvent.isValid()) {
-                    // To prevent ourselves from signalling the event twice,
-                    // we set '_currentEvent' as invalid after signalling it.
-                    _executor->signalEvent(_currentEvent);
-                    _currentEvent = executor::TaskExecutor::EventHandle();
-                }
+                //if (_currentEvent.isValid()) {
+                //    // To prevent ourselves from signalling the event twice,
+                //    // we set '_currentEvent' as invalid after signalling it.
+                //    _executor->signalEvent(_currentEvent);
+                //    _currentEvent = executor::TaskExecutor::EventHandle();
+                //}
 
                 return;
             } else {
@@ -586,7 +683,19 @@ void AsyncResultsMerger::handleBatchResponse(
     if (!_params.isTailable && !remote.hasNext() && !remote.exhausted()) {
         remote.status = askForNextBatch_inlock(remoteIndex);
         if (!remote.status.isOK()) {
+            index_err() << "!remote.status.isOK() remote: " << remote.toString();
             return;
+        } else {
+            if (remote.shardId) {
+                auto it = _findingShard.find(*(remote.shardId));
+                if (it == _findingShard.end()) {
+                    index_err() << "remote not found: " << remote.toString();
+                    invariant(false);
+                } else {
+                    _findingShard[*(remote.shardId)] += 1;
+                    _sentNum++;
+                }
+            }
         }
     }
 
@@ -602,7 +711,7 @@ void AsyncResultsMerger::signalCurrentEventIfReady_inlock() {
         // invalid after signalling it.
         _executor->signalEvent(_currentEvent);
         _currentEvent = executor::TaskExecutor::EventHandle();
-    }
+    } 
 }
 
 bool AsyncResultsMerger::haveOutstandingBatchRequests_inlock() {
@@ -615,28 +724,48 @@ bool AsyncResultsMerger::haveOutstandingBatchRequests_inlock() {
     return false;
 }
 
-void AsyncResultsMerger::scheduleKillCursors_inlock() {
+void AsyncResultsMerger::scheduleKillCursors_inlock(bool flowContral) {
     invariant(_lifecycleState == kKillStarted);
     invariant(_killCursorsScheduledEvent.isValid());
 
+    _numKillingCursor.store(0);
     for (const auto& remote : _remotes) {
         invariant(!remote.cbHandle.isValid());
 
         if (remote.status.isOK() && remote.cursorId && !remote.exhausted()) {
-            BSONObj cmdObj = KillCursorsRequest(_params.nsString, {*remote.cursorId}).toBSON();
+
+            while(flowContral && _numKillingCursor.load() > 0) {
+                 sleepmicros(5);
+            }
+
+            NamespaceString nss = _params.nsString;
+            if (remote.chunkId) {
+                nss = NamespaceString(_params.nsString.toString() + "$" + remote.chunkId->toString());
+            } else {
+                index_warning() << "kill cursor but not found chunkId, ns: " << _params.nsString << 
+                    "; cursorID: " << *(remote.cursorId);
+            }
+            BSONObj cmdObj = KillCursorsRequest(nss, {*remote.cursorId}).toBSON();
 
             executor::RemoteCommandRequest request(
                 remote.getTargetHost(), _params.nsString.db().toString(), cmdObj, _params.txn);
 
-            _executor->scheduleRemoteCommand(
+            _numKillingCursor.store(1);
+            auto callbackStatus = _executor->scheduleRemoteCommand(
                 request,
-                stdx::bind(&AsyncResultsMerger::handleKillCursorsResponse, stdx::placeholders::_1));
+                stdx::bind(&AsyncResultsMerger::handleKillCursorsResponse, this, stdx::placeholders::_1));
+            if (!callbackStatus.isOK()) {
+                index_warning() << "scheduleRemoteCommand killCursor faild: " << callbackStatus.getStatus(); 
+                _numKillingCursor.store(0);
+                continue;
+            } 
         }
     }
 }
 
 void AsyncResultsMerger::handleKillCursorsResponse(
     const executor::TaskExecutor::RemoteCommandCallbackArgs& cbData) {
+    _numKillingCursor.store(0);
     // We just ignore any killCursors command responses.
 }
 
@@ -644,6 +773,7 @@ executor::TaskExecutor::EventHandle AsyncResultsMerger::kill() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     if (_killCursorsScheduledEvent.isValid()) {
         invariant(_lifecycleState != kAlive);
+        index_warning() << "repeate kill cursor state: " << (int)_lifecycleState;
         return _killCursorsScheduledEvent;
     }
 
@@ -666,7 +796,7 @@ executor::TaskExecutor::EventHandle AsyncResultsMerger::kill() {
     // remotes now. Otherwise, we have to wait until all responses are back, and then we can kill
     // the remote cursors.
     if (!haveOutstandingBatchRequests_inlock()) {
-        scheduleKillCursors_inlock();
+        scheduleKillCursors_inlock(true);
         _lifecycleState = kKillComplete;
         _executor->signalEvent(_killCursorsScheduledEvent);
     }
@@ -685,13 +815,17 @@ AsyncResultsMerger::RemoteCursorData::RemoteCursorData(HostAndPort hostAndPort,
                                                        CursorId establishedCursorId)
     : cursorId(establishedCursorId), _shardHostAndPort(std::move(hostAndPort)) {}
 
-AsyncResultsMerger::RemoteCursorData::RemoteCursorData(ShardId shardId, ChunkId chunkId, BSONObj cmdObj)
+AsyncResultsMerger::RemoteCursorData::RemoteCursorData(ShardId shardId,
+                                                       ChunkId chunkId,
+                                                       BSONObj cmdObj)
     : shardId(std::move(shardId)), chunkId(std::move(chunkId)), initialCmdObj(std::move(cmdObj)) {}
 
 AsyncResultsMerger::RemoteCursorData::RemoteCursorData(HostAndPort hostAndPort,
                                                        ChunkId ChunkId,
                                                        CursorId establishedCursorId)
-    : chunkId(std::move(chunkId)), cursorId(establishedCursorId), _shardHostAndPort(std::move(hostAndPort)) {}
+    : chunkId(std::move(chunkId)),
+      cursorId(establishedCursorId),
+      _shardHostAndPort(std::move(hostAndPort)) {}
 
 const HostAndPort& AsyncResultsMerger::RemoteCursorData::getTargetHost() const {
     invariant(_shardHostAndPort);
@@ -727,6 +861,47 @@ Status AsyncResultsMerger::RemoteCursorData::resolveShardIdToHostAndPort(
     _shardHostAndPort = std::move(findHostStatus.getValue());
 
     return Status::OK();
+}
+
+//only for test
+std::string AsyncResultsMerger::RemoteCursorData::toString() {
+    mongo::BSONObjBuilder builder;
+    if (shardId) {
+        builder.append("shardId", shardId->toString());
+    } else {
+        builder.append("shardId", "null");
+    }
+
+    if (chunkId) {
+        builder.append("chunkId", chunkId->toString());
+    } else {
+        builder.append("chunkId", "null");
+    }
+
+    if (initialCmdObj) {
+        builder.append("initialCmdObj", *initialCmdObj);
+    } else {
+        builder.append("initialCmdObj", "null");
+    }
+
+    if (cursorId) {
+        builder.append("cursorId", *cursorId);
+    } else {
+        builder.append("cursorId", "null");
+    }
+
+    if (_shardHostAndPort) {
+        builder.append("_shardHostAndPort", _shardHostAndPort->toString());
+    } else {
+        builder.append("_shardHostAndPort", "null");
+    }
+
+    builder.append("retryCount", retryCount);
+    builder.append("fetchedCount", fetchedCount);
+    builder.append("status", status.toString());
+    builder.append("sent", sent);
+
+    return builder.obj().toString();
 }
 
 std::shared_ptr<Shard> AsyncResultsMerger::RemoteCursorData::getShard() {

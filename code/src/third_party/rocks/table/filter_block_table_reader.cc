@@ -1,4 +1,4 @@
-//  Copyright (c) 2017-present, Huawei, Inc.  All rights reserved.
+//  Copyright (c) 2017-present.  All rights reserved.
 //  This source code is licensed under the BSD-style license found in the
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
@@ -39,17 +39,17 @@ void FilterBlockTableIterator::SkipNotBelongDataBlocksPre(){
       ParsedInternalKey ikey;
       if(ParseInternalKey(current_key, &ikey)){
         if(!IsNeedCheckValueType(ikey.type)){
-          Log(InfoLogLevel::ERROR_LEVEL, info_log_,
-                "FilterChecker skip pre key: type(%d)size(%d)data(%s); value: (%d), (%-10s)", 
-                ikey.type, ikey.user_key.size(), ikey.user_key.data(), current_value.size(), current_value.data());
+          Log(InfoLogLevel::DEBUG_LEVEL, info_log_,
+                "FilterChecker skip pre key: type(%d)size(%d) value: (%d)", 
+                ikey.type, ikey.user_key.size(), current_value.size());
           return;
         }else if(range_checker_->DoesRecordBelongToChunk(ikey.user_key, current_value)){
         //Range_checker is not appointed or the current KV matches to it.
         return;
         }
-      Log(InfoLogLevel::ERROR_LEVEL, info_log_,
-              "FilterChecker skip pre key key(%d)(%d)(%s): value: (%d), (%-20s)", 
-              ikey.type, ikey.user_key.size(), ikey.user_key.data(), current_value.size(), current_value.data());
+      Log(InfoLogLevel::DEBUG_LEVEL, info_log_,
+              "FilterChecker skip pre key key type(%d)size(%d) value: (%d)", 
+              ikey.type, ikey.user_key.size(), current_value.size());
       }
     }
 
@@ -74,9 +74,9 @@ void FilterBlockTableIterator::SkipEmptyDataBlocksForward() {
         if(ParseInternalKey(cur_key, &ikey)){
           if(!IsNeedCheckValueType(ikey.type)){
             if(ikey.type != kTypeDeletion){
-            Log(InfoLogLevel::ERROR_LEVEL, info_log_,
-                  "TEST SST FilterChecker skip forward key: type(%d)size(%d)data(%s); value: (%d), (%-10s)", 
-                  ikey.type, ikey.user_key.size(), ikey.user_key.data(), cur_value.size(), cur_value.data());
+            Log(InfoLogLevel::WARN_LEVEL, info_log_,
+                  "SST FilterChecker skip forward key: type(%d)size(%d)value: (%d)", 
+                  ikey.type, ikey.user_key.size(), cur_value.size());
               }
             return;
           }else if(range_checker_->DoesRecordBelongToChunk(ikey.user_key, cur_value)){
@@ -84,8 +84,8 @@ void FilterBlockTableIterator::SkipEmptyDataBlocksForward() {
           return;
           }
         Log(InfoLogLevel::DEBUG_LEVEL, info_log_,
-                "FilterBlockTableIterator SkipEmptyData key(%d)(%d)(%s): value: (%d), (%-20s)", 
-                ikey.type, ikey.user_key.size(), ikey.user_key.data(), cur_value.size(), cur_value.data());
+                "FilterBlockTableIterator SkipEmptyData key type(%d)size(%d) value: (%d)", 
+                ikey.type, ikey.user_key.size(),  cur_value.size());
         }
      }
 
@@ -102,8 +102,8 @@ void FilterBlockTableIterator::SkipEmptyDataBlocksForward() {
     if(!(second_level_iter_.iter() == nullptr ||
          (!second_level_iter_.Valid() &&
          !second_level_iter_.status().IsIncomplete()))){
-      Log(InfoLogLevel::ERROR_LEVEL, info_log_,
-              "TEST BIG BUG need to check logic A(%d)B(%d)C(%d)", 
+          Log(InfoLogLevel::ERROR_LEVEL, info_log_,
+              "BIG BUG need to check logic A(%d)B(%d)C(%d)", 
               (second_level_iter_.iter() == nullptr), second_level_iter_.Valid(), second_level_iter_.status().IsIncomplete());
     }
     // Move to next block
@@ -133,17 +133,19 @@ void FilterBlockTableIterator::SkipEmptyDataBlocksBackward() {
         ParsedInternalKey ikey;
         if(ParseInternalKey(current_key, &ikey)){
           if(!IsNeedCheckValueType(ikey.type)){
-            Log(InfoLogLevel::ERROR_LEVEL, info_log_,
-                  "TEST SST FilterChecker skip Backward key: type(%d)size(%d)data(%s); value: (%d), (%-10s)", 
-                  ikey.type, ikey.user_key.size(), ikey.user_key.data(), current_value.size(), current_value.data());
+            if(ikey.type != kTypeDeletion){
+            Log(InfoLogLevel::WARN_LEVEL, info_log_,
+                  "FilterChecker skip Backward key: type(%d)size(%d) value: (%d)", 
+                  ikey.type, ikey.user_key.size(), current_value.size());
+            }
             return;
           }else if(range_checker_->DoesRecordBelongToChunk(ikey.user_key, current_value)){
           //Range_checker is not appointed or the current KV matches to it.
           return;
           }
-        Log(InfoLogLevel::WARN_LEVEL, info_log_,
-                "FilterBlockTableIterator SkipEmptyData key(%d)(%d)(%s): value: (%d), (%-20s)", 
-                ikey.type, ikey.user_key.size(), ikey.user_key.data(), current_value.size(), current_value.data());
+        Log(InfoLogLevel::DEBUG_LEVEL, info_log_,
+                "FilterBlockTableIterator SkipEmptyData key(%d)size(%d) value: (%d)", 
+                ikey.type, ikey.user_key.size(), current_value.size());
         }
       }
 
@@ -161,7 +163,7 @@ void FilterBlockTableIterator::SkipEmptyDataBlocksBackward() {
          (!second_level_iter_.Valid() &&
          !second_level_iter_.status().IsIncomplete()))){
       Log(InfoLogLevel::ERROR_LEVEL, info_log_,
-              "TEST BIG BUG need to check logic A(%d)B(%d)C(%d)", 
+              "BIG BUG need to check logic A(%d)B(%d)C(%d)", 
               (second_level_iter_.iter() == nullptr), second_level_iter_.Valid(), second_level_iter_.status().IsIncomplete());
     }
     // Move to previous block
@@ -244,9 +246,8 @@ Status FilterBlockTableReader::Get(const ReadOptions& readOptions, const Slice& 
       bool tochunk = (ParseInternalKey(key, &ikey) &&
                  range_checker->DoesRecordBelongToChunk(ikey.user_key, value));
       
-      Log(InfoLogLevel::INFO_LEVEL, GetIOptions().info_log,
-              "range_checker: %p, %s; key:%s, %-10s, tochunk(%d)",range_checker, range_checker->GetName(),
-              key.data() + sizeof(int), key.data(), tochunk);
+      Log(InfoLogLevel::DEBUG_LEVEL, GetIOptions().info_log,
+              "range_checker: %p, %s; tochunk(%d)",range_checker, range_checker->GetName(), tochunk);
       if(!tochunk){
          return Status::NotFound();
       }

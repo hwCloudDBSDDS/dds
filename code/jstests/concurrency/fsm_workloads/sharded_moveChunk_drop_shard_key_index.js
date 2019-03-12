@@ -34,6 +34,7 @@ var $config = (function() {
                 to: shardName,
                 _waitForDelete: true,
             });
+	    sleep(2*1000);
         },
 
         dropIndex: function dropIndex(db, collName) {

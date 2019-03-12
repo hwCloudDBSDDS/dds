@@ -36,9 +36,9 @@
 #include "mongo/client/read_preference.h"
 #include "mongo/db/cursor_id.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/s/chunk_id.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/util/net/hostandport.h"
-#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 

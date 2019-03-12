@@ -47,7 +47,7 @@
     assert.eq(1, config.databases.count({_id: dbC.getName()}));
 
     // 10 dropped collections
-    assert.eq(numColls,
+    assert.eq((numColls + 1),
               config.collections.count({_id: RegExp("^" + dbA + "\\..*"), dropped: true}));
 
     // 20 active (dropped is missing)

@@ -28,6 +28,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
 
+
+
 #include "mongo/platform/basic.h"
 
 #include <string>
@@ -46,17 +48,20 @@
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/sharding_state.h"
+#include "mongo/db/storage/storage_options.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/grid.h"
-#include "mongo/s/request_types/split_chunk_request_type.h"
-#include "mongo/s/stale_exception.h"
-#include "mongo/s/split_chunk_request.h"
 #include "mongo/s/confirm_split_request.h"
+#include "mongo/s/request_types/split_chunk_request_type.h"
+#include "mongo/s/split_chunk_request.h"
+#include "mongo/s/stale_exception.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
-#include "mongo/db/storage/storage_options.h"
+#include "mongo/util/scopeguard.h"
+#include "mongo/util/util_extend/config_reader.h"
 
 namespace mongo {
 
@@ -178,53 +183,113 @@ public:
              int options,
              std::string& errmsg,
              BSONObjBuilder& result) override {
-         Date_t initExecTime = Date_t::now();
-         log() << "splitChunk db: " << dbname << " cmdobj:" << cmdObj;
-         SplitChunkReq splitChunkRequest = uassertStatusOK(SplitChunkReq::createFromCommand(cmdObj));
-         if (!splitChunkRequest.validSplitPoint()) {
-             log() << "[splitChunk] invalid splitPoint " << cmdObj;
-             errmsg = str::stream() << "invlid split point ";
-             return false;
-         }
-         splitChunkRequest.setFullRightDBPath(storageGlobalParams.dbpath + /*'/' + */
-                                              splitChunkRequest.getRightChunkName() + '/' +
-                                              splitChunkRequest.getRightDBPath());
+        if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
+            return appendCommandStatus(result,
+                                       {ErrorCodes::IllegalOperation, "can only be run on shard"});
+        }
 
-         index_LOG(1)<<"splitChunk db Request: " << splitChunkRequest;
-         NamespaceString nss = splitChunkRequest.getNss();
-         NamespaceString nss_with_chunkID (StringData(nss.ns()+'$'+ splitChunkRequest.getName()));
+        SplitChunkReq splitChunkRequest = uassertStatusOK(SplitChunkReq::createFromCommand(cmdObj));
+        if (!splitChunkRequest.validSplitPoint()) {
+            index_err() << "[splitChunk] invalid splitPoint ";
+            errmsg = str::stream() << "invlid split point ";
+            return appendCommandStatus(result, Status(ErrorCodes::CannotSplit, errmsg));
+        }
+        splitChunkRequest.setFullRightDBPath(storageGlobalParams.dbpath + /*'/' + */
+                                             splitChunkRequest.getRightChunkName() +
+                                             '/' + splitChunkRequest.getRightDBPath());
 
-         index_log() << "[splitChunk] shardSvr start nss : " << nss_with_chunkID;
+        NamespaceString nss = splitChunkRequest.getNss();
+        NamespaceString nss_with_chunkID(StringData(nss.ns() + '$' + splitChunkRequest.getName()));
+        splitChunkRequest.setNs(nss_with_chunkID);
 
-         splitChunkRequest.setNs(nss_with_chunkID);
-         index_log() << "[splitChunk] shardSvr get DBLock nss: " << nss_with_chunkID;
-         Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_IS);
-         index_log() << "[splitChunk] after geted DBLock nss: " << nss_with_chunkID << "; used Time(ms): " <<
-             (Date_t::now()-initExecTime);
+        index_log() << "[splitChunk] db: " << nss_with_chunkID << "; cmd: " << cmdObj;
+        Collection* collection = nullptr;
+        {
 
-         Database* db = dbHolder().get(txn, nss.db());
-         if (!db) {
-             log() << "splitChunk db not exeist: " << nss.db();
-             errmsg = str::stream() << "database not exist " << nss.db();
-             return false;
-         }
+            Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_IS);
+            Database* db = dbHolder().get(txn, nss.db());
+            if (!db) {
+                index_err() << "[splitChunk] db not exist: " << nss.db();
+                errmsg = str::stream() << "database not exist " << nss.db();
+                return appendCommandStatus(result, Status(ErrorCodes::CannotSplit, errmsg));
+            }
 
-         Collection* collection = db->getCollection(nss_with_chunkID);
-         if (!collection) {
-             log() << "splitChunk nss not exeist: " << nss_with_chunkID;
-             errmsg = str::stream() << "collection not exist " << nss_with_chunkID.toString();
-             return false;
-         }
+            collection = db->getCollection(nss_with_chunkID);
+            if (!collection) {
+                index_err() << "[splitChunk] nss not exist: " << nss_with_chunkID;
+                errmsg = str::stream() << "collection not exist " << nss_with_chunkID.toString();
+                return appendCommandStatus(result, Status(ErrorCodes::CannotSplit, errmsg));
+            }
 
-         Status commandStatus = collection->split(txn, splitChunkRequest, result);
-         if (!commandStatus.isOK()) {
-             log() << "splitChunk split fail: " ;
-             return appendCommandStatus(result, commandStatus);
-         }
-         
-         index_log() << "[splitChunk] shardSvr end nss : " << nss_with_chunkID <<
-             "; used Time(ms): " << (Date_t::now()-initExecTime);
-         return true;
+            if (!collection->getCursorManager()->cursorsEmpty()) {
+                errmsg = str::stream() << "open cursors exist on collection "
+                                       << nss_with_chunkID.toString();
+                index_err() << "[splitChunk] open cursors exist on collection: "
+                            << nss_with_chunkID;
+                return appendCommandStatus(result, Status(ErrorCodes::CannotSplit, errmsg));
+            }
+        }
+
+        int chunksNum = ns2chunkHolder().getNumChunks();
+        size_t maxNumChunks = ConfigReader::getInstance()->getDecimalNumber<size_t>(
+            "PublicOptions", "max_chunk_count_in_one_shard");
+        if (chunksNum >= (int)maxNumChunks) {
+            errmsg = str::stream() << "chunks Num : " << chunksNum << " gt maxNumChunks: " << maxNumChunks
+                << nss_with_chunkID.toString();
+            index_err() << errmsg;
+            return appendCommandStatus(result, Status(ErrorCodes::CannotSplit, errmsg));
+        }
+
+        collection->lockBalancer();
+        auto guard = MakeGuard([collection] { collection->unlockBalancer(); });
+        Date_t start = Date_t::now();
+        Status commandStatus = collection->preSplit(txn, splitChunkRequest, result);
+        auto preTime = Date_t::now() - start;
+        start = Date_t::now();
+        if (!commandStatus.isOK()) {
+            if (commandStatus.code() == ErrorCodes::DuplicateKey) {
+                index_warning() << "[splitChunk] preSplit repeat Split: " << commandStatus.toString();
+                return true;
+            } else {
+                index_err() << "[splitChunk] preSplit fail, status: " << commandStatus.toString();
+                errmsg = str::stream() << "preSplit faild: " << commandStatus.toString();
+                return appendCommandStatus(result, commandStatus);
+            }
+        }
+
+        {
+            AutoGetCollection autoColl(txn, nss_with_chunkID, MODE_IX, MODE_X);
+            if (!collection->getCursorManager()->cursorsEmpty()) {
+                errmsg = str::stream() << "open cursors exist on collection "
+                                       << nss_with_chunkID.toString();
+                index_err() << "[splitChunk] open cursors exist on collection: "
+                            << nss_with_chunkID;
+                collection->rollbackPreSplit(txn, splitChunkRequest);
+                return appendCommandStatus(result, Status(ErrorCodes::CannotSplit, errmsg));
+            }
+
+            collection->setSpliting(true);
+        }
+
+        commandStatus = collection->split(txn, splitChunkRequest, result);
+        if (!commandStatus.isOK()) {
+            collection->setSpliting(false);
+            index_err() << "[splitChunk] split fail, status: " << commandStatus;
+            if (commandStatus.code() == ErrorCodes::NeedRollBackSplit) {
+                return appendCommandStatus(result, commandStatus);
+            } else {
+                return appendCommandStatus(result,
+                                           Status(ErrorCodes::CannotSplit, commandStatus.reason()));
+            }
+
+            collection->rollbackPreSplit(txn, splitChunkRequest);
+        }
+
+        auto splitTime = Date_t::now() - start;
+
+        index_log() << "[splitChunk] succ: " << nss_with_chunkID
+                    << "; prepareSplit use time: " << preTime << "; split use time: " << splitTime;
+        return true;
     }
 
 } cmdSplitChunk;
@@ -236,9 +301,9 @@ public:
 
     void help(std::stringstream& help) const override {
         help << "internal command usage only\n"
-            "example:\n"
-            " { confirmSplit:\"db.foo\" , keyPattern: {a:1} , min : {a:100} , max: {a:200} { "
-            "splitKeys : [ {a:150} , ... ]}";
+                "example:\n"
+                " { confirmSplit:\"db.foo\" , keyPattern: {a:1} , min : {a:100} , max: {a:200} { "
+                "splitKeys : [ {a:150} , ... ]}";
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -254,13 +319,13 @@ public:
     }
 
     Status checkAuthForCommand(Client* client,
-        const std::string& dbname,
-        const BSONObj& cmdObj) override {
-            if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
                 ResourcePattern::forClusterResource(), ActionType::internal)) {
-                    return Status(ErrorCodes::Unauthorized, "Unauthorized");
-            }
-            return Status::OK();
+            return Status(ErrorCodes::Unauthorized, "Unauthorized");
+        }
+        return Status::OK();
     }
 
     std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
@@ -268,49 +333,71 @@ public:
     }
 
     bool run(OperationContext* txn,
-        const std::string& dbname,
-        BSONObj& cmdObj,
-        int options,
-        std::string& errmsg,
-        BSONObjBuilder& result) override {
-            Date_t initExecTime = Date_t::now();
-            index_log() << "confirmSplit db: " << dbname << " cmdobj:" << cmdObj;
-            ConfirmSplitRequest confirmSplitRequest = uassertStatusOK(ConfirmSplitRequest::createFromCommand(cmdObj));
-            NamespaceString nss = confirmSplitRequest.getNss();
-            NamespaceString nss_with_chunkID (StringData(nss.ns()+'$'+ confirmSplitRequest.getName()));
-            index_log() << "[confirmSplit] shardSvr start nss : " << nss_with_chunkID;
-            confirmSplitRequest.setNs(nss_with_chunkID);
-            {
-                index_log() << "[confirmSplit] nss db: " << nss_with_chunkID;
-                Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_IS);
-                Lock::CollectionLock collLock(txn->lockState(), nss.ns(), MODE_IS);
-                index_log() << "[confirmSplit] nss db after DBLock: " << nss_with_chunkID;
-                Database* db = dbHolder().get(txn, nss.db());
-                if (!db) {
-                    log() << "confirmSplit db not exist: " << nss.db();
-                    errmsg = str::stream() << "database not exist " << dbname;
-                    return false;
-                }
+             const std::string& dbname,
+             BSONObj& cmdObj,
+             int options,
+             std::string& errmsg,
+             BSONObjBuilder& result) override {
+        if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
+            return appendCommandStatus(result,
+                                       {ErrorCodes::IllegalOperation, "can only be run on shard"});
+        }
 
-                Collection* collection = db->getCollection(nss_with_chunkID);
-                if (!collection) {
-                    log() << "confirmSplit nss not exist: " << nss_with_chunkID;
-                    errmsg = str::stream() << "collection not exist " << nss_with_chunkID.toString();
-                    return false;
-                }
+        ConfirmSplitRequest confirmSplitRequest =
+            uassertStatusOK(ConfirmSplitRequest::createFromCommand(cmdObj));
+        NamespaceString nss = confirmSplitRequest.getNss();
+        NamespaceString nss_with_chunkID(
+            StringData(nss.ns() + '$' + confirmSplitRequest.getName()));
+        confirmSplitRequest.setNs(nss_with_chunkID);
 
-                Status commandStatus = collection->confirmSplit(txn, confirmSplitRequest, result);
-                if (!commandStatus.isOK()) {
-                    log() << "confirmSplit split fail: " ;
-                    return appendCommandStatus(result, commandStatus);
-                }
+        index_log() << "[confirmSplit] db: " << nss_with_chunkID << "; cmd: " << cmdObj;
+        // update chunk version in cache
+        // ShardingState::get(txn)->onStaleShardVersion(txn, nss_with_chunkID, ChunkVersion());
+
+        ShardingState::get(txn)->updateMetadata(
+            txn, confirmSplitRequest.getNss(), confirmSplitRequest.getChunk());
+
+        {
+            Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_IS);
+            Lock::CollectionLock collLock(txn->lockState(), nss_with_chunkID.ns(), MODE_IS);
+            Database* db = dbHolder().get(txn, nss.db());
+            if (!db) {
+                index_err() << "[confirmSplit] db not exist: " << nss.db();
+                errmsg = str::stream() << "database not exist " << dbname;
+                return false;
             }
 
-            index_log() << "[confirmSplit] shardSvr end nss : " << nss_with_chunkID <<
-                "; used Time(ms): " << (Date_t::now()-initExecTime);
-            return true;
-    }
+            Collection* collection = db->getCollection(nss_with_chunkID);
+            if (!collection) {
+                index_err() << "[confirmSplit] nss not exist: " << nss_with_chunkID;
+                errmsg = str::stream() << "collection not exist " << nss_with_chunkID.toString();
+                return false;
+            }
+            std::set<CursorId> cursorsNow;
+            collection->getCursorManager()->getCursorIds(&cursorsNow);
+            if (cursorsNow.size() > 0) {
+                errmsg = str::stream() << "open cursors exist on collection "
+                                       << nss_with_chunkID.toString();
+                index_err() << "[confirmSplit] open cursors exist on collection: "
+                            << nss_with_chunkID;
+                invariant(false);
+                return appendCommandStatus(result, Status(ErrorCodes::CannotSplit, errmsg));
+            }
 
+            collection->setSpliting(false);
+            Status commandStatus = collection->confirmSplit(txn, confirmSplitRequest, result);
+            if (!commandStatus.isOK()) {
+                index_err() << "[confirmSplit] confirmSplit fail: " << commandStatus;
+                return appendCommandStatus(result, commandStatus);
+            }
+        }
+
+        // update chunk version in cache
+        ShardingState::get(txn)->onStaleShardVersion(txn, nss_with_chunkID, ChunkVersion());
+
+        index_log() << "[confirmSplit] succ: " << nss_with_chunkID;
+        return true;
+    }
 } cmdConfirmSplit;
 
 }  // namespace

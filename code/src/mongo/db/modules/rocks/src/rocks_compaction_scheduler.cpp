@@ -59,8 +59,8 @@ namespace mongo {
             }
         }
         if (schedule) {
-            log() << "Scheduling compaction to clean up tombstones for prefix "
-                  << rocksdb::Slice(prefix).ToString(true);
+            index_log() << "Scheduling compaction to clean up tombstones for prefix "
+                        << rocksdb::Slice(prefix).ToString(true);
             // we schedule compaction now
             std::string nextPrefix(rocksGetNextPrefix(prefix));
             rocksdb::Slice begin(prefix), end(nextPrefix);
@@ -68,5 +68,4 @@ namespace mongo {
             rocksdb::experimental::SuggestCompactRange(_db, &begin, &end);
         }
     }
-
 }

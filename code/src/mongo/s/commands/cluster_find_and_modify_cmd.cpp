@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "mongo/base/status_with.h"
+#include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
@@ -40,9 +41,12 @@
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/catalog_cache.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/chunk_manager.h"
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/commands/checkView.h"
 #include "mongo/s/commands/cluster_explain.h"
 #include "mongo/s/commands/sharded_command_processing.h"
 #include "mongo/s/commands/strategy.h"
@@ -51,12 +55,8 @@
 #include "mongo/s/mongos_options.h"
 #include "mongo/s/sharding_raii.h"
 #include "mongo/s/stale_exception.h"
-#include "mongo/util/timer.h"
 #include "mongo/util/log.h"
-#include "mongo/s/catalog/type_chunk.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
-#include "mongo/bson/bsonobjbuilder.h"
-
+#include "mongo/util/timer.h"
 namespace mongo {
 namespace {
 
@@ -96,14 +96,22 @@ public:
                            const rpc::ServerSelectionMetadata& serverSelectionMetadata,
                            BSONObjBuilder* out) const {
         const NamespaceString nss = parseNsCollectionRequired(dbName, cmdObj);
-
         auto scopedDB = uassertStatusOK(ScopedShardDatabase::getExisting(txn, dbName));
         DBConfig* conf = scopedDB.db();
 
         shared_ptr<ChunkManager> chunkMgr;
         shared_ptr<Shard> shard;
+        shared_ptr<Chunk> ck = nullptr;
 
-        if (!conf->isShardingEnabled() || CollectionType::TableType::kNonShard == conf->getCollTabType(nss.ns())) {
+        bool isExist = false;
+        auto res = conf->isCollectionExist(txn, nss.ns());
+        if (res.isOK()) {
+            isExist = res.getValue();
+        } else {
+            return res.getStatus();
+        }
+
+        if (!conf->isShardingEnabled() || !isExist) {
             auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, conf->getPrimaryId());
             if (!shardStatus.isOK()) {
                 return shardStatus.getStatus();
@@ -126,24 +134,33 @@ public:
 
             StatusWith<BSONObj> status = _getShardKey(txn, chunkMgr, query);
             if (!status.isOK()) {
-                return status.getStatus();
-            }
+                if ((status.getStatus().code() == ErrorCodes::ShardKeyNotFound) &&
+                    CollectionType::TableType::kNonShard == conf->getCollTabType(nss.ns())) {
+                    auto shardStatus =
+                        Grid::get(txn)->shardRegistry()->getShard(txn, conf->getPrimaryId());
+                    if (!shardStatus.isOK()) {
+                        return shardStatus.getStatus();
+                    }
+                    shard = shardStatus.getValue();
+                } else {
+                    return status.getStatus();
+                }
+            } else {
+                BSONObj shardKey = status.getValue();
+                auto chunk = chunkMgr->findIntersectingChunk(txn, shardKey, collation);
 
-            BSONObj shardKey = status.getValue();
-            auto chunk = chunkMgr->findIntersectingChunk(txn, shardKey, collation);
-
-            if (!chunk.isOK()) {
-                uasserted(ErrorCodes::ShardKeyNotFound,
-                          "findAndModify must target a single shard, but was not able to due "
-                          "to non-simple collation");
+                if (!chunk.isOK()) {
+                    uasserted(ErrorCodes::ShardKeyNotFound,
+                              "findAndModify must target a single shard, but was not able to due "
+                              "to non-simple collation");
+                }
+                ck = chunk.getValue();
+                auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, ck->getShardId());
+                if (!shardStatus.isOK()) {
+                    return shardStatus.getStatus();
+                }
+                shard = shardStatus.getValue();
             }
-
-            auto shardStatus =
-                Grid::get(txn)->shardRegistry()->getShard(txn, chunk.getValue()->getShardId());
-            if (!shardStatus.isOK()) {
-                return shardStatus.getStatus();
-            }
-            shard = shardStatus.getValue();
         }
 
         BSONObjBuilder explainCmd;
@@ -153,9 +170,13 @@ public:
 
         // Time how long it takes to run the explain command on the shard.
         Timer timer;
-
+        if (ck) {
+            index_LOG(0) << "ck not null";
+            explainCmd.append("chunkId", ck->getChunkId().toString());
+        }
+        BSONObj cmd = explainCmd.obj();
         BSONObjBuilder result;
-        auto runStatus = _runCommand(txn, conf, chunkMgr, shard->getId(), nss, explainCmd.obj(), result);
+        auto runStatus = _runCommand(txn, conf, chunkMgr, shard->getId(), nss, cmd, result);
         if (!runStatus.isOK()) {
             return runStatus.getStatus();
         }
@@ -178,9 +199,20 @@ public:
         return ClusterExplain::buildExplainResult(
             txn, shardResults, ClusterExplain::kSingleShard, millisElapsed, out);
     }
-    static bool CreateCollIfNotExist(OperationContext* txn,const std::string& dbName,const NamespaceString& ns){
+    static bool CreateCollIfNotExist(OperationContext* txn,
+                                     const std::string& dbName,
+                                     const NamespaceString& ns) {
         auto config = uassertStatusOK(grid.catalogCache()->getDatabase(txn, dbName));
-        if(!config->isCollectionExist(dbName+"."+ns.coll())){
+
+        bool isExist = false;
+        auto res = config->isCollectionExist(txn, dbName + "." + ns.coll());
+        if (res.isOK()) {
+            isExist = res.getValue();
+        } else {
+            return false;
+        }
+
+        if (!isExist) {
             Command* createCmd = Command::findCommand("create");
             int queryOptions = 0;
             string errmsg;
@@ -188,16 +220,17 @@ public:
             cmdBob.append("create", ns.coll());
             auto createCmdObj = cmdBob.done();
             bool ok = false;
-            try { 
-                 ok = createCmd->run(txn, dbName, createCmdObj, queryOptions, errmsg, cmdBob);
+            try {
+                ok = createCmd->run(txn, dbName, createCmdObj, queryOptions, errmsg, cmdBob);
             } catch (const DBException& e) {
-                 LOG(1)<<"run create cmd error";
-                 return false;
+                index_LOG(1) << "run create cmd error";
+                return false;
             }
             return ok;
         }
         return true;
     }
+    // end
     virtual bool run(OperationContext* txn,
                      const std::string& dbName,
                      BSONObj& cmdObj,
@@ -205,17 +238,32 @@ public:
                      std::string& errmsg,
                      BSONObjBuilder& result) {
         const NamespaceString nss = parseNsCollectionRequired(dbName, cmdObj);
-        LOG(1)<<"[find_and_modify] cmd "<<cmdObj;
         // findAndModify should only be creating database if upsert is true, but this would require
         // that the parsing be pulled into this function.
         auto scopedDb = uassertStatusOK(ScopedShardDatabase::getOrCreate(txn, dbName));
         DBConfig* conf = scopedDb.db();
-        if( !CreateCollIfNotExist(txn,dbName,nss)){
-            return false;
-        }  
 
-        if (nss.isOnInternalDb() || CollectionType::TableType::kNonShard == conf->getCollTabType(nss.ns())) {
-            auto runStatus = _runCommand(txn, conf, nullptr, conf->getPrimaryId(), nss, cmdObj, result);
+        auto isviewStatus = isView(txn, dbName, nss);
+
+        if (!isviewStatus.isOK()) {
+            return appendCommandStatus(result, isviewStatus.getStatus());
+        }
+        bool isExist = uassertStatusOK(isviewStatus);
+
+        if (isExist) {
+            return appendCommandStatus(result,
+                                       Status(ErrorCodes::CommandNotSupportedOnView,
+                                              "findAndModify not supported on a view"));
+        }
+
+        if (!CreateCollIfNotExist(txn, dbName, nss)) {
+            return false;
+        }
+
+        if (nss.isOnInternalDb() ||
+            CollectionType::TableType::kNonShard == conf->getCollTabType(nss.ns())) {
+            auto runStatus =
+                _runCommand(txn, conf, nullptr, conf->getPrimaryId(), nss, cmdObj, result);
             if (!runStatus.isOK()) {
                 return appendCommandStatus(result, runStatus.getStatus());
             }
@@ -223,9 +271,10 @@ public:
         }
 
         if (!conf->isShardedAfterReload(txn, nss.ns())) {
-            return appendCommandStatus(result,
-                                        Status(ErrorCodes::NamespaceNotSharded,
-                                        str::stream() << "ns " << nss.ns() <<" is not sharded yet"));
+            return appendCommandStatus(
+                result,
+                Status(ErrorCodes::NamespaceNotSharded,
+                       str::stream() << "ns " << nss.ns() << " is not sharded yet"));
         }
 
         shared_ptr<ChunkManager> chunkMgr = _getChunkManager(txn, conf, nss);
@@ -266,7 +315,8 @@ public:
         ChunkId chunkId(chunk.getValue()->getChunkId());
         chunkId.appendForCommands(&cmdBuilder);
 
-        auto runStatus = _runCommand(txn, conf, chunkMgr, chunk.getValue()->getShardId(), nss, cmdBuilder.obj(), result);
+        auto runStatus = _runCommand(
+            txn, conf, chunkMgr, chunk.getValue()->getShardId(), nss, cmdBuilder.obj(), result);
         if (runStatus.isOK()) {
             return runStatus.getValue();
         }
@@ -310,12 +360,12 @@ private:
     }
 
     StatusWith<bool> _runCommand(OperationContext* txn,
-                     DBConfig* conf,
-                     shared_ptr<ChunkManager> chunkManager,
-                     const ShardId& shardId,
-                     const NamespaceString& nss,
-                     const BSONObj& cmdObj,
-                     BSONObjBuilder& result) const {
+                                 DBConfig* conf,
+                                 shared_ptr<ChunkManager> chunkManager,
+                                 const ShardId& shardId,
+                                 const NamespaceString& nss,
+                                 const BSONObj& cmdObj,
+                                 BSONObjBuilder& result) const {
         BSONObj res;
 
         auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, shardId);
@@ -323,21 +373,22 @@ private:
             return shardStatus.getStatus();
         }
         std::vector<ChunkType> Chunks;
-        uassertStatusOK(grid.catalogClient(txn)->getChunks(txn,
-                                           BSON(ChunkType::ns(nss.ns())),
-                                           BSONObj(),
-                                           boost::none,
-                                           &Chunks,
-                                           nullptr,
-                                           repl::ReadConcernLevel::kMajorityReadConcern));
+        uassertStatusOK(
+            grid.catalogClient(txn)->getChunks(txn,
+                                               BSON(ChunkType::ns(nss.ns())),
+                                               BSONObj(),
+                                               boost::none,
+                                               &Chunks,
+                                               nullptr,
+                                               repl::ReadConcernLevel::kMajorityReadConcern));
 
-        BSONObjBuilder newCmd; 
-        if( Chunks.size() == 0){
-             newCmd.appendElements(cmdObj);
-             LOG(1)<<"ns not found on mongos";
-        }else{
-             newCmd.appendElements(cmdObj);
-             newCmd.append("chunkId",Chunks[0].getName());
+        BSONObjBuilder newCmd;
+        if (Chunks.size() == 0) {
+            newCmd.appendElements(cmdObj);
+            LOG(1) << "ns not found on mongos";
+        } else {
+            newCmd.appendElements(cmdObj);
+            newCmd.append("chunkId", Chunks[0].getName());
         }
         ShardConnection conn(shardStatus.getValue()->getConnString(), nss.ns(), chunkManager);
         bool ok = conn->runCommand(conf->name(), newCmd.obj(), res);
@@ -348,9 +399,10 @@ private:
             if (errCode == ErrorCodes::RecvStaleConfig)
                 throw RecvStaleConfigException("FindAndModify", res);
 
-            if (errCode == ErrorCodes::FailedToSatisfyReadPreference
-                || ErrorCodes::isNetworkError(static_cast<ErrorCodes::Error>(errCode))) {
-                return {ErrorCodes::ShardNotFound, str::stream() << "shard cannt be accessed " << errCode}; 
+            if (errCode == ErrorCodes::FailedToSatisfyReadPreference ||
+                ErrorCodes::isNetworkError(static_cast<ErrorCodes::Error>(errCode))) {
+                return {ErrorCodes::ShardNotFound,
+                        str::stream() << "shard cannt be accessed " << errCode};
             }
         }
 

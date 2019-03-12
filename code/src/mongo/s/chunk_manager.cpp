@@ -59,9 +59,10 @@
 #include "mongo/s/config.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_util.h"
+#include "mongo/s/stale_exception.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
-#include "mongo/s/stale_exception.h"
+#include "mongo/util/util_extend/config_reader.h"
 
 namespace mongo {
 
@@ -116,16 +117,6 @@ private:
     ChunkManager* const _manager;
 };
 
-bool allOfType(BSONType type, const BSONObj& o) {
-    BSONObjIterator it(o);
-    while (it.more()) {
-        if (it.next().type() != type) {
-            return false;
-        }
-    }
-    return true;
-}
-
 bool isChunkMapValid(const ChunkMap& chunkMap) {
 #define ENSURE(x)                                          \
     do {                                                   \
@@ -140,8 +131,8 @@ bool isChunkMapValid(const ChunkMap& chunkMap) {
     }
 
     // Check endpoints
-    ENSURE(allOfType(MinKey, chunkMap.begin()->second->getMin()));
-    ENSURE(allOfType(MaxKey, boost::prior(chunkMap.end())->second->getMax()));
+    ENSURE(chunkMap.begin()->second->getMin().allOfType(MinKey));
+    ENSURE(boost::prior(chunkMap.end())->second->getMax().allOfType(MaxKey));
 
     // Make sure there are no gaps or overlaps
     for (ChunkMap::const_iterator it = boost::next(chunkMap.begin()), end = chunkMap.end();
@@ -194,14 +185,18 @@ ChunkManager::ChunkManager(OperationContext* txn, const CollectionType& coll)
     // coll does not have correct version. Use same initial version as _load and createFirstChunks.
     _version = ChunkVersion(0, 0, coll.getEpoch());
 
-    if (!coll.getDefaultCollation().isEmpty()) {
-        auto statusWithCollator = CollatorFactoryInterface::get(txn->getServiceContext())
-                                      ->makeFromBSON(coll.getDefaultCollation());
+    if (!coll.getOptions().isEmpty()) {
+        BSONObj options = coll.getOptions();
+        if (options.hasField("collation") && options["collation"].type() == Object) {
+           BSONObj collation = options["collation"].embeddedObject();
+           auto statusWithCollator = CollatorFactoryInterface::get(txn->getServiceContext())
+                                          ->makeFromBSON(collation);
 
-        // The collation was validated upon collection creation.
-        invariantOK(statusWithCollator.getStatus());
+            
+           invariantOK(statusWithCollator.getStatus());
 
-        _defaultCollator = std::move(statusWithCollator.getValue());
+           _defaultCollator = std::move(statusWithCollator.getValue());        
+        }
     }
 }
 
@@ -218,8 +213,8 @@ void ChunkManager::loadExistingRanges(OperationContext* txn, const ChunkManager*
 
         Timer t;
 
-        log() << "ChunkManager loading chunks for " << _ns << " sequenceNumber: " << _sequenceNumber
-              << " based on: " << (oldManager ? oldManager->getVersion().toString() : "(empty)");
+        LOG(3) << "ChunkManager loading chunks for " << _ns
+               << " sequenceNumber: " << _sequenceNumber << " based on: " << _startingVersion;
 
         if (_load(txn, chunkMap, shardIds, &shardVersions, oldManager)) {
             // TODO: Merge into diff code above, so we validate in one place
@@ -229,8 +224,8 @@ void ChunkManager::loadExistingRanges(OperationContext* txn, const ChunkManager*
                 _shardVersions = std::move(shardVersions);
                 _chunkRangeMap = _constructRanges(_chunkMap);
 
-                log() << "ChunkManager load took " << t.millis() << " ms and found version "
-                      << _version;
+                LOG(3) << "took " << t.millis() << "ms " << _ns << " from " << _startingVersion
+                       << " to " << _version << " n=" << numChunks();
 
                 return;
             }
@@ -244,9 +239,9 @@ void ChunkManager::loadExistingRanges(OperationContext* txn, const ChunkManager*
 
     _version = ChunkVersion(0, 0, OID());
     throw RecvStaleConfigException(_ns,
-                                    str::stream() << "[" << _ns << "] load invalid config",
-                                    ChunkVersion(),
-                                    ChunkVersion());
+                                   str::stream() << "[" << _ns << "] load invalid config",
+                                   ChunkVersion(),
+                                   ChunkVersion());
 }
 
 bool ChunkManager::_load(OperationContext* txn,
@@ -260,8 +255,7 @@ bool ChunkManager::_load(OperationContext* txn,
     // If we have a previous version of the ChunkManager to work from, use that info to reduce
     // our config query
     if (oldManager && oldManager->getVersion().isSet()) {
-        // Get the old max version
-        _version = oldManager->getVersion();
+        _version = _startingVersion;
 
         // Load a copy of the old versions
         *shardVersions = oldManager->_shardVersions;
@@ -286,7 +280,7 @@ bool ChunkManager::_load(OperationContext* txn,
             chunkMap.insert(make_pair(oldC->getMax(), newC));
         }
 
-        LOG(0) << "loading chunk manager for collection " << _ns
+        LOG(2) << "loading chunk manager for collection " << _ns
                << " using old chunk manager w/ version " << _version.toString() << " and "
                << oldChunkMap.size() << " chunks";
     }
@@ -314,7 +308,7 @@ bool ChunkManager::_load(OperationContext* txn,
 
     int diffsApplied = differ.calculateConfigDiff(txn, chunks);
     if (diffsApplied > 0) {
-        LOG(0) << "loaded " << diffsApplied << " chunks into new chunk manager for " << _ns
+        LOG(2) << "loaded " << diffsApplied << " chunks into new chunk manager for " << _ns
                << " with version " << _version;
 
         // Add all existing shards we find to the shards set
@@ -379,7 +373,7 @@ void ChunkManager::_printChunks() const {
     }
 }
 
-void ChunkManager::calcInitSplitsAndShards(OperationContext* txn,
+/*void ChunkManager::calcInitSplitsAndShards(OperationContext* txn,
                                            const ShardId& primaryShardId,
                                            const vector<BSONObj>* initPoints,
                                            const set<ShardId>* initShardIds,
@@ -484,7 +478,7 @@ Status ChunkManager::createFirstChunks(OperationContext* txn,
     _version = ChunkVersion(0, 0, version.epoch());
 
     return Status::OK();
-}
+}*/
 
 StatusWith<shared_ptr<Chunk>> ChunkManager::findIntersectingChunk(OperationContext* txn,
                                                                   const BSONObj& shardKey,
@@ -509,21 +503,13 @@ StatusWith<shared_ptr<Chunk>> ChunkManager::findIntersectingChunk(OperationConte
                 chunkMin = it->first;
                 chunk = it->second;
             }
-            /*
-            else{
-                it = _chunkMap.begin();
-                if( shardKey.toString() == it->first.toString() ){
-                    chunk = it->second;
-                    return chunk;
-                }
-            }*/
         }
 
         if (chunk) {
             if (chunk->containsKey(shardKey)) {
                 return chunk;
             }
-            log()<<"..............";
+
             log() << redact(chunkMin.toString());
             log() << redact((*chunk).toString());
             log() << redact(shardKey);
@@ -550,6 +536,19 @@ shared_ptr<Chunk> ChunkManager::findIntersectingChunkWithSimpleCollation(
     // collation.
     massertStatusOK(chunk.getStatus());
     return chunk.getValue();
+}
+
+
+shared_ptr<Chunk> ChunkManager::findChunkByChunkId(const std::string& id) const {
+    std::string idwithoutprefix = id.substr(id.find_first_not_of('0'));
+
+    for (auto& chunk : _chunkMap) {
+        if (chunk.second->getChunkId() == idwithoutprefix) {
+            return chunk.second;
+        }
+    }
+
+    return nullptr;
 }
 
 void ChunkManager::getShardIdsForQuery(OperationContext* txn,
@@ -774,6 +773,15 @@ ChunkVersion ChunkManager::getVersion(const ShardId& shardName) const {
     return i->second;
 }
 
+ChunkVersion ChunkManager::getStartingVersion() const {
+    return _startingVersion;
+}
+
+void ChunkManager::setStartingVersion(const ChunkVersion& version) {
+    _startingVersion = version;
+    return;
+}
+
 ChunkVersion ChunkManager::getVersion() const {
     return _version;
 }
@@ -797,47 +805,47 @@ ChunkManager::ChunkRangeMap ChunkManager::_constructRanges(const ChunkMap& chunk
         return chunkRangeMap;
     }
 
-    for(const auto& current : chunkMap) {
-        auto insertResult = chunkRangeMap.insert(std::make_pair(current.second->getMax(),
+    for (const auto& current : chunkMap) {
+        auto insertResult =
+            chunkRangeMap.insert(std::make_pair(current.second->getMax(),
                                                 ShardAndChunkRange(current.second->getChunkId(),
-                                                                    current.second->getLastmod(),
-                                                                    current.second->getMin(),
-                                                                    current.second->getMax(),
-                                                                    current.second->getShardId())));
+                                                                   current.second->getLastmod(),
+                                                                   current.second->getMin(),
+                                                                   current.second->getMax(),
+                                                                   current.second->getShardId())));
         invariant(insertResult.second);
         if (insertResult.first != chunkRangeMap.begin()) {
             // Make sure there are no gaps in the ranges
             insertResult.first--;
-            invariant(
-                SimpleBSONObjComparator::kInstance.evaluate(insertResult.first->first == current.second->getMin()));
+            invariant(SimpleBSONObjComparator::kInstance.evaluate(insertResult.first->first ==
+                                                                  current.second->getMin()));
         }
     }
 
     invariant(!chunkRangeMap.empty());
-    invariant(allOfType(MinKey, chunkRangeMap.begin()->second.getMin()));
-    invariant(allOfType(MaxKey, chunkRangeMap.rbegin()->first));
+    invariant(chunkRangeMap.begin()->second.getMin().allOfType(MinKey));
+    invariant(chunkRangeMap.rbegin()->first.allOfType(MaxKey));
 
     return chunkRangeMap;
 }
 
-uint64_t ChunkManager::getCurrentDesiredChunkSize() const {
+uint64_t ChunkManager::getCurrentDesiredChunkSize(int shardNum) const {
     // split faster in early chunks helps spread out an initial load better
     // but only Rocksdb L1 has files can auto-balancer get the correct splitPoint
-    const uint64_t minChunkSize = 200 * 1024ULL * 1024ULL;  // 200 MBytes
-
-    uint64_t splitThreshold = grid.getBalancerConfiguration()->getMaxChunkSizeBytes();
-
-    int nc = numChunks();
-
-    if (nc < 3) {
-        return minChunkSize;
-    } else if (nc < 10) {
-        splitThreshold = max(splitThreshold / 4, minChunkSize);
-    } else if (nc < 20) {
-        splitThreshold = max(splitThreshold / 2, minChunkSize);
+    int chunkNum = numChunks() / shardNum;
+    if (chunkNum < 4) {
+        return ConfigReader::getInstance()->getDecimalNumber<int64_t>("PublicOptions", "max_chunk_size_lt4")
+            * 1024ULL * 1024ULL;  // 200M
+    } else if (chunkNum < 8) {
+        return ConfigReader::getInstance()->getDecimalNumber<int64_t>("PublicOptions", "max_chunk_size_lt8")
+            * 1024ULL * 1024ULL;  // 500M
+    } else if (chunkNum < 16) {
+        return ConfigReader::getInstance()->getDecimalNumber<int64_t>("PublicOptions", "max_chunk_size_lt16")
+            * 1024ULL * 1024ULL;  // 2G
+    } else {
+        return ConfigReader::getInstance()->getDecimalNumber<int64_t>("PublicOptions", "max_chunk_size_gt16")
+            * 1024ULL * 1024ULL;  // 10G
     }
-
-    return splitThreshold;
 }
 
 repl::OpTime ChunkManager::getConfigOpTime() const {
@@ -845,10 +853,10 @@ repl::OpTime ChunkManager::getConfigOpTime() const {
 }
 
 void ChunkManager::getShardEndpointsForQuery(OperationContext* txn,
-                                       const BSONObj& query,
-                                       const BSONObj& collation,
-                                       vector<ShardEndpoint*>* endpoints,
-                                       bool isUseLowerBoundForMax) const {
+                                             const BSONObj& query,
+                                             const BSONObj& collation,
+                                             vector<ShardEndpoint*>* endpoints,
+                                             bool isUseLowerBoundForMax) const {
     auto qr = stdx::make_unique<QueryRequest>(NamespaceString(_ns));
     qr->setFilter(query);
 
@@ -867,7 +875,7 @@ void ChunkManager::getShardEndpointsForQuery(OperationContext* txn,
         const NamespaceString nss(_ns);
         auto config = uassertStatusOK(grid.catalogCache()->getDatabase(txn, nss.db().toString()));
         type = config->getCollTabType(_ns);
-        if( type != CollectionType::TableType::kNonShard ){
+        if (type != CollectionType::TableType::kNonShard) {
             uasserted(13502, "use geoNear command rather than $near query");
         }
     }
@@ -877,8 +885,8 @@ void ChunkManager::getShardEndpointsForQuery(OperationContext* txn,
         auto chunk = findIntersectingChunk(txn, shardKeyToFind, collation);
         if (chunk.isOK()) {
             endpoints->push_back(new ShardEndpoint(chunk.getValue()->getChunkId(),
-                                              chunk.getValue()->getShardId(),
-                                              chunk.getValue()->getLastmod()));
+                                                   chunk.getValue()->getShardId(),
+                                                   chunk.getValue()->getLastmod()));
             return;
         }
     }
@@ -889,20 +897,20 @@ void ChunkManager::getShardEndpointsForQuery(OperationContext* txn,
     for (BoundList::const_iterator it = ranges.begin(); it != ranges.end(); ++it) {
         getShardEndpointsForRange(endpoints, it->first, it->second, isUseLowerBoundForMax);
     }
-    
+
     if (endpoints->empty()) {
         ShardId shardId = _chunkRangeMap.begin()->second.getShardId();
         ChunkId chunkId = _chunkRangeMap.begin()->second.getChunkId();
-        endpoints->push_back(new ShardEndpoint(chunkId , shardId, getVersion(shardId)));
+        endpoints->push_back(new ShardEndpoint(chunkId, shardId, getVersion(shardId)));
     }
 
     return;
 }
 
 void ChunkManager::getShardEndpointsForRange(vector<ShardEndpoint*>* endpoints,
-                                       const BSONObj& min,
-                                       const BSONObj& max,
-                                       bool isUseLowerBoundForMax) const {
+                                             const BSONObj& min,
+                                             const BSONObj& max,
+                                             bool isUseLowerBoundForMax) const {
     auto it = _chunkRangeMap.upper_bound(min);
     auto end = it;
     if (isUseLowerBoundForMax) {
@@ -928,13 +936,17 @@ void ChunkManager::getShardEndpointsForRange(vector<ShardEndpoint*>* endpoints,
         }
 
         if (!exist) {
-            endpoints->push_back(new ShardEndpoint(it->second.getChunkId(),
-                                              it->second.getShardId(),
-                                              it->second.getLastmod()));
+            endpoints->push_back(new ShardEndpoint(
+                it->second.getChunkId(), it->second.getShardId(), it->second.getLastmod()));
         }
     }
 
     return;
 }
-
+StatusWith<shared_ptr<Chunk>> ChunkManager::getFirstChunk() const {
+    shared_ptr<Chunk> chunk;
+    ChunkMap::const_iterator it = _chunkMap.begin();
+    chunk = it->second;
+    return chunk;
+}
 }  // namespace mongo

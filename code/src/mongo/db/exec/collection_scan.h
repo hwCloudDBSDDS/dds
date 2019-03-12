@@ -56,12 +56,14 @@ public:
 
     StageState doWork(WorkingSetID* out) final;
     bool isEOF() final;
+    bool isDEAD() final;
 
     void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) final;
     void doSaveState() final;
     void doRestoreState() final;
     void doDetachFromOperationContext() final;
     void doReattachToOperationContext() final;
+    void doReleaseCursor() final;
 
     StageType stageType() const final {
         return STAGE_COLLSCAN;

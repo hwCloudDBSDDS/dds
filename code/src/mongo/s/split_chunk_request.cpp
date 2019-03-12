@@ -3,8 +3,8 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/base/status_with.h"
-#include "mongo/bson/util/bson_extract.h"
 #include "mongo/bson/bson_comparator_interface_base.h"
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/logger/redaction.h"
 #include "mongo/s/split_chunk_request.h"
 #include "mongo/util/log.h"
@@ -22,17 +22,19 @@ const char kRightChunkId[] = "rightChunkID";
 
 }  // namespace
 
-SplitChunkReq::SplitChunkReq(const CollectionType &coll,
-                             const ChunkType &chunk,
+SplitChunkReq::SplitChunkReq(const CollectionType& coll,
+                             const ChunkType& chunk,
                              const std::string& rightDBPath,
                              const std::string& rightChunkId,
                              const BSONObj& splitPoint)
-        : _coll(coll), _chunk(chunk), _rightDBPath(rightDBPath),
-        _rightChunkId(rightChunkId),_splitPoint(splitPoint) {}
+    : _coll(coll),
+      _chunk(chunk),
+      _rightDBPath(rightDBPath),
+      _rightChunkId(rightChunkId),
+      _splitPoint(splitPoint) {}
 
 StatusWith<SplitChunkReq> SplitChunkReq::createFromCommand(const BSONObj& cmdobj) {
 
-    log() << "SplitChunkReq::createFromCommand() cmdobj: " << cmdobj;
     CollectionType coll;
     {
         BSONElement source;
@@ -87,19 +89,18 @@ StatusWith<SplitChunkReq> SplitChunkReq::createFromCommand(const BSONObj& cmdobj
             BSONElement source;
             Status status = bsonExtractTypedField(cmdobj, kSplitPoint, BSONType::Object, &source);
             if (status.isOK()) {
-                splitPoint = source.Obj();
+                splitPoint = source.Obj().getOwned();
             }
         }
     }
 
-    log() << "SplitChunkReq::createFromCommand() splitPoint: " << splitPoint;
     SplitChunkReq request(coll, chunk, rightDBPath, rightChunkId, splitPoint);
     return request;
 }
 
 void SplitChunkReq::appendAsCommand(BSONObjBuilder* builder,
-                                    const ChunkType &chunk,
-                                    const CollectionType &coll,
+                                    const ChunkType& chunk,
+                                    const CollectionType& coll,
                                     const std::string& rightDBPath,
                                     const std::string& rightChunkId,
                                     const BSONObj& splitPoint) {
@@ -110,8 +111,8 @@ void SplitChunkReq::appendAsCommand(BSONObjBuilder* builder,
 }
 
 void SplitChunkReq::appendAsCommand(BSONObjBuilder* builder,
-                                    const ChunkType &chunk,
-                                    const CollectionType &coll,
+                                    const ChunkType& chunk,
+                                    const CollectionType& coll,
                                     const std::string& rightDBPath,
                                     const std::string& rightChunkId) {
 
@@ -124,12 +125,12 @@ void SplitChunkReq::appendAsCommand(BSONObjBuilder* builder,
 
 std::string SplitChunkReq::toString() const {
     std::stringstream ss;
-    ss << "split: " << _coll.toBSON() << "; " << _chunk.toBSON() << ";  rightDbPath: " << _rightDBPath <<
-        "; splitPoint: " << _splitPoint;
+    ss << "split: " << _coll.toBSON() << "; " << _chunk.toBSON()
+       << ";  rightDbPath: " << _rightDBPath << "; splitPoint: " << _splitPoint;
     return ss.str();
 }
 
-void SplitChunkReq::setNs(const NamespaceString & ns){
+void SplitChunkReq::setNs(const NamespaceString& ns) {
     _coll.setNs(ns);
 }
 
@@ -146,7 +147,7 @@ bool SplitChunkReq::validSplitPoint() const {
         return false;
     }
 
-    //todo  key pattern and other field
+    // todo  key pattern and other field
     return true;
 }
 

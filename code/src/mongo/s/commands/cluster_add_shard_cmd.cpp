@@ -86,6 +86,7 @@ public:
                      int options,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
+        index_log() << "[MONGOS] addShard ";
         auto parsedRequest = uassertStatusOK(AddShardRequest::parseFromMongosCommand(cmdObj));
 
         auto configShard = Grid::get(txn)->shardRegistry()->getConfigShard();

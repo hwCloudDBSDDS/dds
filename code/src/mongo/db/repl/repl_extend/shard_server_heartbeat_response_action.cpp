@@ -5,8 +5,8 @@
 namespace mongo {
 namespace repl {
 
-ShardServerHeartbeatResponseAction::ShardServerHeartbeatResponseAction() : 
-    _action(NoAction), _primaryConfigServer("") {}
+ShardServerHeartbeatResponseAction::ShardServerHeartbeatResponseAction()
+    : _action(NoAction), _primaryConfigServer("") {}
 
 ShardServerHeartbeatResponseAction ShardServerHeartbeatResponseAction::makeNoAction(
     const std::string& primaryConfigServer) {

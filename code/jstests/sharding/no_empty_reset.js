@@ -32,7 +32,17 @@ var admin = st.s.getDB("admin");
 assert.soon(
     function() {
         var result = admin.runCommand(
-            {moveChunk: "" + coll, find: {_id: -1}, to: fullShard.shardName, _waitForDelete: true});
+            {moveChunk: "" + coll, find: {_id: -1}, to: "shard0001", _waitForDelete: true});
+        jsTestLog('moveChunk result = ' + tojson(result));
+        return result.ok;
+    },
+    "Setup FAILURE:  Unable to move chunk from " + emptyShard.shardName + " to " +
+        fullShard.shardName);
+
+assert.soon(
+    function() {
+        var result = admin.runCommand(
+            {moveChunk: "" + coll, find: {_id: 1}, to: "shard0001", _waitForDelete: true});
         jsTestLog('moveChunk result = ' + tojson(result));
         return result.ok;
     },
@@ -47,7 +57,7 @@ jsTestLog("Making sure we don't insert into the wrong shard...");
 
 collB.insert({_id: -11});
 
-var emptyColl = emptyShard.getCollection("" + coll);
+var emptyColl = st.d0.getCollection("" + coll);
 
 print(emptyColl);
 print(emptyShard);

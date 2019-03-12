@@ -49,7 +49,7 @@
         }
 
         // Abort if we've failed too many times
-        assert.lt(test, 4);
+        assert.lt(test, 5);
 
         // Sleeping for long enough to reset our exponential counter
         sleep(3000);

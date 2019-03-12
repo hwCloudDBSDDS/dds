@@ -27,7 +27,7 @@
 *    exception statement from all source files in the program, then also delete
 *    it in the license file.
 */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/platform/basic.h"
 
 
@@ -42,6 +42,8 @@
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/service_context.h"
+#include "mongo/s/grid.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -152,6 +154,7 @@ public:
              int,
              string& errmsg,
              BSONObjBuilder& result) {
+
         string shortSource = jsobj.getStringField("convertToCapped");
         double size = jsobj.getField("size").number();
 
@@ -160,8 +163,47 @@ public:
             return false;
         }
 
+        NamespaceString nss(dbname, shortSource);
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && 
+            !nss.isSystemCollection()) {
+            //get dist lock
+            auto scopedDistLock = Grid::get(txn)->catalogClient(txn)->getDistLockManager()->lock(
+                txn, nss.ns(), "convertToCapped", DistLockManager::kDefaultLockTimeout);
+            if (!scopedDistLock.isOK()) {
+                index_err() << "[convertToCappedOnConfig] getDistLock error, ns:" << nss.ns();
+                return appendCommandStatus(result, scopedDistLock.getStatus());
+            }
+            index_LOG(0) << "[convertToCappedOnConfig] getDistLock ns: " << nss.ns();
+            
+            std::string shortTmpName = str::stream() << "tmp.convertToCapped." << nss.coll();
+            std::string longTmpName = str::stream() << dbname << "." << shortTmpName;
+
+            auto scopedDistLock2 = Grid::get(txn)->catalogClient(txn)->getDistLockManager()->lock(
+                txn, longTmpName, "convertToCapped", DistLockManager::kDefaultLockTimeout);
+            if (!scopedDistLock2.isOK()) {
+                index_err() << "[convertToCappedOnConfig] getDistLock error, ns:" << longTmpName;
+                return appendCommandStatus(result, scopedDistLock2.getStatus());
+            }
+            index_LOG(0) << "[convertToCappedOnConfig] getDistLock ns: " << longTmpName;
+
+            auto rollBackStatus = rollBackConvertOnConfig(txn, nss);
+            if (!rollBackStatus.isOK()) {
+                index_err() << "[convertToCapped] rollBackConvertOnConfig failed " << 
+                rollBackStatus.toString();
+                return appendCommandStatus(result, rollBackStatus);
+            }
+            auto status = convertToCappedOnConfig(txn, nss, size);
+            if (!status.isOK()) {
+                index_err() << "[convertToCapped] run failed, status " << status.toString();
+                rollBackConvertOnConfig(txn, nss);
+                return appendCommandStatus(result, status);
+            }
+
+            return appendCommandStatus(result, status);
+        }
+
         return appendCommandStatus(
-            result, convertToCapped(txn, NamespaceString(dbname, shortSource), size));
+            result, convertToCapped(txn, nss, size));
     }
 
 } cmdConvertToCapped;

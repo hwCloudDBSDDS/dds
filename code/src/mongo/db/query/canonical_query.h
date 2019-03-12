@@ -106,6 +106,9 @@ public:
     BSONObj getQueryObj() const {
         return _qr->getFilter();
     }
+    void setQueryObj(BSONObj filter) {
+        _qr->setFilter(filter);
+    }
     QueryRequest& getQueryRequest() const {
         return *_qr;
     }

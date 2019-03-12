@@ -147,7 +147,7 @@ Status ViewCatalog::_createOrUpdateView_inlock(OperationContext* txn,
         this->_viewGraphNeedsRefresh = true;
     });
 
-    LOG(1)<<"--_createOrUpdateView_inlock _valid.store(true)";
+    index_LOG(1) << "ViewCatalog::_createOrUpdateView_inlock _valid.store(true)";
     // We may get invalidated, but we're exclusively locked, so the change must be ours.
     txn->recoveryUnit()->onCommit([this]() { this->_valid.store(true); });
     return Status::OK();

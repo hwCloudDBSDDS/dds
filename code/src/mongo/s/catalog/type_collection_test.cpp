@@ -54,7 +54,10 @@ TEST(CollectionType, Basic) {
                                       << CollectionType::keyPattern(BSON("a" << 1))
                                       << CollectionType::defaultCollation(BSON("locale"
                                                                                << "fr_CA"))
-                                      << CollectionType::unique(true)));
+                                      << CollectionType::unique(true)
+                                      << CollectionType::prefix(9999)
+                                      << "tableType" << 1
+                                      << CollectionType::ident("coll-123456")));
     ASSERT_TRUE(status.isOK());
 
     CollectionType coll = status.getValue();
@@ -90,7 +93,10 @@ TEST(CollectionType, MissingDefaultCollationParses) {
                                       << CollectionType::epoch(oid)
                                       << CollectionType::updatedAt(Date_t::fromMillisSinceEpoch(1))
                                       << CollectionType::keyPattern(BSON("a" << 1))
-                                      << CollectionType::unique(true)));
+                                      << CollectionType::unique(true)
+                                      << CollectionType::prefix(9999)
+                                      << "tableType" << 1
+                                      << CollectionType::ident("coll-123456")));
     ASSERT_TRUE(status.isOK());
 
     CollectionType coll = status.getValue();
@@ -107,7 +113,10 @@ TEST(CollectionType, DefaultCollationSerializesCorrectly) {
                                       << CollectionType::keyPattern(BSON("a" << 1))
                                       << CollectionType::defaultCollation(BSON("locale"
                                                                                << "fr_CA"))
-                                      << CollectionType::unique(true)));
+                                      << CollectionType::unique(true)
+                                      << CollectionType::prefix(9999)
+                                      << "tableType" << 1
+                                      << CollectionType::ident("coll-123456")));
     ASSERT_TRUE(status.isOK());
 
     CollectionType coll = status.getValue();
@@ -125,7 +134,10 @@ TEST(CollectionType, MissingDefaultCollationIsNotSerialized) {
                                       << CollectionType::epoch(oid)
                                       << CollectionType::updatedAt(Date_t::fromMillisSinceEpoch(1))
                                       << CollectionType::keyPattern(BSON("a" << 1))
-                                      << CollectionType::unique(true)));
+                                      << CollectionType::unique(true)
+                                      << CollectionType::prefix(9999)
+                                      << "tableType" << 1
+                                      << CollectionType::ident("coll-123456")));
     ASSERT_TRUE(status.isOK());
 
     CollectionType coll = status.getValue();
@@ -149,6 +161,7 @@ TEST(CollectionType, EpochCorrectness) {
     // We should be allowed to set empty epoch for dropped collections
     coll.setDropped(true);
     coll.setEpoch(OID());
+    coll.setPrefix(9999);
     ASSERT_OK(coll.validate());
 
     // We should be allowed to set normal epoch for non-dropped collections
@@ -167,7 +180,13 @@ TEST(CollectionType, Pre22Format) {
                                                                   << "key"
                                                                   << BSON("a" << 1)
                                                                   << "unique"
-                                                                  << false)));
+                                                                  << false 
+                                                                  << "prefix"
+                                                                  << 9999
+                                                                  << "tableType"
+                                                                  << 1
+                                                                  << "ident"
+                                                                  << "coll-123456")));
 
     ASSERT(coll.getNs() == NamespaceString{"db.coll"});
     ASSERT(!coll.getEpoch().isSet());
@@ -185,7 +204,10 @@ TEST(CollectionType, InvalidCollectionNamespace) {
                                       << CollectionType::epoch(oid)
                                       << CollectionType::updatedAt(Date_t::fromMillisSinceEpoch(1))
                                       << CollectionType::keyPattern(BSON("a" << 1))
-                                      << CollectionType::unique(true)));
+                                      << CollectionType::unique(true)
+                                      << CollectionType::prefix(9999)
+                                      << "tableType" << 1
+                                      << CollectionType::ident("coll-123456")));
     ASSERT_TRUE(result.isOK());
     CollectionType collType = result.getValue();
     ASSERT_FALSE(collType.validate().isOK());

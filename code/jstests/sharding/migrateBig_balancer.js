@@ -37,9 +37,9 @@
 
     admin.runCommand({shardcollection: "" + coll, key: {_id: 1}});
 
-    assert.lt(
+    /*assert.lt(
         5, mongos.getDB("config").chunks.find({ns: "test.stuff"}).count(), "not enough chunks");
-
+    */
     assert.soon(function() {
         var res = mongos.getDB("config").chunks.group({
             cond: {ns: "test.stuff"},

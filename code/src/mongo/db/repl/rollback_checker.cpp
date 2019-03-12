@@ -32,6 +32,7 @@
 
 #include "mongo/db/repl/rollback_checker.h"
 
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/log.h"
 
@@ -140,8 +141,11 @@ bool RollbackChecker::_checkForRollback_inlock(int remoteRBID) {
 
 RollbackChecker::CallbackHandle RollbackChecker::_scheduleGetRollbackId(
     const RemoteCommandCallbackFn& nextAction, const CallbackFn& errorFn) {
-    executor::RemoteCommandRequest getRollbackIDReq(
-        _syncSource, "admin", BSON("replSetGetRBID" << 1), nullptr);
+    executor::RemoteCommandRequest getRollbackIDReq(_syncSource,
+                                                    "admin",
+                                                    BSON("replSetGetRBID" << 1),
+                                                    nullptr,
+                                                    Milliseconds(kReplSetGetRBIDTimeoutMS));
     auto cbh = _executor->scheduleRemoteCommand(getRollbackIDReq, nextAction);
 
     if (cbh.getStatus() == ErrorCodes::ShutdownInProgress) {

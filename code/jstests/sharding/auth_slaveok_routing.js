@@ -44,10 +44,20 @@
      * is no admin user.
      */
     var adminDB = mongos.getDB('admin');
-    adminDB.createUser({user: 'user', pwd: 'password', roles: jsTest.adminUserRoles});
-    adminDB.auth('user', 'password');
+    adminDB.createUser({
+        user: 'user',
+        pwd: 'WEak@2password',
+        roles: jsTest.adminUserRoles,
+        passwordDigestor: "server"
+    });
+    adminDB.auth('user', 'WEak@2password');
     var priAdminDB = replTest.getPrimary().getDB('admin');
-    priAdminDB.createUser({user: 'user', pwd: 'password', roles: jsTest.adminUserRoles},
+    priAdminDB.createUser({
+        user: 'user',
+        pwd: 'WEak@2password',
+        roles: jsTest.adminUserRoles,
+        passwordDigestor: "server"
+    },
                           {w: 3, wtimeout: 30000});
 
     coll.drop();

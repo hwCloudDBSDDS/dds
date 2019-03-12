@@ -1557,8 +1557,7 @@ TEST_F(TopoCoordTest, ReplSetGetStatus) {
     getTopoCoord().processHeartbeatResponse(
         startupTime + Milliseconds(2), Milliseconds(1), member, hbResponseGood, OpTime());
     getTopoCoord().prepareHeartbeatRequest(startupTime + Milliseconds(3), setName, member);
-    Date_t timeoutTime =
-        startupTime + Milliseconds(3) + kDefaultConfigHeartbeatTimeoutPeriod;
+    Date_t timeoutTime = startupTime + Milliseconds(3) + kDefaultConfigHeartbeatTimeoutPeriod;
 
     StatusWith<ReplSetHeartbeatResponse> hbResponseDown =
         StatusWith<ReplSetHeartbeatResponse>(Status(ErrorCodes::HostUnreachable, ""));

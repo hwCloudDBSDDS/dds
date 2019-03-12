@@ -34,11 +34,11 @@
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/db/repl/member_state.h"
+#include "mongo/db/repl/repl_extend/shard_server_heartbeat_args.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/sync_source_selector.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
-#include "mongo/db/repl/repl_extend/shard_server_heartbeat_args.h"
 
 namespace mongo {
 

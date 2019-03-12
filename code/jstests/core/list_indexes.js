@@ -149,8 +149,8 @@
     //
 
     coll.drop();
-    assert.commandWorked(coll.getDB().createCollection(coll.getName(), {autoIndexId: false}));
-    assert.eq([], cursorGetIndexNames(getListIndexesCursor(coll)));
+    assert.commandWorked(coll.getDB().createCollection(coll.getName(), {autoIndexId: true}));
+    assert.eq(["_id_"], cursorGetIndexNames(getListIndexesCursor(coll)));
 
     //
     // Test killCursors against a listCollections cursor.

@@ -163,14 +163,14 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* txn,
     OwnedPointerVector<ShardEndpoint> endpointsOwned;
     vector<ShardEndpoint*>& endpoints = endpointsOwned.mutableVector();
     if (primary) {
-        endpoints.push_back(new ShardEndpoint(ChunkId(), primary->getId(), ChunkVersion::UNSHARDED()));
+        endpoints.push_back(
+            new ShardEndpoint(ChunkId(), primary->getId(), ChunkVersion::UNSHARDED()));
     } else {
         invariant(chunkManager);
         chunkManager->getShardEndpointsForQuery(txn,
-                                          query.getQueryRequest().getFilter(),
-                                          query.getQueryRequest().getCollation(),
-                                          &endpoints);        
-
+                                                query.getQueryRequest().getFilter(),
+                                                query.getQueryRequest().getCollation(),
+                                                &endpoints);
     }
 
     ClusterClientCursorParams params(query.nss(), readPref);
@@ -205,7 +205,9 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* txn,
     }
 
     // target a particular host for each chunk
-    for(const auto& it : endpoints) {
+    for (const auto& it : endpoints) {
+        index_LOG(1) << "[CLUSTR_FIND] runQueryWithoutRetrying to shardname: " << it->shardName
+                     << ", chunkId: " << it->chunkId << ", shardversion: " << it->shardVersion;
         auto shardStatus = shardRegistry->getShard(txn, it->shardName);
         if (!shardStatus.isOK()) {
             return shardStatus.getStatus();
@@ -234,8 +236,8 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* txn,
         }
     }
 
-    auto ccc = ClusterClientCursorImpl::make(
-        Grid::get(txn)->getExecutorPool()->getArbitraryExecutor(), std::move(params));
+    auto ccc = ClusterClientCursorImpl::make(Grid::get(txn)->getExecutorPool()->getIdleExecutor(),
+                                             std::move(params));
 
     auto cursorState = ClusterCursorManager::CursorState::NotExhausted;
     int bytesBuffered = 0;
@@ -250,7 +252,9 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* txn,
             // exhausted. If it is tailable, usually we keep it open (i.e. "NotExhausted") even
             // when we reach end-of-stream. However, if all the remote cursors are exhausted, there
             // is no hope of returning data and thus we need to close the mongos cursor as well.
+            index_LOG(1) << "[CLUSTER_FIND] runQueryWithoutRetrying End-Of-Stream";
             if (!ccc->isTailable() || ccc->remotesExhausted()) {
+                index_LOG(1) << "[CLUSTER_FIND] runQueryWithoutRetrying Cursor is Exhausted";
                 cursorState = ClusterCursorManager::CursorState::Exhausted;
             }
             break;
@@ -286,9 +290,10 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* txn,
     // If the cursor is exhausted, then there are no more results to return and we don't need to
     // allocate a cursor id.
     if (cursorState == ClusterCursorManager::CursorState::Exhausted) {
+        index_LOG(1) << "[CLUSTER_FIND] runQueryWithoutRetrying Cursor is Exhausted, return 0";
         return CursorId(0);
     }
-
+    index_LOG(1) << "[CLUSTER_FIND] runQueryWithoutRetrying return datasize: " << results->size();
     // Register the cursor with the cursor manager.
     auto cursorManager = Grid::get(txn)->getCursorManager();
     const auto cursorType = chunkManager ? ClusterCursorManager::CursorType::NamespaceSharded
@@ -331,7 +336,8 @@ StatusWith<CursorId> ClusterFind::runQuery(OperationContext* txn,
 
     std::shared_ptr<ChunkManager> chunkManager;
     std::shared_ptr<Shard> primary;
-    auto cmOrPrimaryStatus = dbConfig.getValue()->getChunkManagerOrPrimary(txn, query.nss().ns(), chunkManager, primary);
+    auto cmOrPrimaryStatus =
+        dbConfig.getValue()->getChunkManagerOrPrimary(txn, query.nss().ns(), chunkManager, primary);
     if (!cmOrPrimaryStatus.isOK()) {
         return cmOrPrimaryStatus;
     }
@@ -342,6 +348,7 @@ StatusWith<CursorId> ClusterFind::runQuery(OperationContext* txn,
         auto cursorId = runQueryWithoutRetrying(
             txn, query, readPref, chunkManager.get(), std::move(primary), results, viewDefinition);
         if (cursorId.isOK()) {
+            index_LOG(1) << "[CLUSTER_FIND] return cursorid: " << cursorId.getValue();
             return cursorId;
         }
         auto status = std::move(cursorId.getStatus());
@@ -353,12 +360,13 @@ StatusWith<CursorId> ClusterFind::runQuery(OperationContext* txn,
             // Errors other than trying to reach a non existent shard or receiving a stale
             // metadata message from MongoD are fatal to the operation. Network errors and
             // replication retries happen at the level of the AsyncResultsMerger.
+            index_err() << "ClusterFind::runQuery query fail status: " << status;
             return status;
         }
 
-        LOG(1) << "Received error status for query " << redact(query.toStringShort())
-               << " on attempt " << retries << " of " << kMaxStaleConfigRetries << ": "
-               << redact(status);
+        index_LOG(1) << "[CLUSTER_FIND] Received error status for query "
+                     << redact(query.toStringShort()) << " on attempt " << retries << " of "
+                     << kMaxStaleConfigRetries << ": " << redact(status);
 
         const bool staleEpoch = (status == ErrorCodes::StaleEpoch);
         if (staleEpoch) {
@@ -368,8 +376,7 @@ StatusWith<CursorId> ClusterFind::runQuery(OperationContext* txn,
                 return CursorId(0);
             }
         }
-        chunkManager =
-            dbConfig.getValue()->getChunkManagerIfExists(txn, query.nss().ns(), true, staleEpoch);
+        chunkManager = dbConfig.getValue()->getChunkManagerIfExists(txn, query.nss().ns(), true);
         if (!chunkManager) {
             auto cmOrPrimaryStatus = dbConfig.getValue()->getChunkManagerOrPrimary(
                 txn, query.nss().ns(), chunkManager, primary);
@@ -390,6 +397,8 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* txn,
 
     auto pinnedCursor = cursorManager->checkOutCursor(request.nss, request.cursorid, txn);
     if (!pinnedCursor.isOK()) {
+        index_err() << "[CLUSTER_FIND] runGetMore getMore checkOutCursor error, cursorid: "
+                    << request.cursorid << "; errMsg: " << pinnedCursor.getStatus().toString();
         return pinnedCursor.getStatus();
     }
     invariant(request.cursorid == pinnedCursor.getValue().getCursorId());
@@ -413,12 +422,16 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* txn,
     while (!FindCommon::enoughForGetMore(batchSize, batch.size())) {
         auto next = pinnedCursor.getValue().next();
         if (!next.isOK()) {
+            index_err() << "[CLUSTER_FIND] getMore run next error, errMsg: "
+                        << next.getStatus().toString();
             return next.getStatus();
         }
 
         if (next.getValue().isEOF()) {
             // We reached end-of-stream.
+            index_LOG(1) << "[CLUSTER_FIND] getMore End-Of-Stream";
             if (!pinnedCursor.getValue().isTailable()) {
+                index_LOG(1) << "[CLUSTER_FIND] getMore Cursor is Exhausted";
                 cursorState = ClusterCursorManager::CursorState::Exhausted;
             }
             break;

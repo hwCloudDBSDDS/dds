@@ -96,10 +96,10 @@ private:
 /**
  *  Representation of a shard identifier.
  */
-class ShardIdent{
+class ShardIdent {
 public:
     ShardIdent(ShardId& shardId, std::string& processIdent);
-    ShardIdent() {};
+    ShardIdent(){};
 
     static StatusWith<ShardIdent> fromBSON(const BSONObj& obj);
 

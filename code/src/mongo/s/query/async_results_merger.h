@@ -37,12 +37,13 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/cursor_id.h"
 #include "mongo/executor/task_executor.h"
+#include "mongo/s/chunk_id.h"
 #include "mongo/s/query/cluster_client_cursor_params.h"
 #include "mongo/s/query/cluster_query_result.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/stdx/condition_variable.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
-#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -231,6 +232,9 @@ private:
          */
         std::shared_ptr<Shard> getShard();
 
+        //for test 
+        std::string toString();
+
         // ShardId on which a cursor will be created.
         // TODO: This should always be set.
         const boost::optional<ShardId> shardId;
@@ -261,6 +265,8 @@ private:
         // batchSize in getMore when mongod returned less docs than the requested batchSize.
         long long fetchedCount = 0;
 
+        bool sent = false;
+
     private:
         // For a cursor, which has shard id associated contains the exact host on which the remote
         // cursor resides.
@@ -285,7 +291,7 @@ private:
     /**
      * Callback run to handle a response from a killCursors command.
      */
-    static void handleKillCursorsResponse(
+    void handleKillCursorsResponse(
         const executor::TaskExecutor::RemoteCommandCallbackArgs& cbData);
 
     /**
@@ -354,7 +360,7 @@ private:
     /**
      * Schedules a killCursors command to be run on all remote hosts that have open cursors.
      */
-    void scheduleKillCursors_inlock();
+    void scheduleKillCursors_inlock(bool flowContral);
 
     // Not owned here.
     executor::TaskExecutor* _executor;
@@ -371,6 +377,17 @@ private:
 
     // Data tracking the state of our communication with each of the remote nodes.
     std::vector<RemoteCursorData> _remotes;
+
+    //protected by _mutex
+    std::map<ShardId, int> _findingShard;
+
+    int _sentNum = 0;
+
+    int _maxSentNum = 0;
+
+    stdx::condition_variable _condVar;
+
+    std::atomic<long long> _numKillingCursor;
 
     // The top of this priority queue is the index into '_remotes' for the remote host that has the
     // next document to return, according to the sort order. Used only if there is a sort.

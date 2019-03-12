@@ -36,8 +36,8 @@
 #include <atomic>
 #include <map>
 #include <memory>
-#include <string>
 #include <mutex>
+#include <string>
 
 // for invariant()
 #include "mongo/util/assert_util.h"
@@ -58,7 +58,15 @@ namespace mongo {
         return _activeSnapshots.size();
     }
 
-   
+    size_t RocksTransactionEngine::numUnCommitedTracked() {
+        stdx::lock_guard<stdx::mutex> lk(_lock);
+        return _uncommittedTransactionId.size();
+    }
+    size_t RocksTransactionEngine::numSortSnapshots() {
+        stdx::lock_guard<stdx::mutex> lk(_lock);
+        return _keysSortedBySnapshot.size();
+    }
+
     std::list<uint64_t>::iterator RocksTransactionEngine::_getLatestSnapshotId_inlock() {
         return _activeSnapshots.insert(_activeSnapshots.end(), _latestSnapshotId);
     }
@@ -77,8 +85,8 @@ namespace mongo {
             _keyInfo.erase(iter);
         }
 
-        auto listIter = _keysSortedBySnapshot.insert(_keysSortedBySnapshot.end(),
-                                                     {key, newSnapshotId});
+        auto listIter =
+            _keysSortedBySnapshot.insert(_keysSortedBySnapshot.end(), {key, newSnapshotId});
         _keyInfo.insert({StringData(listIter->first), {newSnapshotId, listIter}});
     }
 

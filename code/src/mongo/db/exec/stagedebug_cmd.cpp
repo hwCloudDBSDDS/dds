@@ -423,21 +423,7 @@ public:
             }
 
             return new CollectionScan(txn, params, workingSet, matcher);
-        }
-// sort is disabled for now.
-#if 0
-            else if ("sort" == nodeName) {
-                uassert(16969, "Node argument must be provided to sort",
-                        nodeArgs["node"].isABSONObj());
-                uassert(16970, "Pattern argument must be provided to sort",
-                        nodeArgs["pattern"].isABSONObj());
-                PlanStage* subNode = parseQuery(txn, db, nodeArgs["node"].Obj(), workingSet, exprs);
-                SortStageParams params;
-                params.pattern = nodeArgs["pattern"].Obj();
-                return new SortStage(params, workingSet, subNode);
-            }
-#endif
-        else if ("mergeSort" == nodeName) {
+        } else if ("mergeSort" == nodeName) {
             uassert(
                 16971, "Nodes argument must be provided to sort", nodeArgs["nodes"].isABSONObj());
             uassert(16972,

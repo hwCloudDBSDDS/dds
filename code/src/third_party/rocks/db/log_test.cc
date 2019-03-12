@@ -213,8 +213,8 @@ class LogTest : public ::testing::TestWithParam<int> {
   void FixChecksum(int header_offset, int len, bool recyclable) {
     // Compute crc of type/len/data
     int header_size = recyclable ? kRecyclableHeaderSize : kHeaderSize;
-    uint32_t crc = crc32c::Value(&dest_contents()[header_offset + 6],
-                                 header_size - 6 + len);
+    uint32_t crc = crc32c::Value(&dest_contents()[header_offset + kTypePos],
+                                 header_size - kTypePos + len);
     crc = crc32c::Mask(crc);
     EncodeFixed32(&dest_contents()[header_offset], crc);
   }
@@ -414,8 +414,8 @@ TEST_P(LogTest, ReadError) {
 
 TEST_P(LogTest, BadRecordType) {
   Write("foo");
-  // Type is stored in header[6]
-  IncrementByte(6, 100);
+  // Type is stored in header[kTypePos]
+  IncrementByte(kTypePos, 100);
   FixChecksum(0, 3, false);
   ASSERT_EQ("EOF", Read());
   ASSERT_EQ(3U, DroppedBytes());
@@ -474,10 +474,10 @@ TEST_P(LogTest, BadLengthAtEndIsNotIgnored) {
 
 TEST_P(LogTest, ChecksumMismatch) {
   Write("foooooo");
-  IncrementByte(0, 14);
+  IncrementByte(0, 7+kHeaderSize);
   ASSERT_EQ("EOF", Read());
   if (!GetParam()) {
-    ASSERT_EQ(14U, DroppedBytes());
+    ASSERT_EQ(7+kHeaderSize, DroppedBytes());
     ASSERT_EQ("OK", MatchError("checksum mismatch"));
   } else {
     ASSERT_EQ(0U, DroppedBytes());
@@ -487,7 +487,7 @@ TEST_P(LogTest, ChecksumMismatch) {
 
 TEST_P(LogTest, UnexpectedMiddleType) {
   Write("foo");
-  SetByte(6, GetParam() ? kRecyclableMiddleType : kMiddleType);
+  SetByte(kTypePos, GetParam() ? kRecyclableMiddleType : kMiddleType);
   FixChecksum(0, 3, !!GetParam());
   ASSERT_EQ("EOF", Read());
   ASSERT_EQ(3U, DroppedBytes());
@@ -496,7 +496,7 @@ TEST_P(LogTest, UnexpectedMiddleType) {
 
 TEST_P(LogTest, UnexpectedLastType) {
   Write("foo");
-  SetByte(6, GetParam() ? kRecyclableLastType : kLastType);
+  SetByte(kTypePos, GetParam() ? kRecyclableLastType : kLastType);
   FixChecksum(0, 3, !!GetParam());
   ASSERT_EQ("EOF", Read());
   ASSERT_EQ(3U, DroppedBytes());
@@ -506,7 +506,7 @@ TEST_P(LogTest, UnexpectedLastType) {
 TEST_P(LogTest, UnexpectedFullType) {
   Write("foo");
   Write("bar");
-  SetByte(6, GetParam() ? kRecyclableFirstType : kFirstType);
+  SetByte(kTypePos, GetParam() ? kRecyclableFirstType : kFirstType);
   FixChecksum(0, 3, !!GetParam());
   ASSERT_EQ("bar", Read());
   ASSERT_EQ("EOF", Read());
@@ -517,7 +517,7 @@ TEST_P(LogTest, UnexpectedFullType) {
 TEST_P(LogTest, UnexpectedFirstType) {
   Write("foo");
   Write(BigString("bar", 100000));
-  SetByte(6, GetParam() ? kRecyclableFirstType : kFirstType);
+  SetByte(kTypePos, GetParam() ? kRecyclableFirstType : kFirstType);
   FixChecksum(0, 3, !!GetParam());
   ASSERT_EQ(BigString("bar", 100000), Read());
   ASSERT_EQ("EOF", Read());
@@ -540,7 +540,7 @@ TEST_P(LogTest, MissingLastIsNotIgnored) {
   ShrinkSize(14);
   ASSERT_EQ("EOF", Read(WALRecoveryMode::kAbsoluteConsistency));
   ASSERT_GT(DroppedBytes(), 0U);
-  ASSERT_EQ("OK", MatchError("Corruption: error reading trailing data"));
+  ASSERT_EQ("OK", MatchError("Rocksdb Corruption: error reading trailing data"));
 }
 
 TEST_P(LogTest, PartialLastIsIgnored) {
@@ -559,7 +559,7 @@ TEST_P(LogTest, PartialLastIsNotIgnored) {
   ASSERT_EQ("EOF", Read(WALRecoveryMode::kAbsoluteConsistency));
   ASSERT_GT(DroppedBytes(), 0U);
   ASSERT_EQ("OK", MatchError(
-                      "Corruption: truncated headerCorruption: "
+                      "Rocksdb Corruption: truncated headerRocksdb Corruption: "
                       "error reading trailing data"));
 }
 

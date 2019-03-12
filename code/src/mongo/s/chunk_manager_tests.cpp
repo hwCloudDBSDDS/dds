@@ -231,6 +231,9 @@ TEST_F(ChunkManagerTests, Basic) {
                                 manager.getDefaultCollator() ? manager.getDefaultCollator()->clone()
                                                              : nullptr,
                                 manager.isUnique());
+        if (manager.getVersion().isSet()) {
+            newManager.setStartingVersion(manager.getVersion());
+        }
         newManager.loadExistingRanges(operationContext(), &manager);
 
         ASSERT_EQ(numChunks, static_cast<int>(manager.getChunkMap().size()));

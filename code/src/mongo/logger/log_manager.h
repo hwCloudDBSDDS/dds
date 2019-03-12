@@ -30,6 +30,7 @@
 #include <string>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/logger/audit_log_domain.h"
 #include "mongo/logger/component_message_log_domain.h"
 #include "mongo/logger/rotatable_file_writer.h"
 #include "mongo/platform/unordered_map.h"
@@ -57,6 +58,13 @@ public:
     }
 
     /**
+     * Gets the global audit domain for this manager.  It has no name.
+     */
+    AuditLogDomain* getGlobalAuditDomain() {
+        return &_globalAuditDomain;
+    }
+
+    /**
      * Get the log domain with the given name, creating if needed.
      */
     MessageLogDomain* getNamedDomain(const std::string& name);
@@ -66,6 +74,7 @@ private:
 
     DomainsByNameMap _domains;
     ComponentMessageLogDomain _globalDomain;
+    AuditLogDomain _globalAuditDomain;
 };
 
 }  // namespace logger

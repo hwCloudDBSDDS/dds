@@ -123,7 +123,8 @@
     var testListConfigChunksIndexes = function(st) {
         // This test depends on all the indexes in the configChunksIndexes being the exact indexes
         // in the config chunks collection.
-        var configChunksIndexes = ["_id_", "ns_1_lastmod_1", "ns_1_min_1", "ns_1_shard_1_min_1"];
+        var configChunksIndexes =
+            ["_id_", "ns_1_lastmod_1", "ns_1_min_1", "ns_1_shard_1_min_1", "status_1"];
         var configDB = st.s.getDB("config");
         var cursor;
         var cursorArray = [];
@@ -139,7 +140,9 @@
         assert.eq(cursor.objsLeftInBatch(), 2);
         cursorArray.push(cursor.next());
         cursorArray.push(cursor.next());
-        assert(!cursor.hasNext());
+        // assert(!cursor.hasNext());
+        assert(cursor.hasNext());
+        cursorArray.push(cursor.next());
         assert.eq(arrayGetNames(sortArrayByName(cursorArray)), configChunksIndexes);
     };
 
@@ -215,6 +218,10 @@
         assert.commandWorked(st.s.adminCommand({split: testColl.getFullName(), middle: {e: 11}}));
         assert.commandWorked(
             st.s.adminCommand({movechunk: testColl.getFullName(), find: {e: 1}, to: shard2}));
+        assert.commandWorked(
+            st.s.adminCommand({movechunk: testColl.getFullName(), find: {e: 3}, to: shard1}));
+        assert.commandWorked(
+            st.s.adminCommand({movechunk: testColl.getFullName(), find: {e: 7}, to: shard1}));
         assert.commandWorked(
             st.s.adminCommand({movechunk: testColl.getFullName(), find: {e: 9}, to: shard2}));
         assert.commandWorked(

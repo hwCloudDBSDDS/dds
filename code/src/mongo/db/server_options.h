@@ -30,11 +30,13 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/platform/process_id.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
-#include "mongo/s/catalog/type_shard_server.h"
-#include "mongo/util/net/listen.h"  // For DEFAULT_MAX_CONN
-#include "mongo/util/concurrency/notification.h"
-#include "mongo/stdx/mutex.h"
 #include "mongo/s/catalog/type_shard.h"
+#include "mongo/s/catalog/type_shard_server.h"
+#include "mongo/stdx/mutex.h"
+#include "mongo/util/concurrency/notification.h"
+#include "mongo/util/net/listen.h"  // For DEFAULT_MAX_CONN
+#include "mongo/util/net/whitelist.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 const int DEFAULT_UNIX_PERMS = 0700;
@@ -51,36 +53,41 @@ struct ServerGlobalParams {
         return port == DefaultDBPort;
     }
 
-    std::string bind_ip;  // --bind_ip
-    std::string extendIPs; // manage ips   
-    std::string processIdentity; // add for shard process re-start after failover, used as identity in register flow
+    std::string bind_ip;          // --bind_ip
+    std::string extendIPs;        // manage ips
+    std::string bindIp;           // bind ip for register,active,heartbeat
+    std::string processIdentity;  // add for shard process re-start after failover, used as identity
+                                  // in register flow
 
-    bool rest = false;    // --rest
-    bool jsonp = false;   // --jsonp
+    bool rest = false;   // --rest
+    bool jsonp = false;  // --jsonp
 
     bool indexBuildRetry = true;  // --noIndexBuildRetry
 
     std::atomic<bool> quiet{false};  // --quiet NOLINT
 
     ClusterRole clusterRole = ClusterRole::None;  // --configsvr/--shardsvr
-
     std::string shardName = "";  // shardName to be used when adding shardsvr to a shard
-    ShardServerType::ShardServerState shardServerState = ShardServerType::ShardServerState::kStandby;
+    ShardServerType::ShardServerState shardServerState =
+        ShardServerType::ShardServerState::kStandby;
     ShardType::ShardState shardState = ShardType::ShardState::kShardRegistering;
-    std::shared_ptr<Notification<void>> activeNotification; // standby will be blocked until receive grant active message
+    std::shared_ptr<Notification<void>>
+        activeNotification;  // standby will be blocked until receive grant active message
 
     stdx::mutex shardServerStateMutex;
     stdx::mutex shardStateMutex;
 
-    // Auto-increment value used to generate chunk id. Initialized when CS become a leader, by loading the maximum id from the chunk collection.
+    // Auto-increment value used to generate chunk id. Initialized when CS become a leader, by
+    // loading the maximum id from the chunk collection.
     std::atomic<uint64_t> chunkCount{0};  // --quiet NOLINT
-        
+
     bool cpu = false;  // --cpu show cpu time periodically
 
     bool objcheck = true;  // --objcheck
 
     int defaultProfile = 0;                // --profile
     int slowMS = 100;                      // --time in ms that is "slow"
+    int profileSizeMB = 1;                 // --the maxsize of system.profile collection
     int defaultLocalThresholdMillis = 15;  // --localThreshold in ms to consider a node local
     bool moveParanoia = false;             // for move chunk paranoia
 
@@ -89,6 +96,8 @@ struct ServerGlobalParams {
     std::string socket = "/tmp";  // UNIX domain socket directory
 
     int maxConns = DEFAULT_MAX_CONN;  // Maximum number of simultaneous open connections.
+    int maxInternalConns =
+        DEFAULT_MAX_CONN_INTERNAL;  // Maximum number of simultaneous open internal connections.
 
     int unixSocketPermissions = DEFAULT_UNIX_PERMS;  // permissions for the UNIX domain socket
 
@@ -102,6 +111,14 @@ struct ServerGlobalParams {
     int syslogFacility;             // Facility used when appending messages to the syslog.
 
     bool isHttpInterfaceEnabled = false;  // True if the dbwebserver should be enabled.
+    bool limitVerifyTimes = true;
+    std::string auditLogpath;  // Path to audit log file, if logging to a file; otherwise, empty.
+    std::string auditLogFormat = "JSON";  // Format of audit log
+    std::string auditOpFilterStr;         // Filter ops that need to be audited, string format.
+    int auditOpFilter = 0xFFFFFFFF;  // Bitwise or result of ops that need to be audited, parsed
+                                     // from auditOpFilterStr.
+    bool auditAuthSuccess = true;    // True if audit authorization success requests.
+    bool readOnly = false;
 
 #ifndef _WIN32
     ProcessId parentProc;  // --fork pid of initial process
@@ -116,7 +133,7 @@ struct ServerGlobalParams {
         bool storageDetailsCmdEnabled;  // -- enableExperimentalStorageDetailsCmd
     } experimental;
 
-    time_t started = ::time(0);
+    Date_t started = Date_t::now();
 
     BSONArray argvArray;
     BSONObj parsedOpts;
@@ -181,6 +198,12 @@ struct ServerGlobalParams {
         // "3.2" feature compatibility mode.
         AtomicWord<bool> validateFeaturesAsMaster{true};
     } featureCompatibility;
+
+    /**
+     * host  in adminWhiteList manage and monitor mongodb instances
+     * It's not limited by 'maxIncomingConnections'
+     */
+    WhiteList adminWhiteList;
 };
 
 extern ServerGlobalParams serverGlobalParams;

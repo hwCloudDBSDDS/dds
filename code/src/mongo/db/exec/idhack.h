@@ -70,6 +70,7 @@ public:
     void doDetachFromOperationContext() final;
     void doReattachToOperationContext() final;
     void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) final;
+    void doReleaseCursor() final;
 
     /**
      * ID Hack has a very strict criteria for the queries it supports.

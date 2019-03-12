@@ -43,6 +43,7 @@ public:
 
     bool isVersionableCB(DBClientBase*);
     bool forceRemoteCheckShardVersionCB(OperationContext* txn, const std::string&);
+    void reloadChunkMapIfNeeded(OperationContext* txn, const std::string& ns);
     bool checkShardVersionCB(OperationContext*, DBClientBase*, const std::string&, bool, int);
     bool checkShardVersionCB(OperationContext*, ShardConnection*, bool, int);
     void resetShardVersionCB(DBClientBase*);

@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kWrite
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/ops/write_ops_parsers.h"
@@ -34,9 +36,13 @@
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/dbmessage.h"
-#include "mongo/util/assert_util.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/db/ops/insert.h"
+#include "mongo/util/assert_util.h"
+#include "mongo/util/log.h"
+#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 
 namespace mongo {
 namespace {
@@ -113,10 +119,12 @@ void parseWriteCommand(StringData dbName,
             op->prewarmInBulk = field.Bool();
         } else if (fieldName == "chunkId") {
             op->ns = NamespaceString(dbName, op->ns.coll() + "$" + field.valueStringData());
-        } 
-        else if (fieldName == uniqueFieldName) {
+        } else if (fieldName == uniqueFieldName) {
             haveUniqueField = true;
             *uniqueField = field;
+        } else if (fieldName == "updateCmdFromUserManager" ||
+                   fieldName == "deleteCmdFromUserManager") {
+            op->usermanagerCmd = true;
         } else if (fieldName[0] != '$') {
             std::initializer_list<StringData> ignoredFields = {
                 "writeConcern", "maxTimeMS", "shardVersion"};
@@ -129,9 +137,12 @@ void parseWriteCommand(StringData dbName,
         }
     }
 
-    //attach chunkid if need
+    // attach chunkid if need
     op->ns = mongo::ns2chunkHolder().getNsWithChunkId(op->ns);
-
+    if (!op->ns.isSystemCollection() && !op->ns.isChunk() &&
+        ClusterRole::ShardServer == serverGlobalParams.clusterRole) {
+        index_err() << "[write] not chunkId dbname: " << dbName << "; ns: " << op->ns;
+    }
 
     uassert(ErrorCodes::FailedToParse,
             str::stream() << "The " << uniqueFieldName << " option is required to the "

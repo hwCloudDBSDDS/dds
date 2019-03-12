@@ -375,6 +375,8 @@ private:
      **/
     bool _memberIsBlacklisted(const MemberConfig& memberConfig, Date_t now) const;
 
+    unsigned int _getFailedConfigCountInCluster();
+    uint32_t _configDegradeCount = 0;
     // This node's role in the replication protocol.
     Role _role;
 
@@ -466,6 +468,9 @@ private:
 
     // Whether or not the storage engine supports read committed.
     ReadCommittedSupport _storageEngineSupportsReadCommitted{ReadCommittedSupport::kUnknown};
+
+    // For primary, protect the count of down nodes
+    stdx::mutex _downCountMutex;
 };
 
 }  // namespace repl

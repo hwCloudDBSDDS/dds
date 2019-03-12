@@ -38,8 +38,8 @@
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/record_data.h"
 #include "mongo/db/storage/record_fetcher.h"
-#include "mongo/s/split_chunk_request.h"
 #include "mongo/s/confirm_split_request.h"
+#include "mongo/s/split_chunk_request.h"
 
 namespace mongo {
 
@@ -624,18 +624,25 @@ public:
                                         long long numRecords,
                                         long long dataSize) = 0;
 
-    virtual Status split(OperationContext* txn, 
-                        const SplitChunkReq& request,
-                        BSONObj& splitPoint) {
-            return Status::OK();
+    virtual Status preSplit(OperationContext* txn,
+                            const SplitChunkReq& request,
+                            BSONObj& splitPoint) {
+        return Status::OK();
     }
 
-    virtual Status confirmSplit(OperationContext* txn,
-                                const ConfirmSplitRequest& request) {
-            return Status::OK();
+    virtual Status split(OperationContext* txn,
+                         const SplitChunkReq& request,
+                         const BSONObj& splitPoint) {
+        return Status::OK();
     }
 
-    virtual void stopBackGround4Chunk() {}
+    virtual Status rollbackPreSplit(OperationContext* txn, const SplitChunkReq& request) {
+        return Status::OK();
+    }
+
+    virtual Status confirmSplit(OperationContext* txn, const ConfirmSplitRequest& request) {
+        return Status::OK();
+    }
 
 protected:
     std::string _ns;

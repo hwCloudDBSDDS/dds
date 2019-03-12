@@ -42,6 +42,7 @@
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
@@ -61,7 +62,6 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/stdx/memory.h"
-#include "mongo/db/catalog/database_holder.h"
 #include "mongo/util/log.h"
 
 namespace mongo {

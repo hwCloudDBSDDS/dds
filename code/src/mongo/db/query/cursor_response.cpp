@@ -109,6 +109,11 @@ StatusWith<CursorResponse> CursorResponse::parseFromBSON(const BSONObj& cmdRespo
         if (ErrorCodes::isStaleShardingError(cmdStatus.code())) {
             auto vWanted = ChunkVersion::fromBSON(cmdResponse, "vWanted");
             auto vReceived = ChunkVersion::fromBSON(cmdResponse, "vReceived");
+
+            if (!ChunkVersion::needReload(vReceived, vWanted)) {
+                return Status(ErrorCodes::StaleShardVersion, cmdStatus.reason());
+            }
+
             if (!vWanted.hasEqualEpoch(vReceived)) {
                 return Status(ErrorCodes::StaleEpoch, cmdStatus.reason());
             }

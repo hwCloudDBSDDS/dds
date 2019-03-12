@@ -55,6 +55,7 @@ public:
     static const BSONField<std::string> name;
     static const BSONField<std::string> primary;
     static const BSONField<bool> sharded;
+    static const BSONField<bool> enableSharding;
 
 
     /**
@@ -94,6 +95,12 @@ public:
     void setSharded(bool sharded) {
         _sharded = sharded;
     }
+    bool getEnableSharding() const {
+        return _enableSharding.get();
+    }
+    void setEnableSharding(bool enableSharding) {
+        _enableSharding = enableSharding;
+    }
 
 private:
     // Requred database name
@@ -106,6 +113,7 @@ private:
     // Required whether sharding is enabled for this database. Even though this field is of
     // type optional, it is only used as an indicator that the value was explicitly set.
     boost::optional<bool> _sharded;
+    boost::optional<bool> _enableSharding;
 };
 
 }  // namespace mongo

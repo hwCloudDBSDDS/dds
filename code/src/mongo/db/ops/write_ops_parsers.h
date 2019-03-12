@@ -28,10 +28,10 @@
 
 #pragma once
 
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/ops/write_ops.h"
 #include "mongo/util/net/message.h"
-#include "mongo/db/catalog/database_holder.h"
 
 namespace mongo {
 

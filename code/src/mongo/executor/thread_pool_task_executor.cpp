@@ -420,6 +420,11 @@ void ThreadPoolTaskExecutor::cancelAllCommands() {
     _net->cancelAllCommands();
 }
 
+uint32_t ThreadPoolTaskExecutor::getTaskCountInNetwork() const {
+    return _networkInProgressQueue.size() + _poolInProgressQueue.size();
+}
+
+
 StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::enqueueCallbackState_inlock(
     WorkQueue* queue, WorkQueue* wq) {
     if (_inShutdown) {

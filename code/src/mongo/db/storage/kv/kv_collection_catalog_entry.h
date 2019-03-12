@@ -90,8 +90,7 @@ public:
     /*
     this function is only used by rename collection command.
     */
-    std::unique_ptr<RecordStore> getUniquePtrRecordStore()
-    {
+    std::unique_ptr<RecordStore> getUniquePtrRecordStore() {
         return std::move(_recordStore);
     }
 

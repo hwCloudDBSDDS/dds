@@ -42,6 +42,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 
+
 namespace {
 
 // Return a value in the set {-1, 0, 1} to represent the sign of parameter i.
@@ -264,6 +265,11 @@ void IndexScan::doDetachFromOperationContext() {
 void IndexScan::doReattachToOperationContext() {
     if (_indexCursor)
         _indexCursor->reattachToOperationContext(getOpCtx());
+}
+
+void IndexScan::doReleaseCursor() {
+    if (_indexCursor)
+        _indexCursor->detachFromOperationContext();
 }
 
 void IndexScan::doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {

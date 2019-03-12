@@ -36,7 +36,6 @@
 #include "mongo/base/static_assert.h"
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
-
 namespace mongo {
 
 struct DataType {
@@ -93,7 +92,7 @@ struct DataType {
 #endif
 
             if (ptr) {
-                std::memcpy(ptr, &t, sizeof(T));
+                memcpy(ptr, &t, sizeof(T));
             }
 
             if (advanced) {

@@ -70,8 +70,12 @@
 "listDatabases",
 "enableFailover",
 "disableFailover",
+"getAutoShard",
+"removeShardMap",
 "prepareSnapshot",
 "endSnapshot",
+"prepareClusterSnapshot",
+"endClusterSnapshot",
 "listIndexes",
 "listShards",
 "logRotate",
@@ -82,6 +86,7 @@
 "planCacheRead", # view contents of plan cache
 "planCacheWrite", # clear cache, drop cache entry, pin/unpin/shun plans
 "reIndex",
+"reload",
 "remove",
 "removeShard",
 "renameCollection",  # Not used for permissions checks, but to id the event in logs.
@@ -89,10 +94,10 @@
 "repairDatabase",
 "replSetConfigure",
 "replSetGetConfig",
-"replSetGetPrimaryConfig",
+"replSetGetPrimaryConfig", # Modified by JevonQiao 00391113, 2017/4/23 
 "replSetGetStatus",
 "replSetHeartbeat",
-"shardServerHeartbeat",
+"shardServerHeartbeat", # Added by Limingqiang 00385489, 2017/5/24
 "replSetReconfig",  # Not used for permissions checks, but to id the event in logs.
 "replSetStateChange",
 "resync",

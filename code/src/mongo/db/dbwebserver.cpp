@@ -79,7 +79,9 @@ void doUnlockedStuff(stringstream& ss) {
     ss << mongodVersion(vii) << '\n';
     ss << "git hash: " << vii.gitVersion() << '\n';
     ss << vii.openSSLVersion("OpenSSL version: ", "\n");
-    ss << "uptime: " << time(0) - serverGlobalParams.started << " seconds\n";
+    ss << "uptime: " << static_cast<unsigned int>(
+                            durationCount<Seconds>(Date_t::now() - serverGlobalParams.started))
+       << " seconds\n";
     ss << "</pre>";
 }
 

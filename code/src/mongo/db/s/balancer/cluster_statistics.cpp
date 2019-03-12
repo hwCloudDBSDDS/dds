@@ -53,6 +53,7 @@ bool ClusterStatistics::ChunkStatistics::isUnderSplitThreshold(uint64_t splitThr
 BSONObj ClusterStatistics::ChunkStatistics::toBSON() const {
     BSONObjBuilder builder;
     builder.append("id", chunkId.toString());
+    builder.append("ns", ns);
     builder.append("currSizeMB", static_cast<long long>(currSizeMB));
     builder.append("documentNum", static_cast<long long>(documentNum));
     builder.append("tps", static_cast<long long>(tps));
@@ -62,7 +63,8 @@ BSONObj ClusterStatistics::ChunkStatistics::toBSON() const {
     return builder.obj();
 }
 
-StatusWith<ClusterStatistics::ChunkStatistics> ClusterStatistics::ChunkStatistics::fromBSON(const BSONObj& source) {
+StatusWith<ClusterStatistics::ChunkStatistics> ClusterStatistics::ChunkStatistics::fromBSON(
+    const BSONObj& source) {
     ClusterStatistics::ChunkStatistics chunkStatistics;
 
     {
@@ -137,9 +139,32 @@ bool ClusterStatistics::ShardStatistics::isAboveThreshold() const {
     return false;
 }
 
+bool ClusterStatistics::ShardStatistics::isSizeMaxed() const {
+    if (!maxSizeMB || !currSizeMB) {
+        return false;
+    }
+
+    return currSizeMB >= maxSizeMB;
+}
+
+bool ClusterStatistics::ShardStatistics::isSizeExceeded() const {
+    if (!maxSizeMB || !currSizeMB) {
+        return false;
+    }
+
+    return currSizeMB > maxSizeMB;
+}
+
 BSONObj ClusterStatistics::ShardStatistics::toBSON() const {
     BSONObjBuilder builder;
     builder.append("id", shardId.toString());
+    builder.append("maxSizeMB", static_cast<long long>(maxSizeMB));
+    builder.append("currSizeMB", static_cast<long long>(currSizeMB));
+    builder.append("draining", isDraining);
+    if (!shardTags.empty()) {
+        BSONArrayBuilder arrayBuilder(builder.subarrayStart("tags"));
+        arrayBuilder.append(shardTags);
+    }
 
     BSONArrayBuilder b;
     for (const ClusterStatistics::ChunkStatistics& chunkStat : chunkStatistics) {
@@ -150,7 +175,8 @@ BSONObj ClusterStatistics::ShardStatistics::toBSON() const {
     return builder.obj();
 }
 
-StatusWith<ClusterStatistics::ShardStatistics> ClusterStatistics::ShardStatistics::fromBSON(const BSONObj& source) {
+StatusWith<ClusterStatistics::ShardStatistics> ClusterStatistics::ShardStatistics::fromBSON(
+    const BSONObj& source) {
     ClusterStatistics::ShardStatistics shardStatistics;
 
     // TODO: parse cpu and mem
@@ -161,15 +187,17 @@ StatusWith<ClusterStatistics::ShardStatistics> ClusterStatistics::ShardStatistic
             return status;
         }
         shardStatistics.mongoVersion = version;
-    }            
-
+    }
     // TODO: parse cpu and mem
     {
-        BSONElement cpuInfo;
-        Status status = bsonExtractTypedField(source, "cpu", Object, &cpuInfo);
+        int cpuUsag;
+        long long out = 0;
+        Status status = bsonExtractIntegerField(source, "cpu_usage",  &out);
         if (!status.isOK()) {
             return status;
         }
+        cpuUsag = static_cast<int>(out);
+        shardStatistics.cpuInfo.CpuUsage = cpuUsag;
     }
 
     {
@@ -178,6 +206,7 @@ StatusWith<ClusterStatistics::ShardStatistics> ClusterStatistics::ShardStatistic
         if (!status.isOK()) {
             return status;
         }
+        shardStatistics.memInfo = {0};
     }
 
     {
@@ -257,7 +286,8 @@ StatusWith<ClusterStatistics::ShardStatistics> ClusterStatistics::ShardStatistic
         if (status.isOK()) {
             BSONObjIterator it(chunksElem.Obj());
             while (it.more()) {
-                auto chunkStatistics = ClusterStatistics::ChunkStatistics::fromBSON(it.next().Obj());
+                auto chunkStatistics =
+                    ClusterStatistics::ChunkStatistics::fromBSON(it.next().Obj());
                 if (!chunkStatistics.isOK()) {
                     return chunkStatistics.getStatus();
                 }

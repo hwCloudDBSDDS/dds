@@ -378,7 +378,13 @@ void syncFixUp(OperationContext* txn,
                 if (status.code() == ErrorCodes::CommandNotSupportedOnView)
                     continue;
 
-                throw ex;
+                index_log() << "rollback exception: " << causedBy(status);
+
+                // If socket error or network error ocuurs, abort rollback and return
+                // It will transition to RECOVERING after return.
+                return;
+            } catch (const std::exception& e2) {
+                throw e2;
             }
         }
         newMinValid = rollbackSource.getLastOperation();
@@ -630,8 +636,8 @@ void syncFixUp(OperationContext* txn,
 
     log() << "rollback 4.7";
     unsigned deletes = 0, updates = 0;
-    time_t lastProgressUpdate = time(0);
-    time_t progressUpdateGap = 10;
+    Date_t lastProgressUpdate = Date_t::now();
+    Seconds progressUpdateGap(10);
     for (const auto& nsAndGoodVersionsByDocID : goodVersions) {
         // Keep an archive of items rolled back if the collection has not been dropped
         // while rolling back createCollection operations.
@@ -643,7 +649,7 @@ void syncFixUp(OperationContext* txn,
 
         const auto& goodVersionsByDocID = nsAndGoodVersionsByDocID.second;
         for (const auto& idAndDoc : goodVersionsByDocID) {
-            time_t now = time(0);
+            Date_t now = Date_t::now();
             if (now - lastProgressUpdate > progressUpdateGap) {
                 log() << deletes << " delete and " << updates
                       << " update operations processed out of " << goodVersions.size()
@@ -791,7 +797,7 @@ void syncFixUp(OperationContext* txn,
     log() << "rollback 6";
 
     // clean up oplog
-    LOG(2) << "rollback truncate oplog after " << fixUpInfo.commonPoint.toString();
+    index_log() << "rollback truncate oplog after " << fixUpInfo.commonPoint.toString();
     {
         const NamespaceString oplogNss(rsOplogName);
         ScopedTransaction transaction(txn, MODE_IX);
@@ -853,7 +859,16 @@ Status _syncRollback(OperationContext* txn,
 
     FixUpInfo how;
     log() << "rollback 1";
-    how.rbid = rollbackSource.getRollbackId();
+    try {
+        how.rbid = rollbackSource.getRollbackId();
+    } catch (const std::exception& e) {
+        index_warning() << "rollback 1 exception " << redact(e.what()) << "; sleeping 1 min";
+
+        // abandon rollback
+        sleepSecondsFn(Seconds(30));
+        return Status::OK();
+    }
+
     {
         log() << "rollback 2 FindCommonPoint";
         try {
@@ -886,10 +901,11 @@ Status _syncRollback(OperationContext* txn,
                           18752);
         } catch (const DBException& e) {
             warning() << "rollback 2 exception " << redact(e) << "; sleeping 1 min";
-
-            sleepSecondsFn(Seconds(60));
-            throw;
+            // abandon rollback
+            sleepSecondsFn(Seconds(30));
+            return Status::OK();
         }
+        index_log() << "rollback 2 FindCommonPoint: " << how.commonPoint.toString();
     }
 
     log() << "rollback 3 fixup";

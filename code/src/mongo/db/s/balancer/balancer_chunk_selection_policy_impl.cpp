@@ -31,6 +31,7 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy_impl.h"
+#include "mongo/s/client/shard_registry.h"
 
 #include <map>
 #include <set>
@@ -38,17 +39,23 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj_comparator_interface.h"
+#include "mongo/db/modules/rocks/src/gc_common.h"
 #include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_tags.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/sharding_raii.h"
 #include "mongo/s/shard_util.h"
+#include "mongo/s/sharding_raii.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+
+#include "mongo/s/balancer_configuration.h"
+
+
+
 
 namespace mongo {
 
@@ -211,7 +218,8 @@ StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksT
     IndexSplitInfoVector splitCandidates;
 
     for (const auto& coll : collections) {
-        if (coll.getTabType() != CollectionType::TableType::kSharded) {
+        if (coll.getTabType() != CollectionType::TableType::kSharded ||
+            coll.getAllowBalance() == false) {
             continue;
         }
         const NamespaceString nss(coll.getNs());
@@ -258,18 +266,19 @@ StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::indexSelectCh
     IndexSplitInfoVector splitCandidates;
 
     for (const auto& coll : collections) {
-        if (coll.getTabType() != CollectionType::TableType::kSharded) {
+        const NamespaceString nss(coll.getNs());
+        if (coll.getTabType() != CollectionType::TableType::kSharded || GcRefNs == nss.toString() ||
+            coll.getAllowBalance() == false) {
             continue;
         }
-        const NamespaceString nss(coll.getNs());
 
         auto candidatesStatus = _indexGetSplitCandidatesForCollection(txn, nss, shardStats);
         if (candidatesStatus == ErrorCodes::NamespaceNotFound) {
             // Namespace got dropped before we managed to get to it, so just skip it
             continue;
         } else if (!candidatesStatus.isOK()) {
-            warning() << "Unable to enforce tag range policy for collection " << nss.ns()
-                      << causedBy(candidatesStatus.getStatus());
+            index_warning() << "Unable to enforce tag range policy for collection " << nss.ns()
+                            << causedBy(candidatesStatus.getStatus());
             continue;
         }
 
@@ -280,6 +289,375 @@ StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::indexSelectCh
 
     return splitCandidates;
 }
+string  BalancerChunkSelectionPolicyImpl::canChunkMove(OperationContext* txn, const ClusterStatistics::ChunkStatistics *destChunkStatics,std::vector<ClusterStatistics::ShardStatistics> shardStats,const ClusterStatistics::ShardStatistics *maxShard,const ClusterStatistics::ShardStatistics *minShard )
+{
+        NamespaceString nss(StringData(destChunkStatics->ns));
+        index_LOG(1) << "begin get cm";
+        auto scopedCMStatus = ScopedChunkManager::getExisting(txn, nss);
+        if (!scopedCMStatus.isOK()) {
+            index_LOG(0) << "get chunkmanager error.";
+            return std::string();
+        }
+        auto scopedCM = std::move(scopedCMStatus.getValue());
+        ChunkManager *const cm = scopedCM.cm();
+        const auto distributionStatus = createCollectionDistributionStatus(txn, shardStats, cm);
+        if (!distributionStatus.isOK()) {
+            index_LOG(0) << "get distributionStatus error.";
+            return std::string();
+        }
+        const DistributionStatus &distribution = distributionStatus.getValue();
+        index_LOG(1) << "create distribution success.";
+        const ChunkType *destChunk = getChunkTypeByChunkId(distribution.getChunks(maxShard->shardId), destChunkStatics->chunkId);
+        index_LOG(1) << "getChunkTypeByChunkId end.";
+        if (nullptr != destChunk) {
+            index_LOG(1) << "get chunktype success:" << destChunk->getID() << destChunk->getID();
+            Status result = BalancerPolicy::isShardSuitableReceiver(*minShard, distribution.getTagForChunk(
+                                                                            *destChunk));
+            if (!result.isOK()) {
+                index_LOG(0) << "min shard  is not suitable for chunk." << destChunk->getID();
+                return std::string();
+            }
+            index_LOG(1) << "get chunktype success:" << destChunk->getID() ;
+            string temp = destChunk->getID();
+            return temp;
+        }
+        return std::string();
+}
+
+bool BalancerChunkSelectionPolicyImpl::isChunkNumBalance(const ShardStatisticsVector& shardStats,const std::string &ns,const ShardId& shardId , bool isSource)
+{
+    size_t totalChunkNum =0;
+    size_t chunkNumOnshard =0;
+
+    for (const auto& stat : shardStats) {
+        if (shardId == stat.shardId)
+        {
+            for (const auto& chunk : stat.chunkStatistics) {
+                if (chunk.ns == ns) {
+                    chunkNumOnshard++;
+                    totalChunkNum++;
+                }
+            }
+        } else
+        {
+            for (const auto& chunk : stat.chunkStatistics) {
+                if (chunk.ns == ns) {
+                    totalChunkNum++;
+                }
+            }
+        }
+    }
+    size_t shardSize = shardStats.size();
+    size_t averChunkSize = totalChunkNum / shardSize;
+    index_LOG(1) << "all chunk num for ns:" << ns << totalChunkNum << ",shard size:" <<shardSize << ",aver size:" << averChunkSize  ;
+    // TODO: source chunk num must < averChunkSize/2
+    if(isSource)
+    {
+        if(chunkNumOnshard > averChunkSize / 2)
+        {
+            index_LOG(1) << "chunk size on source shard is suitable, can still offload chunk from this shard.";
+            return true;
+        }
+        return false;
+    }
+    else
+    {
+        if(chunkNumOnshard < 2 * averChunkSize)
+        {
+            index_LOG(1) << "chunk size on shard is suitable, can still move chunk to this shard.";
+            return true;
+        }
+        return false;
+    }
+
+}
+
+string
+BalancerChunkSelectionPolicyImpl::findChunk(OperationContext* txn, size_t maxChunkForShard,std::vector<CollectionType>& collections,std::vector<ClusterStatistics::ShardStatistics> shardStats,const ClusterStatistics::ShardStatistics *maxShard,const ClusterStatistics::ShardStatistics *minShard ) {
+
+    uint64_t min = 50000000;;
+    uint64_t max = 0;
+    ClusterStatistics::ChunkStatistics minTemp ;
+    const  std::vector<ClusterStatistics::ChunkStatistics> &chunkStatistics = maxShard->chunkStatistics;
+    bool isMaxFind = false;
+    bool isMinFind = false;
+    size_t chunkSize = maxShard->chunkStatistics.size();
+    ClusterStatistics::ChunkStatistics maxTemp ;
+    index_LOG(1) << "max cpu shard get " << chunkSize << " chunks.";
+
+
+    // 1 get max tps chunk
+    for (const ClusterStatistics::ChunkStatistics &chunk : chunkStatistics) {
+        index_LOG(1) << "one chunk is " << chunk.toBSON().toString();
+
+        if (chunk.tps == 0) {
+            continue;
+        }
+
+        if (chunk.tps > max) {
+            NamespaceString nss(StringData(chunk.ns));
+            if(!isShardCollection(nss, collections))
+            {
+                index_LOG(1) << "chunk of collection is not shard colleciton," <<  chunk.toBSON().toString();
+                continue;
+            }
+            max = chunk.tps;
+            maxTemp = chunk;
+            isMaxFind = true;
+            index_LOG(1) << "now max tps chunk  is " << maxTemp.toBSON().toString();
+        }
+
+        if (chunk.tps < min) {
+            NamespaceString nss(StringData(chunk.ns));
+            if(!isShardCollection(nss, collections))
+            {
+                index_LOG(1) << "chunk of collection is not shard colleciton, chunk:" << chunk.toBSON().toString();
+                continue;
+            }
+            minTemp = chunk;
+            min = chunk.tps;
+            isMinFind = true;
+            index_LOG(1) << "now min is " << minTemp.toBSON().toString() << "min is " << min;
+        }
+    }
+    if(isMaxFind &&  isMinFind )
+    {
+        index_LOG(1) << "get min tps chunk:" <<minTemp.chunkId.toString() << "of collections:"<< minTemp.ns << ", tps:" << minTemp.tps;
+        index_LOG(1) << "get max tps chunk:" <<maxTemp.chunkId.toString() << "of collections:" << maxTemp.ns <<", tps:" << maxTemp.tps;
+    }
+    else
+    {
+        index_LOG(1) << "get none max or  tps chunk, all chunk tps is 0 or chunk is unsharded chunk.";
+    }
+
+
+    // 3 get mid tps chunk
+    if (isMaxFind && isMinFind) {
+        if (maxTemp.chunkId == minTemp.chunkId) {
+            index_LOG(1) << " max tps chunk is same with min tps chunk" ;
+            return std::string();
+        } else {
+            for (size_t i = 0; i <chunkSize; i++) {
+                if (chunkStatistics[i].tps > min && chunkStatistics[i].tps < max) {
+                    index_LOG(0) << " get mindle chunk :" << chunkStatistics[i].chunkId <<  "ns: " << chunkStatistics[i].ns << ",tps :"  <<chunkStatistics[i].tps;
+                    NamespaceString nss(StringData(chunkStatistics[i].ns));
+                    if(!isShardCollection(nss, collections))
+                    {
+                        index_LOG(1) << "chunk of collection is not shard colleciton, chunk:" << chunkStatistics[i].toBSON().toString();
+                        continue;
+                    }
+                    if(!isChunkNumBalance(shardStats, chunkStatistics[i].ns,minShard->shardId,false))
+                    {
+                        index_LOG(1) << "chunk for collection:" << chunkStatistics[i].ns << "is not suitable for shard:" << minShard->shardId.toString();
+                        continue;
+                    }
+
+
+                    if(!isChunkNumBalance(shardStats, chunkStatistics[i].ns, maxShard->shardId, true))
+                    {
+                        index_LOG(1) << "chunk for collection:" << chunkStatistics[i].ns << "can not offload frome :" << maxShard->shardId.toString();
+                        continue;
+                    }
+                    if(minShard->chunkStatistics.size() >= maxChunkForShard)
+                    {
+                        index_LOG(1) << "chunks on min load shard :" << minShard->shardId.toString() << "exceed limit";
+                        continue;
+                    }
+                    string destChunkId = canChunkMove(txn ,&chunkStatistics[i], shardStats,maxShard,minShard );
+                    if(!destChunkId.empty())
+                    {
+                        index_LOG(1) << "chunk of collection can  move to dest shard:" << destChunkId;
+                        return  destChunkId;;
+                    }
+                }
+            }
+        }
+    }
+    return "";
+}
+
+
+ClusterStatistics::ShardStatistics *
+BalancerChunkSelectionPolicyImpl::_getMaxCpuUsageShard(ShardStatisticsVector &shardStats,
+                                                       set<ShardId> &excludedShards) {
+    ClusterStatistics::ShardStatistics *best  = nullptr;
+    double cpuUsage = -1;
+    size_t shardSize = shardStats.size();
+    for (size_t i = 0; i < shardSize; i++) {
+        if (excludedShards.count(shardStats[i].shardId))
+            continue;
+        if (shardStats[i].cpuInfo.CpuUsage > cpuUsage) {
+            // TODO Judge chunks num of the shard
+            cpuUsage = shardStats[i].cpuInfo.CpuUsage;
+            best = &shardStats[i];
+        }
+    }
+    return best;
+}
+
+ClusterStatistics::ShardStatistics *
+BalancerChunkSelectionPolicyImpl::_getMinCpuUsageShard(ShardStatisticsVector &shardStats,
+                                                       set<ShardId> &excludedShards) {
+
+    ClusterStatistics::ShardStatistics *best = nullptr;
+    int cpuUsage = 100000;
+    size_t shardSize = shardStats.size();
+    for (size_t i = 0; i < shardSize; i++) {
+        if (excludedShards.count(shardStats[i].shardId))
+            continue;
+        if (shardStats[i].cpuInfo.CpuUsage < cpuUsage) {
+            // TODO Judge chunks num of the shard
+            cpuUsage = shardStats[i].cpuInfo.CpuUsage;
+            best = &shardStats[i];
+        }
+    }
+    return best;
+}
+
+
+const ChunkType * BalancerChunkSelectionPolicyImpl::getChunkTypeByChunkId(const std::vector<ChunkType> &chunks, const ChunkId &chunkId) {
+    size_t chunkSize = chunks.size();
+    for (size_t i = 0; i < chunkSize; i++) {
+        index_LOG(1) << "getChunkTypeByChunkId get a chunid " << chunks[i].toBSON().toString();
+        ChunkType changer;
+        if (changer.toID(chunkId.toString()) == chunks[i].getID()) {
+            index_LOG(1) << "getChunkTypeByChunkId dest chukid " << chunks[i].getID() ;
+            return &(chunks[i]);
+        }
+    }
+    return nullptr;
+}
+
+bool  BalancerChunkSelectionPolicyImpl::isShardCollection(NamespaceString& ns, std::vector<CollectionType> & collections) {
+    for(CollectionType col: collections)
+    {
+        index_LOG(1) << "isShardCollection for " << col.fullNs() << ",tableType:" <<  static_cast<int>(col.getTabType()) ;
+        if(col.getNs() == ns)
+         {
+             if( col.getTabType() == CollectionType::TableType::kSharded)
+             {
+                 return true;
+             }
+             return false;
+         }
+    }
+    return false;
+}
+
+StatusWith<ChunkType> BalancerChunkSelectionPolicyImpl::getChunkById(OperationContext* txn, string chunkId)
+{
+    ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
+    auto findChunkStatus =
+            Grid::get(txn)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+                    txn,
+                    kPrimaryOnlyReadPreference,
+                    repl::ReadConcernLevel::kLocalReadConcern,
+                    NamespaceString(ChunkType::ConfigNS),
+                    BSON(ChunkType::name(chunkId)),
+                    BSONObj(),
+                    boost::none);
+
+    if (!findChunkStatus.isOK()) {
+        index_log() << "[_moveChunks] failed to get info of chunk " << chunkId;
+        return {ErrorCodes::ChunkNotFound,
+                str::stream() << "Unable to find constraints information for shard " << chunkId};
+
+    }
+
+    auto chunkDocs = findChunkStatus.getValue().docs;
+    if (chunkDocs.size() == 0) {
+        index_log() << "[_moveChunks] there is no chunk named " << chunkId << "is found";
+        return {ErrorCodes::ChunkNotFound,
+                str::stream() << "Unable to find constraints information for shard " << chunkId};
+    }
+
+    auto chunkDocStatus = ChunkType::fromBSON(chunkDocs.front());
+    if (!chunkDocStatus.isOK()) {
+        index_log() << "[_moveChunks] failed to get chunktype from BSON for " << chunkId;
+        return {ErrorCodes::ChunkNotFound,
+                str::stream() << "Unable to find constraints information for shard " << chunkId};
+    }
+    return chunkDocStatus.getValue();
+}
+
+StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectMinTpsChunksToMove(
+        OperationContext *txn) {
+    BalancerConfiguration *balancerConfig = Grid::get(txn)->getBalancerConfiguration();
+    auto shardStatsStatus = _clusterStats->getStats(txn);
+    if (!shardStatsStatus.isOK()) {
+        index_LOG(0) << "get shardStatsStatus error.";
+        return shardStatsStatus.getStatus();
+    }
+    auto shardStats = std::move(shardStatsStatus.getValue());
+    if (shardStats.size() < 2) {
+        index_LOG(0) << "no more than two shard, no chunk can be selected to move.";
+        return MigrateInfoVector{};
+    }
+    std::vector<CollectionType> collections;
+    Status collsStatus =
+            Grid::get(txn)->catalogClient(txn)->getCollections(txn, nullptr, &collections, nullptr);
+    if (!collsStatus.isOK()) {
+        return collsStatus;
+    }
+
+    if (collections.empty()) {
+        index_LOG(0) << "no collections now, no chunk can be selected to move.";
+        return MigrateInfoVector{};
+    }
+    MigrateInfoVector candidateChunks;
+    //TODO: if no min shard fullfilled , continue to find  little min shard ,usedShards store this
+    set<ShardId> usedShards;
+    size_t  maxChunkForShard = ConfigReader::getInstance()->getDecimalNumber<size_t>(
+            "PublicOptions", "max_chunk_count_in_one_shard");
+    if(maxChunkForShard <= 0)
+    {
+        index_LOG(1) << " get max chunk for shard failed";
+        maxChunkForShard = 400; //TODO
+    }
+    const ClusterStatistics::ShardStatistics * max  = _getMaxCpuUsageShard(shardStats, usedShards);
+    const ClusterStatistics::ShardStatistics * min = _getMinCpuUsageShard(shardStats, usedShards);
+    index_LOG(1) << " get max cpu shard:" << max->shardId << ", cpuUsage" << max->cpuInfo.CpuUsage;
+    index_LOG(1) << " get min cpu shard:" << min->shardId << ", cpuUsage" << min->cpuInfo.CpuUsage;
+    if (max == min) {
+        index_LOG(1) << "max cpu is same with min cpu shard, no chunk can be selected to move.";
+        return MigrateInfoVector{};
+    }
+    if (nullptr != max && nullptr != min) {
+        if ((max->cpuInfo.CpuUsage - min->cpuInfo.CpuUsage) <= balancerConfig->getThreshold()) {
+            index_LOG(1) << "max cpu shard and min cpu shard diff less than " << balancerConfig->getThreshold();
+            return MigrateInfoVector{};
+        }
+
+        unsigned long chunkSize = max->chunkStatistics.size();
+        if (chunkSize <= 0) {
+            index_LOG(1) << "shard :" << max->shardId << "has no chunk, no chunk can be selected to move.";
+            return MigrateInfoVector{};
+        }
+        std::string candiChunkId = findChunk(txn, maxChunkForShard, collections, shardStats, max, min);
+        if (!candiChunkId.empty()) {
+            index_LOG(1) << "get dest Chunk" <<  candiChunkId ;
+            {
+                auto candiChunk = getChunkById(txn, candiChunkId);
+                if(!candiChunk.getStatus().isOK())
+                {
+                    return MigrateInfoVector{};
+                }
+                index_LOG(1) << "get dest Chunk" <<  candiChunk.getValue().toString() ;
+                MigrateInfo bestMig(min->shardId, candiChunk.getValue());
+                candidateChunks.push_back(bestMig);
+                return candidateChunks;
+            }
+        }
+        usedShards.emplace(min->shardId);
+        index_LOG(1) << "not chunks can be founded to move to shard:" <<  min->shardId.toString();
+        return MigrateInfoVector{};
+    }
+    else {
+        index_LOG(1) << "invalid shard .";
+        return MigrateInfoVector{};
+    }
+}
+
 
 
 StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMove(
@@ -310,7 +688,8 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMo
     MigrateInfoVector candidateChunks;
 
     for (const auto& coll : collections) {
-        if (coll.getTabType() != CollectionType::TableType::kSharded) {
+        if (coll.getTabType() != CollectionType::TableType::kSharded ||
+            coll.getAllowBalance() == false) {
             continue;
         }
         const NamespaceString nss(coll.getNs());
@@ -372,7 +751,7 @@ BalancerChunkSelectionPolicyImpl::selectSpecificChunkToMove(OperationContext* tx
 Status BalancerChunkSelectionPolicyImpl::checkMoveAllowed(OperationContext* txn,
                                                           const ChunkType& chunk,
                                                           const ShardId& newShardId) {
-    auto shardStatsStatus = _clusterStats->getStats(txn);
+    auto shardStatsStatus = _clusterStats->getStats(txn, true);
     if (!shardStatsStatus.isOK()) {
         return shardStatsStatus.getStatus();
     }
@@ -470,7 +849,8 @@ StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCand
 }
 
 
-StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::_indexGetSplitCandidatesForCollection(
+StatusWith<IndexSplitInfoVector>
+BalancerChunkSelectionPolicyImpl::_indexGetSplitCandidatesForCollection(
     OperationContext* txn, const NamespaceString& nss, const ShardStatisticsVector& shardStats) {
     auto scopedCMStatus = ScopedChunkManager::getExisting(txn, nss);
     if (!scopedCMStatus.isOK()) {
@@ -488,51 +868,53 @@ StatusWith<IndexSplitInfoVector> BalancerChunkSelectionPolicyImpl::_indexGetSpli
     const DistributionStatus& distribution = collInfoStatus.getValue();
 
 
-    //log() << "_indexGetSplitCandidatesForCollection";
+    index_LOG(2) << "[Auto-SplitChunk]_indexGetSplitCandidatesForCollection";
     map<string, ClusterStatistics::ChunkStatistics> chunkNameToStatis;
     for (const auto& shardStat : shardStats) {
-        //log() << "[Auto-SplitChunk]shardId: " << shardStat.shardId.toString();
         for (const auto& chunkStat : shardStat.chunkStatistics) {
             chunkNameToStatis[chunkStat.chunkId.toString()] = chunkStat;
-            LOG(1) << "[Auto-SplitChunk]shardId: " << shardStat.shardId.toString() << ", chunkId: " << chunkStat.chunkId.toString() 
-                  << ", ns: " << chunkStat.ns << ", currSizeMB: " << chunkStat.currSizeMB << ", documentNum: "
-                  << chunkStat.documentNum << ", tps: " << chunkStat.tps << ", sstfileNum: " << chunkStat.sstfileNum
-                  << ", sstfilesize: " << chunkStat.sstfilesize;
+            index_LOG(1) << "[Auto-SplitChunk]shardId: " << shardStat.shardId.toString()
+                         << ", chunkId: " << chunkStat.chunkId.toString()
+                         << ", ns: " << chunkStat.ns << ", currSizeMB: " << chunkStat.currSizeMB
+                         << ", documentNum: " << chunkStat.documentNum << ", tps: " << chunkStat.tps
+                         << ", sstfileNum: " << chunkStat.sstfileNum
+                         << ", sstfilesize: " << chunkStat.sstfilesize;
         }
     }
 
     IndexSplitInfoVector splits;
 
     // Check for chunks, which are in above the split threshold
+    int shardNum = int(shardStats.size());
     for (const auto& shardStat : shardStats) {
         const vector<ChunkType>& chunks = distribution.getChunks(shardStat.shardId);
 
-        LOG(1) << "[Auto-SplitChunk]shardId: " << shardStat.shardId.toString() << ", chunkSize: " << chunks.size();
         if (chunks.empty()) {
-            //error() << "[Auto-SplitChunk]Chunks is empty.";
+            index_LOG(2) << "[Auto-SplitChunk]Chunks is empty.";
             continue;
         }
+
+        index_LOG(1) << "[Auto-SplitChunk]collectionNs: " << nss.toString()
+                     << ", shardId: " << shardStat.shardId.toString()
+                     << ", chunkcount: " << chunks.size();
 
         // Scan all chunks to find if we should perform a split operation
         for (const auto& chunk : chunks) {
             if (chunkNameToStatis.find(chunk.getName()) == chunkNameToStatis.end()) {
-                error() << "[Auto-SplitChunk]Unable to find chunk from chunkNameToStatis map, chunkName is "
-                        << chunk.getName();
+                index_err() << "[Auto-SplitChunk]Unable to find chunk from chunkNameToStatis map, "
+                               "chunkName is "
+                            << chunk.getName();
                 continue;
             }
-            
-            auto chunkStat      = chunkNameToStatis[chunk.getName()];
-            auto splitThreshold = cm->getCurrentDesiredChunkSize();
 
-            LOG(1) << "[Auto-SplitChunk]splitThreshold: " << splitThreshold << ", chunkId: " << chunk.getName()
-                << "; chunkStat: " << chunkStat.toBSON();
+            auto chunkStat = chunkNameToStatis[chunk.getName()];
+            auto splitThreshold = cm->getCurrentDesiredChunkSize(shardNum);
+
             if (!chunkStat.isAboveSplitThreshold(splitThreshold)) {
-                LOG(1) << "[Auto-SplitChunk]chunk(" << chunk.getName() << ") is not above SplitThreashold";
+                index_LOG(2) << "[Auto-SplitChunk]chunk(" << chunk.getName()
+                             << ") is not above SplitThreashold";
                 continue;
             }
-
-            LOG(1) << "[Auto-SplitChunk]nss: " << nss.toString() << ", chunkNss: " << NamespaceString(cm->getns()).toString()
-                  << ", minKey: " << chunk.getMin() << ", maxKey: " << chunk.getMax();
 
             splits.emplace_back(chunk, BSONObj());
         }

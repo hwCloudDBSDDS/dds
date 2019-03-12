@@ -62,7 +62,8 @@
     });
 
     // Add one shard since the last shard cannot be removed.
-    var normalShard = MongoRunner.runMongod({shardsvr: ''});
+    var normalShard = MongoRunner.runMongod(
+        {shardsvr: '', "configdb": st.configRS.getURL(), "bind_ip": getHostName()});
     st.s.adminCommand({addShard: normalShard.name, name: 'normalShard'});
 
     // Allocate a port that can be used to test adding invalid hosts.
@@ -72,7 +73,8 @@
 
     // 1.a. with or without specifying the shardName.
 
-    var standalone = MongoRunner.runMongod({shardsvr: ''});
+    var standalone = MongoRunner.runMongod(
+        {shardsvr: '', "configdb": st.configRS.getURL(), "bind_ip": getHostName()});
 
     jsTest.log("Adding a standalone *without* a specified shardName should succeed.");
     addShardRes = st.s.adminCommand({addshard: standalone.name});

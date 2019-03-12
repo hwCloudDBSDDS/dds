@@ -89,9 +89,9 @@ public:
     virtual Protocol getProtocol() const = 0;
 
     // for core test
-    virtual void setCommandArgs(const BSONObj& commandArgs){}
+    virtual void setCommandArgs(const BSONObj& commandArgs) {}
 
-    virtual void setCommandName(const StringData& commandName){}
+    virtual void setCommandName(const StringData& commandName) {}
 
 protected:
     RequestInterface() = default;

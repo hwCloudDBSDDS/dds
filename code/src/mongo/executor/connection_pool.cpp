@@ -126,7 +126,7 @@ private:
     OwnedConnection takeFromProcessingPool(ConnectionInterface* connection);
 
     void updateStateInLock();
-
+    void printErrLog();
 private:
     ConnectionPool* const _parent;
 
@@ -138,6 +138,11 @@ private:
     OwnershipPool _checkedOutPool;
 
     std::priority_queue<Request, std::vector<Request>, RequestComparator> _requests;
+    int readyPoolSize;
+    int processingPoolSize;
+    int droppedProcessingPoolSize;
+    int checkedOutPoolSize;
+    int targetSize;
 
     std::unique_ptr<TimerInterface> _requestTimer;
     Date_t _requestTimerExpiration;
@@ -508,6 +513,10 @@ void ConnectionPool::SpecificPool::spawnConnections(stdx::unique_lock<stdx::mute
             std::min(_requests.size() + _checkedOutPool.size(), _parent->_options.maxConnections));
     };
 
+    targetSize = target();
+    readyPoolSize = _readyPool.size();
+    processingPoolSize = _processingPool.size();
+    checkedOutPoolSize = _checkedOutPool.size();
     // While all of our inflight connections are less than our target
     while (_readyPool.size() + _processingPool.size() + _checkedOutPool.size() < target()) {
         std::unique_ptr<ConnectionPool::ConnectionInterface> handle;
@@ -640,7 +649,6 @@ void ConnectionPool::SpecificPool::updateStateInLock() {
                 if (x.first <= now) {
                     auto cb = std::move(x.second);
                     _requests.pop();
-
                     lk.unlock();
                     cb(Status(ErrorCodes::ExceededTimeLimit,
                               "Couldn't get a connection within the time limit"));
@@ -677,6 +685,15 @@ void ConnectionPool::SpecificPool::updateStateInLock() {
         // Set the shutdown timer
         _requestTimer->setTimeout(timeout, [this]() { shutdown(); });
     }
+}
+
+void ConnectionPool::SpecificPool::printErrLog(){
+    index_log() << "[connectionPool] get conn expiration " << _requestTimerExpiration
+                << "; now : " << _parent->_factory->now()
+                << "; readyPoolSize : " << readyPoolSize
+                << "; processingPoolSize : " << processingPoolSize
+                << "; checkedOutPoolSize : " << checkedOutPoolSize
+                << "; targetSize : " << targetSize;
 }
 
 }  // namespace executor

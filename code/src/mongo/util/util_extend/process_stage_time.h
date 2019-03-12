@@ -1,8 +1,8 @@
 #pragma once
 
-#include <vector>
 #include <string>
 #include <time.h>
+#include <vector>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
@@ -14,30 +14,24 @@
 
 namespace mongo {
 
-class ProcessStageTime  {
+class ProcessStageTime {
     MONGO_DISALLOW_COPYING(ProcessStageTime);
 
 public:
-    struct StageDetails{
+    struct StageDetails {
         std::string name;
-        Date_t startTime;  
+        Date_t startTime;
 
-        StageDetails():
-            name(std::string()), startTime(Date_t::max()) {
-        }
+        StageDetails() : name(std::string()), startTime(Date_t::max()) {}
 
-        StageDetails(const std::string &stageName, Date_t now):
-            name(stageName), startTime(now) {
-        }
+        StageDetails(const std::string& stageName, Date_t now) : name(stageName), startTime(now) {}
     };
-        
+
     ProcessStageTime(std::string processName);
 
     virtual ~ProcessStageTime();
 
-    void clear();
-
-    void noteStageStart(const std::string &stageName);
+    void noteStageStart(const std::string& stageName);
 
     void noteProcessEnd();
 
@@ -49,9 +43,8 @@ public:
 
 private:
     std::string _processName;
-    
-    std::vector<StageDetails> _stages;
-    stdx::mutex _mutex;    
-};
 
+    std::vector<StageDetails> _stages;
+    stdx::mutex _mutex;
+};
 }

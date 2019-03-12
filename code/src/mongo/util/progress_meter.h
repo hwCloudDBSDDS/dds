@@ -30,6 +30,7 @@
 #pragma once
 
 #include "mongo/util/thread_safe_string.h"
+#include "mongo/util/time_support.h"
 
 #include <string>
 
@@ -114,12 +115,12 @@ private:
 
     unsigned long long _total;
     bool _showTotal{true};
-    int _secondsBetween{3};
+    Seconds _secondsBetween{Seconds(3)};
     int _checkInterval{100};
 
     unsigned long long _done;
     unsigned long long _hits;
-    int _lastTime;
+    Date_t _lastTime;
 
     std::string _units;
     ThreadSafeString _name;

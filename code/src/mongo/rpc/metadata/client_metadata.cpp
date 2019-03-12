@@ -395,7 +395,7 @@ const BSONObj& ClientMetadata::getDocument() const {
 void ClientMetadata::logClientMetadata(Client* client) const {
     invariant(!getDocument().isEmpty());
     LOG(3) << "received client metadata from " << client->getRemote().toString() << " "
-          << client->desc() << ": " << getDocument();
+           << client->desc() << ": " << getDocument();
 }
 
 StringData ClientMetadata::fieldName() {

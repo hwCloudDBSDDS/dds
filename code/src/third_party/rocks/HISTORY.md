@@ -1,4 +1,6 @@
 # Rocksdb Change Log
+### Bug Fixes
+* Fix DB::Flush() keep waiting after flush finish under certain condition.
 ## 5.1.0 (01/13/2016)
 ### Public API Change
 * Support dynamically change `delete_obsolete_files_period_micros` option via SetDBOptions().
@@ -197,7 +199,7 @@
 * Added a new way to report QPS from db_bench (check out --report_file and --report_interval_seconds)
 * Added a cache for individual rows. See DBOptions::row_cache for more info.
 * Several new features on EventListener (see include/rocksdb/listener.h):
- - OnCompationCompleted() now returns per-compaciton job statistics, defined in include/rocksdb/compaction_job_stats.h.
+ - OnCompationCompleted() now returns per-compaction job statistics, defined in include/rocksdb/compaction_job_stats.h.
  - Added OnTableFileCreated() and OnTableFileDeleted().
 * Add compaction_options_universal.enable_trivial_move to true, to allow trivial move while performing universal compaction. Trivial move will happen only when all the input files are non overlapping.
 

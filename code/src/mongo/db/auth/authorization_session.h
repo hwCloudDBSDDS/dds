@@ -283,6 +283,12 @@ public:
     // called.
     bool isImpersonating() const;
 
+    bool isAuthWithBuiltinUser() const;
+    bool isAuthWithCustomerOrNoAuthUser() const;
+    bool isAuthWithCustomer() const;
+    bool isNoAuthUser() const;
+    bool shouldAllowLocalhost() const;
+
 private:
     // If any users authenticated on this session are marked as invalid this updates them with
     // up-to-date information. May require a read lock on the "admin" db to read the user data.

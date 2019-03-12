@@ -270,7 +270,7 @@ TEST_F(ThreadedOperationDeadlineTests, KillArrivesWhileWaiting) {
     WaitTestState state;
     auto waiterResult = startWaiter(txn.get(), &state);
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()));
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()));
     {
         stdx::lock_guard<Client> clientLock(*txn->getClient());
         txn->markKilled();
@@ -287,11 +287,11 @@ TEST_F(ThreadedOperationDeadlineTests, MaxTimeExpiresWhileWaiting) {
                                                        startDate + Seconds{60},   // until
                                                        startDate + Seconds{10});  // maxTime
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()))
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()))
         << waiterResult.get();
     mockClock->advance(Seconds{9});
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()));
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()));
     mockClock->advance(Seconds{2});
     ASSERT_THROWS_CODE(waiterResult.get(), DBException, ErrorCodes::ExceededTimeLimit);
 }
@@ -305,11 +305,11 @@ TEST_F(ThreadedOperationDeadlineTests, UntilExpiresWhileWaiting) {
                                                        startDate + Seconds{10},   // until
                                                        startDate + Seconds{60});  // maxTime
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()))
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()))
         << waiterResult.get();
     mockClock->advance(Seconds{9});
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()));
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()));
     mockClock->advance(Seconds{2});
     ASSERT(stdx::cv_status::timeout == waiterResult.get());
 }
@@ -320,7 +320,7 @@ TEST_F(ThreadedOperationDeadlineTests, SignalOne) {
     auto waiterResult = startWaiter(txn.get(), &state);
 
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()))
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()))
         << waiterResult.get();
     state.signal();
     ASSERT(stdx::cv_status::no_timeout == waiterResult.get());
@@ -336,16 +336,16 @@ TEST_F(ThreadedOperationDeadlineTests, KillOneSignalAnother) {
     auto waiterResult1 = startWaiter(txn1.get(), &state1);
     auto waiterResult2 = startWaiter(txn2.get(), &state2);
     ASSERT(stdx::future_status::ready !=
-           waiterResult1.wait_for(Milliseconds::zero().toSystemDuration()));
+           waiterResult1.wait_for(Milliseconds::zero().toSteadyDuration()));
     ASSERT(stdx::future_status::ready !=
-           waiterResult2.wait_for(Milliseconds::zero().toSystemDuration()));
+           waiterResult2.wait_for(Milliseconds::zero().toSteadyDuration()));
     {
         stdx::lock_guard<Client> clientLock(*txn1->getClient());
         txn1->markKilled();
     }
     ASSERT_THROWS_CODE(waiterResult1.get(), DBException, ErrorCodes::Interrupted);
     ASSERT(stdx::future_status::ready !=
-           waiterResult2.wait_for(Milliseconds::zero().toSystemDuration()));
+           waiterResult2.wait_for(Milliseconds::zero().toSteadyDuration()));
     state2.signal();
     ASSERT(stdx::cv_status::no_timeout == waiterResult2.get());
 }
@@ -359,11 +359,11 @@ TEST_F(ThreadedOperationDeadlineTests, SignalBeforeUntilExpires) {
                                                        startDate + Seconds{10},   // until
                                                        startDate + Seconds{60});  // maxTime
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()))
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()))
         << waiterResult.get();
     mockClock->advance(Seconds{9});
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()));
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()));
     state.signal();
     ASSERT(stdx::cv_status::no_timeout == waiterResult.get());
 }
@@ -377,11 +377,11 @@ TEST_F(ThreadedOperationDeadlineTests, SignalBeforeMaxTimeExpires) {
                                                        startDate + Seconds{60},   // until
                                                        startDate + Seconds{10});  // maxTime
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()))
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()))
         << waiterResult.get();
     mockClock->advance(Seconds{9});
     ASSERT(stdx::future_status::ready !=
-           waiterResult.wait_for(Milliseconds::zero().toSystemDuration()));
+           waiterResult.wait_for(Milliseconds::zero().toSteadyDuration()));
     state.signal();
     ASSERT(stdx::cv_status::no_timeout == waiterResult.get());
 }

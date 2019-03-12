@@ -90,8 +90,11 @@ public:
     void initCollectionBeforeRepair(OperationContext* opCtx, const std::string& ns);
     void reinitCollectionAfterRepair(OperationContext* opCtx, const std::string& ns);
 
-    Status postInitRecordStore(OperationContext* opCtx, StringData ns, const CollectionOptions& options);
-    Status updateChunkMetadataViaRecordStore(OperationContext* opCtx, StringData ns,BSONArray &indexes);
+    Status postInitRecordStore(OperationContext* opCtx, StringData ns);
+    Status updateChunkMetadataViaRecordStore(OperationContext* opCtx,
+                                             StringData ns,
+                                             BSONArray& indexes);
+
 private:
     class AddCollectionChange;
     class RemoveCollectionChange;
@@ -101,6 +104,5 @@ private:
 
     KVStorageEngine* const _engine;  // not owned here
     CollectionMap _collections;
-    mutable stdx::mutex  _collectionsMutex;
 };
 }

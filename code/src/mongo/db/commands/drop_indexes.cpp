@@ -90,18 +90,20 @@ public:
              int,
              string& errmsg,
              BSONObjBuilder& result) {
-        //const NamespaceString nss = parseNsCollectionRequired(dbname, jsobj);
         const NamespaceString nss(parseNs(dbname, jsobj));
-        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && dbname != "config" && dbname != "system"){
-            log()<<"[drop_indexes].. on configServer : "<<jsobj.toString();
-            Status st = dropIndexesOnCfgSrv(txn,dbname, nss, jsobj, result);
-            if( st.isOK()){
+        index_log()<<"dropindex :"<<jsobj;
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && dbname != "config" &&
+            dbname != "system" && dbname != "admin") {
+            Status st = dropIndexesOnCfgSrv(txn, dbname, nss, jsobj, result);
+            if (st.isOK()) {
                 return true;
-            }else{
-                return  appendCommandStatus(result,st);
+            } else {
+                return appendCommandStatus(result, st);
             }
-        }else{
-            log()<<"[drop_indexes].. on shardServer  : "<<jsobj.toString();
+        } else {
+            index_log() << "[drop_indexes].. on shardServer  : ";
+            //set dropping index flag into txn.
+            txn->setDroppedIndexFlag(true);
             return appendCommandStatus(result, dropIndexes(txn, nss, jsobj, &result));
         }
     }
@@ -137,17 +139,17 @@ public:
         DBDirectClient db(txn);
 
         const NamespaceString toReIndexNs = parseNsCollectionRequired(dbname, jsobj);
-        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && dbname != "config" && dbname != "system"){
-           log()<<"[CmdReIndex] reindex on configServer start...";
-           Status st = reIndexesOnCfgSrv(txn,dbname,toReIndexNs,jsobj,result);
-           if( st.isOK() ){
-               return true;  
-           }else{
-               return appendCommandStatus(result,st);
-           }
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && dbname != "config" &&
+            dbname != "system") {
+            index_log() << "[CmdReIndex] reindex on configServer start...";
+            Status st = reIndexesOnCfgSrv(txn, dbname, toReIndexNs, jsobj, result);
+            if (st.isOK()) {
+                return true;
+            } else {
+                return appendCommandStatus(result, st);
+            }
         }
         LOG(0) << "CMD: reIndex " << toReIndexNs;
-        txn->setNs(toReIndexNs);
 
         ScopedTransaction transaction(txn, MODE_IX);
         Lock::DBLock dbXLock(txn->lockState(), dbname, MODE_X);

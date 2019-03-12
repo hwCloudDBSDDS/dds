@@ -50,10 +50,10 @@
 #include "mongo/db/storage/capped_callback.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/snapshot.h"
-#include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/mutex.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/split_chunk_request.h"
+#include "mongo/stdx/condition_variable.h"
+#include "mongo/stdx/mutex.h"
 
 namespace mongo {
 
@@ -180,11 +180,16 @@ private:
  */
 class Collection final : CappedCallback, UpdateNotifier {
 public:
-    enum class BalanceOpType  : int{
+    enum class ChunkState : int {
         SPLITING = 0,
         CONFIRMING,
         STABLE,
+        ASSIGNING,
+        CORRUPTED,
     };
+
+    // db instance type
+    enum class dbInstanceType : int { kSysDb = 0, kUserDb = 1 };
 
     Collection(OperationContext* txn,
                StringData fullNS,
@@ -194,10 +199,12 @@ public:
 
     ~Collection();
 
+    static std::string statestr(const ChunkState& s);
+
     bool ok() const {
         return _magic == 1357924;
     }
-    void getAllIndexes(OperationContext* opCtx,BSONArray &arr);
+    void getAllIndexes(OperationContext* opCtx, BSONArray& arr);
 
     CollectionCatalogEntry* getCatalogEntry() {
         return _details;
@@ -467,34 +474,65 @@ public:
      * Collection is destroyed.
      */
     const CollatorInterface* getDefaultCollator() const;
-    
+
     void extractShardkey(OperationContext* txn, const BSONObj& doc);
 
-    CollectionType::TableType getCollTabType()const{
+    CollectionType::TableType getCollTabType() const {
         return _tableType;
     }
-    void setCollTabType(CollectionType::TableType tab){
+    void setCollTabType(CollectionType::TableType tab) {
         _tableType = tab;
     }
 
-    Status split(OperationContext* txn,
-                 const SplitChunkReq& request,
-                 BSONObjBuilder& output);
+    dbInstanceType getDbInstanceType() const {
+        return _dbInstType;
+    }
+    void setDbInstanceType(dbInstanceType dbInstType) {
+        _dbInstType = dbInstType;
+    }
+
+    void lockBalancer() {
+        _balanceMutex.lock();
+    }
+
+    void unlockBalancer() {
+        _balanceMutex.unlock();
+    }
+
+    Status preSplit(OperationContext* txn, const SplitChunkReq& request, BSONObjBuilder& output);
+    Status rollbackPreSplit(OperationContext* txn, const SplitChunkReq& request);
+    Status split(OperationContext* txn, const SplitChunkReq& request, BSONObjBuilder& output);
 
     Status confirmSplit(OperationContext* txn,
                         const ConfirmSplitRequest& request,
-                        BSONObjBuilder& output) ;
+                        BSONObjBuilder& output);
 
-    const bool isAssigning() {
-        return _isAssigning;
-    }
-    
-    void setAssigning(bool isAssigning){
-        _isAssigning = isAssigning;
+    const bool isActive() {
+        return (_chunkState != ChunkState::ASSIGNING && _chunkState != ChunkState::CORRUPTED);
     }
 
-    void stopBackGround4Chunk() {
-        _recordStore->stopBackGround4Chunk();
+    const bool isStable() {
+        return (_chunkState == ChunkState::STABLE);
+    }
+
+    void setState(ChunkState state) {
+        stdx::unique_lock<stdx::mutex> lock(_balanceMutex);
+        if (state == ChunkState::ASSIGNING) {
+            invariant(_chunkState == ChunkState::STABLE);
+        }
+        _chunkState = state;
+    }
+
+    ChunkState getState() const {
+        return _chunkState;
+    }
+
+    bool getSpliting() const {
+        return _spliting.load();
+    }
+
+    void setSpliting(bool spliting) {
+        _spliting.store(spliting);
     }
 
 private:
@@ -549,6 +587,8 @@ private:
 
     CollectionType::TableType _tableType = CollectionType::TableType::kNonShard;
 
+    dbInstanceType _dbInstType = dbInstanceType::kSysDb;
+
     // The default collation which is applied to operations and indices which have no collation of
     // their own. The collection's validator will respect this collation.
     //
@@ -579,16 +619,14 @@ private:
     // The earliest snapshot that is allowed to use this collection.
     boost::optional<SnapshotName> _minVisibleSnapshot;
 
-    BalanceOpType _balanceOpType = BalanceOpType::STABLE;
+    ChunkState _chunkState = ChunkState::STABLE;
     std::string _splittingChunkID;
     Status _balanceOpResult = Status::OK();
     BSONObj _splitPoint;
     stdx::mutex _balanceMutex;
 
-   
-    stdx::mutex _mutex;
-    bool _isAssigning;
-    
+    std::atomic<bool> _spliting{false};
+
     friend class Database;
     friend class IndexCatalog;
     friend class NamespaceDetails;

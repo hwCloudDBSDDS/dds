@@ -158,6 +158,10 @@ private:
             return _entry;
         }
 
+        bool isCustomerConnection() const override {
+            return _customerConnection;
+        }
+
     private:
         explicit LegacySession(std::unique_ptr<AbstractMessagingPort> amp,
                                TransportLayerLegacy* tl);
@@ -170,6 +174,8 @@ private:
         TagMask _tags;
 
         MessageCompressorManager _messageCompressorManager;
+
+        bool _customerConnection;
 
         std::unique_ptr<Connection> _connection;
 

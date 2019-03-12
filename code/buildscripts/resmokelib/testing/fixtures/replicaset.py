@@ -6,6 +6,7 @@ from __future__ import absolute_import
 
 import os.path
 import time
+import shutil
 
 import pymongo
 
@@ -63,7 +64,10 @@ class ReplicaSetFixture(interface.ReplFixture):
         self.initial_sync_node = None
         self.initial_sync_node_idx = -1
 
-    def setup(self):
+    def setup(self, logflag=""):
+        shutil.rmtree(self._dbpath_prefix, ignore_errors=True)
+        #os.popen('/root/namenode/hadoop-2.7.3/bin/hdfs dfs -rm -r hdfs://163.40.13.205:9000' + self._dbpath_prefix + '/*')
+        #time.sleep(2)
         self.replset_name = self.mongod_options.get("replSet", "rs")
 
         if not self.nodes:
@@ -71,15 +75,17 @@ class ReplicaSetFixture(interface.ReplFixture):
                 node = self._new_mongod(i, self.replset_name)
                 self.nodes.append(node)
 
+        i = 1
         for node in self.nodes:
-            node.setup()
+            node.setup(logflag + "_" + self.replset_name + str(i))
+            i += 1
 
         if self.start_initial_sync_node:
             if not self.initial_sync_node:
                 self.initial_sync_node_idx = len(self.nodes)
                 self.initial_sync_node = self._new_mongod(self.initial_sync_node_idx,
                                                           self.replset_name)
-            self.initial_sync_node.setup()
+            self.initial_sync_node.setup(logflag)
             self.initial_sync_node.await_ready()
 
         self.port = self.get_primary().port

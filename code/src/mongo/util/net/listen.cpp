@@ -40,6 +40,7 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/stdx/thread.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/asio_message_port.h"
@@ -48,6 +49,9 @@
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/util_extend/default_parameters.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+
 
 #ifndef _WIN32
 
@@ -65,6 +69,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <time.h>
 #ifdef __OpenBSD__
 #include <sys/uio.h>
 #endif
@@ -122,6 +127,11 @@ vector<SockAddr> ipToAddrs(const char* ips, int port, bool useUnixSockets) {
             (sa.getAddr() == "127.0.0.1" || sa.getAddr() == "0.0.0.0"))  // only IPv4
             out.push_back(SockAddr(makeUnixSockPath(port), port));
 #endif
+
+        if (GLOBAL_CONFIG_GET(ListenControlPort) && serverGlobalParams.binaryName == "mongod") {
+            SockAddr sa1(ip.c_str(), DEFAULT_CONTRSL_PORT);
+            out.push_back(sa1);
+        }       
     }
     return out;
 }
@@ -163,6 +173,7 @@ Listener::~Listener() {
 
 bool Listener::setupSockets() {
     checkTicketNumbers();
+    checkInternalTicketNumbers();
 
 #if !defined(_WIN32)
     _mine = ipToAddrs(_ip.c_str(), _port, (!serverGlobalParams.noUnixSocket && useUnixSockets()));
@@ -210,12 +221,17 @@ bool Listener::setupSockets() {
         }
 #endif
 
-        if (::bind(sock, me.raw(), me.addressSize) != 0) {
+        for (int time = 0; ::bind(sock, me.raw(), me.addressSize) != 0; time++) {
             int x = errno;
             error() << "listen(): bind() failed " << errnoWithDescription(x)
                     << " for socket: " << me.toString();
-            if (x == EADDRINUSE)
+            if (x == EADDRINUSE && time < 10) {
                 error() << "  addr already in use";
+                stdx::this_thread::sleep_for(kDefaultBindRetryInterval.toSteadyDuration());
+                index_err() << "Start retry listen(): bind() " << time + 1 << "times.";
+                continue;
+            }
+
             return _setupSocketsSuccessful;
         }
 
@@ -260,8 +276,8 @@ void Listener::initAndListen() {
     }
 
     if (maxfd >= FD_SETSIZE) {
-        error() << "socket " << maxfd << " is higher than " << FD_SETSIZE - 1 
-             << "; not supported,can exe  'ls /proc/xxx(threadID)/fd -l',check open socket."
+        error() << "socket " << maxfd << " is higher than " << FD_SETSIZE - 1
+                << "; not supported,can exe  'ls /proc/xxx(threadID)/fd -l',check open socket."
                 << warnings;
         // return;
     }
@@ -342,10 +358,9 @@ void Listener::initAndListen() {
             long long myConnectionNumber = globalConnectionNumber.addAndFetch(1);
 
             if (_logConnect && !serverGlobalParams.quiet) {
-                int conns = globalTicketHolder.used() + 1;
+                int conns = globalTicketHolder.used() + internalTicketHolder.used() + 1;
                 const char* word = (conns == 1 ? " connection" : " connections");
-                LOG(2) << "connection accepted from " << from.toString() << " #"
-                      << myConnectionNumber << " (" << conns << word << " now open)";
+                LOG(2) << "end connection (" << conns << word << " now open)";
             }
 
             if (from.getType() != AF_UNIX)
@@ -558,10 +573,8 @@ void Listener::initAndListen() {
         long long myConnectionNumber = globalConnectionNumber.addAndFetch(1);
 
         if (_logConnect && !serverGlobalParams.quiet) {
-            int conns = globalTicketHolder.used() + 1;
+            int conns = globalTicketHolder.used() + internalTicketHolder.used() + 1;
             const char* word = (conns == 1 ? " connection" : " connections");
-            LOG(2) << "connection accepted from " << from.toString() << " #" << myConnectionNumber
-                  << " (" << conns << word << " now open)";
         }
 
         if (from.getType() != AF_UNIX)
@@ -593,7 +606,8 @@ void Listener::waitUntilListening() const {
 void Listener::_accepted(const std::shared_ptr<Socket>& psocket, long long connectionId) {
     std::unique_ptr<AbstractMessagingPort> port;
     if (isMessagePortImplASIO()) {
-        port = stdx::make_unique<ASIOMessagingPort>(psocket->stealSD(), psocket->remoteAddr());
+        port = stdx::make_unique<ASIOMessagingPort>(
+            psocket->stealSD(), psocket->remoteAddr(), psocket->localAddr());
     } else {
         port = stdx::make_unique<MessagingPort>(psocket);
     }
@@ -627,7 +641,7 @@ int getMaxConnections() {
 #endif
 }
 
-void Listener::checkTicketNumbers() {
+Status Listener::checkTicketNumbers() {
     int want = getMaxConnections();
     int current = globalTicketHolder.outof();
     if (current != DEFAULT_MAX_CONN) {
@@ -635,13 +649,30 @@ void Listener::checkTicketNumbers() {
             // they want fewer than they can handle
             // which is fine
             LOG(1) << " only allowing " << current << " connections";
-            return;
+            return Status::OK();
         }
         if (current > want) {
             log() << " --maxConns too high, can only handle " << want;
         }
     }
-    globalTicketHolder.resize(want);
+    return globalTicketHolder.resize(want);
+}
+
+Status Listener::checkInternalTicketNumbers() {
+    int want = getMaxConnections();
+    int current = internalTicketHolder.outof();
+    if (current != DEFAULT_MAX_CONN_INTERNAL) {
+        if (current < want) {
+            // they want fewer than they can handle
+            // which is fine
+            LOG(1) << " only allowing " << current << " internal connections";
+            return Status::OK();
+        }
+        if (current > want) {
+            log() << " --maxIncomingConnections too high, can only handle " << want;
+        }
+    }
+    return internalTicketHolder.resize(want);
 }
 
 void Listener::shutdown() {
@@ -649,6 +680,7 @@ void Listener::shutdown() {
 }
 
 TicketHolder Listener::globalTicketHolder(DEFAULT_MAX_CONN);
+TicketHolder Listener::internalTicketHolder(DEFAULT_MAX_CONN_INTERNAL);
 AtomicInt64 Listener::globalConnectionNumber;
 
 void ListeningSockets::closeAll() {

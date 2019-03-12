@@ -31,11 +31,17 @@
 #include "mongo/platform/basic.h"
 
 
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/role_name.h"
+#include "mongo/db/auth/user_name.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/count.h"
+#include "mongo/db/modules/rocks/src/gc_common.h"
+#include "mongo/db/modules/rocks/src/gc_common.h"
 #include "mongo/db/query/explain.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
@@ -44,8 +50,10 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/views/resolved_view.h"
+#include "mongo/s/client/shard.h"
+#include "mongo/s/grid.h"
 #include "mongo/util/log.h"
-#include "mongo/db/catalog/database_holder.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
 
 namespace mongo {
 namespace {
@@ -101,12 +109,7 @@ public:
         actions.addAction(ActionType::find);
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
-    
-    virtual Status checkAuthForCommand(Client* client,
-                                       const std::string& dbname,
-                                       const BSONObj& cmdObj) {
-        return Status::OK();
-    }
+
 
     virtual Status explain(OperationContext* txn,
                            const std::string& dbname,
@@ -165,6 +168,51 @@ public:
         return Status::OK();
     }
 
+    int getChunksNum(OperationContext* txn, const std::string& ns) {
+        repl::ReadConcernLevel readConcern;
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+            readConcern = repl::ReadConcernLevel::kLocalReadConcern;
+        }
+
+        std::vector<ChunkType> chunks;
+        auto status = grid.catalogClient(txn)->getChunks(
+            txn, BSON(ChunkType::ns(ns)), BSONObj(), 0, &chunks, nullptr, readConcern);
+        if (!status.isOK() || chunks.empty()) {
+            index_err() << "getChunksNum error: " << status << "; ns: " << ns;
+            return 0;
+        }
+        return chunks.size();
+    }
+
+    int gcCount(OperationContext* txn,
+                const string& dbname,
+                const NamespaceString& ns,
+                const CountRequest& request) {
+        if (dbname == "config" && GLOBAL_CONFIG_GET(IsShardingTest) &&
+            !GLOBAL_CONFIG_GET(ShowInternalInfo) && GLOBAL_CONFIG_GET(enableGlobalGC) &&
+            serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+            if (ns.ns() == "config.chunks") {
+                if (!request.getQuery().isEmpty()) {
+                    return 0;
+                } else {
+                    int num = getChunksNum(txn, GcRefNs) + getChunksNum(txn, GcRemoveInfoNs);
+                    index_LOG(0) << "count dbname: " << dbname << "; num: " << num;
+                    return num;
+                }
+            } else if (ns.ns() == "config.collections") {
+                if (!request.getQuery().isEmpty()) {
+                    return 0;
+                } else {
+                    return 2;
+                }
+            } else {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+    }
+
     virtual bool run(OperationContext* txn,
                      const string& dbname,
                      BSONObj& cmdObj,
@@ -189,16 +237,47 @@ public:
                        "http://dochub.mongodb.org/core/3.4-feature-compatibility."));
         }
 
+        if (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser()) {
+
+            if (request.getValue().getNs().ns() == "admin.system.users") {
+                std::set<std::string> buildinUsers;
+                UserName::getBuildinUsers(buildinUsers);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                BSONObj query = BSON("$and" << BSON_ARRAY(request.getValue().getQuery() << filter));
+                request.getValue().setQuery(query);
+            }
+            if (request.getValue().getNs().ns() == "admin.system.roles") {
+                std::set<std::string> buildinRoles;
+                RoleName::getBuildinRoles(buildinRoles);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                BSONObj query = BSON("$and" << BSON_ARRAY(request.getValue().getQuery() << filter));
+                request.getValue().setQuery(query);
+            }
+        }
+
+        int gc_count = gcCount(txn, dbname, ns, request.getValue());
+
         AutoGetCollectionOrViewForRead ctx(txn, nss);
         Collection* collection = ctx.getCollection();
-        if( collection == NULL){
-            LOG(1)<<"[CmdCount].. Collection:"<< nss <<" not found ";
-        }
-        // if find with chunkid, but no collection here, we should return stale config, so mongos will retry
+
+        // if find with chunkid, but no collection here, we should return stale config, so mongos
+        // will retry
         if (!collection && nss.isChunk()) {
+            index_LOG(0) << "Collection:" << nss << " not found ";
             return appendCommandStatus(
-                result, {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});            
+                result, {ErrorCodes::SendStaleConfig, str::stream() << "Collection [" << nss.toString() << "] not found."});
         }
+
+        auto css = CollectionShardingState::get(txn, request.getValue().getNs());
+        css->checkChunkVersionOrThrow(txn);
 
         if (ctx.getView()) {
             ctx.releaseLocksForView();
@@ -270,8 +349,10 @@ public:
         CountStage* countStage = static_cast<CountStage*>(exec->getRootStage());
         const CountStats* countStats =
             static_cast<const CountStats*>(countStage->getSpecificStats());
-
-        result.appendNumber("n", countStats->nCounted);
+        result.appendNumber("n",
+                            countStats->nCounted >= gc_count ? countStats->nCounted - gc_count
+                                                             : countStats->nCounted);
+        index_LOG(1) << "[CountCmd] nss: " << nss << " count return: " << countStats->nCounted;
         return true;
     }
 

@@ -55,7 +55,7 @@ public:
      * descriptor and address. This messaging port is already connected, and connect() should not be
      * called.
      */
-    ASIOMessagingPort(int fd, SockAddr farEnd);
+    ASIOMessagingPort(int fd, SockAddr farEnd, SockAddr farStart);
 
     /**
      * This is the "Egress Constructor", used by the dbclient. This messaging port is not connected
@@ -86,6 +86,7 @@ public:
     bool connect(SockAddr& farEnd) override;
 
     HostAndPort remote() const override;
+    HostAndPort local() const override;
 
     unsigned remotePort() const override;
 
@@ -137,6 +138,7 @@ private:
     boost::optional<Milliseconds> _timeout;
 
     HostAndPort _remote;
+    HostAndPort _local;
 
     bool _isEncrypted;
     bool _awaitingHandshake;

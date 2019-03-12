@@ -40,6 +40,7 @@
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/mongoutils/str.h"
 
+
 namespace mongo {
 
 using std::unique_ptr;
@@ -102,8 +103,7 @@ PlanStage::StageState FetchStage::doWork(WorkingSetID* out) {
             verify(member->hasRecordId());
 
             try {
-                if (!_cursor)
-                {
+                if (!_cursor) {
                     _cursor = _collection->getCursor(getOpCtx());
                 }
                 auto fetcher = _cursor->fetcherForId(member->recordId);
@@ -170,6 +170,11 @@ void FetchStage::doDetachFromOperationContext() {
 void FetchStage::doReattachToOperationContext() {
     if (_cursor)
         _cursor->reattachToOperationContext(getOpCtx());
+}
+
+void FetchStage::doReleaseCursor() {
+    if (_cursor)
+        _cursor->detachFromOperationContext();
 }
 
 void FetchStage::doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {

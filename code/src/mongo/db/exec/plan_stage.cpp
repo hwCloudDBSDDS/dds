@@ -44,6 +44,8 @@ PlanStage::StageState PlanStage::work(WorkingSetID* out) {
     ++_commonStats.works;
 
     StageState workResult = doWork(out);
+
+
     if (StageState::ADVANCED == workResult) {
         ++_commonStats.advanced;
     } else if (StageState::NEED_TIME == workResult) {
@@ -106,6 +108,14 @@ void PlanStage::reattachToOperationContext(OperationContext* opCtx) {
 
 ClockSource* PlanStage::getClock() const {
     return _opCtx->getServiceContext()->getFastClockSource();
+}
+
+void PlanStage::releaseCursor() {
+    for (auto&& child : _children) {
+        child->releaseCursor();
+    }
+
+    doReleaseCursor();
 }
 
 }  // namespace mongo

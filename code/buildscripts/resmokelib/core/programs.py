@@ -77,7 +77,7 @@ def mongod_program(logger, executable=None, process_kwargs=None, **kwargs):
     # Override the storage engine specified on the command line with "wiredTiger" if running a
     # config server replica set.
     if "replSet" in kwargs and "configsvr" in kwargs:
-        kwargs["storageEngine"] = "wiredTiger"
+        kwargs["storageEngine"] = "rocksdb"
 
     # Apply the rest of the command line arguments.
     _apply_kwargs(args, kwargs)

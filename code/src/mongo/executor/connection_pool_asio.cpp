@@ -27,9 +27,9 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kASIO
 
-#include "mongo/platform/basic.h"
-#include "mongo/base/remote_command_timeout.h"
 #include "mongo/executor/connection_pool_asio.h"
+#include "mongo/com/include/remote_command_timeout.h"
+#include "mongo/platform/basic.h"
 
 #include <asio.hpp>
 
@@ -64,7 +64,7 @@ void ASIOTimer::setTimeout(Milliseconds timeout, TimeoutCallback cb) {
         cancelTimeout();
 
         std::error_code ec;
-        _impl.expires_after(std::min(kMaxTimerDuration, timeout).toSystemDuration(), ec);
+        _impl.expires_after(std::min(kMaxTimerDuration, timeout).toSteadyDuration(), ec);
         if (ec) {
             severe() << "Failed to set connection pool timer: " << ec.message();
             fassertFailed(40333);

@@ -118,7 +118,6 @@ void CollectionOptions::reset() {
     prefix = 0;
     dbPath = "";
     toCreate = false;
-    
 }
 
 bool CollectionOptions::isValid() const {
@@ -146,7 +145,7 @@ Status CollectionOptions::parse(const BSONObj& options) {
     // store the "create" field. These versions also refrained from materializing the unknown
     // options in the catalog, so we are free to fail on unknown options in this case.
     const bool createdOn24OrEarlier = (options.firstElement().fieldNameStringData() == "create"_sd);
-    if( options.isEmpty()){
+    if (options.isEmpty()) {
         return Status::OK();
     }
     // During parsing, ignore some validation errors in order to accept options objects that
@@ -276,10 +275,10 @@ Status CollectionOptions::parse(const BSONObj& options) {
 
             pipeline = e.Obj().getOwned();
         } else if (fieldName == "newChunkFlag") {
-            //ignore this filed.
-        }else if (fieldName == "dbPath") {
-            //ignore this filed.
-        }else if (!createdOn24OrEarlier &&
+            // ignore this filed.
+        } else if (fieldName == "dbPath") {
+            // ignore this filed.
+        } else if (!createdOn24OrEarlier &&
                    collectionOptionsWhitelist.find(fieldName) == collectionOptionsWhitelist.end()) {
             return Status(ErrorCodes::InvalidOptions,
                           str::stream() << "The field '" << fieldName
@@ -355,10 +354,10 @@ BSONObj CollectionOptions::toBSON() const {
         b.append("prefix", prefix);
     }
 
-    if (!dbPath.empty()){
+    if (!dbPath.empty()) {
         b.append("dbPath", dbPath);
     }
-        
+
     return b.obj();
 }
 }

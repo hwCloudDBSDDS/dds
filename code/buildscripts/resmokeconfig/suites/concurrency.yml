@@ -9,7 +9,8 @@ selector:
     # Skip fsm_all_simultaneous.js to avoid triggering the 6-hour timeout in Evergreen when this
     # suite is run with --repeat=10 on the Linux Repeated Execution variant.
     - jstests/concurrency/fsm_all_simultaneous.js
-
+    - jstests/concurrency/fsm_all.js
+    
 executor:
   js_test:
     config:

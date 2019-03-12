@@ -64,6 +64,13 @@ public:
         kOff,            // Balancer is completely off
     };
 
+    // balancer policy
+    enum BalancerPolicy {
+        kDefault,           // default  Balancer poicy
+        kBalanceByLoad,  // balance by shard load
+        kInvalid,            //
+    };
+
     // The key under which this setting is stored on the config server
     static const char kKey[];
 
@@ -89,6 +96,13 @@ public:
     }
 
     /**
+   * Returns the shard load threshold.
+   */
+    long long getThreshold() const {
+        return _threshold;
+    }
+
+    /**
      * Returns true if either 'now' is in the balancing window or if no balancing window exists.
      */
     bool isTimeInBalancingWindow(const boost::posix_time::ptime& now) const;
@@ -107,6 +121,14 @@ public:
         return _waitForDelete;
     }
 
+
+    /**
+  * Returns whether the balancer should wait for deletions after each completed move.
+  */
+    long long getPolicyMode() const {
+        return _policyMode;
+    }
+
 private:
     BalancerSettingsType();
 
@@ -118,6 +140,10 @@ private:
     MigrationSecondaryThrottleOptions _secondaryThrottle;
 
     bool _waitForDelete{false};
+
+    long long _threshold = {2000};
+
+    long long _policyMode = 0 ;  // 0 : default , 1: balance by load
 };
 
 /**
@@ -223,6 +249,7 @@ public:
     bool shouldBalance() const;
     bool shouldBalanceForAutoSplit() const;
 
+
     /**
      * Returns the secondary throttle options for the balancer.
      */
@@ -245,6 +272,16 @@ public:
         return _shouldAutoSplit.loadRelaxed();
     }
 
+
+    long long getThreshold() const {
+        return _balancerSettings.getThreshold();
+    }
+
+
+    long long  getPolicyMode() const {
+        return  _balancerSettings.getPolicyMode();
+    }
+
     /**
      * Blocking method, which refreshes the balancer configuration from the settings in the
      * config.settings collection. It will stop at the first bad configuration value and return an
@@ -255,6 +292,8 @@ public:
      * at a time.
      */
     Status refreshAndCheck(OperationContext* txn);
+
+
 
 private:
     /**
@@ -278,6 +317,7 @@ private:
 
     // The latest read balancer settings and a mutex to protect its swaps
     mutable stdx::mutex _balancerSettingsMutex;
+
     BalancerSettingsType _balancerSettings;
 
     // Max chunk size after which a chunk would be considered jumbo and won't be moved. This value

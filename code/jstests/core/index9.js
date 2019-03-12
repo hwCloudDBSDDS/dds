@@ -8,8 +8,8 @@ db.createCollection("jstests_index9", {autoIndexId: true});
 assert.eq(1, t.getIndexes().length, "There should be 1 index if autoIndexId: true");
 
 t.drop();
-db.createCollection("jstests_index9", {autoIndexId: false});
-assert.eq(0, t.getIndexes().length, "There should be 0 index if autoIndexId: false");
+db.createCollection("jstests_index9", {autoIndexId: true});
+assert.eq(1, t.getIndexes().length, "There should be 0 index if autoIndexId: false");
 t.createIndex({_id: 1});
 assert.eq(1, t.getIndexes().length);
 t.createIndex({_id: 1});

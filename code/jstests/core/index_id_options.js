@@ -14,12 +14,12 @@
 
     // _id indexes must have key pattern {_id: 1}.
     coll.drop();
-    assert.commandWorked(coll.runCommand("create", {autoIndexId: false}));
+    assert.commandWorked(coll.runCommand("create", {autoIndexId: true}));
     assert.commandFailed(coll.ensureIndex({_id: -1}, {name: "_id_"}));
 
     // The name of an _id index gets corrected to "_id_".
     coll.drop();
-    assert.commandWorked(coll.runCommand("create", {autoIndexId: false}));
+    assert.commandWorked(coll.runCommand("create", {autoIndexId: true}));
     assert.commandWorked(coll.ensureIndex({_id: 1}, {name: "bad"}));
     var spec = GetIndexHelpers.findByKeyPattern(coll.getIndexes(), {_id: 1});
     assert.neq(null, spec, "_id index spec not found");
@@ -27,7 +27,7 @@
 
     // _id indexes cannot have any options other than "key", "name", "ns", "v", and "collation."
     coll.drop();
-    assert.commandWorked(coll.runCommand("create", {autoIndexId: false}));
+    assert.commandWorked(coll.runCommand("create", {autoIndexId: true}));
     assert.commandFailed(coll.ensureIndex({_id: 1}, {name: "_id_", unique: true}));
     assert.commandFailed(coll.ensureIndex({_id: 1}, {name: "_id_", sparse: false}));
     assert.commandFailed(
@@ -40,17 +40,17 @@
 
     // _id indexes must have the collection default collation.
     coll.drop();
-    assert.commandWorked(coll.runCommand("create", {autoIndexId: false}));
+    assert.commandWorked(coll.runCommand("create", {autoIndexId: true}));
     assert.commandFailed(coll.ensureIndex({_id: 1}, {name: "_id_", collation: {locale: "en_US"}}));
     assert.commandWorked(coll.ensureIndex({_id: 1}, {name: "_id_", collation: {locale: "simple"}}));
 
     coll.drop();
-    assert.commandWorked(coll.runCommand("create", {autoIndexId: false}));
+    assert.commandWorked(coll.runCommand("create", {autoIndexId: true}));
     assert.commandWorked(coll.ensureIndex({_id: 1}, {name: "_id_"}));
 
     coll.drop();
     assert.commandWorked(
-        coll.runCommand("create", {autoIndexId: false, collation: {locale: "en_US"}}));
+        coll.runCommand("create", {autoIndexId: true, collation: {locale: "en_US"}}));
     assert.commandFailed(coll.ensureIndex({_id: 1}, {name: "_id_", collation: {locale: "simple"}}));
     assert.commandFailed(coll.ensureIndex({_id: 1}, {name: "_id_", collation: {locale: "fr_CA"}}));
     assert.commandWorked(
@@ -58,7 +58,7 @@
 
     coll.drop();
     assert.commandWorked(
-        coll.runCommand("create", {autoIndexId: false, collation: {locale: "en_US"}}));
+        coll.runCommand("create", {autoIndexId: true, collation: {locale: "en_US"}}));
     assert.commandWorked(coll.ensureIndex({_id: 1}, {name: "_id_"}));
     spec = GetIndexHelpers.findByName(coll.getIndexes(), "_id_");
     assert.neq(null, spec, "_id index spec not found");
@@ -66,7 +66,7 @@
 
     // Non-_id indexes cannot have the name "_id_".
     coll.drop();
-    assert.commandWorked(coll.runCommand("create", {autoIndexId: false}));
+    assert.commandWorked(coll.runCommand("create", {autoIndexId: true}));
     assert.commandFailed(coll.ensureIndex({_id: "hashed"}, {name: "_id_"}));
     assert.commandFailed(coll.ensureIndex({a: 1}, {name: "_id_"}));
 })();

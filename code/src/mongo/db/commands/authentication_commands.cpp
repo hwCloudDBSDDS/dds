@@ -160,7 +160,7 @@ bool CmdAuthenticate::run(OperationContext* txn,
     if (!serverGlobalParams.quiet) {
         mutablebson::Document cmdToLog(cmdObj, mutablebson::Document::kInPlaceDisabled);
         redactForLogging(&cmdToLog);
-        log() << " authenticate db: " << dbname << " " << cmdToLog;
+        LOG(1) << " authenticate db: " << dbname << " " << cmdToLog;
     }
     std::string mechanism = cmdObj.getStringField("mechanism");
     if (mechanism.empty()) {

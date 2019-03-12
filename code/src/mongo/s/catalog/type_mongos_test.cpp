@@ -86,6 +86,7 @@ TEST(Validity, MissingMongoVersion) {
                        << MongosType::ping(Date_t::fromMillisSinceEpoch(1))
                        << MongosType::uptime(100)
                        << MongosType::waiting(false)
+                       << MongosType::extendIPs("127.0.0.1")
                        << MongosType::configVersion(0));
 
     auto mongosTypeResult = MongosType::fromBSON(obj);
@@ -104,6 +105,7 @@ TEST(Validity, MissingConfigVersion) {
                        << MongosType::ping(Date_t::fromMillisSinceEpoch(1))
                        << MongosType::uptime(100)
                        << MongosType::waiting(false)
+                       << MongosType::extendIPs("127.0.0.1")
                        << MongosType::mongoVersion("x.x.x"));
 
     auto mongosTypeResult = MongosType::fromBSON(obj);
@@ -123,6 +125,7 @@ TEST(Validity, Valid) {
                        << MongosType::uptime(100)
                        << MongosType::waiting(false)
                        << MongosType::mongoVersion("x.x.x")
+                       << MongosType::extendIPs("127.0.0.1")
                        << MongosType::configVersion(0));
 
     auto mongosTypeResult = MongosType::fromBSON(obj);

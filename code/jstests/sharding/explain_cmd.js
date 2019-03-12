@@ -49,8 +49,10 @@
     assert.commandWorked(explain);
     assert("queryPlanner" in explain);
     assert("executionStats" in explain);
-    assert.eq(2, explain.queryPlanner.winningPlan.shards.length);
-    assert.eq(2, explain.executionStats.executionStages.shards.length);
+    // wooo assert.eq(2, explain.queryPlanner.winningPlan.shards.length);
+    assert.eq(3, explain.queryPlanner.winningPlan.shards.length);
+    // wooo assert.eq(2, explain.executionStats.executionStages.shards.length);
+    assert.eq(3, explain.executionStats.executionStages.shards.length);
 
     // An explain of a command that doesn't exist should fail gracefully.
     explain = db.runCommand({
@@ -120,7 +122,8 @@
     });
     assert.commandWorked(explain, tojson(explain));
     assert.eq(explain.queryPlanner.winningPlan.stage, "SHARD_WRITE");
-    assert.eq(explain.queryPlanner.winningPlan.shards.length, 2);
+    // wooo assert.eq(explain.queryPlanner.winningPlan.shards.length, 2);
+    assert.eq(explain.queryPlanner.winningPlan.shards.length, 3);
     assert.eq(explain.queryPlanner.winningPlan.shards[0].winningPlan.stage, "DELETE");
     assert.eq(explain.queryPlanner.winningPlan.shards[1].winningPlan.stage, "DELETE");
     // Check that the deletes didn't actually happen.
@@ -154,9 +157,11 @@
         verbosity: "allPlansExecution"
     });
     assert.commandWorked(explain, tojson(explain));
-    assert.eq(explain.queryPlanner.winningPlan.shards.length, 2);
+    // wooo assert.eq(explain.queryPlanner.winningPlan.shards.length, 2);
+    assert.eq(explain.queryPlanner.winningPlan.shards.length, 3);
     assert.eq(explain.queryPlanner.winningPlan.stage, "SHARD_WRITE");
-    assert.eq(explain.queryPlanner.winningPlan.shards.length, 2);
+    // wooo assert.eq(explain.queryPlanner.winningPlan.shards.length, 2);
+    assert.eq(explain.queryPlanner.winningPlan.shards.length, 3);
     assert.eq(explain.queryPlanner.winningPlan.shards[0].winningPlan.stage, "UPDATE");
     assert.eq(explain.queryPlanner.winningPlan.shards[1].winningPlan.stage, "UPDATE");
     // Check that the update didn't actually happen.

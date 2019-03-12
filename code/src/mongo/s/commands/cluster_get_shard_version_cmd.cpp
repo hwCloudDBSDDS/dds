@@ -106,14 +106,18 @@ public:
                 Status(ErrorCodes::NamespaceNotSharded, "ns [" + nss.ns() + " is not sharded."));
         }
 
-        auto cm = config->getChunkManagerIfExists(txn, nss.ns());
+        bool should = cmdObj.hasElement("should");
+        auto cm = config->getChunkManagerIfExists(txn, nss.ns(), should);
         if (!cm) {
             errmsg = "no chunk manager?";
             return false;
         }
 
-        cm->_printChunks();
+        if (cmdObj.hasElement("print")) {
+            cm->_printChunks();
+        }
         cm->getVersion().addToBSON(result, "version");
+        result.appendTimestamp("startversion", cm->getStartingVersion().toLong());
 
         return true;
     }

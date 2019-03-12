@@ -371,7 +371,7 @@ TEST_F(VersionStorageInfoTest, GetSplitPointBySize_NoFile) {
                                            left_numrecord,
                                            right_datasize,
                                            right_numrecord);
-  ASSERT_EQ(true, s.IsNotFound());
+  ASSERT_EQ(true, s.IsNotSupported());
   ASSERT_EQ("", split_point);
   ASSERT_EQ(0, left_datasize);
   ASSERT_EQ(0, left_numrecord);
@@ -403,7 +403,7 @@ TEST_F(VersionStorageInfoTest, GetSplitPointBySize_OnlyOneFile) {
                                            left_numrecord,
                                            right_datasize,
                                            right_numrecord);
-  ASSERT_EQ(true, s.IsNotFound());
+  ASSERT_EQ(true, s.IsNotSupported());
   ASSERT_EQ("", split_point);
   ASSERT_EQ(0, left_datasize);
   ASSERT_EQ(0, left_numrecord);
@@ -444,7 +444,7 @@ TEST_F(VersionStorageInfoTest, GetSplitPointBySize_NotFound) {
                                            left_numrecord,
                                            right_datasize,
                                            right_numrecord);
-  ASSERT_EQ(true, s.IsNotFound());
+  ASSERT_EQ(true, s.IsNotSupported());
   ASSERT_EQ("", split_point);
   ASSERT_EQ(0, left_datasize);
   ASSERT_EQ(0, left_numrecord);

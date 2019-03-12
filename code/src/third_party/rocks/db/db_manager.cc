@@ -1,4 +1,4 @@
-//  Copyright (c) 2017-present, huawei, Inc.  All rights reserved.
+//  Copyright (c) 2017-present.  All rights reserved.
 //  This source code is licensed under the BSD-style license found in the
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
@@ -55,19 +55,19 @@ Status DbManager::PrepareSplit(std::vector<std::string>& files){
 
   if (!s.ok()) {
     // clean all the files we might have created
-    Log(InfoLogLevel::INFO_LEVEL, info_log_, "Snapshot failed -- %s", s.ToString().c_str());
+    Log(InfoLogLevel::WARN_LEVEL, info_log_, "Copy file Snapshot failed -- %s", s.ToString().c_str());
     // we have to delete the dir and all its children
     std::vector<std::string> subchildren;
     env_->GetChildren(options_.instance_path, &subchildren);
     for (auto& subchild : subchildren) {
       std::string subchild_path = options_.instance_path + "/" + subchild;
       Status s1 = env_->DeleteFile(subchild_path);
-      Log(InfoLogLevel::INFO_LEVEL, info_log_, "Delete Child DB file %s -- %s", subchild_path.c_str(),
+      Log(InfoLogLevel::DEBUG_LEVEL, info_log_, "Delete Child DB file %s -- %s", subchild_path.c_str(),
           s1.ToString().c_str());
     }
     // finally delete the private dir
     Status s1 = env_->DeleteDir(options_.instance_path);
-    Log(InfoLogLevel::INFO_LEVEL, info_log_, "Delete Child DB dir %s -- %s", options_.instance_path.c_str(),
+    Log(InfoLogLevel::DEBUG_LEVEL, info_log_, "Delete Child DB dir %s -- %s", options_.instance_path.c_str(),
         s1.ToString().c_str());
     return s;
   }
@@ -112,14 +112,14 @@ Status DbManager::Split(std::vector<LiveFileMetaData>& metadata,
              == range_checker->DoesKeyRangeBelongToChunk(file.smallestkey,
                                                    file.largestkey)){
          Log(InfoLogLevel::DEBUG_LEVEL, info_log_,
-           "cfd[%s]:file(%s) samll_key(%s,%s) largest_key(%s) path(%s)not write transaction log",
-           file.column_family_name.c_str(), file.name.c_str(), file.smallestkey.c_str(), file.largestkey.c_str(), file.db_path.c_str());
+           "cfd[%s]:file(%s) path(%s)not write transaction log",
+           file.column_family_name.c_str(), file.name.c_str(), file.db_path.c_str());
          continue;
       }
       
       Log(InfoLogLevel::DEBUG_LEVEL, info_log_,
-        "cfd[%s]:file(%s) samll_key(%s,%s) largest_key(%s) path(%s)need write transaction log",
-        file.column_family_name.c_str(), file.name.c_str(), file.smallestkey.c_str(), file.largestkey.c_str(), file.db_path.c_str());
+        "cfd[%s]:file(%s) path(%s)need write transaction log",
+        file.column_family_name.c_str(), file.name.c_str(), file.db_path.c_str());
       
       std::string id;
       id.assign(file.name, file.name.rfind("/")+1, file.name.size()-file.name.rfind("/")-1);
@@ -156,7 +156,7 @@ Status DbManager::RollbackSplit(){
    Status s;
 
    // clean all the files we might have created
-   Log(InfoLogLevel::INFO_LEVEL, info_log_, "Split Rollback the files child(%s) parent(%s)", 
+   Log(InfoLogLevel::WARN_LEVEL, info_log_, "Split Rollback the files child(%s) parent(%s)", 
    options_.instance_path.c_str(), dbname_.c_str());
    // we have to delete the dir and all its children
    std::vector<std::string> subdir;
@@ -172,7 +172,7 @@ Status DbManager::RollbackSplit(){
    Log(InfoLogLevel::DEBUG_LEVEL, info_log_, "Delete Child DB dir %s -- %s", options_.instance_path.c_str(),
        s.ToString().c_str());
    if(!s.ok()){
-     Log(InfoLogLevel::ERROR_LEVEL, info_log_, "Rollback split delete files failed %s", s.ToString().c_str());
+     Log(InfoLogLevel::WARN_LEVEL, info_log_, "Rollback split delete files failed %s", s.ToString().c_str());
      return s;
    }
    

@@ -48,6 +48,9 @@ class ServerSelectionMetadata;
 /**
  * Legacy interface for processing client read/write/cmd requests.
  */
+
+extern bool isNeedRetryErrCode(const ErrorCodes::Error errCode);
+
 class Strategy {
 public:
     static void queryOp(OperationContext* txn, Request& request);

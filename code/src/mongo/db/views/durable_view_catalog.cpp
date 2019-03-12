@@ -55,6 +55,7 @@ void DurableViewCatalog::onExternalChange(OperationContext* txn, const Namespace
     Database* db = dbHolder().get(txn, name.db());
 
     if (db) {
+        index_LOG(1) << "DurableViewCatalog::onExternalChange ns:" << name;
         txn->recoveryUnit()->onCommit([db]() { db->getViewCatalog()->invalidate(); });
     }
 }
@@ -126,7 +127,7 @@ Status DurableViewCatalogImpl::iterate(OperationContext* txn, Callback callback)
 void DurableViewCatalogImpl::upsert(OperationContext* txn,
                                     const NamespaceString& name,
                                     const BSONObj& view) {
-    dassert(txn->lockState()->isDbLockedForMode(_db->name(), MODE_X));
+    dassert(txn->lockState()->isDbLockedForMode(_db->name(), MODE_IX));
 
     NamespaceString systemViewsNs(_db->getSystemViewsName());
     NamespaceString nss = ns2chunkHolder().getNsWithChunkId(systemViewsNs);

@@ -38,24 +38,6 @@ using namespace std;
 static uint32_t crc32c_long[4][256];
 static uint32_t crc32c_short[4][256];
 
-
-/*****************************************************************************
-*   Prototype    : IndexGF2MatrixTimes
-*   Description  : Init GF2 Matrix
-*   Input        : uint32_t *mator
-*                  uint32_t vecor
-*   Output       : None
-*   Return Value : static inline uint32_t
-*   Calls        :
-*   Called By    :
-*
-*   History:
-*
-*       1.  Date         : 2017/7/18
-*           Author       : w00416554
-*           Modification : Created function
-*
-*****************************************************************************/
 static inline uint32_t IndexGF2MatrixTimes(uint32_t *mator, uint32_t vecor)
 {
     uint32_t sumor = 0;
@@ -72,23 +54,6 @@ static inline uint32_t IndexGF2MatrixTimes(uint32_t *mator, uint32_t vecor)
     return sumor;
 }
 
-/*****************************************************************************
-*   Prototype    : IndexGF2MatrixSquare
-*   Description  : GF2 matrix square
-*   Input        : uint32_t *square
-*                  uint32_t *mator
-*   Output       : None
-*   Return Value : static inline void
-*   Calls        :
-*   Called By    :
-*
-*   History:
-*
-*       1.  Date         : 2017/7/18
-*           Author       : w00416554
-*           Modification : Created function
-*
-*****************************************************************************/
 static inline void IndexGF2MatrixSquare(uint32_t *square, uint32_t *mator)
 {
     int i;
@@ -98,23 +63,6 @@ static inline void IndexGF2MatrixSquare(uint32_t *square, uint32_t *mator)
     }
 }
 
-/*****************************************************************************
-*   Prototype    : IndexCRC32ZerosOp
-*   Description  : crc zero operation
-*   Input        : uint32_t *even
-*                  uint64_t len
-*   Output       : None
-*   Return Value : static void
-*   Calls        :
-*   Called By    :
-*
-*   History:
-*
-*       1.  Date         : 2017/7/18
-*           Author       : w00416554
-*           Modification : Created function
-*
-*****************************************************************************/
 static void IndexCRC32ZerosOp(uint32_t *even, uint64_t len)
 {
     int i;
@@ -150,23 +98,6 @@ static void IndexCRC32ZerosOp(uint32_t *even, uint64_t len)
     }
 }
 
-/*****************************************************************************
-*   Prototype    : IndexCRC32Zeros
-*   Description  : crc zero
-*   Input        : uint32_t data[][256]
-*                  uint64_t len
-*   Output       : None
-*   Return Value : static void
-*   Calls        :
-*   Called By    :
-*
-*   History:
-*
-*       1.  Date         : 2017/7/18
-*           Author       : w00416554
-*           Modification : Created function
-*
-*****************************************************************************/
 static void IndexCRC32Zeros(uint32_t data[][256], uint64_t len)
 {
     uint32_t i;
@@ -181,23 +112,6 @@ static void IndexCRC32Zeros(uint32_t data[][256], uint64_t len)
     }
 }
 
-/*****************************************************************************
-*   Prototype    : IndexCRC32Shift
-*   Description  : crc shift
-*   Input        : uint32_t data[][256]
-*                  uint32_t crc
-*   Output       : None
-*   Return Value : static inline uint32_t
-*   Calls        :
-*   Called By    :
-*
-*   History:
-*
-*       1.  Date         : 2017/7/18
-*           Author       : w00416554
-*           Modification : Created function
-*
-*****************************************************************************/
 static inline uint32_t IndexCRC32Shift(uint32_t data[][256], uint32_t crc)
 {
     return data[0][crc & 0xff] ^
@@ -206,46 +120,12 @@ static inline uint32_t IndexCRC32Shift(uint32_t data[][256], uint32_t crc)
         data[3][crc >> 24];
 }
 
-/*****************************************************************************
-*   Prototype    : IndexCRC32Init
-*   Description  : crc init
-*   Input        : None
-*   Output       : None
-*   Return Value : void
-*   Calls        :
-*   Called By    :
-*
-*   History:
-*
-*       1.  Date         : 2017/7/18
-*           Author       : w00416554
-*           Modification : Created function
-*
-*****************************************************************************/
 void IndexCRC32Init()
 {
     IndexCRC32Zeros(crc32c_long, CRC_LONG);
     IndexCRC32Zeros(crc32c_short, CRC_SHORT);
 }
 
-/*****************************************************************************
-*   Prototype    : IndexCRC32
-*   Description  : crc calc
-*   Input        : uint32_t crc
-*                  char *buf
-*                  uint64_t length
-*   Output       : None
-*   Return Value : uint32_t
-*   Calls        :
-*   Called By    :
-*
-*   History:
-*
-*       1.  Date         : 2017/7/18
-*           Author       : w00416554
-*           Modification : Created function
-*
-*****************************************************************************/
 uint32_t IndexCRC32(uint32_t crc, char *buf, uint64_t length)
 {
     uint64_t crca, crcb, crcc;

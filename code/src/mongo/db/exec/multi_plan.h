@@ -153,6 +153,8 @@ public:
 
     static const char* kStageType;
 
+    virtual void releaseCursor() override;
+
 private:
     //
     // Have all our candidate plans do something.

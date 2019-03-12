@@ -79,7 +79,7 @@ env.Library(
         '$BUILD_DIR/mongo/util/ntservice',
         '$BUILD_DIR/mongo/util/processinfo',
         'server_status_core',
-    ]
+    ],
 )
 
 # Commands that should only be present in mongod
@@ -89,6 +89,8 @@ env.Library(
         "apply_ops_cmd.cpp",
         "clone.cpp",
         "clone_collection.cpp",
+        "copy_data.cpp",
+        "operation_util.cpp",
         "collection_to_capped.cpp",
         "dbcommands.cpp",
         "compact.cpp",
@@ -126,6 +128,7 @@ env.Library(
         "plan_cache_commands.cpp",
         "rename_collection_cmd.cpp",
         "repair_cursor.cpp",
+        "reload_cmd.cpp",
         "set_feature_compatibility_version_command.cpp",
         "snapshot_management.cpp",
         "test_commands.cpp",
@@ -136,7 +139,15 @@ env.Library(
         "write_commands/write_commands.cpp",
         "shard_collection.cpp",
         "get_shard_statistics.cpp",
-        "set_refresh_threads.cpp",
+        "enable_failover.cpp",
+        "disable_failover.cpp",
+        "prepare_snapshot.cpp",
+        "end_snapshot.cpp",
+        "getAutoShard_cmd.cpp",
+        "removeShardMap_cmd.cpp",
+        "prepare_cluster_snapshot.cpp",
+        "end_cluster_snapshot.cpp",
+	"removeShardMap_cmd.cpp",
     ],
     LIBDEPS=[
         'apply_ops_cmd_common',

@@ -81,7 +81,7 @@ private:
         while (true) {
             {
                 stdx::unique_lock<stdx::mutex> lk(_mutex);
-                _cv.wait_for(lk, waitTime.toSystemDuration(), [&] { return _inShutdown; });
+                _cv.wait_for(lk, waitTime.toSteadyDuration(), [&] { return _inShutdown; });
 
                 if (_inShutdown)
                     return;

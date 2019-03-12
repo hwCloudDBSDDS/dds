@@ -42,7 +42,9 @@ public:
     ClusterStatisticsImpl();
     ~ClusterStatisticsImpl();
 
-    StatusWith<std::vector<ShardStatistics>> getStats(OperationContext* txn,bool isMoveCommand = false) override;
+    StatusWith<std::vector<ShardStatistics>> getStats(OperationContext* txn,
+                                                      bool isMoveCommand = false) override;
+    void setBalanceThread(std::string& threadId) override;
 };
 
 }  // namespace mongo

@@ -79,8 +79,7 @@ bool isMMAPV1() {
 
     if (globalStorageEngine) {
         return globalStorageEngine->isMmapV1();
-    }
-    else {
+    } else {
         return false;
     }
 }

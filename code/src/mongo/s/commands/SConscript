@@ -6,6 +6,7 @@ env.Library(
     target='cluster_write',
     source=[
         'cluster_write.cpp',
+        'checkView.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/s/coreshard',
@@ -84,8 +85,10 @@ env.Library(
         'run_on_all_shards_cmd.cpp',
         'sharded_command_processing.cpp',
         'strategy.cpp',
-        'cluster_offload_chunk_cmd.cpp',
-        'cluster_assign_chunk_cmd.cpp',
+        #'cluster_offload_chunk_cmd.cpp',
+        #'cluster_assign_chunk_cmd.cpp',
+        'cluster_enable_failover_cmd.cpp',
+        'cluster_disable_failover_cmd.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/client/parallel',

@@ -26,16 +26,22 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
+
 #include "mongo/db/storage/journal_listener.h"
 
 #include <rocksdb/db.h>
 
 #include "rocks_durability_manager.h"
 #include "rocks_util.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
-    RocksDurabilityManager::RocksDurabilityManager(rocksdb::DB* db, bool durable)
-        : _db(db), _durable(durable), _journalListener(&NoOpJournalListener::instance) {}
+    RocksDurabilityManager::RocksDurabilityManager(rocksdb::DB* db, bool durable, 
+        const std::vector<rocksdb::ColumnFamilyHandle*>& cfHandles)
+        : _db(db), _durable(durable), _journalListener(&NoOpJournalListener::instance)
+        ,_columnFamilyHandles(cfHandles){}
+
 
     void RocksDurabilityManager::setJournalListener(JournalListener* jl) {
         stdx::unique_lock<stdx::mutex> lk(_journalListenerMutex);
@@ -44,13 +50,34 @@ namespace mongo {
 
     void RocksDurabilityManager::waitUntilDurable(bool forceFlush) {
         stdx::unique_lock<stdx::mutex> lk(_journalListenerMutex);
-        JournalListener::Token token = _journalListener->getToken();
+        JournalListener::Token token;
+        if (_journalListener) {
+            token = _journalListener->getToken();
+        }
+
         if (!_durable || forceFlush) {
             invariantRocksOK(_db->Flush(rocksdb::FlushOptions()));
         } else {
             invariantRocksOK(_db->SyncWAL());
         }
-        _journalListener->onDurable(token);
+
+        if (_journalListener) {
+            _journalListener->onDurable(token);
+        }
     }
 
-} // namespace mongo
+    //rocksdb::Status RocksDurabilityManager::flushMemTable(void) {
+    //    rocksdb::FlushOptions option;
+    //    option.wait = false;
+    //    for (auto cfHandle : _columnFamilyHandles)
+    //    {
+    //         auto status = _db->Flush(option, cfHandle);
+    //         if (!status.ok()) {
+    //             index_err() << "MaybeFlush fail: " << status.ToString();
+    //         }
+    //    }
+
+    //    return  rocksdb::Status::OK();
+    //}
+
+}  // namespace mongo

@@ -180,11 +180,11 @@ Status waitForLinearizableReadConcern(OperationContext* txn) {
     }
 
     if (awaitReplResult.duration >= Milliseconds(500)) {
-        warning() << "time-consuming awaitReplication in "
-            << "waitForLinearizableReadConcern with OpTime: " << lastOpApplied
-            << ", total time: " << awaitReplResult.duration;
-    }        
-    
+        index_warning() << "time-consuming awaitReplication in "
+                        << "waitForLinearizableReadConcern with OpTime: " << lastOpApplied
+                        << ", total time: " << awaitReplResult.duration;
+    }
+
     return awaitReplResult.status;
 }
 

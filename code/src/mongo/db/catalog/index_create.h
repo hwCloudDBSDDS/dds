@@ -47,14 +47,73 @@ class BSONObj;
 class Collection;
 class OperationContext;
 
+class CommandResult {
+private:
+    std::string _server;
+    std::string _shardId;
+    BSONObj _result;
+    bool _isOK;
+    std::string _errmsg;
+    ErrorCodes::Error _code;
+
+public:
+    CommandResult() {
+        _isOK = false;
+        _code = ErrorCodes::OK;
+    };
+    ~CommandResult(){};
+
+    ErrorCodes::Error code() {
+        return _code;
+    }
+    std::string& getServer() {
+        return _server;
+    }
+    std::string& getShardId() {
+        return _shardId;
+    }
+    void setServer(std::string& ser) {
+        _server = ser;
+    }
+    void setShardId(std::string& shardId) {
+        _shardId = shardId;
+    }
+    BSONObj result() {
+        return _result;
+    }
+    bool isOK() {
+        return _isOK;
+    }
+    std::string& errmsg() {
+        return _errmsg;
+    }
+    void setResult(BSONObj& res) {
+        _result = res;
+    }
+    void setOK(bool ok) {
+
+        _isOK = ok;
+    }
+    void setErrmsg(std::string err) {
+        _errmsg = err;
+    }
+    void setCode(ErrorCodes::Error code) {
+        _code = code;
+    }
+};
 
 Status createIndexMetadata(OperationContext* txn,
-                          const NamespaceString& ns,
-                          std::vector<BSONObj>& indexSpecs,
-                          BSONObj& cmdObj,
-                          const std::string& dbname,
-                          BSONObjBuilder& result);
+                           const NamespaceString& ns,
+                           std::vector<BSONObj>& indexSpecs,
+                           BSONObj& cmdObj,
+                           const std::string& dbname,
+                           BSONObjBuilder& result,
+                           const bool isReIndex = false);
 
+StatusWith<BSONObj> prepareSpecForCreate(OperationContext* txn,
+                                         const NamespaceString& ns,
+                                         const BSONObj& original,
+                                         std::vector<int64_t>* prefixes);
 
 /**
  * Builds one or more indexes.

@@ -78,6 +78,13 @@ public:
 
     static Client* getCurrent();
 
+    bool isCustomerConnection() const {
+        if (_session) {
+            return _session->isCustomerConnection();
+        }
+        return false;
+    }
+
     bool getIsLocalHostConnection() {
         if (!hasRemote()) {
             return false;
@@ -92,6 +99,11 @@ public:
     HostAndPort getRemote() const {
         verify(_session);
         return _session->remote();
+    }
+
+    HostAndPort getLocal() const {
+        verify(_session);
+        return _session->local();
     }
 
     /**

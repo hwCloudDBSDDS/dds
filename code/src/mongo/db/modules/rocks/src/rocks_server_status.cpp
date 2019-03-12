@@ -43,8 +43,8 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/scopeguard.h"
 
-#include "rocks_recovery_unit.h"
 #include "rocks_engine.h"
+#include "rocks_recovery_unit.h"
 #include "rocks_transaction.h"
 
 namespace mongo {
@@ -71,7 +71,6 @@ namespace mongo {
 
     BSONObj RocksServerStatusSection::generateSection(OperationContext* txn,
                                                       const BSONElement& configElement) const {
-
         BSONObjBuilder bob;
 
         // if the second is true, that means that we pass the value through PrettyPrintBytes
@@ -113,10 +112,12 @@ namespace mongo {
         }
         bob.append("total-live-recovery-units", RocksRecoveryUnit::getTotalLiveRecoveryUnits());
         bob.append("block-cache-usage", PrettyPrintBytes(_engine->getBlockCacheUsage()));
-        bob.append("transaction-engine-keys",
-                   static_cast<long long>(_engine->getTransactionEngine()->numKeysTracked()));
-        bob.append("transaction-engine-snapshots",
-                   static_cast<long long>(_engine->getTransactionEngine()->numActiveSnapshots()));
+ 
+        long long numKeys = 0;
+        long long activeSnapshots = 0;
+        _engine->getTransactionEngineStat(numKeys, activeSnapshots);
+        bob.append("transaction-engine-keys", numKeys);
+        bob.append("transaction-engine-snapshots", activeSnapshots);
 
         std::vector<rocksdb::ThreadStatus> threadList;
         auto s = rocksdb::Env::Default()->GetThreadList(&threadList);
@@ -148,7 +149,8 @@ namespace mongo {
                 }
 
                 const std::vector<std::pair<std::string, std::string>> byte_properties(
-                    {{"BytesRead", "bytes_read"}, {"BytesWritten", "bytes_written"},
+                    {{"BytesRead", "bytes_read"},
+                     {"BytesWritten", "bytes_written"},
                      {"TotalInputBytes", "total_bytes"}});
                 for (const auto& prop : byte_properties) {
                     auto itr = op_properties.find(prop.first);
@@ -163,8 +165,8 @@ namespace mongo {
                 for (const auto& prop : speed_properties) {
                     auto itr = op_properties.find(prop.first);
                     if (itr != op_properties.end()) {
-                        size_t speed =
-                            (itr->second * 1000 * 1000) / static_cast<size_t>(ts.op_elapsed_micros + 1);
+                        size_t speed = (itr->second * 1000 * 1000) /
+                                       static_cast<size_t>(ts.op_elapsed_micros + 1);
                         threadObjBuilder.append(
                             prop.second, PrettyPrintBytes(static_cast<size_t>(speed)) + "/s");
                     }
@@ -178,35 +180,33 @@ namespace mongo {
         // add counters
         auto stats = _engine->getStatistics();
         if (stats) {
-          BSONObjBuilder countersObjBuilder;
-          const std::vector<std::pair<rocksdb::Tickers, std::string>> counterNameMap = {
-            {rocksdb::NUMBER_KEYS_WRITTEN, "num-keys-written"},
-            {rocksdb::NUMBER_KEYS_READ, "num-keys-read"},
-            {rocksdb::NUMBER_DB_SEEK, "num-seeks"},
-            {rocksdb::NUMBER_DB_NEXT, "num-forward-iterations"},
-            {rocksdb::NUMBER_DB_PREV, "num-backward-iterations"},
-            {rocksdb::BLOCK_CACHE_MISS, "block-cache-misses"},
-            {rocksdb::BLOCK_CACHE_HIT, "block-cache-hits"},
-            {rocksdb::BLOOM_FILTER_USEFUL, "bloom-filter-useful"},
-            {rocksdb::BYTES_WRITTEN, "bytes-written"},
-            {rocksdb::BYTES_READ, "bytes-read-point-lookup"},
-            {rocksdb::ITER_BYTES_READ, "bytes-read-iteration"},
-            {rocksdb::FLUSH_WRITE_BYTES, "flush-bytes-written"},
-            {rocksdb::COMPACT_READ_BYTES, "compaction-bytes-read"},
-            {rocksdb::COMPACT_WRITE_BYTES, "compaction-bytes-written"}
-          };
+            BSONObjBuilder countersObjBuilder;
+            const std::vector<std::pair<rocksdb::Tickers, std::string>> counterNameMap = {
+                {rocksdb::NUMBER_KEYS_WRITTEN, "num-keys-written"},
+                {rocksdb::NUMBER_KEYS_READ, "num-keys-read"},
+                {rocksdb::NUMBER_DB_SEEK, "num-seeks"},
+                {rocksdb::NUMBER_DB_NEXT, "num-forward-iterations"},
+                {rocksdb::NUMBER_DB_PREV, "num-backward-iterations"},
+                {rocksdb::BLOCK_CACHE_MISS, "block-cache-misses"},
+                {rocksdb::BLOCK_CACHE_HIT, "block-cache-hits"},
+                {rocksdb::BLOOM_FILTER_USEFUL, "bloom-filter-useful"},
+                {rocksdb::BYTES_WRITTEN, "bytes-written"},
+                {rocksdb::BYTES_READ, "bytes-read-point-lookup"},
+                {rocksdb::ITER_BYTES_READ, "bytes-read-iteration"},
+                {rocksdb::FLUSH_WRITE_BYTES, "flush-bytes-written"},
+                {rocksdb::COMPACT_READ_BYTES, "compaction-bytes-read"},
+                {rocksdb::COMPACT_WRITE_BYTES, "compaction-bytes-written"}};
 
-          for (const auto& counter_name : counterNameMap) {
-            countersObjBuilder.append(
-                counter_name.second,
-                static_cast<long long>(stats->getTickerCount(counter_name.first)));
-          }
+            for (const auto& counter_name : counterNameMap) {
+                countersObjBuilder.append(
+                    counter_name.second,
+                    static_cast<long long>(stats->getTickerCount(counter_name.first)));
+            }
 
-          bob.append("counters", countersObjBuilder.obj());
+            bob.append("counters", countersObjBuilder.obj());
         }
 
         return bob.obj();
     }
 
 }  // namespace mongo
-

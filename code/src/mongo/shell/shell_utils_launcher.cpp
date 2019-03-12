@@ -799,8 +799,26 @@ BSONObj ResetDbpath(const BSONObj& a, void* data) {
     if (boost::filesystem::exists(path))
         boost::filesystem::remove_all(path);
     boost::filesystem::create_directory(path);
+    // remove path for stream
+    // FIXME:
+    string __ip = "`cat /opt/stream/config/rocks_conf.ini | grep ip | awk -v FS='=' '{print $2}'`";
+    string __port =
+        "`cat /opt/stream/config/rocks_conf.ini | grep port | awk -v FS='=' '{print $2}'`";
+    string __cmd =
+        "/opt/stream/hadoop-2.7.3/bin/hdfs dfs -rm -r hdfs://" + __ip + ":" + __port + path;
+    int __out = system(__cmd.c_str());
+    printf("cmd is \n%s\n and result is %d\n", __cmd.c_str(), __out);
     return undefinedReturn;
 }
+/*  Run bash shell cmd
+BSONObj RunShellCmd(const BSONObj& a, void* data) {
+    verify(a.nFields() == 1);
+    string path = a.firstElement().valuestrsafe();
+    verify(!path.empty());
+    system(path.c_str());
+    return undefinedReturn;
+}
+*/
 
 BSONObj PathExists(const BSONObj& a, void* data) {
     verify(a.nFields() == 1);
@@ -1039,6 +1057,7 @@ void installShellUtilsLauncher(Scope& scope) {
     scope.injectNative("waitProgram", WaitProgram);
     scope.injectNative("checkProgram", CheckProgram);
     scope.injectNative("resetDbpath", ResetDbpath);
+    // scope.injectNative("runShellCmd", RunShellCmd);
     scope.injectNative("pathExists", PathExists);
     scope.injectNative("copyDbpath", CopyDbpath);
 }

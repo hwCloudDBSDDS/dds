@@ -53,15 +53,15 @@ class MasterSlaveFixture(interface.ReplFixture):
         self.master = None
         self.slave = None
 
-    def setup(self):
+    def setup(self, logflag=""):
         if self.master is None:
             self.master = self._new_mongod_master()
-        self.master.setup()
+        self.master.setup(logflag)
         self.port = self.master.port
 
         if self.slave is None:
             self.slave = self._new_mongod_slave()
-        self.slave.setup()
+        self.slave.setup(logflag)
 
     def await_ready(self):
         self.master.await_ready()
@@ -160,6 +160,6 @@ class MasterSlaveFixture(interface.ReplFixture):
         mongod_options = self.mongod_options.copy()
         mongod_options.update(self.slave_options)
         mongod_options["slave"] = ""
-        mongod_options["source"] = "%s:%d" % (socket.gethostname(), self.port)
+        mongod_options["source"] = "%s:%d" % ("localhost", self.port)
         mongod_options["dbpath"] = os.path.join(self._dbpath_prefix, "slave")
         return self._new_mongod(mongod_logger, mongod_options)

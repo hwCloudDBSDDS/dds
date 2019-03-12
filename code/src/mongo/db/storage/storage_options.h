@@ -42,6 +42,7 @@
 
 
 namespace mongo {
+extern const std::string DATA_PATH;
 
 struct StorageGlobalParams {
     // Default data directory for mongod when running in non-config server mode.
@@ -106,5 +107,7 @@ struct StorageGlobalParams {
 };
 
 extern StorageGlobalParams storageGlobalParams;
+
+extern std::string getDataPath(void);
 
 }  // namespace mongo

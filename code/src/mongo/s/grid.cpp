@@ -79,7 +79,7 @@ void Grid::init(std::unique_ptr<ShardingCatalogClient> catalogClient,
     invariant(!_balancerConfig);
     invariant(!_executorPool);
     invariant(!_network);
-
+    invariant(!_initialized);
     _catalogClient = std::move(catalogClient);
     _catalogManager = std::move(catalogManager);
     _catalogCache = std::move(catalogCache);
@@ -88,12 +88,16 @@ void Grid::init(std::unique_ptr<ShardingCatalogClient> catalogClient,
     _balancerConfig = std::move(balancerConfig);
     _executorPool = std::move(executorPool);
     _network = network;
-
     _shardRegistry->init();
+    _initialized = true;
 }
 
 bool Grid::allowLocalHost() const {
     return _allowLocalShard;
+}
+
+bool Grid::initialized() const {
+    return _initialized;
 }
 
 void Grid::setAllowLocalHost(bool allow) {
@@ -125,8 +129,8 @@ void Grid::clearForUnitTests() {
     _balancerConfig.reset();
     _executorPool.reset();
     _network = nullptr;
-
     _configOpTime = repl::OpTime();
+    _initialized = true;
 }
 
 }  // namespace mongo

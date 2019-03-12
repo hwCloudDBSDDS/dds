@@ -106,7 +106,9 @@ public:
         result.append("version", VersionInfoInterface::instance().version());
         result.append("process", serverGlobalParams.binaryName);
         result.append("pid", ProcessId::getCurrent().asLongLong());
-        result.append("uptime", (double)(time(0) - serverGlobalParams.started));
+        result.append("uptime",
+                      static_cast<unsigned int>(
+                          durationCount<Seconds>(Date_t::now() - serverGlobalParams.started)));
         auto uptime = clock->now() - _started;
         result.append("uptimeMillis", durationCount<Milliseconds>(uptime));
         result.append("uptimeEstimate", durationCount<Seconds>(uptime));
@@ -154,7 +156,8 @@ public:
 
         {
             RamLog::LineIterator rl(RamLog::get("warnings"));
-            if (rl.lastWrite() >= time(0) - (10 * 60)) {  // only show warnings from last 10 minutes
+            if (rl.lastWrite() >=
+                Date_t::now() - Seconds(10 * 60)) {  // only show warnings from last 10 minutes
                 BSONArrayBuilder arr(result.subarrayStart("warnings"));
                 while (rl.more()) {
                     arr.append(rl.next());

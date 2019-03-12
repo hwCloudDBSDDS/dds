@@ -475,4 +475,10 @@ const SpecificStats* MultiPlanStage::getSpecificStats() const {
     return &_specificStats;
 }
 
+void MultiPlanStage::releaseCursor() {
+    for (size_t ix = 0; ix < _candidates.size(); ++ix) {
+        _candidates[ix].root->releaseCursor();
+    }
+}
+
 }  // namespace mongo

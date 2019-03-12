@@ -53,4 +53,7 @@ Status cloneCollectionAsCapped(OperationContext* txn,
  * Converts the collection "collectionName" to a capped collection with a size of "size".
  */
 Status convertToCapped(OperationContext* txn, const NamespaceString& collectionName, double size);
+
+Status rollBackConvertOnConfig(OperationContext* txn, NamespaceString& nss);
+Status convertToCappedOnConfig(OperationContext* txn, const NamespaceString& collectionName, double size);
 }  // namespace mongo

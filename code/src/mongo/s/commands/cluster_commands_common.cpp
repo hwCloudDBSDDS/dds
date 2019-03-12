@@ -39,6 +39,7 @@
 #include "mongo/s/client/version_manager.h"
 #include "mongo/s/query/cluster_client_cursor_impl.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
+#include "mongo/s/grid.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/log.h"
 
@@ -48,12 +49,14 @@ using std::shared_ptr;
 using std::string;
 
 Future::CommandResult::CommandResult(const string& server,
+                                     const string& shardId,
                                      const string& db,
                                      const BSONObj& cmd,
                                      int options,
                                      DBClientBase* conn,
                                      bool useShardedConn)
     : _server(server),
+      _shardId(shardId),
       _db(db),
       _options(options),
       _cmd(cmd),
@@ -77,8 +80,8 @@ void Future::CommandResult::init() {
         }
 
         if (_conn->lazySupported()) {
-            _cursor.reset(
-                new DBClientCursor(_conn, _db + ".$cmd", _cmd, ChunkId(), -1 /*limit*/, 0, NULL, _options, 0));
+            _cursor.reset(new DBClientCursor(
+                _conn, _db + ".$cmd", _cmd, ChunkId(), -1 /*limit*/, 0, NULL, _options, 0));
             _cursor->initLazy();
         } else {
             _done = true;  // we set _done first because even if there is an error we're done
@@ -156,7 +159,15 @@ bool Future::CommandResult::join(OperationContext* txn, int maxRetries) {
             _done = false;
             init();
             continue;
+        }catch(DBException& excep) {
+            BSONObjBuilder builderRes;
+            builderRes.append("errmsg",redact(excep.what()));
+            builderRes.append("code",excep.getCode());
+            _res = builderRes.obj();
         } catch (std::exception& e) {
+            BSONObjBuilder builderRes;
+            builderRes.append("errmsg",redact(e.what()));
+            _res = builderRes.obj();
             error() << "Future::spawnCommand (part 2) exception: " << causedBy(redact(e.what()));
             break;
         }
@@ -167,13 +178,14 @@ bool Future::CommandResult::join(OperationContext* txn, int maxRetries) {
 }
 
 shared_ptr<Future::CommandResult> Future::spawnCommand(const string& server,
+                                                       const string& shardId,
                                                        const string& db,
                                                        const BSONObj& cmd,
                                                        int options,
                                                        DBClientBase* conn,
                                                        bool useShardConn) {
     shared_ptr<Future::CommandResult> res(
-        new Future::CommandResult(server, db, cmd, options, conn, useShardConn));
+        new Future::CommandResult(server, shardId, db, cmd, options, conn, useShardConn));
     return res;
 }
 
@@ -218,6 +230,25 @@ bool appendEmptyResultSet(BSONObjBuilder& result, Status status, const std::stri
     }
 
     return Command::appendCommandStatus(result, status);
+}
+
+std::vector<NamespaceString> getAllShardedCollectionsForDb(OperationContext* opCtx,
+                                                           StringData dbName) {
+    const auto dbNameStr = dbName.toString();
+
+    std::vector<CollectionType> collectionsOnConfig;
+    uassertStatusOK(Grid::get(opCtx)->catalogClient(opCtx)->getCollections(
+        opCtx, &dbNameStr, &collectionsOnConfig, nullptr));
+
+    std::vector<NamespaceString> collectionsToReturn;
+    for (const auto& coll : collectionsOnConfig) {
+        if (coll.getDropped())
+            continue;
+
+        collectionsToReturn.push_back(coll.getNs());
+    }
+
+    return collectionsToReturn;
 }
 
 }  // namespace mongo

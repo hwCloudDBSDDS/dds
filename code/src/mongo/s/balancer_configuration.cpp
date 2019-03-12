@@ -52,6 +52,8 @@ const char kStopped[] = "stopped";
 const char kMode[] = "mode";
 const char kActiveWindow[] = "activeWindow";
 const char kWaitForDelete[] = "_waitForDelete";
+const char kThreshold[] = "threshLoad";
+const char kDefaulPolicy[] = "policyMode";
 
 const NamespaceString kSettingsNamespace("config", "settings");
 
@@ -61,7 +63,14 @@ const char BalancerSettingsType::kKey[] = "balancer";
 const char* BalancerSettingsType::kBalancerModes[] = {"full", "autoSplitOnly", "off"};
 
 const char ChunkSizeSettingsType::kKey[] = "chunksize";
-const uint64_t ChunkSizeSettingsType::kDefaultMaxChunkSizeBytes{10ULL * 1024ULL * 1024ULL * 1024ULL}; // Default Chunk Size: 10GB
+const uint64_t ChunkSizeSettingsType::kDefaultMaxChunkSizeBytes{
+    10ULL * 1024ULL * 1024ULL * 1024ULL};  // Default Chunk Size: 10GB
+
+const long long  kDefaultShardThreshold = 2000; // Default load threshold/ cpuuse * 100
+
+const long long  kDefaultBalancerPolicy = 0; // Default load balance policy
+
+const long long  kBalanceByLoadPolicy = 1; // balance plicy by shad load
 
 const char AutoSplitSettingsType::kKey[] = "autosplit";
 
@@ -76,6 +85,7 @@ BalancerSettingsType::BalancerMode BalancerConfiguration::getBalancerMode() cons
     stdx::lock_guard<stdx::mutex> lk(_balancerSettingsMutex);
     return _balancerSettings.getMode();
 }
+
 
 Status BalancerConfiguration::setBalancerMode(OperationContext* txn,
                                               BalancerSettingsType::BalancerMode mode) {
@@ -260,9 +270,22 @@ StatusWith<BalancerSettingsType> BalancerSettingsType::fromBSON(const BSONObj& o
             if (it == std::end(kBalancerModes)) {
                 return Status(ErrorCodes::BadValue, "Invalid balancer mode");
             }
-
             settings._mode = static_cast<BalancerMode>(it - std::begin(kBalancerModes));
         }
+
+        long long  loadThreshHold;
+        Status loadStatus = bsonExtractIntegerFieldWithDefault(obj, kThreshold, kDefaultShardThreshold,  &loadThreshHold);
+        if (!loadStatus.isOK())
+            settings._threshold = kDefaultShardThreshold ;
+        else
+            settings._threshold = loadThreshHold;
+
+        long long  policyMode;
+        Status modeStatus = bsonExtractIntegerFieldWithDefault(obj, kDefaulPolicy, kDefaultBalancerPolicy , &policyMode);
+        if (!modeStatus.isOK())
+            settings._policyMode = kDefaultBalancerPolicy;
+        else
+            settings._policyMode = policyMode;
     }
 
     {
@@ -382,13 +405,6 @@ StatusWith<ChunkSizeSettingsType> ChunkSizeSettingsType::fromBSON(const BSONObj&
 }
 
 bool ChunkSizeSettingsType::checkMaxChunkSizeValid(uint64_t maxChunkSizeBytes) {
-#if 0
-    if (maxChunkSizeBytes >= (1024 * 1024) && maxChunkSizeBytes <= (1024 * 1024 * 1024)) {
-        return true;
-    }
-
-    return false;
-#endif
     // We always set it to true because chunk size is not limit currently
     return true;
 }

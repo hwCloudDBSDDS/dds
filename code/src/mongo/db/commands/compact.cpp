@@ -180,4 +180,74 @@ public:
     }
 };
 static CompactCmd compactCmd;
+
+
+class CompactTestCmd : public Command {
+public:
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
+    }
+    virtual bool adminOnly() const {
+        return false;
+    }
+    virtual bool slaveOk() const {
+        return true;
+    }
+    virtual bool maintenanceMode() const {
+        return true;
+    }
+    virtual void addRequiredPrivileges(const std::string& dbname,
+        const BSONObj& cmdObj,
+        std::vector<Privilege>* out) {
+            ActionSet actions;
+            actions.addAction(ActionType::compact);
+            out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
+    }
+    virtual void help(stringstream& help) const {
+        help << "compact collection\n"
+            "warning: this operation locks the database and is slow. you can cancel with "
+            "killOp()\n"
+            "{ compact : <collection_name>, [force:<bool>], [validate:<bool>],\n"
+            "  [paddingFactor:<num>], [paddingBytes:<num>] }\n"
+            "  force - allows to run on a replica set primary\n"
+            "  validate - check records are noncorrupt before adding to newly compacting "
+            "extents. slower but safer (defaults to true in this version)\n";
+    }
+    CompactTestCmd() : Command("compactTest") {}
+
+    virtual bool run(OperationContext* txn,
+        const string& db,
+        BSONObj& cmdObj,
+        int,
+        string& errmsg,
+        BSONObjBuilder& result) {
+            //todo shoud lock globle ;
+
+            index_log() << "compact db: " << db << "; cmdObj: " << cmdObj ;
+            auto g_ctx = getGlobalServiceContext();
+            if (g_ctx == nullptr) {
+                index_err() << "getGlobalServiceContext failed.";
+                return appendCommandStatus(
+                    result,
+                {ErrorCodes::InternalError, str::stream() << "getGlobalServiceContext failed."});
+            }
+
+            StorageEngine* storageEngine = g_ctx->getGlobalStorageEngine();
+            if (storageEngine == nullptr) {
+                index_err() << "getGlobalStorageEngine failed.";
+                return appendCommandStatus(
+                    result,
+                {ErrorCodes::InternalError, str::stream() << "getGlobalStorageEngine failed."});
+            }
+
+            auto status = storageEngine->compact();
+            if (!status.isOK()) {
+                return appendCommandStatus(result, status);
+            }
+
+            return true;
+    }
+};
+static CompactTestCmd compactTestCmd;
+
 }

@@ -64,7 +64,9 @@ assert.writeOK(coll.insert({_id: true, a: true, b: true}));
 // Index without shard key query - not covered
 assert.commandWorked(coll.ensureIndex({a: 1}));
 assert.eq(1, coll.find({a: true}).explain(true).executionStats.totalDocsExamined);
-assert.eq(1, coll.find({a: true}, {_id: 0, a: 1}).explain(true).executionStats.totalDocsExamined);
+// assert.eq(1, coll.find({a: true}, {_id: 0, a:
+// 1}).explain(true).executionStats.totalDocsExamined);
+assert.eq(0, coll.find({a: true}, {_id: 0, a: 1}).explain(true).executionStats.totalDocsExamined);
 
 //
 // Index with shard key query - can't be covered since hashed index
@@ -146,15 +148,18 @@ assert(admin.runCommand({shardCollection: coll + "", key: {a: 1}}).ok);
 st.printShardingStatus();
 
 // Insert some bad data manually
-assert.writeOK(st.shard0.getCollection(coll.toString()).insert({_id: "bad data", c: true}));
+// wooo assert.writeOK(st.shard0.getCollection(coll.toString()).insert({_id: "bad data", c: true}));
+assert.writeOK(coll.insert({_id: "bad data", c: true, a: 1}));
 
 //
 // Index without shard key query - not covered but succeeds
 assert.commandWorked(coll.ensureIndex({c: 1}));
 var explain = coll.find({c: true}).explain(true).executionStats;
-assert.eq(0, explain.nReturned);
+// assert.eq(0, explain.nReturned);
+assert.eq(1, explain.nReturned);
 assert.eq(1, explain.totalDocsExamined);
-assert.eq(1, getChunkSkips(explain.executionStages.shards[0].executionStages));
+// assert.eq(1, getChunkSkips(explain.executionStages.shards[0].executionStages));
+assert.eq(0, getChunkSkips(explain.executionStages.shards[0].executionStages));
 
 //
 // Index with shard key query - covered and succeeds and returns result

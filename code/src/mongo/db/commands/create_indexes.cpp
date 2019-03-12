@@ -44,7 +44,10 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/index/index_description_onCfg.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/index_legacy.h"
+#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
@@ -54,15 +57,16 @@
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/views/view_catalog.h"
-#include "mongo/s/shard_key_pattern.h"
-#include "mongo/util/scopeguard.h"
-#include "mongo/s/grid.h"
-#include "mongo/s/catalog/type_collection.h"
-#include "mongo/util/log.h"
-#include "mongo/s/catalog/type_chunk.h"
-#include "mongo/s/client/shard_registry.h"
-#include "mongo/s/client/shard.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/catalog/type_collection.h"
+#include "mongo/s/client/shard.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/shard_key_pattern.h"
+#include "mongo/util/log.h"
+#include "mongo/util/represent_as.h"
+#include "mongo/util/scopeguard.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
 
 namespace mongo {
 
@@ -70,12 +74,12 @@ using std::string;
 using std::vector;
 using IndexVersion = IndexDescriptor::IndexVersion;
 
-
-
 const StringData kIndexesFieldName = "indexes"_sd;
 const StringData kCommandName = "createIndexes"_sd;
 const StringData kWriteConcern = "writeConcern"_sd;
 const StringData kchunkIdFieldName = "chunkId"_sd;
+const StringData kMaxTimeOut = "maxTimeMS"_sd;
+
 /**
  * Parses the index specifications from 'cmdObj', validates them, and returns equivalent index
  * specifications that have any missing attributes filled in. If any index specification is
@@ -129,10 +133,13 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
             }
 
             hasIndexesField = true;
-        } else if (kchunkIdFieldName == cmdElemFieldName || kCommandName == cmdElemFieldName || kWriteConcern == cmdElemFieldName) {
+        } else if (kchunkIdFieldName == cmdElemFieldName || kCommandName == cmdElemFieldName ||
+                   kWriteConcern == cmdElemFieldName || kMaxTimeOut == cmdElemFieldName) {
             // Both the command name and writeConcern are valid top-level fields.
             continue;
         } else {
+            index_err()<< "Invalid field specified for " << kCommandName << " command: "
+                                  << cmdElemFieldName;
             return {ErrorCodes::BadValue,
                     str::stream() << "Invalid field specified for " << kCommandName << " command: "
                                   << cmdElemFieldName};
@@ -234,44 +241,42 @@ public:
     }
 
     virtual bool run(OperationContext* txn,
-            const string& dbname,
-            BSONObj& cmdObj,
-            int options,
-            string& errmsg,
-            BSONObjBuilder& result) {
+                     const string& dbname,
+                     BSONObj& cmdObj,
+                     int options,
+                     string& errmsg,
+                     BSONObjBuilder& result) {
         NamespaceString ns(parseNs(dbname, cmdObj));
-        log()<<"CmdCreateIndex CMD: "<<cmdObj;
-        txn->setNs(ns);
+        index_log() << "CmdCreateIndex ns: " << ns;
         if (ns.isSystemDotIndexes())
-             return appendCommandStatus(result,Status(ErrorCodes::CannotCreateIndex,
-                      "cannot have an index on the system.indexes collection"));        
-        log()<<" create indexes ..001";
+            return appendCommandStatus(
+                result,
+                Status(ErrorCodes::CannotCreateIndex,
+                       "cannot have an index on the system.indexes collection"));
         auto specsWithStatus =
             parseAndValidateIndexSpecs(ns, cmdObj, serverGlobalParams.featureCompatibility);
         if (!specsWithStatus.isOK()) {
-            log()<<"create indexes ..002";
             return appendCommandStatus(result, specsWithStatus.getStatus());
         }
         auto specs = std::move(specsWithStatus.getValue());
-        
-        // create index metadata on config server
-        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && dbname != "config" && dbname != "system" && dbname !="admin"){
-            // if succeed to create index metadata, then pass the commands to 
-            // all the shard servers
-            Status status = createIndexMetadata(txn, ns, specs,cmdObj,dbname,result);
-            if( status.isOK() ){
-                return true;
-            }else{
-                return appendCommandStatus(result,status);
-            } 
-            //grid.catalogClient(txn)->createIndexOnShards(txn, ns, cmdObj);
 
+        // create index metadata on config server
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && dbname != "config" &&
+            dbname != "system" && dbname != "admin") {
+            // if succeed to create index metadata, then pass the commands to
+            // all the shard servers
+            Status status = createIndexMetadata(txn, ns, specs, cmdObj, dbname, result);
+            if (status.isOK()) {
+                return true;
+            } else {
+                return appendCommandStatus(result, status);
+            }
         }
 
         // now we know we have to create index(es)
         // Note: createIndexes command does not currently respect shard versioning.
         ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock dbLock(txn->lockState(), ns.db(), MODE_IX);
+        Lock::DBLock dbLock(txn->lockState(), ns.db(), MODE_X);
         if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(ns)) {
             return appendCommandStatus(
                 result,
@@ -281,25 +286,33 @@ public:
 
         Database* db = dbHolder().get(txn, ns.db());
         if (!db) {
-            dbLock.relockWithMode(MODE_X);
             db = dbHolder().openDb(txn, ns.db());
-            dbLock.relockWithMode(MODE_IX);
         }
-        Lock::CollectionLock collLock(txn->lockState(), ns.ns(), MODE_X);
 
-        Collection* collection = db->getCollection(ns,true);
+        Collection* collection = db->getCollection(ns, true);
         if (collection) {
-            result.appendBool("createdCollectionAutomatically", false);
-            if(collection->isAssigning()){
-                //chunk is assigning, return ChunkNotAssigned let CS retry.
-                return appendCommandStatus(result, Status(ErrorCodes::ChunkNotAssigned, "chunk not assigned."));
+            /*if (from_config) {
+                result.appendBool("createdCollectionAutomatically", isCreateCollection);
+            } else {
+                result.appendBool("createdCollectionAutomatically", false);
+            }*/
+            if (!collection->isStable()) {
+                // chunk is assigning, return ChunkNotAssigned let CS retry.
+                return appendCommandStatus(
+                    result, Status(ErrorCodes::ChunkNotAssigned, "chunk is not stable."));
             }
         } else {
             if (db->getViewCatalog()->lookup(txn, ns.ns())) {
                 errmsg = "Cannot create indexes on a view";
                 return appendCommandStatus(result, {ErrorCodes::CommandNotSupportedOnView, errmsg});
             }
-
+            if (ClusterRole::ShardServer == serverGlobalParams.clusterRole && dbname != "config" && 
+                dbname != "system" &&  dbname != "admin") {
+                index_log() << "" << ns.ns() << " may have been droped before";
+                return appendCommandStatus(result,
+                                           {ErrorCodes::StaleShardVersion,
+                                            "ns not found on shardServer when createIndex"});
+            }
             MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
                 WriteUnitOfWork wunit(txn);
                 collection = db->createCollection(txn, ns.ns(), CollectionOptions());
@@ -307,7 +320,7 @@ public:
                 wunit.commit();
             }
             MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, kCommandName, ns.ns());
-            result.appendBool("createdCollectionAutomatically", true);
+            // result.appendBool("createdCollectionAutomatically", true);
         }
 
         auto indexSpecsWithDefaults =
@@ -318,7 +331,7 @@ public:
         specs = std::move(indexSpecsWithDefaults.getValue());
 
         const int numIndexesBefore = collection->getIndexCatalog()->numIndexesTotal(txn);
-        result.append("numIndexesBefore", numIndexesBefore);
+        // result.append("numIndexesBefore", numIndexesBefore);
 
         auto client = txn->getClient();
         ScopeGuard lastOpSetterGuard =
@@ -330,25 +343,19 @@ public:
         indexer.allowBackgroundBuilding();
         indexer.allowInterruption();
 
-        const size_t origSpecsSize = specs.size();
         indexer.removeExistingIndexes(&specs);
 
         if (specs.size() == 0) {
-            result.append("numIndexesAfter", numIndexesBefore);
-            result.append("note", "all indexes already exist");
+            result.append("numIndexes", numIndexesBefore);
+            // result.append("note", "all indexes already exist");
             return true;
-        }
-
-        if (specs.size() != origSpecsSize) {
-            result.append("note", "index already exists");
         }
 
         for (size_t i = 0; i < specs.size(); i++) {
             const BSONObj& spec = specs[i];
             if (spec["unique"].trueValue()) {
-                //can't create unique index if shard collection and index isn't _id
-                if(CollectionType::TableType::kSharded == collection->getCollTabType())
-                {
+                // can't create unique index if shard collection and index isn't _id
+                if (CollectionType::TableType::kSharded == collection->getCollTabType()) {
                     Status status = checkUniqueIndexConstraints(txn, ns.ns(), spec["key"].Obj());
 
                     if (!status.isOK()) {
@@ -379,8 +386,10 @@ public:
         }
 
         try {
+            index_log() << "CmdCreateIndex before insertAllDocumentsInCollection.";
             Lock::CollectionLock colLock(txn->lockState(), ns.ns(), MODE_IX);
             uassertStatusOK(indexer.insertAllDocumentsInCollection());
+
         } catch (const DBException& e) {
             invariant(e.getCode() != ErrorCodes::WriteConflict);
             // Must have exclusive DB lock before we clean up the index build via the
@@ -420,6 +429,8 @@ public:
             uassert(28552, "collection dropped during index build", db->getCollection(ns.ns()));
         }
 
+        index_log() << "CmdCreateIndex after insertAllDocumentsInCollection.";
+
         MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
             WriteUnitOfWork wunit(txn);
 
@@ -432,22 +443,24 @@ public:
                     opObserver->onCreateIndex(txn, systemIndexes, infoObj);
                 }
             }
-            //get all indexes
+            // get all indexes
             BSONArray indexes;
-            collection->getAllIndexes(txn,indexes);
-            //update chunkMeatadata
+            collection->getAllIndexes(txn, indexes);
+            // update chunkMeatadata
             Database* db = dbHolder().get(txn, ns.db());
             uassert(90551, "database dropped during index build", db);
             uassert(90552, "collection dropped during index build", db->getCollection(ns.ns()));
-            db->toUpdateChunkMetadata(txn,ns.ns(),indexes);
-            
+            //db->toUpdateChunkMetadata(txn, ns.ns(), indexes);
             wunit.commit();
+            //toUpdateChunkMetadata not rollback.
+            db->toUpdateChunkMetadata(txn, ns.ns(), indexes);
         }
         MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, kCommandName, ns.ns());
 
-        result.append("numIndexesAfter", collection->getIndexCatalog()->numIndexesTotal(txn));
+        result.append("numIndexes", collection->getIndexCatalog()->numIndexesTotal(txn));
 
         lastOpSetterGuard.Dismiss();
+        index_log() << "CmdCreateIndex finished;";
 
         return true;
     }

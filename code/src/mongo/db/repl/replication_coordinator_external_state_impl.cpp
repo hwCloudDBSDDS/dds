@@ -74,8 +74,8 @@
 #include "mongo/executor/network_interface.h"
 #include "mongo/executor/network_interface_factory.h"
 #include "mongo/executor/thread_pool_task_executor.h"
-#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/catalog_extend/sharding_catalog_shard_server_manager.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_identity_loader.h"
@@ -323,6 +323,9 @@ void ReplicationCoordinatorExternalStateImpl::startMasterSlave(OperationContext*
 }
 
 void ReplicationCoordinatorExternalStateImpl::shutdown(OperationContext* txn) {
+    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        Grid::get(txn)->catalogManager()->getBalanceEventEngine()->onStepDownFromPrimary();
+    }
     UniqueLock lk(_threadMutex);
     if (_startedThreads) {
         _stopDataReplication_inlock(txn, &lk);
@@ -417,17 +420,20 @@ void ReplicationCoordinatorExternalStateImpl::onDrainComplete(OperationContext* 
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
         // We need to join the balancer here, because it might have been running at a previous time
         // when this node was a primary.
-        getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-            "balancerOnDrainComplete");
+        getGlobalServiceContext()
+            ->getProcessStageTime("secondaryToPrimary")
+            ->noteStageStart("balancerOnDrainComplete");
         Balancer::get(txn)->onDrainComplete(txn);
 
-        getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-            "shardServerManagerOnDrainComplete");
+        getGlobalServiceContext()
+            ->getProcessStageTime("secondaryToPrimary")
+            ->noteStageStart("shardServerManagerOnDrainComplete");
         Grid::get(txn)->catalogManager()->getShardServerManager()->onDrainComplete(txn);
 
-        getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-            "stateMachineOnDrainComplete");    
-        Grid::get(txn)->catalogManager()->getStateMachine()->onDrainComplete(txn);
+        getGlobalServiceContext()
+            ->getProcessStageTime("secondaryToPrimary")
+            ->noteStageStart("stateMachineOnDrainComplete");
+        Grid::get(txn)->catalogManager()->getBalanceEventEngine()->onDrainComplete(txn);
     }
 }
 
@@ -456,11 +462,13 @@ OpTime ReplicationCoordinatorExternalStateImpl::onTransitionToPrimary(OperationC
     }
     const auto opTimeToReturn = fassertStatusOK(28665, loadLastOpTime(txn));
 
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "shardingOnTransitionToPrimaryHook");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("shardingOnTransitionToPrimaryHook");
     _shardingOnTransitionToPrimaryHook(txn);
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "dropAllTempCollections");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("dropAllTempCollections");
     _dropAllTempCollections(txn);
 
     serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(true);
@@ -730,9 +738,10 @@ void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
             txnPtr = cc().makeOperationContext();
             txn = txnPtr.get();
         }
-        Grid::get(txn)->catalogManager()->getStateMachine()->onStepDownFromPrimary();
+        Grid::get(txn)->catalogManager()->getBalanceEventEngine()->onStepDownFromPrimary();
 
         Grid::get(txn)->catalogManager()->getShardServerManager()->onStepDownFromPrimary();
+        Grid::get(txn)->catalogManager()->cancelAllAddShardTasks();
     }
 
     ShardingState::get(getGlobalServiceContext())->markCollectionsNotShardedAtStepdown();
@@ -740,8 +749,9 @@ void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
 
 void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook(
     OperationContext* txn) {
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "shardingStateRecovery");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("shardingStateRecovery");
     auto status = ShardingStateRecovery::recover(txn);
 
     if (ErrorCodes::isShutdownError(status.code())) {
@@ -776,8 +786,9 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
             // Since we *just* wrote the cluster ID to the config.version document (via
             // ShardingCatalogManager::initializeConfigDatabaseIfNeeded), this should always
             // succeed.
-            getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-                "loadClusterId");
+            getGlobalServiceContext()
+                ->getProcessStageTime("secondaryToPrimary")
+                ->noteStageStart("loadClusterId");
             status = ClusterIdentityLoader::get(txn)->loadClusterId(
                 txn, repl::ReadConcernLevel::kLocalReadConcern);
 
@@ -791,8 +802,9 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
 
         // For upgrade from 3.2 to 3.4, check if any shards in config.shards are not yet marked as
         // shard aware, and attempt to initialize sharding awareness on them.
-        getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-            "initializeShardingAwarenessOnUnawareShards");
+        getGlobalServiceContext()
+            ->getProcessStageTime("secondaryToPrimary")
+            ->noteStageStart("initializeShardingAwarenessOnUnawareShards");
         auto shardAwareInitializationStatus =
             Grid::get(txn)->catalogManager()->initializeShardingAwarenessOnUnawareShards(txn);
         if (!shardAwareInitializationStatus.isOK()) {
@@ -802,25 +814,29 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
         }
 
         // Free any leftover locks from previous instantiations.
-        getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-            "freeLeftoverDistLock");
+        getGlobalServiceContext()
+            ->getProcessStageTime("secondaryToPrimary")
+            ->noteStageStart("freeLeftoverDistLock");
         auto distLockManager = Grid::get(txn)->catalogClient(txn)->getDistLockManager();
         distLockManager->unlockAll(txn, distLockManager->getProcessID());
 
-        getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-            "stateMachineOnTransitionToPrimary");
-        Grid::get(txn)->catalogManager()->getStateMachine()->onTransitionToPrimary(txn);
+        getGlobalServiceContext()
+            ->getProcessStageTime("secondaryToPrimary")
+            ->noteStageStart("stateMachineOnTransitionToPrimary");
+        Grid::get(txn)->catalogManager()->getBalanceEventEngine()->onTransitionToPrimary(txn);
 
         // If this is a config server node becoming a primary, start the balancer
-        getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-            "balancerOnTransitionToPrimary");
+        getGlobalServiceContext()
+            ->getProcessStageTime("secondaryToPrimary")
+            ->noteStageStart("balancerOnTransitionToPrimary");
         Balancer::get(txn)->onTransitionToPrimary(txn);
 
-        getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-            "shardServerManagerOnTransitionToPrimary");
+        getGlobalServiceContext()
+            ->getProcessStageTime("secondaryToPrimary")
+            ->noteStageStart("shardServerManagerOnTransitionToPrimary");
         Grid::get(txn)->catalogManager()->getShardServerManager()->onTransitionToPrimary(txn);
 
-        //reset chunkID counter
+        // reset chunkID counter
         serverGlobalParams.chunkCount = 0;
 
         Grid::get(txn)->catalogManager()->resetMaxChunkVersionMap();

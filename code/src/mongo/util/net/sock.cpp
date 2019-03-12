@@ -238,8 +238,8 @@ static SockAddr getLocalAddrForBoundSocketFd(int fd) {
     SockAddr result;
     int rc = getsockname(fd, result.raw(), &result.addressSize);
     if (rc != 0) {
-        warning() << "Could not resolve local address for socket with fd " << fd << ": "
-                  << getAddrInfoStrError(socketGetLastError());
+        index_warning() << "Could not resolve local address for socket with fd " << fd << ": "
+                        << getAddrInfoStrError(socketGetLastError());
         result = SockAddr();
     }
     return result;
@@ -249,7 +249,7 @@ Socket::Socket(int fd, const SockAddr& remote)
     : _fd(fd),
       _remote(remote),
       _timeout(0),
-      _lastValidityCheckAtSecs(time(0)),
+      _lastValidityCheckAtSecs(Date_t::now()),
       _logLevel(logger::LogSeverity::Log()) {
     _init();
     if (fd >= 0) {
@@ -260,7 +260,7 @@ Socket::Socket(int fd, const SockAddr& remote)
 Socket::Socket(double timeout, logger::LogSeverity ll) : _logLevel(ll) {
     _fd = INVALID_SOCKET;
     _timeout = timeout;
-    _lastValidityCheckAtSecs = time(0);
+    _lastValidityCheckAtSecs = Date_t::now();
     _init();
 }
 
@@ -393,8 +393,6 @@ bool Socket::connect(SockAddr& remote) {
     bg.go();
     if (bg.wait(connectTimeoutMillis)) {
         if (bg.inError()) {
-            warning() << "Failed to connect to " << _remote.getAddr() << ":" << _remote.getPort()
-                      << ", reason: " << bg.getErrnoWithDescription();
             close();
             return false;
         }
@@ -402,8 +400,6 @@ bool Socket::connect(SockAddr& remote) {
         // time out the connect
         close();
         bg.wait();  // so bg stays in scope until bg thread terminates
-        warning() << "Failed to connect to " << _remote.getAddr() << ":" << _remote.getPort()
-                  << " after " << connectTimeoutMillis << " milliseconds, giving up.";
         return false;
     }
 
@@ -645,7 +641,7 @@ void Socket::setTimeout(double secs) {
 // <positive value> : secs to wait between stillConnected checks
 // 0 : always check
 // -1 : never check
-const int Socket::errorPollIntervalSecs(5);
+const Seconds Socket::errorPollIntervalSecs(5);
 
 // Patch to allow better tolerance of flaky network connections that get broken
 // while we aren't looking.
@@ -661,13 +657,11 @@ bool Socket::isStillConnected() {
         return false;
     }
 
-    if (errorPollIntervalSecs < 0)
-        return true;
     if (!isPollSupported())
         return true;  // nothing we can do
 
-    time_t now = time(0);
-    time_t idleTimeSecs = now - _lastValidityCheckAtSecs;
+    Date_t now = Date_t::now();
+    Seconds idleTimeSecs = duration_cast<Seconds>(now - _lastValidityCheckAtSecs);
 
     // Only check once every 5 secs
     if (idleTimeSecs < errorPollIntervalSecs)
@@ -693,9 +687,10 @@ bool Socket::isStillConnected() {
         return true;
     } else if (nEvents < 0) {
         // Poll itself failed, this is weird, warn and log errno
-        warning() << "Socket poll() failed during connectivity check"
-                  << " (idle " << idleTimeSecs << " secs,"
-                  << " remote host " << remoteString() << ")" << causedBy(errnoWithDescription());
+        index_warning() << "Socket poll() failed during connectivity check"
+                        << " (idle " << idleTimeSecs << " secs,"
+                        << " remote host " << remoteString() << ")"
+                        << causedBy(errnoWithDescription());
 
         // Return true since it's not clear that we're disconnected.
         return true;
@@ -718,18 +713,15 @@ bool Socket::isStillConnected() {
 
         if (recvd < 0) {
             // An error occurred during recv, warn and log errno
-            warning() << "Socket recv() failed during connectivity check"
-                      << " (idle " << idleTimeSecs << " secs,"
-                      << " remote host " << remoteString() << ")"
-                      << causedBy(errnoWithDescription());
+            index_warning() << "Socket recv() failed during connectivity check"
+                            << " (idle " << idleTimeSecs << " secs,"
+                            << " remote host " << remoteString() << ")"
+                            << causedBy(errnoWithDescription());
         } else if (recvd > 0) {
             // We got nonzero data from this socket, very weird?
             // Log and warn at runtime, log and abort at devtime
             // TODO: Dump the data to the log somehow?
-            error() << "Socket found pending " << recvd
-                    << " bytes of data during connectivity check"
-                    << " (idle " << idleTimeSecs << " secs,"
-                    << " remote host " << remoteString() << ")";
+            index_err() << "Socket found pending bytes of data during connectivity check";
             DEV {
                 std::string hex = hexdump(testBuf, recvd);
                 error() << "Hex dump of stale log data: " << hex;
@@ -754,16 +746,13 @@ bool Socket::isStillConnected() {
     } else if (pollInfo.revents & POLLNVAL) {
         // Socket descriptor itself is weird
         // Log and warn at runtime, log and abort at devtime
-        error() << "Socket descriptor detected as invalid"
-                << " (idle " << idleTimeSecs << " secs,"
-                << " remote host " << remoteString() << ")";
+        index_err() << "Socket descriptor detected as invalid"
+                    << " (idle " << idleTimeSecs << " secs,";
         dassert(false);
     } else {
         // Don't know what poll is saying here
         // Log and warn at runtime, log and abort at devtime
-        error() << "Socket had unknown event (" << static_cast<int>(pollInfo.revents) << ")"
-                << " (idle " << idleTimeSecs << " secs,"
-                << " remote host " << remoteString() << ")";
+        index_err() << "Socket had unknown event idle " << idleTimeSecs << " secs,";
         dassert(false);
     }
 

@@ -102,7 +102,6 @@ public:
 
         // we donnt need shardversion anymore
         return true;
-
     }
 
 private:

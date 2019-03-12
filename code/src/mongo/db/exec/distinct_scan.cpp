@@ -152,6 +152,11 @@ void DistinctScan::doReattachToOperationContext() {
         _cursor->reattachToOperationContext(getOpCtx());
 }
 
+void DistinctScan::doReleaseCursor() {
+    if (_cursor)
+        _cursor->detachFromOperationContext();
+}
+
 unique_ptr<PlanStageStats> DistinctScan::getStats() {
     // Serialize the bounds to BSON if we have not done so already. This is done here rather than in
     // the constructor in order to avoid the expensive serialization operation unless the distinct

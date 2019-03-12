@@ -143,7 +143,7 @@ TEST(DurationCast, OverflowingCastsThrow) {
 }
 
 TEST(DurationCast, ImplicitConversionToStdxDuration) {
-    auto standardMillis = Milliseconds{10}.toSystemDuration();
+    auto standardMillis = Milliseconds{10}.toSteadyDuration();
     ASSERT_EQUALS(Milliseconds{10}, duration_cast<Milliseconds>(standardMillis));
 }
 

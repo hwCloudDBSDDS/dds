@@ -59,8 +59,7 @@ public:
 
     ChunkVersion() : _combined(0), _epoch(OID()) {}
 
-    ChunkVersion(uint64_t version, const OID& epoch)
-        : _combined(version), _epoch(epoch) {}
+    ChunkVersion(uint64_t version, const OID& epoch) : _combined(version), _epoch(epoch) {}
 
     ChunkVersion(int major, int minor, const OID& epoch)
         : _combined(static_cast<uint64_t>(minor) | (static_cast<uint64_t>(major) << 32)),
@@ -187,6 +186,10 @@ public:
 
     bool operator<=(const ChunkVersion& otherVersion) const {
         return this->_combined <= otherVersion._combined;
+    }
+
+    bool operator!=(const ChunkVersion& otherVersion) const {
+        return !equals(otherVersion);
     }
 
     //
@@ -338,6 +341,17 @@ public:
         version._epoch = next.OID();
 
         return version;
+    }
+
+    static bool needReload(const ChunkVersion& vReceived, const ChunkVersion& vWanted) {
+        ChunkVersion versionUnsharded = ChunkVersion(0, 0, OID());
+
+        if (((vWanted == versionUnsharded) && (vReceived != versionUnsharded)) ||
+            ((vWanted.toLong() != 0) && (vReceived >= vWanted))) {
+            return false;
+        }
+
+        return true;
     }
 
     //

@@ -29,11 +29,11 @@
 #pragma once
 
 #include <atomic>
-#include <set>
-#include <unordered_map>
-#include <memory>
-#include <string>
 #include <list>
+#include <memory>
+#include <set>
+#include <string>
+#include <unordered_map>
 
 #include <rocksdb/db.h>
 #include <rocksdb/slice.h>

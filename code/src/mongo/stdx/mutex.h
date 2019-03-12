@@ -28,26 +28,30 @@
 
 #pragma once
 
-#include <mutex>
+#define BOOST_THREAD_HAS_CONDATTR_SET_CLOCK_MONOTONIC
+#define BOOST_THREAD_USES_CHRONO
+#include <boost/thread/locks.hpp>
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/recursive_mutex.hpp>
 
 namespace mongo {
 namespace stdx {
 
-using ::std::mutex;  // NOLINT
+using boost::mutex;  // NOLINT
 
 // NOTE: The timed_mutex class is currently banned in our code due to
 // a buggy implementation in GCC older than 4.9.
 //
 // using ::std::timed_mutex;  // NOLINT
 
-using ::std::recursive_mutex;  // NOLINT
+using boost::recursive_mutex;  // NOLINT
 
-using ::std::adopt_lock_t;   // NOLINT
-using ::std::defer_lock_t;   // NOLINT
-using ::std::try_to_lock_t;  // NOLINT
+using boost::adopt_lock_t;   // NOLINT
+using boost::defer_lock_t;   // NOLINT
+using boost::try_to_lock_t;  // NOLINT
 
-using ::std::lock_guard;   // NOLINT
-using ::std::unique_lock;  // NOLINT
+using boost::lock_guard;   // NOLINT
+using boost::unique_lock;  // NOLINT
 
 constexpr adopt_lock_t adopt_lock{};
 constexpr defer_lock_t defer_lock{};

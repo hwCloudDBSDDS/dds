@@ -251,6 +251,11 @@ public:
         return SystemDuration{duration_cast<Duration<SystemDuration::period>>(*this).count()};
     }
 
+    stdx::chrono::steady_clock::duration toSteadyDuration() const {
+        using SteadyDuration = stdx::chrono::steady_clock::duration;
+        return SteadyDuration{duration_cast<Duration<SteadyDuration::period>>(*this).count()};
+    }
+
     /**
      * Returns the number of periods represented by this duration.
      *

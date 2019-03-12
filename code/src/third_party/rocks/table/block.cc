@@ -454,7 +454,6 @@ InternalIterator* Block::NewIterator(const Comparator* cmp, BlockIter* iter,
       }
     }
   }
-
   return iter;
 }
 

@@ -100,7 +100,8 @@ ClusterStatisticsImpl::ClusterStatisticsImpl() = default;
 
 ClusterStatisticsImpl::~ClusterStatisticsImpl() = default;
 
-StatusWith<vector<ShardStatistics>> ClusterStatisticsImpl::getStats(OperationContext* txn,bool isMoveCommand) {
+StatusWith<vector<ShardStatistics>> ClusterStatisticsImpl::getStats(OperationContext* txn,
+                                                                    bool isMoveCommand) {
     // Get a list of all the shards that are participating in this balance round along with any
     // maximum allowed quotas and current utilization. We get the latter by issuing
     // db.serverStatus() (mem.mapped) to all shards.
@@ -120,38 +121,50 @@ StatusWith<vector<ShardStatistics>> ClusterStatisticsImpl::getStats(OperationCon
         if (shard.getState() == ShardType::ShardState::kShardActive) {
             // collect Statistics on the shard, including chunks Statistics
             auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, shard.getName());
-            if (shardStatus.getValue()->getConnString().toString() != shard.getHost())
-            {
+            if (shardStatus.getValue()->getConnString().toString() != shard.getHost()) {
                 Grid::get(txn)->shardRegistry()->reload(txn);
             }
             auto shardStatisticsStatus = shardutil::retrieveShardStatistics(txn, shard.getName());
             if (!shardStatisticsStatus.isOK()) {
-                //filter shard is not alive when moveChunk
-                if (isMoveCommand){
+                // filter shard is not alive when moveChunk
+                if (isMoveCommand) {
                     continue;
                 }
-                const Status& status = shardStatisticsStatus.getStatus();               
+                const Status& status = shardStatisticsStatus.getStatus();
                 return {status.code(),
-                    str::stream() << "Unable to obtain shard utilization information for "
-                                  << shard.getName()
-                                  << " due to "
-                                  << status.reason()};
+                        str::stream() << "Unable to obtain shard utilization information for "
+                                      << shard.getName()
+                                      << " due to "
+                                      << status.reason()};
             }
 
-            auto shardstatsstatus = 
+            auto shardstatsstatus =
                 ClusterStatistics::ShardStatistics::fromBSON(shardStatisticsStatus.getValue());
             if (!shardstatsstatus.isOK()) {
                 return shardstatsstatus.getStatus();
+            }
+
+            auto shardSizeStatus = shardutil::retrieveTotalShardSize(txn, shard.getName());
+            if (!shardSizeStatus.isOK()) {
+                const Status& status = shardSizeStatus.getStatus();
+                return {status.code(),
+                        str::stream() << "Unable to obtain shard utilization information for "
+                                      << shard.getName()
+                                      << " due to "
+                                      << status.reason()};
             }
 
             std::set<std::string> shardTags;
             for (const auto& shardTag : shard.getTags()) {
                 shardTags.insert(shardTag);
             }
- 
+
             shardstatsstatus.getValue().shardId = std::move(shard.getName());
             shardstatsstatus.getValue().isDraining = std::move(shard.getDraining());
             shardstatsstatus.getValue().shardTags = std::move(shardTags);
+            shardstatsstatus.getValue().maxSizeMB = std::move(shard.getMaxSizeMB());
+            shardstatsstatus.getValue().currSizeMB =
+                std::move(shardSizeStatus.getValue() / 1024 / 1024);
 
             stats.push_back(std::move(shardstatsstatus.getValue()));
         }
@@ -160,4 +173,7 @@ StatusWith<vector<ShardStatistics>> ClusterStatisticsImpl::getStats(OperationCon
     return stats;
 }
 
+void  ClusterStatisticsImpl::setBalanceThread(std::string& threadId){
+    shardutil::setBalanceThread(threadId);
+}
 }  // namespace mongo

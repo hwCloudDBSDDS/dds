@@ -48,6 +48,7 @@ class CmdIsMaster : public Command {
 public:
     CmdIsMaster() : Command("isMaster", false, "ismaster") {}
 
+    bool isShutdown = false;
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -103,6 +104,14 @@ public:
                 txn->getClient(), std::move(swParseClientMetadata.getValue()));
         }
 
+        BSONElement elementShutdown = cmdObj[kShutdownDocumentName];
+        BSONElement elementSetup = cmdObj[kSetupDocumentName];
+        if(!elementShutdown.eoo()) {
+            isShutdown = true;
+        }else if(!elementSetup.eoo()) {
+            isShutdown = false;
+        }
+
         result.appendBool("ismaster", true);
         result.append("msg", "isdbgrid");
         result.appendNumber("maxBsonObjectSize", BSONObjMaxUserSize);
@@ -123,7 +132,7 @@ public:
 
         txn->getClient()->session()->getCompressorManager().serverNegotiate(cmdObj, &result);
 
-        return true;
+        return isShutdown?false:true;
     }
 
 } isMaster;

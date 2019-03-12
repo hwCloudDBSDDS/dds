@@ -66,7 +66,7 @@ for (var test = 0; test < 2; test++) {
         jsTest.log("Waiting for socket timeout time...");
 
         // Need to wait longer than the socket polling time.
-        sleep(2 * 5000);
+        sleep(3 * 5000);
 
         jsTest.log("Run queries using new connections.");
 

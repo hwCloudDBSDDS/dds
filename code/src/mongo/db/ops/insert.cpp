@@ -27,11 +27,15 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/global_timestamp.h"
 #include "mongo/db/views/durable_view_catalog.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 
 namespace mongo {
 
@@ -141,16 +145,22 @@ Status userAllowedWriteNS(const NamespaceString& ns) {
 }
 
 Status userAllowedWriteNS(StringData db, StringData coll) {
-    if (coll == "system.profile") {
+    if (coll.startsWith("system.profile")) {
         return Status(ErrorCodes::BadValue,
                       str::stream() << "cannot write to '" << db << ".system.profile'");
     }
-    return userAllowedCreateNS(db, coll);
+    // for system_profile.js because system.profile was not allowed to write;
+    if (ClusterRole::ShardServer == serverGlobalParams.clusterRole) {
+        return Status::OK();
+    } else {
+        return userAllowedCreateNS(db, coll);
+    }
 }
 
 Status userAllowedCreateNS(StringData db, StringData coll) {
     // validity checking
-
+    size_t dbSize;
+    size_t collSize;
     if (db.size() == 0)
         return Status(ErrorCodes::BadValue, "db cannot be blank");
 
@@ -162,14 +172,21 @@ Status userAllowedCreateNS(StringData db, StringData coll) {
 
     if (!NamespaceString::validCollectionName(coll))
         return Status(ErrorCodes::BadValue, "invalid collection name");
-
-    if (db.size() + 1 /* dot */ + coll.size() > NamespaceString::MaxNsCollectionLen)
+    dbSize = db.size();
+    collSize = coll.find("$");
+    if (collSize == std::string::npos) {
+        collSize = coll.size();
+    }
+    if (dbSize + 1 /* dot */ + collSize > NamespaceString::MaxNsCollectionLen) {
+        index_LOG(0) << " userAllowedCreateNS db: " << db << ",coll: " << coll;
+        index_LOG(0) << " userAllowedCreateNS dbSize: " << dbSize << ",collSize: " << collSize;
         return Status(ErrorCodes::BadValue,
                       str::stream() << "fully qualified namespace " << db << '.' << coll
                                     << " is too long "
                                     << "(max is "
                                     << NamespaceString::MaxNsCollectionLen
                                     << " bytes)");
+    }
 
     // check spceial areas
 

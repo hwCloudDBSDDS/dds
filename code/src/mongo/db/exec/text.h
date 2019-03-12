@@ -62,6 +62,9 @@ struct TextStageParams {
 
     // The text query.
     FTSQueryImpl query;
+
+    // metadata field.
+    bool wantTextScore = true;
 };
 
 /**
@@ -75,7 +78,6 @@ public:
               const TextStageParams& params,
               WorkingSet* ws,
               const MatchExpression* filter);
-
 
     StageState doWork(WorkingSetID* out) final;
     bool isEOF() final;
@@ -96,7 +98,8 @@ private:
      */
     unique_ptr<PlanStage> buildTextTree(OperationContext* txn,
                                         WorkingSet* ws,
-                                        const MatchExpression* filter) const;
+                                        const MatchExpression* filter,
+                                        bool wantTextScore) const;
 
     // Parameters of this text stage.
     TextStageParams _params;

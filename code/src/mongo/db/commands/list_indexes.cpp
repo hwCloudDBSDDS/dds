@@ -25,14 +25,16 @@
  *    delete this exception statement from all source files in the program,
  *    then also delete it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
+#include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/cursor_manager.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
@@ -47,7 +49,13 @@
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/grid.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/log.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 
 namespace mongo {
 
@@ -58,7 +66,7 @@ using std::vector;
 using stdx::make_unique;
 
 namespace {
-
+const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
 /**
  * Lists the indexes for a given collection.
  *
@@ -74,6 +82,41 @@ namespace {
  *   ]
  * }
  */
+bool _runListIndexesOnConfigServer(OperationContext* txn,
+                                   const string& dbname,
+                                   const NamespaceString& targetNss,
+                                   BSONObjBuilder* result) {
+    // auto nsmap = grid.getNsToLockMap();
+    // nsmap->lockNs(targetNss.ns());
+    auto collStatus = Grid::get(txn)->catalogClient(txn)->getCollection(txn, targetNss.ns());
+    if (!collStatus.isOK()) {
+        index_LOG(0) << "[listIndex] fail to getCollection " << targetNss.ns() << " due to "
+                     << collStatus.getStatus();
+        result->append("code", collStatus.getStatus().code());
+        return false;
+    }
+    CollectionType coll = collStatus.getValue().value;
+    auto option = coll.getOptions();
+    BSONElement autoIndexId = option["autoIndexId"];
+    if (!autoIndexId.eoo() && !autoIndexId.boolean()) {
+        BSONArrayBuilder indexes;
+        BSONObj obj = BSON("name"
+                           << "_id_");
+        for (const BSONElement& elm : coll.getIndex()) {
+            BSONObj existIndex = elm.Obj();
+            if (existIndex["name"].toString() != obj["name"].toString()) {
+                indexes.append(elm);
+            }
+        }
+        result->append("indexes", indexes.arr());
+    } else {
+        result->append("indexes", collStatus.getValue().value.getIndex());
+    }
+    // nsmap->unlockNs(targetNss.ns());
+    return true;
+}
+
+
 class CmdListIndexes : public Command {
 public:
     virtual bool slaveOk() const {
@@ -123,6 +166,13 @@ public:
              string& errmsg,
              BSONObjBuilder& result) {
         const NamespaceString ns(parseNs(dbname, cmdObj));
+        bool flag = cmdObj.getField("mgs").eoo();
+        if (!flag)
+            cmdObj = cmdObj.removeField("mgs");
+        if ((serverGlobalParams.clusterRole == ClusterRole::ConfigServer) && dbname != "admin" &&
+            dbname != "config" && dbname != "system") {
+            return _runListIndexesOnConfigServer(txn, dbname, ns, &result);
+        }
 
         const long long defaultBatchSize = std::numeric_limits<long long>::max();
         long long batchSize;
@@ -131,75 +181,123 @@ public:
         if (!parseCursorStatus.isOK()) {
             return appendCommandStatus(result, parseCursorStatus);
         }
-
-        AutoGetCollectionForRead autoColl(txn, ns);
-        if (!autoColl.getDb()) {
-            return appendCommandStatus(result,
-                                       Status(ErrorCodes::NamespaceNotFound, "no database"));
-        }
-
-        const Collection* collection = autoColl.getCollection();
-        if (!collection) {
-            return appendCommandStatus(result,
-                                       Status(ErrorCodes::NamespaceNotFound, "no collection"));
-        }
-
-        const CollectionCatalogEntry* cce = collection->getCatalogEntry();
-        invariant(cce);
-
-        vector<string> indexNames;
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-            indexNames.clear();
-            cce->getAllIndexes(txn, &indexNames);
-        }
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "listIndexes", ns.ns());
-
         auto ws = make_unique<WorkingSet>();
         auto root = make_unique<QueuedDataStage>(txn, ws.get());
 
-        for (size_t i = 0; i < indexNames.size(); i++) {
-            BSONObj indexSpec;
+        if (ClusterRole::ShardServer == serverGlobalParams.clusterRole && 
+            (!flag) && dbname != "config" && dbname != "admin") {
+
+            {
+                ScopedTransaction transaction(txn, MODE_IS);
+                Lock::DBLock dbLock(txn->lockState(), ns.db(), MODE_IS);
+                Database* db = dbHolder().get(txn, ns.db());
+
+                if (db && db->getViewCatalog()->lookup(txn, ns.ns())) {
+                    uasserted(ErrorCodes::CommandNotSupportedOnView,
+                              str::stream() << "Namespace " << ns.ns()
+                                            << " is a view, not a collection");
+                }
+            }
+            auto configshard = Grid::get(txn)->shardRegistry()->getConfigShard();
+            auto cmdResponseStatus = configshard->runCommand(txn,
+                                                             kPrimaryOnlyReadPreference,
+                                                             dbname,
+                                                             cmdObj,
+                                                             Milliseconds(3 * 60 * 1000),
+                                                             Shard::RetryPolicy::kNotIdempotent);
+            if (!cmdResponseStatus.isOK()) {
+                index_log() << "[listIndex] fail to find index in collection due to "
+                            << cmdResponseStatus.getStatus();
+                return appendCommandStatus(result, cmdResponseStatus.getStatus());
+            }
+            if (!cmdResponseStatus.getStatus().isOK()) {
+                index_log() << "[listIndex] fail to find index in collection due to "
+                            << cmdResponseStatus.getStatus();
+                return appendCommandStatus(result, cmdResponseStatus.getStatus());
+            }
+
+            BSONObj res = cmdResponseStatus.getValue().response;
+            if (res.hasField("code")) {
+                int code = res.getIntField("code");
+                Status status = Status(ErrorCodes::Error(code), "getCollection failed");
+                index_log() << "[listIndex] fail to find index in collection due to " << status;
+                return appendCommandStatus(result, status);
+            }
+            for (auto index : res.getObjectField("indexes")) {
+                BSONObj obj = index.Obj().removeField("prefix");
+                WorkingSetID id = ws->allocate();
+                WorkingSetMember* member = ws->get(id);
+                member->keyData.clear();
+                member->recordId = RecordId();
+                member->obj = Snapshotted<BSONObj>(SnapshotId(), obj.getOwned());
+                member->transitionToOwnedObj();
+                root->pushBack(id);
+            }
+        } else {
+
+            AutoGetCollectionForRead autoColl(txn, ns);
+            if (!autoColl.getDb()) {
+                return appendCommandStatus(result,
+                                           Status(ErrorCodes::NamespaceNotFound, "no database"));
+            }
+            const Collection* collection = autoColl.getCollection();
+            if (!collection) {
+                return appendCommandStatus(result,
+                                           Status(ErrorCodes::NamespaceNotFound, "no collection"));
+            }
+            const CollectionCatalogEntry* cce = collection->getCatalogEntry();
+            invariant(cce);
+
+            vector<string> indexNames;
             MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-                indexSpec = cce->getIndexSpec(txn, indexNames[i]);
+                indexNames.clear();
+                cce->getAllIndexes(txn, &indexNames);
             }
             MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "listIndexes", ns.ns());
 
-            if (ns.ns() == FeatureCompatibilityVersion::kCollection &&
-                indexNames[i] == FeatureCompatibilityVersion::k32IncompatibleIndexName) {
-                BSONObjBuilder bob;
-
-                for (auto&& indexSpecElem : indexSpec) {
-                    auto indexSpecElemFieldName = indexSpecElem.fieldNameStringData();
-                    if (indexSpecElemFieldName == IndexDescriptor::kIndexVersionFieldName) {
-                        // Include the index version in the command response as a decimal type
-                        // instead of as a 32-bit integer. This is a new BSON type that isn't
-                        // supported by versions of MongoDB earlier than 3.4 that will cause 3.2
-                        // secondaries to crash when performing initial sync.
-                        bob.append(IndexDescriptor::kIndexVersionFieldName,
-                                   indexSpecElem.numberDecimal());
-                    } else {
-                        bob.append(indexSpecElem);
-                    }
+            for (size_t i = 0; i < indexNames.size(); i++) {
+                BSONObj indexSpec;
+                MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+                    indexSpec = cce->getIndexSpec(txn, indexNames[i]);
                 }
+                MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "listIndexes", ns.ns());
 
-                indexSpec = bob.obj();
+                if (ns.ns() == FeatureCompatibilityVersion::kCollection &&
+                    indexNames[i] == FeatureCompatibilityVersion::k32IncompatibleIndexName) {
+                    BSONObjBuilder bob;
+
+                    for (auto&& indexSpecElem : indexSpec) {
+                        auto indexSpecElemFieldName = indexSpecElem.fieldNameStringData();
+                        if (indexSpecElemFieldName == IndexDescriptor::kIndexVersionFieldName) {
+                            // Include the index version in the command response as a decimal type
+                            // instead of as a 32-bit integer. This is a new BSON type that isn't
+                            // supported by versions of MongoDB earlier than 3.4 that will cause 3.2
+                            // secondaries to crash when performing initial sync.
+                            bob.append(IndexDescriptor::kIndexVersionFieldName,
+                                       indexSpecElem.numberDecimal());
+                        } else {
+                            bob.append(indexSpecElem);
+                        }
+                    }
+                    indexSpec = bob.obj();
+                }
+                WorkingSetID id = ws->allocate();
+                WorkingSetMember* member = ws->get(id);
+                member->keyData.clear();
+                member->recordId = RecordId();
+                member->obj = Snapshotted<BSONObj>(SnapshotId(), indexSpec.getOwned());
+                member->transitionToOwnedObj();
+                root->pushBack(id);
             }
-
-            WorkingSetID id = ws->allocate();
-            WorkingSetMember* member = ws->get(id);
-            member->keyData.clear();
-            member->recordId = RecordId();
-            member->obj = Snapshotted<BSONObj>(SnapshotId(), indexSpec.getOwned());
-            member->transitionToOwnedObj();
-            root->pushBack(id);
         }
-
         const NamespaceString cursorNss = NamespaceString::makeListIndexesNSS(dbname, ns.coll());
         dassert(ns == cursorNss.getTargetNSForListIndexes());
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             txn, std::move(ws), std::move(root), cursorNss.ns(), PlanExecutor::YIELD_MANUAL);
         if (!statusWithPlanExecutor.isOK()) {
+            index_log() << "[listIndex] fail to make plan executor due to "
+                        << statusWithPlanExecutor.getStatus();
             return appendCommandStatus(result, statusWithPlanExecutor.getStatus());
         }
         unique_ptr<PlanExecutor> exec = std::move(statusWithPlanExecutor.getValue());
@@ -220,7 +318,7 @@ public:
                 break;
             }
 
-            firstBatch.append(next);
+            firstBatch.append(next.removeField("prefix"));
         }
 
         CursorId cursorId = 0LL;

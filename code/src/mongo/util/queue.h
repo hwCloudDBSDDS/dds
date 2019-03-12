@@ -38,6 +38,7 @@
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -189,12 +190,13 @@ public:
      * otherwise return false and t won't be changed
      */
     bool blockingPop(T& t, int maxSecondsToWait) {
-        using namespace stdx::chrono;
-        const auto deadline = system_clock::now() + seconds(maxSecondsToWait);
+        const auto deadline = Date_t::now() + Seconds(maxSecondsToWait);
         stdx::unique_lock<stdx::mutex> lk(_lock);
         _clearing = false;
         while (_queue.empty() && !_clearing) {
-            if (stdx::cv_status::timeout == _cvNoLongerEmpty.wait_until(lk, deadline))
+            if (stdx::cv_status::timeout ==
+                _cvNoLongerEmpty.wait_for(
+                    lk, Milliseconds(deadline - Date_t::now()).toSteadyDuration()))
                 return false;
         }
 
@@ -210,13 +212,14 @@ public:
 
     // Obviously, this should only be used when you have
     // only one consumer
-    bool blockingPeek(T& t, int maxSecondsToWait) {
-        using namespace stdx::chrono;
-        const auto deadline = system_clock::now() + seconds(maxSecondsToWait);
+    bool blockingPeek(T& t, int maxMSToWait) {
+        const auto deadline = Date_t::now() + Milliseconds(maxMSToWait);
         stdx::unique_lock<stdx::mutex> lk(_lock);
         _clearing = false;
         while (_queue.empty() && !_clearing) {
-            if (stdx::cv_status::timeout == _cvNoLongerEmpty.wait_until(lk, deadline))
+            if (stdx::cv_status::timeout ==
+                _cvNoLongerEmpty.wait_for(
+                    lk, Milliseconds(deadline - Date_t::now()).toSteadyDuration()))
                 return false;
         }
         if (_clearing) {

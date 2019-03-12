@@ -25,7 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/catalog/coll_mod.h"
@@ -45,6 +45,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/views/view_catalog.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -223,7 +224,6 @@ Status collMod(OperationContext* txn,
     AutoGetDb autoDb(txn, dbName, MODE_X);
     Database* const db = autoDb.getDb();
     Collection* coll = db ? db->getCollection(nss) : nullptr;
-
     // May also modify a view instead of a collection.
     boost::optional<ViewDefinition> view;
     if (db && !coll) {
@@ -262,7 +262,6 @@ Status collMod(OperationContext* txn,
     CollModRequest cmr = statusW.getValue();
 
     WriteUnitOfWork wunit(txn);
-
     if (view) {
         if (!cmr.viewPipeLine.eoo())
             view->setPipeline(cmr.viewPipeLine);

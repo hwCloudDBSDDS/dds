@@ -112,7 +112,7 @@ public:
         return _configVersion.get();
     }
     void setConfigVersion(const long long configVersion);
-    
+
     void setExtendIPs(const std::string& extendIPs);
 
     const std::string& getExtendIPs() const {

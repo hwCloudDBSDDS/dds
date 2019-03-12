@@ -28,6 +28,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kWrite
 
+
+
 #include "mongo/platform/basic.h"
 
 #include <memory>
@@ -58,6 +60,8 @@
 #include "mongo/db/query/query_knobs.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/s/collection_metadata.h"
+#include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/stats/counters.h"
@@ -68,14 +72,14 @@
 #include "mongo/rpc/command_request.h"
 #include "mongo/rpc/command_request_builder.h"
 #include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/s/shard_key_pattern.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
-#include "mongo/s/shard_key_pattern.h"
-#include "mongo/db/s/collection_sharding_state.h"
-#include "mongo/db/s/collection_metadata.h"
-#include "mongo/db/modules/rocks/src/GlobalConfig.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 
 namespace mongo {
 
@@ -87,16 +91,17 @@ MONGO_FP_DECLARE(failAllInserts);
 MONGO_FP_DECLARE(failAllUpdates);
 MONGO_FP_DECLARE(failAllRemoves);
 
-// if command against to a specified chunk, and the chunk is not here, return error and make mongos retry
+// if command against to a specified chunk, and the chunk is not here, return error and make mongos
+// retry
 void throwExceptionForChunkNs(const NamespaceString& ns) {
-    if (ns.isChunk()) {
-        throw SendStaleConfigException(
-            ns.ns(),
-            str::stream() << "chunk " << ns.ns() << " is not on this shard",
-            ChunkVersion(),
-            ChunkVersion());
+    if (!ns.isSystemCollection() && ClusterRole::ShardServer == serverGlobalParams.clusterRole ) {
+        index_warning() << "[write] not chunkId  ns: " << ns;
+        throw SendStaleConfigException(ns.ns(),
+                                       str::stream() << "chunk " << ns.ns()
+                                                     << " is not on this shard",
+                                       ChunkVersion(),
+                                       ChunkVersion());
     }
-    return;
 }
 
 void finishCurOp(OperationContext* txn, CurOp* curOp) {
@@ -128,7 +133,7 @@ void finishCurOp(OperationContext* txn, CurOp* curOp) {
         if (logAll || logSlow) {
             Locker::LockerInfo lockerInfo;
             txn->lockState()->getLockerInfo(&lockerInfo);
-            log() << curOp->debug().report(txn->getClient(), *curOp, lockerInfo.stats);
+            LOG(2) << curOp->debug().report(txn->getClient(), *curOp, lockerInfo.stats);
         }
 
         if (curOp->shouldDBProfile()) {
@@ -191,8 +196,7 @@ void assertCanWrite_inlock(OperationContext* txn, const NamespaceString& ns) {
 
 void makeCollection(OperationContext* txn, const NamespaceString& ns) {
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-        AutoGetOrCreateDb db(txn, ns.db(), MODE_IX);
-        Lock::CollectionLock collLock(txn->lockState(), ns.ns(), MODE_X);
+        AutoGetOrCreateDb db(txn, ns.db(), MODE_X);
         assertCanWrite_inlock(txn, ns);
         if (!db.getDb()->getCollection(ns.ns())) {  // someone else may have beat us to it.
             WriteUnitOfWork wuow(txn);
@@ -268,7 +272,7 @@ static WriteResult::SingleResult createIndex(OperationContext* txn,
     cmdBuilder << "indexes" << BSON_ARRAY(spec);
     BSONObj cmd = cmdBuilder.done();
 
-    LOG(1) << "createIndex()-> ns: " << ns << " cmd: " << cmd;
+    index_LOG(1) << "createIndex()-> ns: " << ns;
 
     rpc::CommandRequestBuilder requestBuilder;
     auto cmdRequestMsg = requestBuilder.setDatabase(ns.db())
@@ -285,10 +289,9 @@ static WriteResult::SingleResult createIndex(OperationContext* txn,
     uassertStatusOK(getStatusFromCommandResult(cmdResult));
 
     // Unlike normal inserts, it is not an error to "insert" a duplicate index.
-    long long n =
-        cmdResult["numIndexesAfter"].numberInt() - cmdResult["numIndexesBefore"].numberInt();
+    long long n = 1;
     CurOp::get(txn)->debug().ninserted += n;
-
+    //
     return {n};
 }
 
@@ -305,7 +308,6 @@ static WriteResult performCreateIndexes(OperationContext* txn, const InsertOp& w
     WriteResult out;
     for (auto&& spec : wholeOp.documents) {
         try {
-            LOG(1) << "performCreateIndexes()-> spec: " << spec;
             lastOpFixer.startingOp();
             out.results.emplace_back(createIndex(txn, wholeOp.ns, spec));
             lastOpFixer.finishedOpSuccessfully();
@@ -327,6 +329,7 @@ static void insertDocuments(OperationContext* txn,
     WriteUnitOfWork wuow(txn);
     uassertStatusOK(collection->insertDocuments(
         txn, begin, end, &CurOp::get(txn)->debug(), /*enforceQuota*/ true));
+
     wuow.commit();
 }
 
@@ -358,7 +361,8 @@ static bool insertBatchAndHandleErrors(OperationContext* txn,
             throwExceptionForChunkNs(wholeOp.ns);
 
             uassert(ErrorCodes::ImplicitCreationNotSupported,
-                    str::stream() << "implicit creation of " << wholeOp.ns.ns() << " is not supported",
+                    str::stream() << "implicit creation of " << wholeOp.ns.ns()
+                                  << " is not supported",
                     wholeOp.ns.supportImplicitCreation());
 
             collection.reset();  // unlock.
@@ -368,6 +372,7 @@ static bool insertBatchAndHandleErrors(OperationContext* txn,
         curOp.raiseDbProfileLevel(collection->getDb()->getProfilingLevel());
         assertCanWrite_inlock(txn, wholeOp.ns);
     };
+    ON_BLOCK_EXIT([&] { txn->recoveryUnit()->abandonSnapshot(); });
 
     // Set the prewarm in txn to pass to rocks_index.
     txn->setPrewarm(wholeOp.prewarmInBulk);
@@ -414,8 +419,7 @@ static bool insertBatchAndHandleErrors(OperationContext* txn,
             MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "insert", wholeOp.ns.ns());
         } catch (const DBException& ex) {
             bool canContinue = handleError(txn, ex, wholeOp, out);
-            if (!canContinue)
-            {
+            if (!canContinue) {
                 return false;
             }
         }
@@ -424,7 +428,6 @@ static bool insertBatchAndHandleErrors(OperationContext* txn,
 }
 
 WriteResult performInserts(OperationContext* txn, const InsertOp& wholeOp) {
-    txn->setNs(wholeOp.ns);
     invariant(!txn->lockState()->inAWriteUnitOfWork());  // Does own retries.
     auto& curOp = *CurOp::get(txn);
     ON_BLOCK_EXIT([&] {
@@ -450,9 +453,7 @@ WriteResult performInserts(OperationContext* txn, const InsertOp& wholeOp) {
         curOp.debug().ninserted = 0;
     }
 
-    if (GLOBAL_CONFIG_GET(IsCoreTest)) {
-        uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
-    }
+    uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
 
     if (wholeOp.ns.isSystemDotIndexes()) {
         return performCreateIndexes(txn, wholeOp);
@@ -469,6 +470,8 @@ WriteResult performInserts(OperationContext* txn, const InsertOp& wholeOp) {
     const size_t maxBatchSize = internalInsertMaxBatchSize;
     batch.reserve(std::min(wholeOp.documents.size(), maxBatchSize));
 
+    ScopedCollectionMetadata collMetadata;
+    collMetadata = CollectionShardingState::get(txn, wholeOp.ns.ns())->getMetadata();
     for (auto&& doc : wholeOp.documents) {
         const bool isLastDoc = (&doc == &wholeOp.documents.back());
         auto fixedDoc = fixDocumentForInsert(doc);
@@ -477,23 +480,20 @@ WriteResult performInserts(OperationContext* txn, const InsertOp& wholeOp) {
             // correct order. In an ordered insert, if one of the docs ahead of us fails, we should
             // behave as-if we never got to this document.
         } else {
-            batch.push_back(fixedDoc.getValue().isEmpty() ? doc : std::move(fixedDoc.getValue()));
+            auto fix_doc = fixedDoc.getValue().isEmpty() ? doc : std::move(fixedDoc.getValue());
+            if (collMetadata) {
+                ShardKeyPattern shardKeyPattern(collMetadata->getKeyPattern());
+                BSONObj shardKey = shardKeyPattern.extractShardKeyFromDoc(fix_doc);
+                if (shardKey.isEmpty()) {
+                    continue;
+                }
+            }
+            batch.push_back(fix_doc);
             bytesInBatch += batch.back().objsize();
             if (!isLastDoc && batch.size() < maxBatchSize && bytesInBatch < insertVectorMaxBytes)
                 continue;  // Add more to batch before inserting.
         }
 
-        ScopedCollectionMetadata collMetadata;
-        collMetadata = CollectionShardingState::get(txn, wholeOp.ns.ns())->getMetadata();
-        if (collMetadata)
-        {
-            ShardKeyPattern shardKeyPattern(collMetadata->getKeyPattern());
-            BSONObj shardKey = shardKeyPattern.extractShardKeyFromDoc(doc);
-            if (shardKey.isEmpty()) {
-                continue;
-            }
-        }
-        
         bool canContinue = insertBatchAndHandleErrors(txn, wholeOp, batch, &lastOpFixer, &out);
         batch.clear();  // We won't need the current batch any more.
         bytesInBatch = 0;
@@ -516,7 +516,8 @@ WriteResult performInserts(OperationContext* txn, const InsertOp& wholeOp) {
 
 static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
                                                        const NamespaceString& ns,
-                                                       const UpdateOp::SingleUpdate& op) {
+                                                       const UpdateOp::SingleUpdate& op,
+                                                       WriteResult::SingleResult& singleResult) {
     globalOpCounters.gotUpdate();
     auto& curOp = *CurOp::get(txn);
     {
@@ -541,17 +542,16 @@ static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
     request.setAtomicity(op.atomicity);
     request.setFirst(op.first);
     request.setLast(op.last);
-    //update global shardName
-    if (serverGlobalParams.clusterRole == ClusterRole::ShardServer && op.query.hasField("shardName"))
-    {
-        LOG(1) << "set global shardName";
+    // update global shardName
+    if (serverGlobalParams.clusterRole == ClusterRole::ShardServer &&
+        op.query.hasField("shardName")) {
+        index_LOG(1) << "set global shardName";
         serverGlobalParams.shardName = op.query.getStringField("shardName");
-        
     }
     ParsedUpdate parsedUpdate(txn, &request);
     uassertStatusOK(parsedUpdate.parseRequest());
 
-    //ScopedTransaction scopedXact(txn, MODE_IX);
+    // ScopedTransaction scopedXact(txn, MODE_IX);
     boost::optional<AutoGetCollection> collection;
     while (true) {
         txn->checkForInterrupt();
@@ -566,7 +566,7 @@ static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
         if (collection->getCollection())
             break;
 
-        throwExceptionForChunkNs(ns); 
+        throwExceptionForChunkNs(ns);
 
         if (!op.upsert)
             break;
@@ -584,7 +584,7 @@ static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
     }
 
     assertCanWrite_inlock(txn, ns);
-
+    ON_BLOCK_EXIT([&] { txn->recoveryUnit()->abandonSnapshot(); });
     auto exec = uassertStatusOK(
         getExecutorUpdate(txn, &curOp.debug(), collection->getCollection(), &parsedUpdate));
 
@@ -593,7 +593,20 @@ static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
         CurOp::get(txn)->setPlanSummary_inlock(Explain::getPlanSummary(exec.get()));
     }
 
-    uassertStatusOK(exec->executePlan());
+    try {
+        uassertStatusOK(exec->executePlan());
+    } catch (const SendStaleConfigException& ex) {
+        if (exec->getRootStage()->stageType() == STAGE_UPDATE) {
+            const UpdateStats* updateStats = UpdateStage::getUpdateStats(exec.get(), true);
+            UpdateResult res = UpdateStage::makeUpdateResult(updateStats);
+            const bool didInsert = !res.upserted.isEmpty();
+            const long long nMatchedOrInserted = didInsert ? 1 : 0;
+            singleResult = {nMatchedOrInserted, res.numDocsModified, res.upserted};
+        }
+        throw ex;
+    } catch (const DBException& ex) {
+        throw ex;        
+    }
 
     PlanSummaryStats summary;
     Explain::getSummaryStats(*exec, &summary);
@@ -607,6 +620,7 @@ static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
         curOp.debug().execStats = execStatsBob.obj();
     }
 
+    
     const UpdateStats* updateStats = UpdateStage::getUpdateStats(exec.get());
     UpdateStage::recordUpdateStatsInOpDebug(updateStats, &curOp.debug());
     curOp.debug().setPlanSummaryMetrics(summary);
@@ -621,14 +635,10 @@ static WriteResult::SingleResult performSingleUpdateOp(OperationContext* txn,
 
 WriteResult performUpdates(OperationContext* txn, const UpdateOp& wholeOp) {
     invariant(!txn->lockState()->inAWriteUnitOfWork());  // Does own retries.
-    if (GLOBAL_CONFIG_GET(IsCoreTest)) {
-        uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
-    }
-    txn->setNs(wholeOp.ns);
+    uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
     DisableDocumentValidationIfTrue docValidationDisabler(txn, wholeOp.bypassDocumentValidation);
     LastOpFixer lastOpFixer(txn, wholeOp.ns);
 
-    ScopedTransaction scopedXact(txn, MODE_IX);
     WriteResult out;
     out.results.reserve(wholeOp.updates.size());
     for (auto&& singleOp : wholeOp.updates) {
@@ -642,14 +652,17 @@ WriteResult performUpdates(OperationContext* txn, const UpdateOp& wholeOp) {
             curOp.setCommand_inlock(cmd);
         }
         ON_BLOCK_EXIT([&] { finishCurOp(txn, &curOp); });
+        WriteResult::SingleResult singleResult{0, 0, BSONObj()};
         try {
             lastOpFixer.startingOp();
-            out.results.emplace_back(performSingleUpdateOp(txn, wholeOp.ns, singleOp));
+            out.results.emplace_back(performSingleUpdateOp(txn, wholeOp.ns, singleOp, singleResult));
             lastOpFixer.finishedOpSuccessfully();
         } catch (const DBException& ex) {
             const bool canContinue = handleError(txn, ex, wholeOp, &out);
-            if (!canContinue)
+            if (!canContinue) {
+                out.results.emplace_back(singleResult);
                 break;
+            }
         }
     }
 
@@ -658,7 +671,8 @@ WriteResult performUpdates(OperationContext* txn, const UpdateOp& wholeOp) {
 
 static WriteResult::SingleResult performSingleDeleteOp(OperationContext* txn,
                                                        const NamespaceString& ns,
-                                                       const DeleteOp::SingleDelete& op) {
+                                                       const DeleteOp::SingleDelete& op,
+                                                       long long& num) {
     globalOpCounters.gotDelete();
     auto& curOp = *CurOp::get(txn);
     {
@@ -688,7 +702,6 @@ static WriteResult::SingleResult performSingleDeleteOp(OperationContext* txn,
         uasserted(ErrorCodes::InternalError, "failAllRemoves failpoint active!");
     }
 
-    ScopedTransaction scopedXact(txn, MODE_IX);
     AutoGetCollection collection(txn,
                                  ns,
                                  MODE_IX,  // DB is always IX, even if collection is X.
@@ -703,6 +716,8 @@ static WriteResult::SingleResult performSingleDeleteOp(OperationContext* txn,
 
     assertCanWrite_inlock(txn, ns);
 
+    ON_BLOCK_EXIT([&] { txn->recoveryUnit()->abandonSnapshot(); });
+
     auto exec = uassertStatusOK(
         getExecutorDelete(txn, &curOp.debug(), collection.getCollection(), &parsedDelete));
 
@@ -711,7 +726,20 @@ static WriteResult::SingleResult performSingleDeleteOp(OperationContext* txn,
         CurOp::get(txn)->setPlanSummary_inlock(Explain::getPlanSummary(exec.get()));
     }
 
-    uassertStatusOK(exec->executePlan());
+    try {
+        uassertStatusOK(exec->executePlan());
+    } catch (const SendStaleConfigException& e) {
+        if (exec->getRootStage()->stageType() == STAGE_DELETE) {
+            DeleteStage* deleteStage = static_cast<DeleteStage*>(exec->getRootStage());
+            const DeleteStats* deleteStats =
+                static_cast<const DeleteStats*>(deleteStage->getSpecificStats());
+            num = deleteStats->docsDeleted;
+        }
+        throw e;
+    } catch (const DBException& e) {
+        throw e;
+    }
+
     long long n = DeleteStage::getNumDeleted(*exec);
     curOp.debug().ndeleted = n;
 
@@ -735,10 +763,8 @@ static WriteResult::SingleResult performSingleDeleteOp(OperationContext* txn,
 
 WriteResult performDeletes(OperationContext* txn, const DeleteOp& wholeOp) {
     invariant(!txn->lockState()->inAWriteUnitOfWork());  // Does own retries.
-    if (GLOBAL_CONFIG_GET(IsCoreTest)) {
-        uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
-    }
-    txn->setNs(wholeOp.ns);
+    uassertStatusOK(userAllowedWriteNS(wholeOp.ns));
+
     DisableDocumentValidationIfTrue docValidationDisabler(txn, wholeOp.bypassDocumentValidation);
     LastOpFixer lastOpFixer(txn, wholeOp.ns);
 
@@ -755,14 +781,17 @@ WriteResult performDeletes(OperationContext* txn, const DeleteOp& wholeOp) {
             curOp.setCommand_inlock(cmd);
         }
         ON_BLOCK_EXIT([&] { finishCurOp(txn, &curOp); });
+        long long num = 0;
         try {
             lastOpFixer.startingOp();
-            out.results.emplace_back(performSingleDeleteOp(txn, wholeOp.ns, singleOp));
+            out.results.emplace_back(performSingleDeleteOp(txn, wholeOp.ns, singleOp, num));
             lastOpFixer.finishedOpSuccessfully();
         } catch (const DBException& ex) {
             const bool canContinue = handleError(txn, ex, wholeOp, &out);
-            if (!canContinue)
+            if (!canContinue) {
+                out.results.emplace_back(WriteResult::SingleResult{num});
                 break;
+            }
         }
     }
 

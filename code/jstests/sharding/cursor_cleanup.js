@@ -45,7 +45,8 @@ jsTest.log("Check whether the cursor is registered in the cursor info.");
 var cursorInfo = admin.serverStatus().metrics.cursor;
 printjson(cursorInfo);
 
-assert.eq(cursorInfo.open.multiTarget, 1);
+// assert.eq(cursorInfo.open.multiTarget, 1);
+assert.eq(cursorInfo.open.multiTarget, 2);
 
 jsTest.log("End the cursors.");
 

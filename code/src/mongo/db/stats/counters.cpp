@@ -37,10 +37,15 @@
 #include "mongo/util/debug_util.h"
 #include "mongo/util/log.h"
 
+
 namespace mongo {
 
 using std::endl;
+using stdx::mutex;
+using std::map;
 
+stdx::mutex  OpCounters::_tpsMutex;
+std::map<std::string, long long>  OpCounters::tpsInterval;
 OpCounters::OpCounters() {}
 
 void OpCounters::gotInserts(int n) {
@@ -134,6 +139,32 @@ BSONObj OpCounters::getObj() const {
     b.append("command", _command.loadRelaxed());
     return b.obj();
 }
+void  OpCounters::setTps(std::map<std::string, long long>& chunkTpsCount, int roundIntervalSeconds){
+    std::map<std::string, long long>::iterator iter;
+    stdx::lock_guard<stdx::mutex> lock(_tpsMutex);
+    for(iter = chunkTpsCount.begin(); iter != chunkTpsCount.end(); iter++) {
+        long long interval = iter->second;
+        long long tps = interval / roundIntervalSeconds;
+        tpsInterval[iter->first] = tps;
+        index_LOG(1) << "collectChunkTps chunk is:" << iter->first << ", last " << roundIntervalSeconds <<   " seconds count diff is : " <<  iter->second << ",tps is:" << tps;
+    }
+}
+
+long long OpCounters::getTpsForCollecion(const std::string &col)
+{
+    stdx::lock_guard<stdx::mutex> lock(_tpsMutex);
+    long long  tps = 0;
+    if (tpsInterval.find(col) != tpsInterval.end())
+    {
+        tps = tpsInterval.find(col)->second;
+    }
+    else
+    {
+        index_warning() << "get shard statistics command for" << col << " is not found";
+    }
+    return  tps;
+}
+
 
 void NetworkCounter::hitPhysical(long long bytesIn, long long bytesOut) {
     const int64_t MAX = 1ULL << 60;
@@ -186,7 +217,12 @@ BSONObj NetworkCounter::getObj() const {
     return b.obj();
 }
 
+
+
 OpCounters globalOpCounters;
 OpCounters replOpCounters;
 NetworkCounter networkCounter;
+
+int oldCpuUsage;
+int cpuUsage;
 }

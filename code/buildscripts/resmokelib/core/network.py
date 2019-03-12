@@ -87,6 +87,31 @@ class PortAllocator(object):
                     % cls._PORTS_PER_FIXTURE)
 
             return next_port
+            
+    @classmethod
+    @_check_port
+    def prev_fixture_port(cls, job_num):
+        """
+        Returns the next port for a fixture to use.
+
+        Raises a PortAllocationError if the fixture has requested more
+        ports than are reserved per job, or if the next port is not a
+        valid port number.
+        """
+        with cls._NUM_USED_PORTS_LOCK:
+            start_port = config.BASE_PORT + (job_num * cls._PORTS_PER_JOB)
+            num_used_ports = cls._NUM_USED_PORTS[job_num]
+            next_port = start_port + num_used_ports
+
+            cls._NUM_USED_PORTS[job_num] -= 1
+
+            if next_port >= start_port + cls._PORTS_PER_FIXTURE:
+                raise errors.PortAllocationError(
+                    "Fixture has requested more than the %d ports reserved per fixture"
+                    % cls._PORTS_PER_FIXTURE)
+
+            return next_port
+
 
     @classmethod
     @_check_port

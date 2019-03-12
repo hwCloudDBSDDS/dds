@@ -2,7 +2,28 @@ selector:
   js_test:
     roots:
     - jstests/noPassthroughWithMongod/*.js
-
+    exclude_files:
+    # The following use cases are all related to mapreduce and replica sets.
+    - jstests/noPassthroughWithMongod/commands_that_write_accept_wc_standalone.js 
+    #- jstests/noPassthroughWithMongod/explain1.js 
+    - jstests/noPassthroughWithMongod/indexbg_restart_secondary.js 
+    - jstests/noPassthroughWithMongod/indexbg_restart_secondary_noretry.js 
+    - jstests/noPassthroughWithMongod/initial_sync_oplog_rollover.js 
+    - jstests/noPassthroughWithMongod/initial_sync_replSetGetStatus.js 
+    - jstests/noPassthroughWithMongod/mapreduce_intermediate_reduce.js 
+    - jstests/noPassthroughWithMongod/logpath.js 
+    - jstests/noPassthroughWithMongod/moveprimary-replset.js 
+    - jstests/noPassthroughWithMongod/mr_writeconflict.js 
+    - jstests/noPassthroughWithMongod/no_balance_collection.js 
+    - jstests/noPassthroughWithMongod/replica_set_shard_version.js 
+    - jstests/noPassthroughWithMongod/server7428.js 
+    - jstests/noPassthroughWithMongod/sharding_migrate_large_docs.js 
+    - jstests/noPassthroughWithMongod/sharding_rs_arb1.js 
+    - jstests/noPassthroughWithMongod/temp_namespace.js 
+    - jstests/noPassthroughWithMongod/ttl_repl.js 
+    - jstests/noPassthroughWithMongod/ttl_repl_maintenance.js 
+    - jstests/noPassthroughWithMongod/ttl_sharded.js 
+    #- jstests/noPassthroughWithMongod/unix_socket1.js
 executor:
   js_test:
     config:

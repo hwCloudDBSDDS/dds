@@ -44,6 +44,7 @@ class IndexAccessMethod;
 class IndexCatalogEntry;
 class OperationContext;
 class RecordStore;
+class ChunkRocksDBInstance;
 
 struct CollectionOptions;
 
@@ -112,10 +113,12 @@ public:
 
     virtual Status dropCollection(OperationContext* opCtx, StringData ns) = 0;
 
-    virtual Status postInitRecordStore(OperationContext* opCtx, StringData ns, const CollectionOptions& options) {
+    virtual Status postInitRecordStore(OperationContext* opCtx, StringData ns) {
         return Status::OK();
     }
-    virtual Status updateChunkMetadataViaRecordStore(OperationContext* opCtx, StringData ns,BSONArray &indexes){
+    virtual Status updateChunkMetadataViaRecordStore(OperationContext* opCtx,
+                                                     StringData ns,
+                                                     BSONArray& indexes) {
         return Status::OK();
     }
 

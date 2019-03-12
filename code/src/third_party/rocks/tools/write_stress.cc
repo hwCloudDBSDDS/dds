@@ -81,7 +81,7 @@ DEFINE_int32(key_size, 10, "Key size");
 DEFINE_int32(value_size, 100, "Value size");
 DEFINE_string(db, "", "Use the db with the following name.");
 DEFINE_bool(destroy_db, true,
-            "Destory the existing DB before running the test");
+            "Destroy the existing DB before running the test");
 
 DEFINE_int32(runtime_sec, 10 * 60, "How long are we running for, in seconds");
 DEFINE_int32(seed, 139, "Random seed");
@@ -135,8 +135,8 @@ class WriteStress {
     // compactions
     options.create_if_missing = true;
     options.write_buffer_size = 256 * 1024;              // 256k
-    options.max_bytes_for_level_base = 1 * 1024 * 1204;  // 1MB
-    options.target_file_size_base = 100 * 1204;          // 100k
+    options.max_bytes_for_level_base = 1 * 1024 * 1024;  // 1MB
+    options.target_file_size_base = 100 * 1024;          // 100k
     options.max_write_buffer_number = 16;
     options.max_background_compactions = 16;
     options.max_background_flushes = 16;

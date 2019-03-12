@@ -207,6 +207,12 @@ void OplogStart::doReattachToOperationContext() {
     }
 }
 
+void OplogStart::doReleaseCursor() {
+    for (auto&& iterator : _subIterators) {
+        iterator->detachFromOperationContext();
+    }
+}
+
 unique_ptr<PlanStageStats> OplogStart::getStats() {
     unique_ptr<PlanStageStats> ret =
         make_unique<PlanStageStats>(CommonStats(kStageType), STAGE_OPLOG_START);

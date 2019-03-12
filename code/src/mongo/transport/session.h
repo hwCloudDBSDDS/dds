@@ -137,6 +137,8 @@ public:
      */
     virtual MessageCompressorManager& getCompressorManager();
 
+    virtual bool isCustomerConnection() const = 0;
+
 protected:
     /**
      * Construct a new session.

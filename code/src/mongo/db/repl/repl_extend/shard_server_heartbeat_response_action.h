@@ -16,11 +16,7 @@ public:
     /**
      * Actions taken based on heartbeat responses
      */
-    enum Action {
-        NoAction,
-        KillSelf,
-        SwitchTarget
-    };
+    enum Action { NoAction, KillSelf, SwitchTarget };
 
     /**
      * Construct an action with unspecified action and a next heartbeat start date in the
@@ -31,21 +27,20 @@ public:
     /**
      * Makes a new action representing doing nothing but sending a heartbeat.
      */
-    static ShardServerHeartbeatResponseAction makeNoAction(
-                                const std::string& primaryConfigServer);
+    static ShardServerHeartbeatResponseAction makeNoAction(const std::string& primaryConfigServer);
 
     /**
      * Makes a new action telling the current node to kill self.
      */
     static ShardServerHeartbeatResponseAction makeKillSelfAction(
-                                const std::string& primaryConfigServer);
+        const std::string& primaryConfigServer);
 
     /**
-     * Makes a new action telling the current node to send heartbeat to 
+     * Makes a new action telling the current node to send heartbeat to
      * a switched target.
      */
     static ShardServerHeartbeatResponseAction makeSwitchTargetAction(
-                                const std::string& primaryConfigServer);
+        const std::string& primaryConfigServer);
 
     /**
      * Gets the action type of this action.

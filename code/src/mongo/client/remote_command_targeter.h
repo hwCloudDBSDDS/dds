@@ -29,13 +29,13 @@
 #pragma once
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
-#include "mongo/db/operation_context.h"
 namespace mongo {
 
 class ConnectionString;
-//class OperationContext;
+// class OperationContext;
 struct ReadPreferenceSetting;
 struct HostAndPort;
 template <typename T>

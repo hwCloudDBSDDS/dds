@@ -38,6 +38,7 @@
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/config.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/stdx/functional.h"
@@ -88,6 +89,7 @@ TransportLayerLegacy::LegacySession::LegacySession(std::unique_ptr<AbstractMessa
       _local(amp->localAddr().toString(true)),
       _tl(tl),
       _tags(kEmptyTagMask),
+      _customerConnection(amp->isCustomerConnection()),
       _connection(stdx::make_unique<Connection>(std::move(amp))) {}
 
 TransportLayerLegacy::LegacySession::~LegacySession() {
@@ -228,7 +230,27 @@ void TransportLayerLegacy::end(const SessionHandle& session) {
 void TransportLayerLegacy::_closeConnection(Connection* conn) {
     conn->closed = true;
     conn->amp->shutdown();
-    Listener::globalTicketHolder.release();
+
+    bool internalTicked = false;
+    if (serverGlobalParams.binaryName == "mongod") {
+        if (conn->amp->local().port() == DEFAULT_CONTRSL_PORT) {
+            internalTicked = true;
+        } else {
+            internalTicked = false;
+        }
+    } else {
+        if (!conn->amp->inAdminWhiteList()) {
+            internalTicked = false;
+        } else {
+            internalTicked = true;
+        }
+    }
+
+    if (internalTicked) {
+        Listener::internalTicketHolder.release();
+    } else {
+        Listener::globalTicketHolder.release();
+    }
 }
 
 // Capture all of the weak pointers behind the lock, to delay their expiry until we leave the
@@ -327,11 +349,41 @@ Status TransportLayerLegacy::_runTicket(Ticket ticket) {
 }
 
 void TransportLayerLegacy::_handleNewConnection(std::unique_ptr<AbstractMessagingPort> amp) {
-    if (!Listener::globalTicketHolder.tryAcquire()) {
-        log() << "connection refused because too many open connections: "
-              << Listener::globalTicketHolder.used();
-        amp->shutdown();
-        return;
+
+    if (serverGlobalParams.adminWhiteList.include(amp->remote().host()) ||
+        serverGlobalParams.adminWhiteList.include(amp->local().host())) {
+        amp->setInAdminWhiteList();
+    }
+
+    bool internalTicked = false;
+    if (serverGlobalParams.binaryName == "mongod") {
+        if (amp->local().port() == DEFAULT_CONTRSL_PORT) {
+            internalTicked = true;
+        } else {
+            internalTicked = false;
+        }
+    } else {
+        if (!amp->inAdminWhiteList()) {
+            internalTicked = false;
+        } else {
+            internalTicked = true;
+        }
+    }
+
+    if (!internalTicked) {
+        if (!Listener::globalTicketHolder.tryAcquire()) {
+            log() << "connection refused because too many open connections: "
+                << Listener::globalTicketHolder.used();
+            amp->shutdown();
+            return;
+        }
+    } else {
+        if (!Listener::internalTicketHolder.tryAcquire()) {
+            log() << "connection refused because too many open internal connections: "
+                << Listener::internalTicketHolder.used();
+            amp->shutdown();
+            return;
+        }
     }
 
     amp->setLogLevel(logger::LogSeverity::Debug(1));

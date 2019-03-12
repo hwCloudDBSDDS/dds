@@ -57,8 +57,8 @@ var dropAction = [
     {dropIndexes: collection, index: "*"},
     {dropIndexes: collection, index: "i_1"},
     {drop: collection},
-    {dropDatabase: 1},
-    {convertToCapped: collection, size: 20000}
+    {dropDatabase: 1}
+    //{convertToCapped: collection, size: 20000}
 ];
 
 for (var idx = 0; idx < dropAction.length; idx++) {

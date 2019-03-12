@@ -34,8 +34,8 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/mutex.h"
-#include "mongo/util/string_map.h"
 #include "mongo/util/concurrency/spin_lock.h"
+#include "mongo/util/string_map.h"
 
 namespace mongo {
 
@@ -103,7 +103,6 @@ DatabaseHolder& dbHolder();
  */
 class Ns2ChunkIdHolder {
 public:
-    
     typedef StringMap<std::string> Ns2ChunkMap;
     Ns2ChunkIdHolder() = default;
 
@@ -111,17 +110,16 @@ public:
      * Retrieves an already opened ns or returns NULL. Must be called with the lock
      */
     bool set(StringData ns, std::string chunkid);
-    bool get(const StringData ns, std::string &chunkid);
+    bool get(const StringData ns, std::string& chunkid);
     bool del(StringData ns);
-    NamespaceString getNsWithChunkId(const NamespaceString &ns);
-
+    NamespaceString getNsWithChunkId(const NamespaceString& ns);
+    int getNumChunks();
 
 private:
     mutable SpinLock _lock;
-    Ns2ChunkMap   _ns2ChunkMap;;
-
+    Ns2ChunkMap _ns2ChunkMap;
+    int _numChunks = 0;
 };
 
-Ns2ChunkIdHolder & ns2chunkHolder();
-
+Ns2ChunkIdHolder& ns2chunkHolder();
 }

@@ -68,6 +68,7 @@
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -136,7 +137,8 @@ BSONObj Cloner::getIdIndexSpec(const std::list<BSONObj>& indexSpecs) {
 Cloner::Cloner() {}
 
 struct Cloner::Fun {
-    Fun(OperationContext* txn, const string& dbName) : lastLog(0), txn(txn), _dbName(dbName) {}
+    Fun(OperationContext* txn, const string& dbName)
+        : lastLog(Date_t()), txn(txn), _dbName(dbName) {}
 
     void operator()(DBClientCursorBatchIterator& i) {
         invariant(from_collection.coll() != "system.indexes");
@@ -184,10 +186,10 @@ struct Cloner::Fun {
 
         while (i.moreInCurrentBatch()) {
             if (numSeen % 128 == 127) {
-                time_t now = time(0);
-                if (now - lastLog >= 60) {
+                Date_t now = Date_t::now();
+                if (now - lastLog >= Seconds(60)) {
                     // report progress
-                    if (lastLog)
+                    if (lastLog != Date_t())
                         log() << "clone " << to_collection << ' ' << numSeen;
                     lastLog = now;
                 }
@@ -277,9 +279,9 @@ struct Cloner::Fun {
                 }
             }
             MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "cloner insert", to_collection.ns());
-            RARELY if (time(0) - saveLast > 60) {
+            RARELY if (Date_t::now() - saveLast > Seconds(60)) {
                 log() << numSeen << " objects cloned so far from collection " << from_collection;
-                saveLast = time(0);
+                saveLast = Date_t::now();
             }
 
             MONGO_FAIL_POINT_BLOCK(initialSyncHangDuringCollectionClone, options) {
@@ -296,7 +298,7 @@ struct Cloner::Fun {
         }
     }
 
-    time_t lastLog;
+    Date_t lastLog;
     OperationContext* txn;
     const string _dbName;
 
@@ -305,7 +307,7 @@ struct Cloner::Fun {
     BSONObj from_options;
     BSONObj from_id_index;
     NamespaceString to_collection;
-    time_t saveLast;
+    Date_t saveLast;
     CloneOptions _opts;
 };
 
@@ -328,7 +330,7 @@ void Cloner::copy(OperationContext* txn,
     f.from_options = from_opts;
     f.from_id_index = from_id_index;
     f.to_collection = to_collection;
-    f.saveLast = time(0);
+    f.saveLast = Date_t::now();
     f._opts = opts;
 
     int options = QueryOption_NoCursorTimeout | (opts.slaveOk ? QueryOption_SlaveOk : 0);
@@ -469,7 +471,11 @@ bool Cloner::copyCollection(OperationContext* txn,
     }
 
     auto sourceIndexes = _conn->getIndexSpecs(nss.ns(), QueryOption_SlaveOk);
-    auto idIndexSpec = getIdIndexSpec(sourceIndexes);
+    BSONObj idIndexSpec;
+    for (BSONObj& col : collList) {
+        idIndexSpec = col.getField("idIndex").embeddedObject();
+    }
+    //auto idIndexSpec = getIdIndexSpec(sourceIndexes);
 
     ScopedTransaction transaction(txn, MODE_IX);
     Lock::DBLock dbWrite(txn->lockState(), dbname, MODE_X);

@@ -25,6 +25,7 @@
  *    delete this exception statement from all source files in the program,
  *    then also delete it in the license file.
  */
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -35,14 +36,13 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
-namespace {
 
-const BSONField<bool> kNoBalance("noBalance");
-const BSONField<bool> kDropped("dropped");
-
-}  // namespace
+const BSONField<bool> CollectionType::kNoBalance("noBalance");
+const BSONField<bool> CollectionType::kDropped("dropped");
+const BSONField<bool> CollectionType::kCreated("created");
 
 const std::string CollectionType::ConfigNS = "config.collections";
 
@@ -52,18 +52,18 @@ const BSONField<Date_t> CollectionType::updatedAt("lastmod");
 const BSONField<BSONObj> CollectionType::keyPattern("key");
 const BSONField<BSONObj> CollectionType::defaultCollation("defaultCollation");
 const BSONField<bool> CollectionType::unique("unique");
-const BSONField<CollectionType::TableType> CollectionType::tabType("tableType"); 
+const BSONField<CollectionType::TableType> CollectionType::tabType("tableType");
 const BSONField<long long> CollectionType::prefix("prefix");
 const BSONField<BSONObj> CollectionType::index("indexes");
 const BSONField<BSONObj> CollectionType::options("options");
-
+const BSONField<std::string> CollectionType::ident("ident");
+const BSONField<std::unordered_set<uint32_t>> CollectionType::kDroppedPrefixes("droppedPrefixes");
 
 StatusWith<CollectionType> CollectionType::fromBSON(const BSONObj& source) {
     CollectionType coll;
     {
         BSONElement colloptions;
-        Status status =
-            bsonExtractTypedField(source, options.name(), Object, &colloptions);
+        Status status = bsonExtractTypedField(source, options.name(), Object, &colloptions);
         if (status.isOK()) {
             BSONObj obj = colloptions.Obj();
             if (obj.isEmpty()) {
@@ -72,7 +72,7 @@ StatusWith<CollectionType> CollectionType::fromBSON(const BSONObj& source) {
 
             coll._options = obj.getOwned();
         } else if (status != ErrorCodes::NoSuchKey) {
-           //TODO // return status;
+            // TODO // return status;
         }
     }
     {
@@ -107,6 +107,18 @@ StatusWith<CollectionType> CollectionType::fromBSON(const BSONObj& source) {
         Status status = bsonExtractBooleanField(source, kDropped.name(), &collDropped);
         if (status.isOK()) {
             coll._dropped = collDropped;
+        } else if (status == ErrorCodes::NoSuchKey) {
+            // Dropped can be missing in which case it is presumed false
+        } else {
+            return status;
+        }
+    }
+
+    {
+        bool collCreated;
+        Status status = bsonExtractBooleanField(source, kCreated.name(), &collCreated);
+        if (status.isOK()) {
+            coll._created = collCreated;
         } else if (status == ErrorCodes::NoSuchKey) {
             // Dropped can be missing in which case it is presumed false
         } else {
@@ -178,7 +190,7 @@ StatusWith<CollectionType> CollectionType::fromBSON(const BSONObj& source) {
         }
     }
 
-	{
+    {
         long long ll_prefix;
         Status status = bsonExtractIntegerField(source, prefix.name(), &ll_prefix);
         if (status.isOK()) {
@@ -190,7 +202,7 @@ StatusWith<CollectionType> CollectionType::fromBSON(const BSONObj& source) {
         }
     }
 
-	{
+    {
         BSONElement collIndex;
         Status status = bsonExtractTypedField(source, index.name(), Array, &collIndex);
         if (status.isOK()) {
@@ -220,7 +232,36 @@ StatusWith<CollectionType> CollectionType::fromBSON(const BSONObj& source) {
         } else {
             return t_status;
         }
+    }
 
+    {
+        std::string collIdent;
+        Status status = bsonExtractStringField(source, ident.name(), &collIdent);
+        if (!status.isOK()) {
+            index_err() << "no ident: " << source;
+        } else {
+            coll._ident = collIdent;
+        }
+    }
+
+    {
+        BSONElement droppedPrefixes;
+        Status status = bsonExtractTypedField(source, kDroppedPrefixes.name(), Array, &droppedPrefixes);
+        if (!status.isOK()) {
+            index_err() << "no droppedPrefixes: " << source <<", status: "<<status;
+        }else{
+            BSONObjIterator it(droppedPrefixes.Obj());
+            while (it.more()) {
+                BSONElement e = it.next();
+                if (e.type() != NumberInt) {
+                    return Status(ErrorCodes::TypeMismatch,
+                                  str::stream() << "Elements in \"" << kDroppedPrefixes.name()
+                                                << "\" array must be NumberInt but found "
+                                                << typeName(e.type()));
+                }
+                coll._droppedPrefixes.insert(e.numberInt());
+            }
+        }
     }
 
     return StatusWith<CollectionType>(coll);
@@ -265,9 +306,7 @@ Status CollectionType::validate() const {
     }
     if (!isValidTabType(_tableType)) {
         return {ErrorCodes::BadValue,
-                str::stream() << "tabType("
-                              << static_cast<int>(_tableType)
-                              << ") is invalid"};
+                str::stream() << "tabType(" << static_cast<int>(_tableType) << ") is invalid"};
     }
 
     return Status::OK();
@@ -282,6 +321,7 @@ BSONObj CollectionType::toBSON() const {
     builder.append(epoch.name(), _epoch.get_value_or(OID()));
     builder.append(updatedAt.name(), _updatedAt.get_value_or(Date_t()));
     builder.append(kDropped.name(), _dropped.get_value_or(false));
+    builder.append(kCreated.name(), _created.get_value_or(false));
 
     builder.append(prefix.name(), _prefix.get_value_or(0));
 
@@ -308,12 +348,21 @@ BSONObj CollectionType::toBSON() const {
         builder.append(index.name(), _index);
     }
 
-    if (isValidTabType(_tableType)){
-        builder.append(tabType.name(), static_cast<std::underlying_type<TableType>::type>(getTabType()));
+    if (isValidTabType(_tableType)) {
+        builder.append(tabType.name(),
+                       static_cast<std::underlying_type<TableType>::type>(getTabType()));
     }
-    if( !_options.isEmpty()){
-        builder.append(options.name(),_options);
+    if (!_options.isEmpty()) {
+        builder.append(options.name(), _options);
     }
+
+    if (_ident.is_initialized()) {
+        builder.append(ident.name(), _ident.get());
+    } else {
+        // nothing
+    }
+    
+    builder.append(kDroppedPrefixes.name(), _droppedPrefixes);
     return builder.obj();
 }
 
@@ -344,8 +393,8 @@ void CollectionType::setPrefix(long long prefix) {
 }
 
 void CollectionType::setIndex(const BSONArray& index) {
-  // todo 
-   _index = index;  
+    // todo
+    _index = index;
 }
 
 void CollectionType::setTabType(TableType tab) {

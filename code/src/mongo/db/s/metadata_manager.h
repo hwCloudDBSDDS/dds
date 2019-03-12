@@ -133,6 +133,11 @@ public:
 
     void updateChunkInfo(OperationContext* txn, const ChunkType& chunkType);
 
+    // Mutex to protect the state below
+    stdx::mutex _managerLock;
+
+    std::shared_ptr<Notification<Status>> refreshCompletionNotification;
+
 private:
     friend class ScopedCollectionMetadata;
 
@@ -207,9 +212,6 @@ private:
 
     // ServiceContext from which to obtain instances of global support objects.
     ServiceContext* _serviceContext;
-
-    // Mutex to protect the state below
-    stdx::mutex _managerLock;
 
     // Holds the collection metadata, which is currently active
     std::unique_ptr<CollectionMetadataTracker> _activeMetadataTracker;

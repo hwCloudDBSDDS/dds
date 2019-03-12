@@ -46,6 +46,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/max_time.h"
+#include "mongo/db/modules/rocks/src/gc_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/getmore_request.h"
@@ -68,13 +69,15 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/query/cluster_find.h"
+#include "mongo/s/sharding_raii.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/s/write_ops/batch_upconvert.h"
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/timer.h"
-#include "mongo/s/sharding_raii.h"
+#include "mongo/util/util_extend/default_parameters.h"
+
 
 namespace mongo {
 
@@ -84,6 +87,10 @@ using std::set;
 using std::string;
 using std::stringstream;
 using std::vector;
+
+namespace {
+const std::string CUSTOM_USER = "rwuser@admin";
+}  // namespace
 
 namespace {
 
@@ -152,6 +159,27 @@ bool handleSpecialNamespaces(OperationContext* txn, Request& request, const Quer
 }
 
 }  // namespace
+
+static Status _checkQueryOPAuthForUser(Client* client, const NamespaceString& ns) {
+    if (AuthorizationSession::get(client)->getAuthorizationManager().isAuthEnabled()) {
+        std::string username;
+        UserNameIterator nameIter = AuthorizationSession::get(client)->getAuthenticatedUserNames();
+        if (nameIter.more()) {
+            username = nameIter->getFullName();
+        }
+
+        if (username == CUSTOM_USER) {  // check if consumer
+            index_LOG(4) << "Mongodb consumer run command " << ns.getCommandNS();
+            /*forbid consumer run command upon admin/config database*/
+            if (NamespaceString::internalDb(ns.db()) || ns.db() == GcDbName) {
+                return Status(ErrorCodes::Unauthorized,
+                              str::stream() << "not authorized for query on " << ns.ns());
+            }
+        }
+    }
+
+    return Status::OK();
+}
 
 void Strategy::queryOp(OperationContext* txn, Request& request) {
     verify(!NamespaceString(request.getns()).isCommand());
@@ -230,37 +258,53 @@ void Strategy::queryOp(OperationContext* txn, Request& request) {
 
     // Do the work to generate the first batch of results. This blocks waiting to get responses from
     // the shard(s).
-    std::vector<BSONObj> batch;
+    Milliseconds execTimeUsed(0);
+    Date_t initExecTime = Date_t::now();
+    do {
+        std::vector<BSONObj> batch;
 
-    // 0 means the cursor is exhausted. Otherwise we assume that a cursor with the returned id can
-    // be retrieved via the ClusterCursorManager.
-    auto cursorId =
-        ClusterFind::runQuery(txn,
-                              *canonicalQuery.getValue(),
-                              readPreference,
-                              &batch,
-                              nullptr /*Argument is for views which OP_QUERY doesn't support*/);
+        // 0 means the cursor is exhausted. Otherwise we assume that a cursor with the returned id
+        // can
+        // be retrieved via the ClusterCursorManager.
+        auto cursorId =
+            ClusterFind::runQuery(txn,
+                                  *canonicalQuery.getValue(),
+                                  readPreference,
+                                  &batch,
+                                  nullptr /*Argument is for views which OP_QUERY doesn't support*/);
 
-    if (!cursorId.isOK() &&
-        cursorId.getStatus() == ErrorCodes::CommandOnShardedViewNotSupportedOnMongod) {
-        uasserted(40247, "OP_QUERY not supported on views");
-    }
+        execTimeUsed = Date_t::now() - initExecTime;
 
-    uassertStatusOK(cursorId.getStatus());
+        if (kDefaultClientExecCommandMaxRetryTimeout > execTimeUsed &&
+            isNeedRetryErrCode(cursorId.getStatus().code())) {
+            index_warning() << "retry! " << redact(q.query)
+                            << "; errorcodr: " << cursorId.getStatus();
+            sleepmillis(1000);
 
-    // Fill out the response buffer.
-    int numResults = 0;
-    OpQueryReplyBuilder reply;
-    for (auto&& obj : batch) {
-        obj.appendSelfToBufBuilder(reply.bufBuilderForResults());
-        numResults++;
-    }
-    reply.send(request.session(),
-               0,  // query result flags
-               request.m(),
-               numResults,
-               0,  // startingFrom
-               cursorId.getValue());
+            continue;
+        }
+
+        if (!cursorId.isOK() &&
+            cursorId.getStatus() == ErrorCodes::CommandOnShardedViewNotSupportedOnMongod) {
+            uasserted(40247, "OP_QUERY not supported on views");
+        }
+        uassertStatusOK(cursorId.getStatus());
+        // Fill out the response buffer.
+        int numResults = 0;
+        OpQueryReplyBuilder reply;
+        for (auto&& obj : batch) {
+            obj.appendSelfToBufBuilder(reply.bufBuilderForResults());
+            numResults++;
+        }
+        reply.send(request.session(),
+                   0,  // query result flags
+                   request.m(),
+                   numResults,
+                   0,  // startingFrom
+                   cursorId.getValue());
+        break;
+
+    } while (kDefaultClientExecCommandMaxRetryTimeout > execTimeUsed);
 }
 
 void Strategy::clientCommandOp(OperationContext* txn, Request& request) {
@@ -315,7 +359,6 @@ void Strategy::clientCommandOp(OperationContext* txn, Request& request) {
     if (maxTimeMS > 0) {
         txn->setDeadlineAfterNowBy(Milliseconds{maxTimeMS});
     }
-
     try {
         OpQueryReplyBuilder reply;
         {
@@ -325,7 +368,7 @@ void Strategy::clientCommandOp(OperationContext* txn, Request& request) {
         reply.sendCommandReply(request.session(), request.m());
         return;
     } catch (const StaleConfigException& e) {
-            throw e;
+        throw e;
     } catch (const DBException& e) {
         OpQueryReplyBuilder reply;
         {

@@ -426,6 +426,118 @@ struct HistogramData {
   HistogramData(){}
 };
 
+enum StreamMetrics : uint32_t
+{
+    STREAM_OPEN_COUNT=0,
+    STREAM_OPEN_COST_AVGTIME,
+    STREAM_CLOSE_COUNT,
+    STREAM_CLOSE_COST_AVGTIME,
+    STREAM_EXIST_COUNT,
+    STREAM_EXIST_COST_AVGTIME,
+    STREAM_SEEK_COUNT,
+    STREAM_SEEK_COST_AVGTIME,
+    STREAM_PREAD_COUNT,
+    STREAM_PREAD_COST_AVGTIME,
+    STREAM_READ_COUNT,
+    STREAM_READ_COST_AVGTIME,
+    STREAM_WRITE_COUNT,
+    STREAM_WRITE_COST_AVGTIME,
+    STREAM_FLUSH_COUNT,
+    STREAM_FLUSH_COST_AVGTIME,
+    STREAM_SYNC_COUNT,
+    STREAM_SYNC_COST_AVGTIME,
+    STREAM_AVAILABLE_COUNT,
+    STREAM_AVAILABLE_COST_AVGTIME,
+    STREAM_DELETE_COUNT,
+    STREAM_DELETE_COST_AVGTIME,
+    STREAM_RENAME_COUNT,
+    STREAM_RENAME_COST_AVGTIME,
+    STREAM_CREATESNAPSHOT_COUNT,
+    STREAM_CREATESNAPSHOT_COST_AVGTIME,
+    STREAM_DELETESNAPSHOT_COUNT,
+    STREAM_DELETESNAPSHOT_COST_AVGTIME,
+    STREAM_CREATEDIRECTORY_COUNT,
+    STREAM_CREATEDIRECTORY_COST_AVGTIME,
+    STREAM_LISTDIRECTORY_COUNT,
+    STREAM_LISTDIRECTORY_COST_AVGTIME,
+    STREAM_GETCONTENTSUMMARY_COUNT,
+    STREAM_GETCONTENTSUMMARY_COST_AVGTIME,
+
+    //STREAM_ CALL PLOG _COUNT STATISTICS
+    PLOG_READSUCCESS_COUNT,
+    PLOG_READFAILED_COUNT,
+    PLOG_READ_COST_AVGTIME,
+    PLOG_GETSUCCESS_COUNT,
+    PLOG_GETFAILED_COUNT,
+    PLOG_GET_COST_AVGTIME,
+    PLOG_SEALSUCCESS_COUNT,
+    PLOG_SEALFAILED_COUNT,
+    PLOG_SEAL_COST_AVGTIME,
+    PLOG_APPENDSUCCESS_COUNT,
+    PLOG_APPENDFAILED_COUNT,
+    PLOG_APPEND_COST_AVGTIME,
+    PLOG_DELETESUCCESS_COUNT,
+    PLOG_DELETEFAILED_COUNT,
+    PLOG_DELETE_COST_AVGTIME,
+    STREAM_METRIC_ENUM_MAX
+};
+	
+
+const std::vector<std::pair<StreamMetrics, std::string>> StreamStatisticsNameMap =
+{
+    {STREAM_OPEN_COUNT, "streamOpenCount"},
+    {STREAM_OPEN_COST_AVGTIME, "streamOpenCostAvgTime"},
+    {STREAM_CLOSE_COUNT, "streamCloseCount"},
+    {STREAM_CLOSE_COST_AVGTIME, "streamCloseCostAvgTime"},
+    {STREAM_EXIST_COUNT, "streamExistCount"},
+    {STREAM_EXIST_COST_AVGTIME, "streamExistCostAvgTime"},
+    {STREAM_SEEK_COUNT, "streamSeekCount"},
+    {STREAM_SEEK_COST_AVGTIME, "streamSeekCostAvgTime"},
+    {STREAM_PREAD_COUNT, "streamPreadCount"},
+    {STREAM_PREAD_COST_AVGTIME, "streamPreadCostAvgTime"},
+    {STREAM_READ_COUNT, "streamReadCount"},
+    {STREAM_READ_COST_AVGTIME, "streamReadCostAvgTime"},
+    {STREAM_WRITE_COUNT, "streamWriteCount"},
+    {STREAM_WRITE_COST_AVGTIME, "streamWriteCostAvgTime"},
+    {STREAM_FLUSH_COUNT, "streamFlushCount"},
+    {STREAM_FLUSH_COST_AVGTIME, "streamFlushCostAvgTime"},
+    {STREAM_SYNC_COUNT, "streamSyncCount"},
+    {STREAM_SYNC_COST_AVGTIME, "streamSyncCostAvgTime"},
+    {STREAM_AVAILABLE_COUNT, "streamAvailableCount"},
+    {STREAM_AVAILABLE_COST_AVGTIME, "streamAvailableCostAvgTime"},
+    {STREAM_DELETE_COUNT, "streamDeleteCount"},
+    {STREAM_DELETE_COST_AVGTIME, "streamDeleteCostAvgTime"},
+    {STREAM_RENAME_COUNT, "streamRenameCount"},
+    {STREAM_RENAME_COST_AVGTIME, "streamRenameCostAvgTime"},
+    {STREAM_CREATESNAPSHOT_COUNT, "streamCreateSnapshotCount"},
+    {STREAM_CREATESNAPSHOT_COST_AVGTIME, "streamCreateSnapshotCostAvgTime"},
+    {STREAM_DELETESNAPSHOT_COUNT, "streamDeleteSnapshotCount"},
+    {STREAM_DELETESNAPSHOT_COST_AVGTIME, "streamDeleteSnapshotCostAvgTime"},
+    {STREAM_CREATEDIRECTORY_COUNT, "streamCreateDirectoryCount"},
+    {STREAM_CREATEDIRECTORY_COST_AVGTIME, "streamCreateDirectoryCostAvgTime"},
+    {STREAM_LISTDIRECTORY_COUNT, "streamListDirectoryCount"},
+    {STREAM_LISTDIRECTORY_COST_AVGTIME, "streamListDirectoryCostAvgTime"},
+    {STREAM_GETCONTENTSUMMARY_COUNT, "streamGetContentSummaryCount"},
+    {STREAM_GETCONTENTSUMMARY_COST_AVGTIME, "streamGetContentSummaryCostAvgTime"},
+
+    //STREAM_ CALL {PLOG_ _COUNT STATISTICS
+    {PLOG_READSUCCESS_COUNT, "plogReadSuccessCount"},
+    {PLOG_READFAILED_COUNT, "plogReadFailedCount"},
+    {PLOG_READ_COST_AVGTIME, "plogReadCostAvgTime"},
+    {PLOG_GETSUCCESS_COUNT, "plogGetSuccessCount"},
+    {PLOG_GETFAILED_COUNT, "plogGetFailedCount"},
+    {PLOG_GET_COST_AVGTIME, "plogGetCostAvgTime"},
+    {PLOG_SEALSUCCESS_COUNT, "plogSealSuccessCount"},
+    {PLOG_SEALFAILED_COUNT, "plogSealFailedCount"},
+    {PLOG_SEAL_COST_AVGTIME, "plogSealCostAvgTime"},
+    {PLOG_APPENDSUCCESS_COUNT, "plogAppendSuccessCount"},
+    {PLOG_APPENDFAILED_COUNT, "plogAppendFailedCount"},
+    {PLOG_APPEND_COST_AVGTIME, "plogAppendCostAvgTime"},
+    {PLOG_DELETESUCCESS_COUNT, "plogDeleteSuccessCount"},
+    {PLOG_DELETEFAILED_COUNT, "plogDeleteFailedCount"},
+    {PLOG_DELETE_COST_AVGTIME, "plogDeleteCostAvgTime"}
+};
+
 enum StatsLevel {
   // Collect all stats except time inside mutex lock AND time spent on
   // compression.
@@ -473,6 +585,7 @@ class Statistics {
     return type < HISTOGRAM_ENUM_MAX;
   }
 
+ 
   StatsLevel stats_level_ = kExceptDetailedTimers;
 };
 

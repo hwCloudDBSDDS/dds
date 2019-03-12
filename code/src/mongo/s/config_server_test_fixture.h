@@ -85,7 +85,9 @@ public:
      */
 
     StatusWith<ShardServerType> getShardServerDoc(OperationContext* txn, const std::string& host);
+
     StatusWith<std::vector<BSONObj>> getAllDoc(OperationContext* txn, const NamespaceString& ns);
+
     Status setupChunks(const std::vector<ChunkType>& chunks);
 
     /**

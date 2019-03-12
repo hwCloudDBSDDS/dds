@@ -48,6 +48,8 @@ public:
     OrStage(OperationContext* opCtx, WorkingSet* ws, bool dedup, const MatchExpression* filter);
 
     void addChild(PlanStage* child);
+    
+    void addChildren(Children childrenToAdd);
 
     bool isEOF() final;
 

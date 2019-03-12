@@ -72,12 +72,12 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
+#include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/modules/rocks/src/Chunk/ChunkRocksRecordStore.h"
+#include "mongo/db/modules/rocks/src/Chunk/chunk_key_string.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/s/shard_key_pattern.h"
-#include "mongo/db/modules/rocks/src/Chunk/ChunkRocksRecordStore.h"
-
-#include "mongo/db/modules/rocks/src/Chunk/chunk_key_string.h"
 
 namespace mongo {
 
@@ -143,6 +143,9 @@ using std::vector;
 
 using logger::LogComponent;
 
+/* BEGIN: Modified for PN:shardServer support key's size larger than 1024 by */
+// static const int IndexKeyMaxSize = 2048;  // this goes away with SERVER-3372
+// keep the same as MongoDB
 static const int IndexKeyMaxSize = 1024;  // this goes away with SERVER-3372
 
 std::string CompactOptions::toString() const {
@@ -182,7 +185,7 @@ void CappedInsertNotifier::_wait(stdx::unique_lock<stdx::mutex>& lk,
     while (!_dead && prevVersion == _version) {
         if (timeout == Microseconds::max()) {
             _notifier.wait(lk);
-        } else if (stdx::cv_status::timeout == _notifier.wait_for(lk, timeout.toSystemDuration())) {
+        } else if (stdx::cv_status::timeout == _notifier.wait_for(lk, timeout.toSteadyDuration())) {
             return;
         }
     }
@@ -237,8 +240,7 @@ Collection::Collection(OperationContext* txn,
           parseValidationLevel(_details->getCollectionOptions(txn).validationLevel))),
       _cursorManager(fullNS),
       _cappedNotifier(_recordStore->isCapped() ? new CappedInsertNotifier() : nullptr),
-      _mustTakeCappedLockOnInsert(isCapped() && !_ns.isSystemDotProfile() && !_ns.isOplog()) ,
-      _isAssigning(false){
+      _mustTakeCappedLockOnInsert(isCapped() && !_ns.isSystemDotProfile() && !_ns.isOplog()) {
 
     _magic = 1357924;
     _indexCatalog.init(txn);
@@ -251,7 +253,7 @@ Collection::Collection(OperationContext* txn,
 Collection::~Collection() {
     verify(ok());
     if (isCapped()) {
-        //TODO   renameCollecton(capped Collection)
+        // renameCollecton(capped Collection)
         //_recordStore->setCappedCallback(nullptr);
         _cappedNotifier->kill();
     }
@@ -376,6 +378,7 @@ Status Collection::insertDocumentsForOplog(OperationContext* txn,
 
     txn->recoveryUnit()->onCommit([this]() { notifyCappedWaitersIfNeeded(); });
 
+
     return status;
 }
 
@@ -387,7 +390,6 @@ Status Collection::insertDocuments(OperationContext* txn,
                                    bool enforceQuota,
                                    bool fromMigrate) {
 
-
     MONGO_FAIL_POINT_BLOCK(failCollectionInserts, extraData) {
         const BSONObj& data = extraData.getData();
         const auto collElem = data["collectionNS"];
@@ -396,7 +398,7 @@ Status Collection::insertDocuments(OperationContext* txn,
             const std::string msg = str::stream()
                 << "Failpoint (failCollectionInserts) has been enabled (" << data
                 << "), so rejecting insert (first doc): " << *begin;
-            log() << msg;
+
             return {ErrorCodes::FailPointEnabled, msg};
         }
     }
@@ -413,8 +415,7 @@ Status Collection::insertDocuments(OperationContext* txn,
         }
 
         auto status = checkValidation(txn, *it);
-        if (!status.isOK())
-        {
+        if (!status.isOK()) {
             return status;
         }
     }
@@ -425,6 +426,7 @@ Status Collection::insertDocuments(OperationContext* txn,
         synchronizeOnCappedInFlightResource(txn->lockState(), _ns);
 
     Status status = _insertDocuments(txn, begin, end, enforceQuota, opDebug);
+
     if (!status.isOK())
         return status;
 
@@ -534,8 +536,11 @@ Status Collection::_insertDocuments(OperationContext* txn,
     }
     Status status = _recordStore->insertRecords(txn, &records, _enforceQuota(enforceQuota));
 
+
     if (!status.isOK())
         return status;
+
+
 
     std::vector<BsonRecord> bsonRecords;
     bsonRecords.reserve(count);
@@ -551,7 +556,6 @@ Status Collection::_insertDocuments(OperationContext* txn,
 
     int64_t keysInserted;
     status = _indexCatalog.indexRecords(txn, bsonRecords, &keysInserted);
-
     if (opDebug) {
         opDebug->keysInserted += keysInserted;
     }
@@ -563,8 +567,11 @@ void Collection::notifyCappedWaitersIfNeeded() {
     // If there is a notifier object and another thread is waiting on it, then we notify
     // waiters of this document insert. Waiters keep a shared_ptr to '_cappedNotifier', so
     // there are waiters if this Collection's shared_ptr is not unique (use_count > 1).
+
+
     if (_cappedNotifier && !_cappedNotifier.unique())
         _cappedNotifier->notifyAll();
+
 }
 
 Status Collection::aboutToDeleteCapped(OperationContext* txn,
@@ -620,12 +627,11 @@ Counter64 moveCounter;
 ServerStatusMetricField<Counter64> moveCounterDisplay("record.moves", &moveCounter);
 
 void Collection::extractShardkey(OperationContext* txn, const BSONObj& doc) {
-	auto metadataNow = CollectionShardingState::get(txn, _ns)->getMetadata();
-    if (metadataNow)
-    {
-    	ShardKeyPattern kp(metadataNow->getKeyPattern());
-    	BSONObj shardKey = kp.extractShardKeyFromDoc(doc);
-    	txn->setShardkey(shardKey);
+    auto metadataNow = CollectionShardingState::get(txn, _ns)->getMetadata();
+    if (metadataNow) {
+        ShardKeyPattern kp(metadataNow->getKeyPattern());
+        BSONObj shardKey = kp.extractShardKeyFromDoc(doc);
+        txn->setShardkey(shardKey);
     }
 
     return;
@@ -715,13 +721,15 @@ StatusWith<RecordId> Collection::updateDocument(OperationContext* txn,
             }
         }
     }
-
+    txn->setOldLen(oldSize);
     Status updateStatus = _recordStore->updateRecord(
         txn, oldLocation, newDoc.objdata(), newDoc.objsize(), _enforceQuota(enforceQuota), this);
 
     if (updateStatus == ErrorCodes::NeedsDocumentMove) {
         return _updateDocumentWithMove(
             txn, oldLocation, oldDoc, newDoc, enforceQuota, opDebug, args, sid);
+    } else if (updateStatus == ErrorCodes::NoMatchingDocument) {
+        throw WriteConflictException();
     } else if (!updateStatus.isOK()) {
         return updateStatus;
     }
@@ -886,7 +894,8 @@ uint64_t Collection::dataSize(OperationContext* txn) const {
 }
 
 BSONObj Collection::getSSTFileStatistics() const {
-    // if this is not a chunk, means the _recordStore is not ChunkRocksRecordStore, just return nothing
+    // if this is not a chunk, means the _recordStore is not ChunkRocksRecordStore, just return
+    // nothing
     if (!_ns.isChunk()) {
         return BSONObj();
     }
@@ -905,17 +914,17 @@ BSONObj Collection::getSSTFileStatistics() const {
         if (std::string::npos != line.find("Sum")) {
             unsigned int iSize = line.size();
             char array[1024];
-            memcpy(array, line.c_str(), iSize+1);
-            char * p = strtok (array, " ");
+            memcpy(array, line.c_str(), iSize + 1);
+            char* p = strtok(array, " ");
 
             // filenum
-            p = strtok (NULL, " ");
+            p = strtok(NULL, " ");
             if (NULL != p) {
                 b.append("count", atoll(p));
             }
 
             // filesize
-            p = strtok (NULL, " ");
+            p = strtok(NULL, " ");
             if (NULL != p) {
                 b.append("size", atoll(p));
             }
@@ -983,10 +992,22 @@ Status Collection::truncate(OperationContext* txn) {
         return status;
 
     // 4) re-create indexes
+    auto replMode = repl::getGlobalReplicationCoordinator()->getReplicationMode();
+    auto single_mongod= ClusterRole::None == serverGlobalParams.clusterRole && 
+                        replMode != repl::ReplicationCoordinator::Mode::modeReplSet;
     for (size_t i = 0; i < indexSpecs.size(); i++) {
-        if (GLOBAL_CONFIG_GET(IsCoreTest)){
+        if (single_mongod) {
             indexSpecs[i] = indexSpecs[i].removeField("prefix");
-            log() << " Collection::truncate()-> : indexSpecs: " << indexSpecs[i];
+            static long long prefix = 50000;
+            BSONObjBuilder builder;
+
+            BSONObjIterator it(indexSpecs[i]);
+            while (it.more()) {
+                builder.append(*it);
+                it++;
+            }
+            builder.append("prefix", prefix++);
+            indexSpecs[i] = builder.obj();
         }
 
         status = _indexCatalog.createIndexOnEmptyCollection(txn, indexSpecs[i]).getStatus();
@@ -1256,7 +1277,6 @@ public:
                 }
                 isFirstEntry = false;
                 prevIndexEntryKey = indexEntry->key;
-
                 // Cache the index keys to cross-validate with documents later.
                 uint32_t keyHash = hashIndexEntry(indexEntry->key, indexEntry->loc, indexNsHash);
                 if ((*_ikc)[keyHash] == 0) {
@@ -1343,13 +1363,11 @@ private:
         MurmurHash3_x86_32(ks.getTypeBits().getBuffer(), ks.getTypeBits().getSize(), hash, &hash);
         MurmurHash3_x86_32(ks.getBuffer(), ks.getSize(), hash, &hash);
         */
-        //modified begin
         SecondaryIndexBuilder ks;
-        ks.Append(key,Ordering::make(BSONObj()));
+        ks.Append(key, Ordering::make(BSONObj()));
         ks.Append(loc);
-        MurmurHash3_x86_32(ks.get_TypeBits().getBuffer(),ks.get_TypeBits().getSize(),hash,&hash);
+        MurmurHash3_x86_32(ks.get_TypeBits().getBuffer(), ks.get_TypeBits().getSize(), hash, &hash);
         MurmurHash3_x86_32(ks.get_Buffer(), ks.get_Size(), hash, &hash);
-        //modified end
         return hash % kKeyCountTableSize;
     }
 };
@@ -1503,98 +1521,143 @@ Status Collection::touch(OperationContext* txn,
     return Status::OK();
 }
 
-Status Collection::validateSplitCommand(const SplitChunkReq& request){
-    if (_balanceOpType == BalanceOpType::SPLITING) {
-        if (_splittingChunkID != request.getRightChunkName()){
-             log() << "can't do split with child chunk: " << request.getRightChunkName() 
-                                                 << "since already splitted for" << _splittingChunkID;
-             return  Status(ErrorCodes::NeedRollBackSplit,
-                                   str::stream() << "can't do split with child chunk: " << request.getRightChunkName() 
-                                                 << "since already splitted for" << _splittingChunkID);
+Status Collection::validateSplitCommand(const SplitChunkReq& request) {
+    if (_chunkState == ChunkState::SPLITING) {
+        if (_splittingChunkID != request.getRightChunkName()) {
+            index_log() << "can't do split with child chunk: " << request.getRightChunkName()
+                        << "since already splitted for" << _splittingChunkID;
+            return Status(ErrorCodes::NeedRollBackSplit,
+                          str::stream() << "can't do split with child chunk: "
+                                        << request.getRightChunkName()
+                                        << " since already splitted for "
+                                        << _splittingChunkID);
         }
     }
 
     return Status::OK();
 }
 
-Status Collection::split(OperationContext* txn,
-                         const SplitChunkReq& request,
-                         BSONObjBuilder& output) {
-    stdx::unique_lock<stdx::mutex> lock(_balanceMutex);
-    auto status = validateSplitCommand (request);
-    if (!status.isOK()){
+Status Collection::preSplit(OperationContext* txn,
+                            const SplitChunkReq& request,
+                            BSONObjBuilder& output) {
+    auto status = validateSplitCommand(request);
+    if (!status.isOK()) {
         return status;
     }
 
-    switch (_balanceOpType) {
-        case BalanceOpType::STABLE:
-            _balanceOpType = BalanceOpType::SPLITING;
+    switch (_chunkState) {
+        case ChunkState::STABLE:
+            _chunkState = ChunkState::SPLITING;
             if (!request.getSplitPoint().isEmpty()) {
-                _splitPoint = request.getSplitPoint();
-                log() << "Collection::split()-> splitPoint: " << _splitPoint;
+                _splitPoint = request.getSplitPoint().getOwned();
             } else {
                 _splitPoint = BSONObj();
             }
-            _balanceOpResult = _recordStore->split(txn, request, _splitPoint);
+            _balanceOpResult = _recordStore->preSplit(txn, request, _splitPoint);
             if (!_balanceOpResult.isOK()) {
-                _balanceOpType = BalanceOpType::STABLE;
-                return _balanceOpResult; 
+                _chunkState = ChunkState::STABLE;
+                return _balanceOpResult;
             } else {
                 _splittingChunkID = request.getRightChunkName();
                 output.append("splitPoint", _splitPoint);
                 return Status::OK();
             }
-        case BalanceOpType::SPLITING:
+        case ChunkState::SPLITING:
+            index_warning() << "[splitChunk] recevie repeat split!";
             if (!_balanceOpResult.isOK()) {
-                return _balanceOpResult; 
-            }else{
+                return _balanceOpResult;
+            } else {
                 output.append("splitPoint", _splitPoint);
-                return Status::OK();
+                return Status(ErrorCodes::DuplicateKey, "repeat split");
             }
-        case BalanceOpType::CONFIRMING:
-            log() << "[splitChunk] collection::split()-> receive split command, but chunk in CONFIRMING"; 
+        case ChunkState::CONFIRMING:
+            index_err() << "[splitChunk] current state is CONFIRMING, but receive split";
             invariant(false);
             break;
         default:
+            index_err() << "[splitChunk] invalid current state is: " << (int)_chunkState;
             invariant(false);
     }
 
     return _balanceOpResult;
+}
+
+Status Collection::rollbackPreSplit(OperationContext* txn, const SplitChunkReq& request) {
+    invariant(_chunkState == ChunkState::SPLITING);
+    invariant(_balanceOpResult.isOK());
+    auto status = _recordStore->rollbackPreSplit(txn, request);
+    _chunkState = ChunkState::STABLE;
+    _splittingChunkID.clear();
+    return status;
+}
+
+Status Collection::split(OperationContext* txn,
+                         const SplitChunkReq& request,
+                         BSONObjBuilder& output) {
+
+    invariant(_chunkState == ChunkState::SPLITING);
+    invariant(_balanceOpResult.isOK());
+    _balanceOpResult = _recordStore->split(txn, request, _splitPoint);
+    if (!_balanceOpResult.isOK()) {
+        return _balanceOpResult;
+    } else {
+        _splittingChunkID = request.getRightChunkName();
+        output.append("splitPoint", _splitPoint);
+        return Status::OK();
+    }
 }
 
 Status Collection::confirmSplit(OperationContext* txn,
                                 const ConfirmSplitRequest& request,
                                 BSONObjBuilder& output) {
     stdx::unique_lock<stdx::mutex> lock(_balanceMutex);
-    switch (_balanceOpType) {
-        case BalanceOpType::STABLE:
+
+    switch (_chunkState) {
+        case ChunkState::STABLE:
             return _balanceOpResult;
-        case BalanceOpType::SPLITING:
-            _balanceOpType = BalanceOpType::CONFIRMING;
-            ShardingState::get(txn)->updateMetadata(txn, request.getNss(), request.getChunk());
+        case ChunkState::SPLITING:
+            _chunkState = ChunkState::CONFIRMING;
             _balanceOpResult = _recordStore->confirmSplit(txn, request);
             if (_balanceOpResult.isOK()) {
-                _balanceOpType = BalanceOpType::STABLE;
+                _chunkState = ChunkState::STABLE;
                 _splittingChunkID.clear();
+                _splitPoint = BSONObj();
             } else {
-                _balanceOpType = BalanceOpType::SPLITING;
-                //todo rollback ChunkVersion
+                _chunkState = ChunkState::SPLITING;
+                // todo rollback ChunkVersion
             }
             return _balanceOpResult;
-        case BalanceOpType::CONFIRMING:
-            log() << "Collection::confirmSplit()-> receive confirm command, but chunk in CONFIRMING"; 
+        case ChunkState::CONFIRMING:
+            index_err() << "[confirmSplit] current state is CONFIRMING, but receive confirm";
             invariant(false);
         default:
+            index_err() << "[confirmSplit] invalid state : " << (int)_chunkState;
             invariant(false);
     }
 
     return _balanceOpResult;
 }
 
-void Collection::getAllIndexes(OperationContext* opCtx,BSONArray &arr){
+string Collection::statestr(const ChunkState& s) {
+    if (ChunkState::STABLE == s) {
+        return "STABLE";
+    } else if (ChunkState::SPLITING == s) {
+        return "SPLITING";
+    } else if (ChunkState::CONFIRMING == s) {
+        return "CONFIRMING";
+    } else if (ChunkState::ASSIGNING == s) {
+        return "ASSIGNING";
+    } else if (ChunkState::CORRUPTED == s) {
+        return "CORRUPTED";
+    } else {
+        return "NOTKNOW";
+    }
+}
+
+void Collection::getAllIndexes(OperationContext* opCtx, BSONArray& arr) {
     IndexCatalog* idxCatalog = getIndexCatalog();
     IndexCatalog::IndexIterator ii = idxCatalog->getIndexIterator(opCtx, true);
-   
+
     BSONArrayBuilder build;
     BSONObjBuilder indexBuilder;
     while (ii.more()) {
@@ -1604,7 +1667,6 @@ void Collection::getAllIndexes(OperationContext* opCtx,BSONArray &arr){
         build.append(obj);
     }
     arr = build.arr();
-    return ;
+    return;
 }
-
 }

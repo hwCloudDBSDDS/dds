@@ -198,7 +198,7 @@ void NetworkInterfaceASIO::waitForWorkUntil(Date_t when) {
         if (waitTime <= Milliseconds(0)) {
             break;
         }
-        _isExecutorRunnableCondition.wait_for(lk, waitTime.toSystemDuration());
+        _isExecutorRunnableCondition.wait_for(lk, waitTime.toSteadyDuration());
     }
     _isExecutorRunnable = false;
 }
@@ -275,9 +275,6 @@ Status NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cb
         StatusWith<ConnectionPool::ConnectionHandle> swConn) {
 
         if (!swConn.isOK()) {
-            LOG(2) << "Failed to get connection from pool for request " << request.id << ": "
-                   << swConn.getStatus();
-
             bool wasPreviouslyCanceled = false;
             {
                 stdx::lock_guard<stdx::mutex> lk(_inProgressMutex);
@@ -293,7 +290,7 @@ Status NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cb
             if (status.code() != ErrorCodes::CallbackCanceled) {
                 _numFailedOps.fetchAndAdd(1);
             }
-
+            //index_log() << "[network] _numTimedOutOps : " << _numTimedOutOps;
             onFinish({status, now() - getConnectionStartTime});
             signalWorkAvailable();
             return;
@@ -400,13 +397,13 @@ Status NetworkInterfaceASIO::startCommand(const TaskExecutor::CallbackHandle& cb
                         }
 
                         if (!ec) {
-                            LOG(2) << "Request " << requestId << " timed out"
+                            LOG(0) << "Request " << requestId << " timed out"
                                    << ", adjusted timeout after getting connection from pool was "
                                    << adjustedTimeout << ", op was " << redact(op->toString());
 
                             op->timeOut_inlock();
                         } else {
-                            LOG(2) << "Failed to time request " << requestId
+                            LOG(0) << "Failed to time request " << requestId
                                    << "out: " << ec.message() << ", op was "
                                    << redact(op->toString());
                         }
@@ -463,12 +460,13 @@ Status NetworkInterfaceASIO::setAlarm(Date_t when, const stdx::function<void()>&
         return {ErrorCodes::ShutdownInProgress, "NetworkInterfaceASIO shutdown in progress"};
     }
 
-    std::shared_ptr<asio::system_timer> alarm;
+    std::shared_ptr<asio::basic_waitable_timer<stdx::chrono::steady_clock>> alarm;
 
     try {
         auto timeLeft = when - now();
         // "alarm" must stay alive until it expires, hence the shared_ptr.
-        alarm = std::make_shared<asio::system_timer>(_io_service, timeLeft.toSystemDuration());
+        alarm = std::make_shared<asio::basic_waitable_timer<stdx::chrono::steady_clock>>(
+            _io_service, timeLeft.toSteadyDuration());
     } catch (...) {
         return exceptionToStatus();
     }

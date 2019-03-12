@@ -40,7 +40,6 @@
 #include "mongo/util/mongoutils/str.h"
 
 
-
 namespace mongo {
 
 using std::string;
@@ -113,16 +112,8 @@ KVStorageEngine::KVStorageEngine(KVEngine* engine, const KVStorageEngineOptions&
     for (size_t i = 0; i < collections.size(); i++) {
         std::string coll = collections[i];
         NamespaceString nss(coll);
-
-        if(serverGlobalParams.clusterRole == ClusterRole::ShardServer
-            && !nss.isOnInternalDb())
-        {
-            //ignore collection which isn't belong to admin local config 
-            continue;
-        } 
-
-        
         string dbName = nss.db().toString();
+
         // No rollback since this is only for committed dbs.
         KVDatabaseCatalogEntry*& db = _dbs[dbName];
         if (!db) {
@@ -306,16 +297,54 @@ void KVStorageEngine::setJournalListener(JournalListener* jl) {
 
 void KVStorageEngine::resetEngineStats() {
     _engine->resetEngineStats();
-    return ;
+    return;
 }
 
-void KVStorageEngine::getEngineStats( std::vector<std::string> & vs) { 
+void KVStorageEngine::getEngineStats(std::vector<std::string>& vs) {
     _engine->getEngineStats(vs);
     return;
-} 
+}
+
 
 void KVStorageEngine::setStorageEngineLogLevel(int level) {
     _engine->setStorageEngineLogLevel(level);
 }
 
+Status KVStorageEngine::prepareSnapshot(BSONObj& cmdObj,BSONObjBuilder& result) {
+    return _engine->prepareSnapshot(cmdObj, result);
+}
+
+Status KVStorageEngine::compact() {
+    return _engine->compact();
+}
+
+Status KVStorageEngine::endSnapshot() {
+    return _engine->endSnapshot();
+}
+
+Status KVStorageEngine::rmCollectionDir(OperationContext* txn, const std::string& path) {
+    return _engine->rmCollectionDir(txn, path);
+}
+
+void KVStorageEngine::stopGC() {
+    _engine->stopGC();
+}
+
+void KVStorageEngine::setGCInfo(const std::string& ns, const std::string& dataPath) {
+    _engine->setGCInfo(ns, dataPath);
+}
+
+Status KVStorageEngine::destroyRocksDB(const std::string& nss) {
+    return _engine->destroyRocksDB(nss);
+}
+
+Status KVStorageEngine::reNameNss(const std::string& srcName, const std::string& destName) {
+    return _engine->reNameNss(srcName, destName);
+}
+
+Status KVStorageEngine::openChunkDbInstance(OperationContext* txn,
+                                            StringData ns,
+                                            const mongo::CollectionOptions& options) {
+    return _engine->openChunkDbInstance(txn, ns, options);
+}
 }

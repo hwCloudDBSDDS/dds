@@ -341,9 +341,9 @@ void CurOp::reportState(BSONObjBuilder* builder) {
 
     builder->append("op", logicalOpToString(_logicalOp));
     std::string new_ns;
-    if(_ns.find('$')!= std::string::npos){ 
-        new_ns = _ns.substr(0,_ns.find('$'));
-    }else{
+    if (_ns.find('$') != std::string::npos && ClusterRole::None != serverGlobalParams.clusterRole) {
+        new_ns = _ns.substr(0, _ns.find('$'));
+    } else {
         new_ns = _ns;
     }
     builder->append("ns", new_ns);

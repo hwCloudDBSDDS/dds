@@ -29,16 +29,16 @@
 #pragma once
 
 #include <atomic>
-#include <set>
-#include <unordered_map>
-#include <memory>
-#include <string>
 #include <list>
+#include <memory>
+#include <set>
+#include <string>
+#include <unordered_map>
 
 #include "mongo/stdx/mutex.h"
 
-#include "mongo/base/string_data.h"
 #include "mongo/base/simple_string_data_comparator.h"
+#include "mongo/base/string_data.h"
 
 namespace mongo {
     class RocksTransaction;
@@ -49,13 +49,14 @@ namespace mongo {
 
         size_t numKeysTracked();
         size_t numActiveSnapshots();
+        size_t numUnCommitedTracked();
+        size_t numSortSnapshots();
+
         void setSplitIsOnGoing(bool split) {
             _isSplitOnGoing.store(split, std::memory_order_relaxed);
         }
 
-        bool getSplitIsOnGoing() {
-            return _isSplitOnGoing.load(std::memory_order_relaxed);
-        }
+        bool getSplitIsOnGoing() { return _isSplitOnGoing.load(std::memory_order_relaxed); }
 
         void increaseCountOfActiveWriteBatchesDuringSplit() {
             _countOfActiveWriteBatchesDuringSplit.fetch_add(1);
@@ -65,7 +66,7 @@ namespace mongo {
             _countOfActiveWriteBatchesOutsideOfSplit.fetch_add(1);
         }
 
-        void subtractCountOfActiveWriteBatchesDuringSplit() {  
+        void subtractCountOfActiveWriteBatchesDuringSplit() {
             _countOfActiveWriteBatchesDuringSplit.fetch_sub(1);
         }
 
@@ -97,9 +98,7 @@ namespace mongo {
         // Cleans up the snapshot from the _activeSnapshots list
         void _cleanupSnapshot_inlock(const std::list<uint64_t>::iterator& snapshotIter);
 
-        uint64_t _getNextTransactionId() {
-          return _nextTransactionId.fetch_add(1);
-        }
+        uint64_t _getNextTransactionId() { return _nextTransactionId.fetch_add(1); }
 
         // returns true if the key was committed after the snapshotId, thus causing a write
         // conflict
@@ -162,8 +161,7 @@ namespace mongo {
 
         void recordSnapshotId();
 
-        void SetTransactionEngine(RocksTransactionEngine* transactionEngine)
-        {
+        void SetTransactionEngine(RocksTransactionEngine* transactionEngine) {
             _transactionEngine = transactionEngine;
         }
 

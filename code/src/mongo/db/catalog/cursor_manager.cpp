@@ -27,7 +27,7 @@
 *    exception statement from all source files in the program, then also delete
 *    it in the license file.
 */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/db/catalog/cursor_manager.h"
 
 #include "mongo/base/data_cursor.h"
@@ -45,6 +45,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/platform/random.h"
 #include "mongo/util/exit.h"
+#include "mongo/util/log.h"
 #include "mongo/util/startup_test.h"
 
 namespace mongo {
@@ -566,9 +567,15 @@ Status CursorManager::eraseCursor(OperationContext* txn, CursorId id, bool shoul
     return Status::OK();
 }
 
+bool CursorManager::cursorsEmpty() const {
+    // stdx::lock_guard<SimpleMutex> lk(_mutex);
+    return _cursors.empty();
+}
+
 void CursorManager::_deregisterCursor_inlock(ClientCursor* cc) {
     invariant(cc);
     CursorId id = cc->cursorid();
     _cursors.erase(id);
+    index_LOG(1) << "remove cursor, id: " << id << " from shard";
 }
 }

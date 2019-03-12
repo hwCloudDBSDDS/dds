@@ -51,20 +51,25 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/set_shard_version_request.h"
 #include "mongo/util/log.h"
-//add
-#include "mongo/util/assert_util.h"
-#include "mongo/s/config_server_client.h"
+// add
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/chunk_manager.h"
-
+#include "mongo/s/config_server_client.h"
+#include "mongo/util/assert_util.h"
+#include "mongo/bson/util/bson_extract.h"
 
 namespace mongo {
+
+const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
+const Milliseconds kCommandTimeout = Seconds{30};
 
 using std::shared_ptr;
 using std::set;
 using std::string;
 
 namespace {
+
+const char kAutoShard[] = "auto";
 
 class MoveDatabasePrimaryCommand : public Command {
 public:
@@ -130,12 +135,30 @@ public:
 
         shared_ptr<DBConfig> config = status.getValue();
 
-        const string to = cmdObj["to"].valuestrsafe();
-        if (!to.size()) {
+        string to = cmdObj["to"].valuestrsafe();
+        if (!to.size() && !cmdObj.hasField("auto")) {
             errmsg = "you have to specify where you want to move it";
             return false;
         }
 
+        if (!to.size()) {
+            //Command* getAutoShardCmd = Command::findCommand("getAutoShard");
+            BSONObjBuilder cmdBuilder;
+            cmdBuilder.append("getAutoShard", "admin"); 
+            auto configShard = Grid::get(txn)->shardRegistry()->getConfigShard();
+            auto cmdResponse = uassertStatusOK(configShard->runCommandWithFixedRetryAttempts(
+                txn,
+                kPrimaryOnlyReadPreference,
+                "admin",
+                cmdBuilder.obj(),
+                kCommandTimeout,
+                Shard::RetryPolicy::kIdempotent)); 
+            uassertStatusOK(cmdResponse.commandStatus);
+
+            uassertStatusOK(
+                bsonExtractStringField(cmdResponse.response, kAutoShard, &to));            
+        }
+        
         auto toShardStatus = grid.shardRegistry()->getShard(txn, to);
         if (!toShardStatus.isOK()) {
             string msg(str::stream() << "Could not move database '" << dbname << "' to shard '"
@@ -195,35 +218,38 @@ public:
             if (!ok) {
                 return appendCommandStatus(result, getStatusFromCommandResult(res));
             }
+            toconn.done();
         }
-        //move chunks of non sharded collections
+        // move chunks of non sharded collections
         set<string> nonShardedColls;
         config->getAllNonShardedCollections(nonShardedColls);
         long long maxChunkSizeBytes = cmdObj["maxChunkSizeBytes"].numberLong();
         if (maxChunkSizeBytes == 0) {
             maxChunkSizeBytes = Grid::get(txn)->getBalancerConfiguration()->getMaxChunkSizeBytes();
         }
-    const auto secondaryThrottle =
+        const auto secondaryThrottle =
             uassertStatusOK(MigrationSecondaryThrottleOptions::createFromCommand(cmdObj));
-        for (set<string>::iterator it = nonShardedColls.begin(),end = nonShardedColls.end(); it != end; ++it) {
+        for (set<string>::iterator it = nonShardedColls.begin(), end = nonShardedColls.end();
+             it != end;
+             ++it) {
 
             ChunkType chunkType;
             chunkType.setNS(*it);
-        shared_ptr<ChunkManager> cm = config->getChunkManager(txn, *it);
-        ChunkMap chunkMap = cm->getChunkMap();
-            
-        for (ChunkMap::const_iterator ite = chunkMap.begin(), end = chunkMap.end(); ite != end; ++ite) {
-                //shared_ptr<Chunk> chunk = *ite->second;
-        ite->second->constructChunkType(&chunkType);
-        uassertStatusOK(configsvr_client::moveChunk(txn,
-                                                    chunkType,
-                                                    toShard->getId(),
-                                                    maxChunkSizeBytes,
-                                                    secondaryThrottle,
-                                                    cmdObj["_waitForDelete"].trueValue()));
-            }                         
-            
-    }
+            shared_ptr<ChunkManager> cm = config->getChunkManager(txn, *it);
+            ChunkMap chunkMap = cm->getChunkMap();
+
+            for (ChunkMap::const_iterator ite = chunkMap.begin(), end = chunkMap.end(); ite != end;
+                 ++ite) {
+                // shared_ptr<Chunk> chunk = *ite->second;
+                ite->second->constructChunkType(&chunkType);
+                uassertStatusOK(configsvr_client::moveChunk(txn,
+                                                            chunkType,
+                                                            toShard->getId(),
+                                                            maxChunkSizeBytes,
+                                                            secondaryThrottle,
+                                                            cmdObj["_waitForDelete"].trueValue()));
+            }
+        }
 
         // TODO ERH - we need a clone command which replays operations from clone start to now
         //            can just use local.oplog.$main
@@ -251,7 +277,7 @@ public:
         */
         const string oldPrimary = fromShard->getConnString().toString();
 
-        //ScopedDbConnection fromconn(fromShard->getConnString());
+        // ScopedDbConnection fromconn(fromShard->getConnString());
 
         config->setPrimary(txn, toShard->getId());
         config->reload(txn);

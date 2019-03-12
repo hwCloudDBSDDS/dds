@@ -547,7 +547,7 @@ SortedDataInterface* WiredTigerKVEngine::getSortedDataInterface(OperationContext
     return new WiredTigerIndexStandard(opCtx, _uri(ident), desc);
 }
 
-Status WiredTigerKVEngine::dropIdent(OperationContext* opCtx, StringData ident) {
+Status WiredTigerKVEngine::dropIdent(OperationContext* opCtx, StringData ident, StringData ns ) {
     _drop(ident);
     return Status::OK();
 }

@@ -11,6 +11,7 @@
 // See ../doc/log_format.txt for more detail.
 
 #pragma once
+
 namespace rocksdb {
 namespace log {
 
@@ -32,14 +33,17 @@ enum RecordType {
 };
 static const int kMaxRecordType = kRecyclableLastType;
 
-static const unsigned int kBlockSize = 32768;
+//static const unsigned int kBlockSize = 32768;
+static const unsigned int kBlockSize = (256*1024);
 
-// Header is checksum (4 bytes), type (1 byte), length (2 bytes).
-static const int kHeaderSize = 4 + 1 + 2;
+// Header is checksum (4 bytes), length (4 bytes), type (1 byte).
+static const int kHeaderSize = 4 + 4 + 1;
 
-// Recyclable header is checksum (4 bytes), type (1 byte), log number
-// (4 bytes), length (2 bytes).
-static const int kRecyclableHeaderSize = 4 + 1 + 4 + 2;
+// Recyclable header is checksum (4 bytes), length (4 bytes), type (1 byte), log number
+// (4 bytes).
+static const int kRecyclableHeaderSize = 4 + 4 + 1 + 4;
+
+static const int kTypePos = kHeaderSize - 1;
 
 }  // namespace log
 }  // namespace rocksdb

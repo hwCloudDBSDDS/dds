@@ -72,12 +72,12 @@ StatusWith<RebalanceEventType> RebalanceEventType::fromBSON(const BSONObj& sourc
 
     {
         BSONElement eventdata;
-        Status status  = bsonExtractTypedField(source, eventData.name(), Object, &eventdata);
+        Status status = bsonExtractTypedField(source, eventData.name(), Object, &eventdata);
         if (!status.isOK()) {
             return {status.code(),
                     str::stream() << "Invalid statemachine data due to " << status.reason()};
         }
-        
+
         if (eventdata.Obj().isEmpty()) {
             return {ErrorCodes::BadValue, "The statemachine data cannot be empty"};
         }

@@ -29,10 +29,11 @@
 #pragma once
 
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy.h"
-
+#include "mongo/s/catalog/type_collection.h"
 namespace mongo {
 
 class ClusterStatistics;
+using std::set;
 
 class BalancerChunkSelectionPolicyImpl final : public BalancerChunkSelectionPolicy {
 public:
@@ -45,6 +46,8 @@ public:
 
     StatusWith<MigrateInfoVector> selectChunksToMove(OperationContext* txn,
                                                      bool aggressiveBalanceHint) override;
+
+    StatusWith<MigrateInfoVector> selectMinTpsChunksToMove(OperationContext* txn) override;
 
     StatusWith<boost::optional<MigrateInfo>> selectSpecificChunkToMove(
         OperationContext* txn, const ChunkType& chunk) override;
@@ -73,6 +76,22 @@ private:
         const NamespaceString& nss,
         const ShardStatisticsVector& shardStats,
         bool aggressiveBalanceHint);
+
+    ClusterStatistics::ShardStatistics * _getMaxCpuUsageShard(ShardStatisticsVector& shardStats, set<ShardId>& excludedShards);
+
+    ClusterStatistics::ShardStatistics * _getMinCpuUsageShard(ShardStatisticsVector& shardStats, set<ShardId>& excludedShards);
+
+    bool isChunkNumBalance(const ShardStatisticsVector& shardStats,const std::string &ns,const ShardId& shardId,bool isSource);
+
+    const ChunkType * getChunkTypeByChunkId(const std::vector<ChunkType>& chunks, const ChunkId & chunkId);
+
+    std::string findChunk(OperationContext* txn, size_t maxChunkNumOnShard,  std::vector<CollectionType>& collections,std::vector<ClusterStatistics::ShardStatistics> shardStats,const ClusterStatistics::ShardStatistics *maxShard,const ClusterStatistics::ShardStatistics *minShard);
+
+    std::string canChunkMove(OperationContext* txn, const ClusterStatistics::ChunkStatistics *destChunkStatics,std::vector<ClusterStatistics::ShardStatistics> shardStats,const ClusterStatistics::ShardStatistics *maxShard,const ClusterStatistics::ShardStatistics *minShard );
+
+    bool  isShardCollection(NamespaceString& ns, std::vector<CollectionType> & collections);
+
+    StatusWith<ChunkType> getChunkById(OperationContext* txn, std::string chunkId);
 
     // Source for obtaining cluster statistics. Not owned and must not be destroyed before the
     // policy object is destroyed.

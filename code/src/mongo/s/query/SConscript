@@ -13,7 +13,7 @@ env.Library(
         "cluster_client_cursor",
         "cluster_cursor_cleanup_job",
         "store_possible_cursor",
-    ]
+    ],
 )
 
 env.Library(
@@ -79,20 +79,20 @@ env.Library(
     ],
 )
 
-env.CppUnitTest(
-    target="async_results_merger_test",
-    source=[
-        "async_results_merger_test.cpp",
-    ],
-    LIBDEPS=[
-        'async_results_merger',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
-        '$BUILD_DIR/mongo/db/query/query_request',
-        '$BUILD_DIR/mongo/db/service_context_noop_init',
-        '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
-        '$BUILD_DIR/mongo/s/sharding_test_fixture',
-    ],
-)
+#env.CppUnitTest(
+#    target="async_results_merger_test",
+#    source=[
+#        "async_results_merger_test.cpp",
+#    ],
+#    LIBDEPS=[
+#        'async_results_merger',
+#        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+#        '$BUILD_DIR/mongo/db/query/query_request',
+#        '$BUILD_DIR/mongo/db/service_context_noop_init',
+#        '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
+#        '$BUILD_DIR/mongo/s/sharding_test_fixture',
+#    ],
+#)
 
 env.Library(
     target="store_possible_cursor",

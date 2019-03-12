@@ -2,7 +2,8 @@ selector:
   js_test:
     roots:
     - jstests/serial_run/*.js
-
+    exclude_files:
+    - jstests/serial_run/election_timing.js
 executor:
   js_test:
     config:

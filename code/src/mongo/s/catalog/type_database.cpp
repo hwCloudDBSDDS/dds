@@ -45,6 +45,7 @@ const std::string DatabaseType::ConfigNS = "config.databases";
 const BSONField<std::string> DatabaseType::name("_id");
 const BSONField<std::string> DatabaseType::primary("primary");
 const BSONField<bool> DatabaseType::sharded("partitioned");
+const BSONField<bool> DatabaseType::enableSharding("enableSharding");
 
 
 StatusWith<DatabaseType> DatabaseType::fromBSON(const BSONObj& source) {
@@ -78,6 +79,15 @@ StatusWith<DatabaseType> DatabaseType::fromBSON(const BSONObj& source) {
         dbt._sharded = dbtSharded;
     }
 
+    {
+        bool dbtEnableSharding;
+        Status status = bsonExtractBooleanFieldWithDefault(
+            source, enableSharding.name(), false, &dbtEnableSharding);
+        if (!status.isOK())
+            return status;
+
+        dbt._enableSharding = dbtEnableSharding;
+    }
     return StatusWith<DatabaseType>(dbt);
 }
 
@@ -94,6 +104,9 @@ Status DatabaseType::validate() const {
         return Status(ErrorCodes::NoSuchKey, "missing sharded");
     }
 
+    /*if (!_enableSharding.is_initialized()) {
+        return Status(ErrorCodes::NoSuchKey, "missing enableSharding");
+    }*/
     return Status::OK();
 }
 
@@ -102,6 +115,7 @@ BSONObj DatabaseType::toBSON() const {
     builder.append(name.name(), _name.get_value_or(""));
     builder.append(primary.name(), _primary.get_value_or(ShardId()).toString());
     builder.append(sharded.name(), _sharded.get_value_or(false));
+    builder.append(enableSharding.name(), _enableSharding.get_value_or(false));
 
     return builder.obj();
 }

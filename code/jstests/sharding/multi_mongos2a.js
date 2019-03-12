@@ -10,11 +10,12 @@
 
     s1.config.databases.find().forEach(printjson);
 
+    s2.adminCommand({shardcollection: "test.existing", key: {_id: 1}});
     s1.getDB('test').existing.insert({_id: 1});
     assert.eq(1, s1.getDB('test').existing.count({_id: 1}));
     assert.eq(1, s2.getDB('test').existing.count({_id: 1}));
+    // wooo s2.adminCommand({shardcollection: "test.existing", key: {_id: 1}});
 
-    s2.adminCommand({shardcollection: "test.existing", key: {_id: 1}});
     assert.eq(true, s2.getDB('test').existing.stats().sharded);
 
     res = s2.getDB("admin").runCommand({

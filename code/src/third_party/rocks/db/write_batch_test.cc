@@ -162,7 +162,7 @@ TEST_F(WriteBatchTest, Corruption) {
   WriteBatchInternal::SetContents(&batch,
                                   Slice(contents.data(),contents.size()-1));
   ASSERT_EQ("Put(foo, bar)@200"
-            "Corruption: bad WriteBatch Delete",
+            "Rocksdb Corruption: bad WriteBatch Delete",
             PrintContents(&batch));
 }
 

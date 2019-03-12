@@ -44,6 +44,8 @@ class MongoDFixture(interface.Fixture):
         self.mongod_executable = utils.default_if_none(config.MONGOD_EXECUTABLE, mongod_executable)
 
         self.mongod_options = utils.default_if_none(mongod_options, {}).copy()
+        if "configdb" not in self.mongod_options:
+            self.mongod_options["configdb"] = "xxx/xxx:111"
         self.preserve_dbpath = preserve_dbpath
 
         # The dbpath in mongod_options takes precedence over other settings to make it easier for
@@ -59,10 +61,12 @@ class MongoDFixture(interface.Fixture):
 
         self.mongod = None
 
-    def setup(self):
+    def setup(self, logflag=""):
         if not self.preserve_dbpath:
             shutil.rmtree(self._dbpath, ignore_errors=True)
 
+        #os.popen('/root/namenode/hadoop-2.7.3/bin/hdfs dfs -rm -r hdfs://163.40.13.205:9000' + self._dbpath + '/*')
+        #time.sleep(2)
         try:
             os.makedirs(self._dbpath)
         except os.error:
@@ -72,6 +76,10 @@ class MongoDFixture(interface.Fixture):
         if "port" not in self.mongod_options:
             self.mongod_options["port"] = core.network.PortAllocator.next_fixture_port(self.job_num)
         self.port = self.mongod_options["port"]
+        if logflag is not "":
+            if not os.path.exists("./resmoke_log/job%d" % (self.job_num)):
+                os.makedirs("./resmoke_log/job%d" % (self.job_num))
+            self.mongod_options["logpath"] = "./resmoke_log/job" + str(self.job_num) + "/" + logflag + ".log"
 
         mongod = core.programs.mongod_program(self.logger,
                                               executable=self.mongod_executable,
@@ -88,6 +96,7 @@ class MongoDFixture(interface.Fixture):
 
     def await_ready(self):
         deadline = time.time() + MongoDFixture.AWAIT_READY_TIMEOUT_SECS
+        #time.sleep(5)
 
         # Wait until the mongod is accepting connections. The retry logic is necessary to support
         # versions of PyMongo <3.0 that immediately raise a ConnectionFailure if a connection cannot
@@ -102,7 +111,12 @@ class MongoDFixture(interface.Fixture):
             try:
                 # Use a shorter connection timeout to more closely satisfy the requested deadline.
                 client = utils.new_mongo_client(self.port, timeout_millis=500)
-                client.admin.command("ping")
+                time.sleep(6)
+                #client.admin.command("ping")
+                ##_db = pymongo.database.Database(client,"admin")
+                ##_out = _db.command("setParameter", "1", logLevel=3)
+                #_out = _db.command("getParameter", "1", logLevel="1")
+                #self.logger.info("======log level is: "+str(_out)+"======")
                 break
             except pymongo.errors.ConnectionFailure:
                 remaining = deadline - time.time()
@@ -149,4 +163,4 @@ class MongoDFixture(interface.Fixture):
         if self.mongod is None:
             raise ValueError("Must call setup() before calling get_connection_string()")
 
-        return "%s:%d" % (socket.gethostname(), self.port)
+        return "%s:%d" % ("localhost", self.port)

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <mutex>
 
+
 #include "port/port.h"
 #include "util/histogram.h"
 #include "util/iostats_context_imp.h"
@@ -218,6 +219,7 @@ Status WritableFileWriter::Close() {
   // in __dtor, simply flushing is not enough
   // Windows when pre-allocating does not fill with zeros
   // also with unbuffered access we also set the end of data.
+
   if (!writable_file_) {
     return s;
   }
@@ -240,7 +242,7 @@ Status WritableFileWriter::Close() {
   writable_file_.reset();
   TEST_KILL_RANDOM("WritableFileWriter::Close:1", rocksdb_kill_odds);
 
-  return s;
+ return s;
 }
 
 // write out the cached data to the OS cache or storage if direct I/O
@@ -292,7 +294,6 @@ Status WritableFileWriter::Flush() {
       }
     }
   }
-
   return s;
 }
 
@@ -389,7 +390,7 @@ Status WritableFileWriter::WriteBuffered(const char* data, size_t size) {
     src += allowed;
   }
   buf_.Size(0);
-  return s;
+ return s;
 }
 
 
@@ -487,7 +488,9 @@ class ReadaheadRandomAccessFile : public RandomAccessFile {
   virtual Status Read(uint64_t offset, size_t n, Slice* result,
                       char* scratch) const override {
     if (n >= readahead_size_) {
-      return file_->Read(offset, n, result, scratch);
+        Status status = file_->Read(offset, n, result, scratch);
+        return status;
+      //return file_->Read(offset, n, result, scratch);
     }
 
     // On Windows in unbuffered mode this will lead to double buffering
@@ -495,7 +498,10 @@ class ReadaheadRandomAccessFile : public RandomAccessFile {
     // In normal mode Windows caches so much data from disk that we do
     // not need readahead.
     if (forward_calls_) {
-      return file_->Read(offset, n, result, scratch);
+
+        Status status = file_->Read(offset, n, result, scratch);
+        return status;
+      //return file_->Read(offset, n, result, scratch);
     }
 
     std::unique_lock<std::mutex> lk(lock_);
@@ -505,7 +511,7 @@ class ReadaheadRandomAccessFile : public RandomAccessFile {
     if (offset >= buffer_offset_ && offset < buffer_len_ + buffer_offset_) {
       uint64_t offset_in_buffer = offset - buffer_offset_;
       copied = std::min(buffer_len_ - static_cast<size_t>(offset_in_buffer), n);
-      memcpy(scratch, buffer_.get() + offset_in_buffer, copied);
+      CommonMemCopy(scratch, copied, buffer_.get() + offset_in_buffer, copied);
       if (copied == n) {
         // fully cached
         *result = Slice(scratch, n);
@@ -513,6 +519,7 @@ class ReadaheadRandomAccessFile : public RandomAccessFile {
       }
     }
     Slice readahead_result;
+
     Status s = file_->Read(offset + copied, readahead_size_, &readahead_result,
       buffer_.get());
     if (!s.ok()) {
@@ -520,7 +527,7 @@ class ReadaheadRandomAccessFile : public RandomAccessFile {
     }
 
     auto left_to_copy = std::min(readahead_result.size(), n - copied);
-    memcpy(scratch + copied, readahead_result.data(), left_to_copy);
+    CommonMemCopy(scratch + copied, left_to_copy, readahead_result.data(), left_to_copy);
     *result = Slice(scratch, copied + left_to_copy);
 
     if (readahead_result.data() == buffer_.get()) {
@@ -529,7 +536,6 @@ class ReadaheadRandomAccessFile : public RandomAccessFile {
     } else {
       buffer_len_ = 0;
     }
-
     return Status::OK();
   }
 
@@ -553,6 +559,125 @@ class ReadaheadRandomAccessFile : public RandomAccessFile {
   mutable uint64_t     buffer_offset_;
   mutable size_t       buffer_len_;
 };
+
+class  PolyWriteableFile : public WritableFile
+{
+public:
+     PolyWriteableFile(std::unique_ptr<WritableFile>&& file, size_t poly_size = 0)
+         : file_(std::move(file)),
+           buffer_(),
+           buffer_len_(0),
+           poly_size_(poly_size){
+           
+           if(poly_size_ > 0){
+               buffer_.reset(new char[poly_size_]);
+           }
+     }
+     PolyWriteableFile(const PolyWriteableFile&) = delete;
+
+     PolyWriteableFile& operator=(const PolyWriteableFile&) = delete;
+    ~ PolyWriteableFile(){}
+    virtual Status Append(const Slice& data) override
+    {
+        if(poly_size_ == 0)
+        {
+            return file_->Append(data);
+        }
+        if(poly_size_ - buffer_len_ >= data.size())
+        {
+            CommonMemCopy(buffer_.get()+buffer_len_, data.size(), data.data(), data.size());
+            buffer_len_ += data.size();
+            return Status::OK();
+        }
+
+        size_t todo = data.size();
+        size_t copied = 0;
+        while(todo > 0){
+            size_t remain  = poly_size_-buffer_len_;
+            if(remain == 0)
+            {
+                Slice d(buffer_.get(), buffer_len_);
+                Status s = file_->Append(d);
+                if(!s.ok())
+                {
+                    return s;
+                }
+                buffer_len_ = 0;
+                remain = poly_size_;
+            }
+
+            size_t copy = remain >= todo ? todo : remain;
+            CommonMemCopy(buffer_.get()+buffer_len_,copy, data.data()+copied, copy);
+            copied += copy;
+            buffer_len_ += copy;
+            todo -= copy;
+        }
+
+        return Status::OK();
+    }
+    virtual Status PositionedAppend(const Slice& data, uint64_t size) override {
+        Status s = AppendAll(true);
+        if(!s.ok()) {return s;}
+        return file_->PositionedAppend(data, size);
+    }
+    virtual Status Truncate(uint64_t size) override {return file_->Truncate(size);}
+    virtual Status Close() override
+    {
+        Status s = AppendAll(true);
+        if(!s.ok()) {return s;}
+        return file_->Close();
+    }
+    virtual Status Flush() override {return file_->Flush();}
+    virtual Status Sync() override
+    {
+        Status s = AppendAll();
+        if(!s.ok()) {return s;}
+        return file_->Sync();
+    }
+    virtual Status Fsync() override
+    {
+        Status s = AppendAll();
+        if(!s.ok()) {return s;}
+        return file_->Fsync();
+    }
+    virtual bool IsSyncThreadSafe() const override{return file_->IsSyncThreadSafe();}
+    virtual bool use_direct_io() const override{return file_->use_direct_io();}
+    virtual size_t GetRequiredBufferAlignment() const override{return file_->GetRequiredBufferAlignment();}
+    virtual uint64_t GetFileSize() override{return file_->GetFileSize();}
+    virtual Status InvalidateCache(size_t offset, size_t length) override{return file_->InvalidateCache(offset, length);}
+#ifdef ROCKSDB_FALLOCATE_PRESENT
+    virtual Status Allocate(uint64_t offset, uint64_t len) override{return Status::OK();}
+    virtual Status RangeSync(uint64_t offset, uint64_t nbytes) override{
+        return Status::OK();
+    }
+    virtual size_t GetUniqueId(char* id, size_t max_size) const override{return file_->GetUniqueId(id, max_size);}
+#endif
+private:
+    std::unique_ptr<WritableFile> file_;
+    mutable std::unique_ptr<char[]> buffer_;
+    mutable size_t       buffer_len_;
+    size_t               poly_size_;
+
+private:
+    Status AppendAll(bool sync = false){
+        if(buffer_len_ > 0)
+        {
+            Slice data(buffer_.get(), buffer_len_);
+            Status s = file_->Append(data);
+            if(!s.ok())
+            {
+                return s;
+            }
+            buffer_len_ = 0;
+            if(sync == true)
+            {
+                return file_->Sync();
+            }
+        }
+
+        return Status::OK();
+    }
+};
 }  // namespace
 
 std::unique_ptr<RandomAccessFile> NewReadaheadRandomAccessFile(
@@ -560,6 +685,12 @@ std::unique_ptr<RandomAccessFile> NewReadaheadRandomAccessFile(
   std::unique_ptr<RandomAccessFile> result(
     new ReadaheadRandomAccessFile(std::move(file), readahead_size));
   return result;
+}
+
+std::unique_ptr<WritableFile> NewPolyWriteableFile(std::unique_ptr<WritableFile>&& file_, size_t poly_size)
+{
+    std::unique_ptr<WritableFile> result(new PolyWriteableFile(std::move(file_), poly_size));
+    return result;
 }
 
 Status NewWritableFile(Env* env, const std::string& fname,

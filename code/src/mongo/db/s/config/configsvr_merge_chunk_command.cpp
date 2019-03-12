@@ -28,6 +28,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
 
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/auth/action_type.h"
@@ -121,6 +122,7 @@ public:
         if (!mergeChunkResult.isOK()) {
             return appendCommandStatus(result, mergeChunkResult);
         }
+
 
         return true;
     }

@@ -44,7 +44,7 @@ using unittest::assertGet;
 TEST(BalanceChunkRequest, ParseFromConfigCommandNoSecondaryThrottle) {
     const ChunkVersion version(1, 0, OID::gen());
     auto request = assertGet(BalanceChunkRequest::parseFromConfigCommand(
-        BSON("_configsvrMoveChunk" << 1   << "balanceType" << 0 << "ns"
+        BSON("_configsvrMoveChunk" << 1 << "balanceType" << 0 << "ns"
                                    << "TestDB.TestColl"
                                    << "min"
                                    << BSON("a" << -100LL)
@@ -75,7 +75,7 @@ TEST(BalanceChunkRequest, ParseFromConfigCommandNoSecondaryThrottle) {
 TEST(BalanceChunkRequest, ParseFromConfigCommandWithSecondaryThrottle) {
     const ChunkVersion version(1, 0, OID::gen());
     auto request = assertGet(BalanceChunkRequest::parseFromConfigCommand(
-        BSON("_configsvrMoveChunk" << 1  << "balanceType" << 0 << "ns"
+        BSON("_configsvrMoveChunk" << 1 << "balanceType" << 0 << "ns"
                                    << "TestDB.TestColl"
                                    << "min"
                                    << BSON("a" << -100LL)

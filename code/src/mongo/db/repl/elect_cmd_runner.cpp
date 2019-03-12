@@ -33,6 +33,7 @@
 #include "mongo/db/repl/elect_cmd_runner.h"
 
 #include "mongo/base/status.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/db/repl/member_heartbeat_data.h"
 #include "mongo/db/repl/replica_set_config.h"
 #include "mongo/db/repl/replication_executor.h"
@@ -77,11 +78,7 @@ std::vector<RemoteCommandRequest> ElectCmdRunner::Algorithm::getRequests() const
          ++it) {
         invariant(*it != selfConfig.getHostAndPort());
         requests.push_back(RemoteCommandRequest(
-            *it,
-            "admin",
-            replSetElectCmd,
-            nullptr,
-            Milliseconds(30 * 1000)));  // trying to match current Socket timeout
+            *it, "admin", replSetElectCmd, nullptr, Milliseconds(kReplSetElectTimeoutMS)));
     }
 
     return requests;

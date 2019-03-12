@@ -17,6 +17,7 @@
 #include "util/arena.h"
 #include "util/autovector.h"
 
+#include "common/common.h"
 
 namespace rocksdb {
 
@@ -111,7 +112,7 @@ void Logger::Logv(const InfoLogLevel log_level, const char* format, va_list ap) 
     Logv(format, ap);
   } else {
     char new_format[500];
-    snprintf(new_format, sizeof(new_format) - 1, "[%s] %s",
+    CommonSnprintf(new_format, sizeof(new_format),  sizeof(new_format) - 1, "[%s] %s",
       kInfoLogLevelNames[log_level], format);
     Logv(new_format, ap);
   }

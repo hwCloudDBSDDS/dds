@@ -3,6 +3,7 @@
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
 
+
 #include "db/write_thread.h"
 #include <chrono>
 #include <limits>
@@ -261,6 +262,7 @@ size_t WriteThread::EnterAsBatchGroupLeader(
   // Tricky. Iteration start (leader) is exclusive and finish
   // (newest_writer) is inclusive. Iteration goes from old to new.
   Writer* w = leader;
+  int batchCnt = 1;
   while (w != newest_writer) {
     w = w->link_newer;
 
@@ -299,6 +301,7 @@ size_t WriteThread::EnterAsBatchGroupLeader(
     }
 
     size += batch_size;
+    batchCnt++ ;
     write_batch_group->push_back(w);
     w->in_batch_group = true;
     *last_writer = w;

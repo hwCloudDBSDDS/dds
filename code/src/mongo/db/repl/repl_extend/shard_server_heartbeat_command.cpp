@@ -28,16 +28,16 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/executor/network_interface.h"
+#include "mongo/s/catalog/catalog_extend/sharding_catalog_shard_server_manager.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
+#include "mongo/s/catalog/sharding_catalog_manager_impl.h"
+#include "mongo/s/grid.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/transport_layer.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/time_support.h"
-#include "mongo/s/grid.h"
-#include "mongo/s/catalog/sharding_catalog_manager.h"
-#include "mongo/s/catalog/sharding_catalog_manager_impl.h"
-#include "mongo/s/catalog/catalog_extend/sharding_catalog_shard_server_manager.h"
 
 namespace mongo {
 namespace repl {
@@ -55,43 +55,53 @@ public:
                      BSONObj& cmdObj,
                      int,
                      string& errmsg,
-                     BSONObjBuilder& result) {        
-        LOG(3) << "Receive heartbeat cmd (" << cmdObj.toString() << ")";                
+                     BSONObjBuilder& result) {
+        index_LOG(3) << "Receive heartbeat";
 
-        Status primaryStatus = getGlobalReplicationCoordinator()->checkIfIAmPrimary(); 
+        auto repl_coordinator = getGlobalReplicationCoordinator();
+        if (repl_coordinator == nullptr) {
+            index_err() << "getGlobalReplicationCoordinator failed.";
+            Status status =
+                Status(ErrorCodes::InternalError, "getGlobalReplicationCoordinator failed.");
+            return appendCommandStatus(result, status);
+        }
+
+        Status primaryStatus = repl_coordinator->checkIfIAmPrimary();
         if (!primaryStatus.isOK()) {
-            log() << "Heartbeat cmd (" << cmdObj.toString() << ") fails" << causedBy(primaryStatus);
+            index_log() << "Heartbeat cmd fails" << causedBy(primaryStatus);
             return appendCommandStatus(result, primaryStatus);
         }
-        
+
         ShardServerHeartbeatArgs args;
         Status argsStatus = args.initialize(cmdObj);
         if (!argsStatus.isOK()) {
-            log() << "Heartbeat cmd (" << cmdObj.toString() << ") fails" << causedBy(argsStatus);
+            index_log() << "Heartbeat cmd fails" << causedBy(argsStatus);
             return appendCommandStatus(result, argsStatus);
-        }    
+        }
         if (!args.hasSender()) {
-            Status status = Status(ErrorCodes::InternalError, 
-                "Heartbeat msg does not contain sender info");
-            log() << "Heartbeat cmd (" << cmdObj.toString() << ") fails" << causedBy(status);
+            Status status =
+                Status(ErrorCodes::InternalError, "Heartbeat msg does not contain sender info");
+            index_log() << "Heartbeat cmd fails" << causedBy(status);
             return appendCommandStatus(result, status);
         }
-        
+
         HostAndPort senderHost = args.getSenderHost();
-        Date_t now = Date_t::now();
-        Status setLastHeartbeatTimeStatus = 
+        Date_t now = getGlobalReplicationCoordinator()->getExecutor()->now();
+        Status setLastHeartbeatTimeStatus =
             Grid::get(txn)->catalogManager()->getShardServerManager()->setLastHeartbeatTime(
-                txn, senderHost, now);    
-        if ((!setLastHeartbeatTimeStatus.isOK()) && 
+                txn, senderHost, now);
+        if ((!setLastHeartbeatTimeStatus.isOK()) &&
             (setLastHeartbeatTimeStatus.code() != ErrorCodes::NotYetInitialized)) {
-            Status status = Status(ErrorCodes::InternalError, 
-                stream() << "Failed to set last heartbeat time for shard server: " 
-                    << senderHost.toString() << causedBy(setLastHeartbeatTimeStatus));
-            log() << "Heartbeat cmd (" << cmdObj.toString() << ") fails" << causedBy(status);
+            Status status =
+                Status(ErrorCodes::InternalError,
+                       stream() << "Failed to set last heartbeat time for shard server: "
+                                << senderHost.toString()
+                                << causedBy(setLastHeartbeatTimeStatus));
+            index_log() << "Heartbeat cmd fails" << causedBy(status);
             return appendCommandStatus(result, status);
         }
-        
-        LOG(3) << "Heartbeat cmd (" << cmdObj.toString() << ") OK";        
+
+        index_LOG(3) << "Heartbeat cmd OK";
         return appendCommandStatus(result, Status::OK());
     }
 } cmdShardServerHeartbeat;

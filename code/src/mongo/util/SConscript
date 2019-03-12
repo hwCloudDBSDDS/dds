@@ -171,15 +171,15 @@ env.CppUnitTest(
     ],
 )
 
-env.CppUnitTest(
-    target='time_support_test',
-    source=[
-        'time_support_test.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-    ],
-)
+#env.CppUnitTest(
+#    target='time_support_test',
+#    source=[
+#        'time_support_test.cpp',
+#    ],
+#    LIBDEPS=[
+#        '$BUILD_DIR/mongo/base',
+#    ],
+#)
 
 env.CppUnitTest(
     target="stringutils_test",
@@ -368,12 +368,12 @@ if has_option('gcov'):
         ],
     )
 
-if has_option('use-cpu-profiler'):
-    quick_exit_env.Append(
-        CPPDEFINES=[
-            'MONGO_CPU_PROFILER',
-        ],
-    )
+#if has_option('use-cpu-profiler'):
+#    quick_exit_env.Append(
+#        CPPDEFINES=[
+#            'MONGO_CPU_PROFILER',
+#        ],
+#    )
 
     if not use_system_version_of_library('tcmalloc'):
         quick_exit_env.InjectThirdPartyIncludePaths(

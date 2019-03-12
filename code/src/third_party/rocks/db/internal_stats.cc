@@ -21,6 +21,7 @@
 
 #include "db/db_impl.h"
 #include "util/string_util.h"
+#include "common/common.h"
 
 namespace rocksdb {
 
@@ -56,12 +57,12 @@ const double kMicrosInSec = 1000000.0;
 
 void PrintLevelStatsHeader(char* buf, size_t len, const std::string& cf_name) {
   int written_size =
-      snprintf(buf, len, "\n** Compaction Stats [%s] **\n", cf_name.c_str());
+      CommonSnprintf(buf, len, len-1, "\n** Compaction Stats [%s] **\n", cf_name.c_str());
   auto hdr = [](LevelStatType t) {
     return InternalStats::compaction_level_stats.at(t).header_name.c_str();
   };
-  int line_size = snprintf(
-      buf + written_size, len - written_size,
+  int line_size = CommonSnprintf(
+      buf + written_size, len - written_size, len - written_size - 1,
       "Level    %s   %s %s %s  %s %s %s %s %s %s %s %s %s %s %s %s %s\n",
       // Note that we skip COMPACTED_FILES and merge it with Files column
       hdr(LevelStatType::NUM_FILES), hdr(LevelStatType::SIZE_MB),
@@ -75,8 +76,8 @@ void PrintLevelStatsHeader(char* buf, size_t len, const std::string& cf_name) {
       hdr(LevelStatType::KEY_DROP));
 
   written_size += line_size;
-  snprintf(buf + written_size, len - written_size, "%s\n",
-           std::string(line_size, '-').c_str());
+  CommonSnprintf(buf + written_size, len - written_size, len - written_size - 1,
+           "%s\n", std::string(line_size, '-').c_str());
 }
 
 void PrepareLevelStats(std::map<LevelStatType, double>* level_stats,
@@ -116,7 +117,7 @@ void PrepareLevelStats(std::map<LevelStatType, double>* level_stats,
 
 void PrintLevelStats(char* buf, size_t len, const std::string& name,
                      const std::map<LevelStatType, double>& stat_value) {
-  snprintf(buf, len,
+  CommonSnprintf(buf, len, len-1,
            "%4s %6d/%-3d %8.2f %5.1f " /*  Level, Files, Size(MB), Score */
            "%8.1f "                    /*  Read(GB) */
            "%7.1f "                    /*  Rn(GB) */
@@ -438,7 +439,7 @@ bool InternalStats::HandleNumFilesAtLevel(std::string* value, Slice suffix) {
     return false;
   } else {
     char buf[100];
-    snprintf(buf, sizeof(buf), "%d",
+    CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1, "%d",
              vstorage->NumLevelFiles(static_cast<int>(level)));
     *value = buf;
     return true;
@@ -461,13 +462,13 @@ bool InternalStats::HandleCompressionRatioAtLevelPrefix(std::string* value,
 bool InternalStats::HandleLevelStats(std::string* value, Slice suffix) {
   char buf[1000];
   const auto* vstorage = cfd_->current()->storage_info();
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "Level Files Size(MB)\n"
            "--------------------\n");
   value->append(buf);
 
   for (int level = 0; level < number_levels_; level++) {
-    snprintf(buf, sizeof(buf), "%3d %8d %8.0f\n", level,
+    CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1, "%3d %8d %8.0f\n", level,
              vstorage->NumLevelFiles(level),
              vstorage->NumLevelBytes(level) / kMB);
     value->append(buf);
@@ -721,7 +722,7 @@ void InternalStats::DumpDBStats(std::string* value) {
   // DB-level stats, only available from default column family
   double seconds_up = (env_->NowMicros() - started_at_ + 1) / kMicrosInSec;
   double interval_seconds_up = seconds_up - db_stats_snapshot_.seconds_up;
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "\n** DB Stats **\nUptime(secs): %.1f total, %.1f interval\n",
            seconds_up, interval_seconds_up);
   value->append(buf);
@@ -747,7 +748,7 @@ void InternalStats::DumpDBStats(std::string* value) {
   // writes/groups is the average group commit size.
   //
   // The format is the same for interval stats.
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "Cumulative writes: %s writes, %s keys, %s commit groups, "
            "%.1f writes per commit group, ingest: %.2f GB, %.2f MB/s\n",
            NumberToHumanString(write_other + write_self).c_str(),
@@ -757,7 +758,7 @@ void InternalStats::DumpDBStats(std::string* value) {
            user_bytes_written / kGB, user_bytes_written / kMB / seconds_up);
   value->append(buf);
   // WAL
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "Cumulative WAL: %s writes, %s syncs, "
            "%.2f writes per sync, written: %.2f GB, %.2f MB/s\n",
            NumberToHumanString(write_with_wal).c_str(),
@@ -767,7 +768,7 @@ void InternalStats::DumpDBStats(std::string* value) {
   value->append(buf);
   // Stall
   AppendHumanMicros(write_stall_micros, human_micros, kHumanMicrosLen, true);
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "Cumulative stall: %s, %.1f percent\n",
            human_micros,
            // 10000 = divide by 1M to get secs, then multiply by 100 for pct
@@ -779,7 +780,7 @@ void InternalStats::DumpDBStats(std::string* value) {
   uint64_t interval_write_self = write_self - db_stats_snapshot_.write_self;
   uint64_t interval_num_keys_written =
       num_keys_written - db_stats_snapshot_.num_keys_written;
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "Interval writes: %s writes, %s keys, %s commit groups, "
            "%.1f writes per commit group, ingest: %.2f MB, %.2f MB/s\n",
            NumberToHumanString(
@@ -798,7 +799,7 @@ void InternalStats::DumpDBStats(std::string* value) {
   uint64_t interval_wal_synced = wal_synced - db_stats_snapshot_.wal_synced;
   uint64_t interval_wal_bytes = wal_bytes - db_stats_snapshot_.wal_bytes;
 
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "Interval WAL: %s writes, %s syncs, "
            "%.2f writes per sync, written: %.2f MB, %.2f MB/s\n",
            NumberToHumanString(interval_write_with_wal).c_str(),
@@ -813,7 +814,7 @@ void InternalStats::DumpDBStats(std::string* value) {
   AppendHumanMicros(
       write_stall_micros - db_stats_snapshot_.write_stall_micros,
       human_micros, kHumanMicrosLen, true);
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "Interval stall: %s, %.1f percent\n",
            human_micros,
            // 10000 = divide by 1M to get secs, then multiply by 100 for pct
@@ -824,7 +825,7 @@ void InternalStats::DumpDBStats(std::string* value) {
   for (int level = 0; level < number_levels_; level++) {
     if (!file_read_latency_[level].Empty()) {
       char buf2[5000];
-      snprintf(buf2, sizeof(buf2),
+      CommonSnprintf(buf2, sizeof(buf2), sizeof(buf2)-1,
                "** Level %d read latency histogram (micros):\n%s\n", level,
                file_read_latency_[level].ToString().c_str());
       value->append(buf2);
@@ -977,33 +978,33 @@ void InternalStats::DumpCFStats(std::string* value) {
 
   double seconds_up = (env_->NowMicros() - started_at_ + 1) / kMicrosInSec;
   double interval_seconds_up = seconds_up - cf_stats_snapshot_.seconds_up;
-  snprintf(buf, sizeof(buf), "Uptime(secs): %.1f total, %.1f interval\n",
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1, "Uptime(secs): %.1f total, %.1f interval\n",
            seconds_up, interval_seconds_up);
   value->append(buf);
-  snprintf(buf, sizeof(buf), "Flush(GB): cumulative %.3f, interval %.3f\n",
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1, "Flush(GB): cumulative %.3f, interval %.3f\n",
            flush_ingest / kGB, interval_flush_ingest / kGB);
   value->append(buf);
-  snprintf(buf, sizeof(buf), "AddFile(GB): cumulative %.3f, interval %.3f\n",
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1, "AddFile(GB): cumulative %.3f, interval %.3f\n",
            add_file_ingest / kGB, interval_add_file_inget / kGB);
   value->append(buf);
 
   uint64_t interval_ingest_files_addfile =
       ingest_files_addfile - cf_stats_snapshot_.ingest_files_addfile;
-  snprintf(buf, sizeof(buf), "AddFile(Total Files): cumulative %" PRIu64
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1, "AddFile(Total Files): cumulative %" PRIu64
                              ", interval %" PRIu64 "\n",
            ingest_files_addfile, interval_ingest_files_addfile);
   value->append(buf);
 
   uint64_t interval_ingest_l0_files_addfile =
       ingest_l0_files_addfile - cf_stats_snapshot_.ingest_l0_files_addfile;
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "AddFile(L0 Files): cumulative %" PRIu64 ", interval %" PRIu64 "\n",
            ingest_l0_files_addfile, interval_ingest_l0_files_addfile);
   value->append(buf);
 
   uint64_t interval_ingest_keys_addfile =
       ingest_keys_addfile - cf_stats_snapshot_.ingest_keys_addfile;
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "AddFile(Keys): cumulative %" PRIu64 ", interval %" PRIu64 "\n",
            ingest_keys_addfile, interval_ingest_keys_addfile);
   value->append(buf);
@@ -1019,7 +1020,7 @@ void InternalStats::DumpCFStats(std::string* value) {
     compact_micros += comp_stats_[level].micros;
   }
 
-  snprintf(buf, sizeof(buf),
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1,
            "Cumulative compaction: %.2f GB write, %.2f MB/s write, "
            "%.2f GB read, %.2f MB/s read, %.1f seconds\n",
            compact_bytes_write / kGB, compact_bytes_write / kMB / seconds_up,
@@ -1035,8 +1036,8 @@ void InternalStats::DumpCFStats(std::string* value) {
   uint64_t interval_compact_micros =
       compact_micros - cf_stats_snapshot_.compact_micros;
 
-  snprintf(
-      buf, sizeof(buf),
+  CommonSnprintf(
+      buf, sizeof(buf), sizeof(buf)-1,
       "Interval compaction: %.2f GB write, %.2f MB/s write, "
       "%.2f GB read, %.2f MB/s read, %.1f seconds\n",
       interval_compact_bytes_write / kGB,
@@ -1049,7 +1050,7 @@ void InternalStats::DumpCFStats(std::string* value) {
   cf_stats_snapshot_.compact_bytes_read = compact_bytes_read;
   cf_stats_snapshot_.compact_micros = compact_micros;
 
-  snprintf(buf, sizeof(buf), "Stalls(count): %" PRIu64
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf)-1, "Stalls(count): %" PRIu64
                              " level0_slowdown, "
                              "%" PRIu64
                              " level0_slowdown_with_compaction, "

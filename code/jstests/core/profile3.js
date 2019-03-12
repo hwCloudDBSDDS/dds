@@ -16,8 +16,13 @@ profileCursor = function(query) {
 
 try {
     username = "jstests_profile3_user";
-    db.createUser({user: username, pwd: "password", roles: jsTest.basicUserRoles});
-    db.auth(username, "password");
+    db.createUser({
+        user: username,
+        pwd: "WEak@2password",
+        roles: jsTest.basicUserRoles,
+        passwordDigestor: "server"
+    });
+    db.auth(username, "WEak@2password");
 
     db.setProfilingLevel(0);
 

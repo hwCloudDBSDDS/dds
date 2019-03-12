@@ -180,8 +180,8 @@ void QuorumChecker::_tabulateHeartbeatResponse(const RemoteCommandRequest& reque
                                                const ResponseStatus& response) {
     ++_numResponses;
     if (!response.isOK()) {
-        warning() << "Failed to complete heartbeat request to " << request.target << "; "
-                  << response.status;
+        index_warning() << "Failed to complete heartbeat request to " << request.target << "; "
+                        << response.status;
         _badResponses.push_back(std::make_pair(request.target, response.status));
         return;
     }
@@ -190,18 +190,18 @@ void QuorumChecker::_tabulateHeartbeatResponse(const RemoteCommandRequest& reque
     ReplSetHeartbeatResponse hbResp;
     Status hbStatus = hbResp.initialize(resBSON, 0);
 
-    log() << "QuorumChecker::_tabulateHeartbeatResponse initializa Bson" << resBSON;
+    index_log() << "QuorumChecker::_tabulateHeartbeatResponse initializa Bson" << resBSON;
     if (hbStatus.code() == ErrorCodes::InconsistentReplicaSetNames) {
         std::string message = str::stream() << "Our set name did not match that of "
                                             << request.target.toString();
         _vetoStatus = Status(ErrorCodes::NewReplicaSetConfigurationIncompatible, message);
-        warning() << message;
+        index_warning() << message;
         return;
     }
 
     if (!hbStatus.isOK() && hbStatus != ErrorCodes::InvalidReplicaSetConfig) {
-        warning() << "Got error (" << hbStatus << ") response on heartbeat request to "
-                  << request.target << "; " << hbResp;
+        index_warning() << "Got error (" << hbStatus << ") response on heartbeat request to "
+                        << request.target << "; " << hbResp;
         _badResponses.push_back(std::make_pair(request.target, hbStatus));
         return;
     }
@@ -213,7 +213,7 @@ void QuorumChecker::_tabulateHeartbeatResponse(const RemoteCommandRequest& reque
                 << " is no larger than the version on " << request.target.toString()
                 << ", which is " << hbResp.getConfigVersion();
             _vetoStatus = Status(ErrorCodes::NewReplicaSetConfigurationIncompatible, message);
-            warning() << message;
+            index_warning() << message;
             return;
         }
     }
@@ -228,7 +228,7 @@ void QuorumChecker::_tabulateHeartbeatResponse(const RemoteCommandRequest& reque
                 << " did not match that of " << request.target.toString() << ", which is "
                 << replMetadata.getValue().getReplicaSetId();
             _vetoStatus = Status(ErrorCodes::NewReplicaSetConfigurationIncompatible, message);
-            warning() << message;
+            index_warning() << message;
         }
     }
 
@@ -237,7 +237,7 @@ void QuorumChecker::_tabulateHeartbeatResponse(const RemoteCommandRequest& reque
         std::string message = str::stream() << "'" << request.target.toString()
                                             << "' has data already, cannot initiate set.";
         _vetoStatus = Status(ErrorCodes::CannotInitializeNodeWithData, message);
-        warning() << message;
+        index_warning() << message;
         return;
     }
 

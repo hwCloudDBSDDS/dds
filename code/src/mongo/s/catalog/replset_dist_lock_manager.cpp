@@ -105,8 +105,8 @@ void ReplSetDistLockManager::shutDown(OperationContext* txn) {
 
     auto status = _catalog->stopPing(txn, _processID);
     if (!status.isOK()) {
-        warning() << "error encountered while cleaning up distributed ping entry for " << _processID
-                  << causedBy(redact(status));
+        index_warning() << "error encountered while cleaning up distributed ping entry for "
+                        << _processID << causedBy(redact(status));
     }
 }
 
@@ -129,10 +129,11 @@ void ReplSetDistLockManager::doTask() {
     while (!isShutDown()) {
         {
             auto txn = cc().makeOperationContext();
-            auto pingStatus = _catalog->ping(txn.get(), _processID, Date_t::now());
+            auto pingStatus = _catalog->ping(txn.get(), _processID, jsTime());
 
             if (!pingStatus.isOK() && pingStatus != ErrorCodes::NotMaster) {
-                warning() << "pinging failed for distributed lock pinger" << causedBy(pingStatus);
+                index_warning() << "pinging failed for distributed lock pinger"
+                                << causedBy(pingStatus);
             }
 
             const Milliseconds elapsed(elapsedSincelastPing.millis());
@@ -176,7 +177,7 @@ void ReplSetDistLockManager::doTask() {
         }
 
         stdx::unique_lock<stdx::mutex> lk(_mutex);
-        _shutDownCV.wait_for(lk, _pingInterval.toSystemDuration(), [this] { return _isShutDown; });
+        _shutDownCV.wait_for(lk, _pingInterval.toSteadyDuration(), [this] { return _isShutDown; });
     }
 }
 
@@ -312,7 +313,7 @@ StatusWith<DistLockHandle> ReplSetDistLockManager::lockWithSessionID(OperationCo
                << " with lockSessionID: " << lockSessionID << ", why: " << whyMessage.toString();
 
         auto lockResult = _catalog->grabLock(
-            txn, name, lockSessionID, who, _processID, Date_t::now(), whyMessage.toString());
+            txn, name, lockSessionID, who, _processID, jsTime(), whyMessage.toString());
 
         auto status = lockResult.getStatus();
 
@@ -379,7 +380,7 @@ StatusWith<DistLockHandle> ReplSetDistLockManager::lockWithSessionID(OperationCo
                                                              currentLock.getLockID(),
                                                              who,
                                                              _processID,
-                                                             Date_t::now(),
+                                                             jsTime(),
                                                              whyMessage);
 
                 const auto& overtakeStatus = overtakeResult.getStatus();
@@ -443,7 +444,7 @@ StatusWith<DistLockHandle> ReplSetDistLockManager::tryLockWithLocalWriteConcern(
                                          lockSessionID,
                                          who,
                                          _processID,
-                                         Date_t::now(),
+                                         jsTime(),
                                          whyMessage.toString(),
                                          DistLockCatalog::kLocalWriteConcern);
 

@@ -118,7 +118,7 @@ long long DbMessage::pullInt64() {
 }
 
 const char* DbMessage::pullCString() {
-    size_t limit = (size_t)(_theEnd-_nextjsobj);
+    size_t limit = (size_t)(_theEnd - _nextjsobj);
     unsigned int len = strnlen(_nextjsobj, limit);
 
     if (len >= limit) {

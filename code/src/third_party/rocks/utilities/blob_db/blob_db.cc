@@ -176,7 +176,7 @@ Status BlobDB::Get(const ReadOptions& options, const Slice& key,
   Slice index_entry_slice(index_entry);
   uint64_t file_number;
   if (!GetVarint64(&index_entry_slice, &file_number)) {
-    return Status::Corruption();
+    return Status::Corruption("Get blob fail");
   }
   assert(file_number == 0);
   s = handle.DecodeFrom(&index_entry_slice);

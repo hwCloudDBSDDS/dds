@@ -45,8 +45,8 @@
 #include "rocks_engine.h"
 #include "rocks_index.h"
 #include "rocks_recovery_unit.h"
-#include "rocks_transaction.h"
 #include "rocks_snapshot_manager.h"
+#include "rocks_transaction.h"
 
 namespace mongo {
 
@@ -80,8 +80,8 @@ namespace mongo {
 
         std::unique_ptr<RecoveryUnit> newRecoveryUnit() {
             return stdx::make_unique<RocksRecoveryUnit>(&_transactionEngine, &_snapshotManager,
-                                                        _db.get(), _counterManager.get(),
-                                                        nullptr, _durabilityManager.get(), true);
+                                                        _db.get(), _counterManager.get(), nullptr,
+                                                        _durabilityManager.get(), true);
         }
 
     private:
@@ -102,8 +102,8 @@ namespace mongo {
     TEST(RocksIndexTest, Isolation) {
         const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
 
-        const std::unique_ptr<SortedDataInterface>
-        sorted(harnessHelper->newSortedDataInterface(true));
+        const std::unique_ptr<SortedDataInterface> sorted(
+            harnessHelper->newSortedDataInterface(true));
 
         {
             const ServiceContext::UniqueOperationContext opCtx(
@@ -169,8 +169,8 @@ namespace mongo {
     void testSeekExactRemoveNext(bool forward, bool unique) {
         auto harnessHelper = newHarnessHelper();
         auto opCtx = harnessHelper->newOperationContext();
-        auto sorted = harnessHelper->newSortedDataInterface(unique,
-                {{key1, loc1}, {key2, loc1}, {key3, loc1}});
+        auto sorted = harnessHelper->newSortedDataInterface(
+            unique, {{key1, loc1}, {key2, loc1}, {key3, loc1}});
         auto cursor = sorted->newCursor(opCtx.get(), forward);
         ASSERT_EQ(cursor->seekExact(key2), IndexKeyEntry(key2, loc1));
         cursor->save();

@@ -5,7 +5,7 @@
 assert("test" == db, "wrong database currently not test");
 
 dd = function(x) {
-    // print( x );
+    print(x);
 };
 
 dd("a");

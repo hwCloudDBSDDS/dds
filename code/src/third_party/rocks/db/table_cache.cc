@@ -25,6 +25,7 @@
 #include "util/stop_watch.h"
 #include "util/sync_point.h"
 
+
 namespace rocksdb {
 
 namespace {
@@ -64,8 +65,8 @@ void AppendVarint64(IterKey* key, uint64_t v) {
 }  // namespace
 
 TableCache::TableCache(const ImmutableCFOptions& ioptions,
-                       const EnvOptions& env_options, Cache* const cache)
-    : ioptions_(ioptions), env_options_(env_options), cache_(cache) {
+                       const EnvOptions& env_options, Cache* const cache, const MutableCFOptions& mutable_cf_options)
+    : ioptions_(ioptions), mutable_cf_options_(mutable_cf_options), env_options_(env_options), cache_(cache) {
   if (ioptions_.row_cache) {
     // If the same cache is shared by multiple instances, we need to
     // disambiguate its entries.
@@ -268,7 +269,7 @@ Status TableCache::Get(const ReadOptions& options,
   std::string row_cache_entry_buffer;
   // Check row cache if enabled. Since row cache does not currently store
   // sequence numbers, we cannot use it if we need to fetch the sequence.
-  if (ioptions_.row_cache && !get_context->NeedToReadSequence()) {
+  if (ioptions_.row_cache && mutable_cf_options_.enable_row_cache && !get_context->NeedToReadSequence()) {
     uint64_t fd_number = fd.GetNumber();
     auto user_key = ExtractUserKey(k);
     // We use the user key as cache key instead of the internal key,
@@ -341,7 +342,7 @@ Status TableCache::Get(const ReadOptions& options,
 
 #ifndef ROCKSDB_LITE
   // Put the replay log in row cache only if something was found.
-  if (!done && s.ok() && row_cache_entry && !row_cache_entry->empty()) {
+  if (!done && s.ok() && mutable_cf_options_.enable_row_cache && row_cache_entry && !row_cache_entry->empty()) {
     size_t charge =
         row_cache_key.Size() + row_cache_entry->size() + sizeof(std::string);
     void* row_ptr = new std::string(std::move(*row_cache_entry));

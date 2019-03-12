@@ -1361,6 +1361,11 @@ var ReplSetTest = function(opts) {
             this.nodes[n] = new MongoBridge(bridgeOptions);
         }
 
+        if (options.logFile && MongoRunner.logFlag) {
+            options.logFile = options.logFile + ".config" + n + ".log";
+        } else {
+            // do nothing, only support config repl
+        }
         var conn = MongoRunner.runMongod(options);
         if (!conn) {
             throw new Error("Failed to start node " + n);

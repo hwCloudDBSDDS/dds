@@ -198,7 +198,7 @@ void DBClientCursor::requestMore() {
     b.appendNum(nextBatchSize());
     b.appendNum(cursorId);
     if (chunkId.isValid()) {
-       b.appendStr(chunkId.toString()); 
+        b.appendStr(chunkId.toString());
     }
 
     Message toSend;

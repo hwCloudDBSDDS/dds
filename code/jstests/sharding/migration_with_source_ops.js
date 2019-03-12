@@ -20,13 +20,17 @@ load('./jstests/libs/chunk_manipulation_util.js');
 (function() {
     "use strict";
 
-    var staticMongod = MongoRunner.runMongod({});  // For startParallelOps.
-
     /**
      * Start up new sharded cluster, stop balancer that would interfere in manual chunk management.
      */
 
     var st = new ShardingTest({shards: 2, mongos: 1});
+    sleep(2000);
+    var staticMongod = MongoRunner.runMongod({
+        'shardsvr': "",
+        "configdb": st.configRS.getURL(),
+        "bind_ip": getHostName()
+    });  // For startParallelOps.
     st.stopBalancer();
 
     var mongos = st.s0, admin = mongos.getDB('admin'),

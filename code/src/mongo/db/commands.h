@@ -281,6 +281,12 @@ public:
         return ReadWriteType::kCommand;
     }
 
+    bool hideDataBase(const std::string& dbname) const;
+
+    Status _checkWriteAllow(OperationContext* txn,
+                            const std::string& dbname,
+                            const BSONObj& cmdObj);
+
 protected:
     static CommandMap* _commands;
     static CommandMap* _commandsByBestName;
@@ -303,7 +309,7 @@ public:
     *init need retry errcode.
     */
     static void initNeedRetryCode();
-    
+
     /**
      * Executes a command after stripping metadata, performing authorization checks,
      * handling audit impersonation, and (potentially) setting maintenance mode. This method
@@ -449,6 +455,8 @@ public:
                                      OperationContext* client,
                                      const std::string& dbname,
                                      const BSONObj& cmdObj);
+
+    static bool _checkIfDisableCommands(const std::string& cmdname);
 
 private:
     /**

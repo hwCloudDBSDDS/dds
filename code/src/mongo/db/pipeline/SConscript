@@ -97,6 +97,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'aggregation_request',
         'document_value_test_util',
+	'$BUILD_DIR/mongo/db/server_options_core',
     ],
 )
 
@@ -254,6 +255,7 @@ docSourceEnv.Library(
         '$BUILD_DIR/mongo/db/storage/wiredtiger/storage_wiredtiger_customization_hooks',
         '$BUILD_DIR/third_party/shim_snappy',
     ],
+	SYSLIBDEPS=["rocksdb"],
     LIBDEPS_TAGS=[
         # Inclusion of sorter.cpp causes a dependency on mongo::isMongos,
         # which is not uniquely defined

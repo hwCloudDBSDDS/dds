@@ -28,16 +28,18 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 
-#include "mongo/platform/basic.h"
-#include <vector>
-#include <string>
 #include "mongo/db/catalog/drop_indexes.h"
+#include "mongo/platform/basic.h"
+#include <string>
+#include <vector>
 
 #include "mongo/db/background.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/catalog/index_create.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
@@ -46,14 +48,14 @@
 #include "mongo/db/index_builder.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/service_context.h"
-#include "mongo/util/log.h"
-#include "mongo/s/catalog/type_chunk.h"
-#include "mongo/s/client/shard_registry.h"
-#include "mongo/s/client/shard.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
-#include "mongo/s/grid.h"
+#include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
-#include "mongo/db/catalog/index_create.h"
+#include "mongo/s/client/shard.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/grid.h"
+#include "mongo/util/log.h"
+#include "mongo/bson/simple_bsonobj_comparator.h"
 namespace mongo {
 /*
 extern Status createIndexMetadata(OperationContext* txn,
@@ -67,29 +69,39 @@ using std::string;
 namespace {
 const StringData kIndexesFieldName = "index"_sd;
 const StringData kIdIndexFieldName = "_id_"_sd;
-Status _dropIndexByKeyPattern(OperationContext* txn,const std::string& ns,CollectionType& coll,const BSONObj& key){
+Status _dropIndexByKeyPattern(OperationContext* txn,
+                              const std::string& ns,
+                              CollectionType& coll,
+                              const BSONObj& key) {
     BackgroundOperation::assertNoBgOpInProgForNs(ns);
     BSONArrayBuilder indexArrayBuilder;
     BSONObjIterator indexspecs(coll.getIndex());
     while (indexspecs.more()) {
         BSONObj existingIndex = indexspecs.next().Obj();
-        log()<<"[_dropIndexByKeyPattern] "<<existingIndex["key"].toString() << " "<<key.toString(); 
-        if(existingIndex.getObjectField("key").toString() != key.toString() ){
+        if(!SimpleBSONObjComparator::kInstance.evaluate(existingIndex.getObjectField("key") == key)){
+             indexArrayBuilder.append(existingIndex);
+             continue;
+        }
+        /*
+        if (existingIndex.getObjectField("key").toString() != key.toString()) {
             indexArrayBuilder.append(existingIndex);
             continue;
-        }
+        }*/
     }
     coll.setIndex(indexArrayBuilder.arr());
     return Status::OK();
 }
-Status _dropIndexByName(OperationContext* txn,CollectionType& coll,const std::string& ns,const std::string& indexToDelete){
+Status _dropIndexByName(OperationContext* txn,
+                        CollectionType& coll,
+                        const std::string& ns,
+                        const std::string& indexToDelete) {
     BackgroundOperation::assertNoBgOpInProgForNs(ns);
     BSONArrayBuilder indexArrayBuilder;
     BSONObjIterator indexspecs(coll.getIndex());
     while (indexspecs.more()) {
         BSONObj existingIndex = indexspecs.next().Obj();
         std::string st = existingIndex.getStringField("name");
-        if( st != indexToDelete ){
+        if (st != indexToDelete) {
             indexArrayBuilder.append(existingIndex);
             continue;
         }
@@ -97,13 +109,16 @@ Status _dropIndexByName(OperationContext* txn,CollectionType& coll,const std::st
     coll.setIndex(indexArrayBuilder.arr());
     return Status::OK();
 }
-bool isIdIndex(const std::string& indexToDelete){
-    if( indexToDelete == kIdIndexFieldName )
+bool isIdIndex(const std::string& indexToDelete) {
+    if (indexToDelete == kIdIndexFieldName)
         return true;
     else
         return false;
 }
-Status _dropAllIndexes(OperationContext* txn,CollectionType& coll,const std::string& ns,bool includingIdIndex){
+Status _dropAllIndexes(OperationContext* txn,
+                       CollectionType& coll,
+                       const std::string& ns,
+                       bool includingIdIndex) {
     BackgroundOperation::assertNoBgOpInProgForNs(ns);
     BSONArrayBuilder indexArrayBuilder;
     BSONObjIterator indexspecs(coll.getIndex());
@@ -111,7 +126,7 @@ Status _dropAllIndexes(OperationContext* txn,CollectionType& coll,const std::str
         BSONObj existingIndex = indexspecs.next().Obj();
         BSONObjIterator i(existingIndex.getObjectField("key"));
         BSONElement e = i.next();
-        if((strcmp(e.fieldName(), "_id") == 0 && (e.numberInt() == 1 || e.numberInt() == -1))){
+        if ((strcmp(e.fieldName(), "_id") == 0 && (e.numberInt() == 1 || e.numberInt() == -1))) {
             indexArrayBuilder.append(existingIndex);
             break;
         }
@@ -119,60 +134,104 @@ Status _dropAllIndexes(OperationContext* txn,CollectionType& coll,const std::str
     coll.setIndex(indexArrayBuilder.arr());
     return Status::OK();
 }
-Status updateCollectionOnCfg(OperationContext* txn,
-                  const std::string& toDeleteNs,
-                  const BSONObj& jsobj,
-                  BSONObjBuilder& anObjBuilder) {
-    //1.get collection
-    //2.get indexes
-    //3.get index specs
-    //4.delete indexes
-    //5.set indexes
-    //6.update collection
-   
-    //1.
+Status updateButNotDeleteIndexMetaData(OperationContext* txn,
+                                       const std::string& toDeleteNs,
+                                       const BSONObj& jsobj,
+                                       BSONObjBuilder& anObjBuilder) {
     CollectionType coll;
-    auto collStatus = grid.catalogClient(txn)->getCollection(txn,toDeleteNs);
-    if(collStatus.isOK()){
+    auto collStatus = grid.catalogClient(txn)->getCollection(txn, toDeleteNs);
+    if (collStatus.isOK()) {
         coll = collStatus.getValue().value;
-    }else{
-        log()<<"[catalog/drop_index.cpp:79] "<< toDeleteNs << " collection not found";
-        return Status(ErrorCodes::NamespaceNotFound, "_______collection not found");
+    } else {
+        index_log() << "[dropIndex] fail to get collection due to " << collStatus.getStatus();
+        return collStatus.getStatus();
+    }
+
+    long long ll_max_prefix = coll.getPrefix();
+    BSONObjIterator indexspecs(coll.getIndex());
+    BSONArrayBuilder indexArrayBuilder;
+    while (indexspecs.more()) {
+
+        BSONObjBuilder build;
+        BSONObj existingIndex = indexspecs.next().Obj();
+
+        BSONElement ele = existingIndex.getField(kIndexesFieldName);
+        if (ele.type() == String) {
+            std::string indexName = ele.valuestr();
+            if (isIdIndex(indexName)) {
+                indexArrayBuilder.append(existingIndex);
+                continue;
+            }
+        }
+
+        build.appendElements(existingIndex.removeField("prefix"));
+        build.append("prefix", ++ll_max_prefix);
+        indexArrayBuilder.append(build.obj());
+    }
+
+    coll.setPrefix(ll_max_prefix);
+    BSONArray temp = indexArrayBuilder.arr();
+    coll.setIndex(temp);
+
+    uassertStatusOK(grid.catalogClient(txn)->updateCollection(txn, toDeleteNs, coll));
+    return Status::OK();
+}
+
+
+Status updateCollectionOnCfg(OperationContext* txn,
+                             const std::string& toDeleteNs,
+                             const BSONObj& jsobj,
+                             BSONObjBuilder& anObjBuilder) {
+    // 1.get collection
+    // 2.get indexes
+    // 3.get index specs
+    // 4.delete indexes
+    // 5.set indexes
+    // 6.update collection
+    // 1.
+    CollectionType coll;
+    auto collStatus = grid.catalogClient(txn)->getCollection(txn, toDeleteNs);
+    if (collStatus.isOK()) {
+        coll = collStatus.getValue().value;
+    } else {
+        index_log() << "[dropIndex] fail to get collection due to " << collStatus.getStatus();
+        return collStatus.getStatus();
     }
     BSONArrayBuilder indexArrayBuilder;
-    //2.
+    // 2.
     BSONObjIterator indexspecs(coll.getIndex());
-    //3.
+    // 3.
+    index_log()<<"wanna to delete : "<<jsobj;
     BSONElement f = jsobj.getField(kIndexesFieldName);
-    if(f.type() == String){
+    if (f.type() == String) {
         std::string indexToDelete = f.valuestr();
-        if (indexToDelete == "*"){
-            //4.5.6  not delete id index default
-            Status s = _dropAllIndexes(txn,coll,toDeleteNs,false);
-            if(!s.isOK()){
+        if (indexToDelete == "*") {
+            // 4.5.6  not delete id index default
+            Status s = _dropAllIndexes(txn, coll, toDeleteNs, false);
+            if (!s.isOK()) {
                 return s;
             }
             anObjBuilder.append("msg", "non-_id indexes dropped for collection");
-        }else{
-            log()<<"[catalog/drop_index.cpp:98] " << indexToDelete;
-            if(isIdIndex(indexToDelete)){
+        } else {
+            if (isIdIndex(indexToDelete)) {
                 return Status(ErrorCodes::InvalidOptions, "_____cannot drop _id index");
             }
-            //4.5.6
-            Status ss = _dropIndexByName(txn,coll,toDeleteNs,indexToDelete);
-            if(!ss.isOK()){
+            // 4.5.6
+            Status ss = _dropIndexByName(txn, coll, toDeleteNs, indexToDelete);
+            if (!ss.isOK()) {
                 return Status(ErrorCodes::IndexNotFound,
-                              str::stream() << "index not found with name [" << indexToDelete << "]");
+                              str::stream() << "index not found with name [" << indexToDelete
+                                            << "]");
             }
-       }
-    }else if(f.type() == Object){
-        //4.5.6
-        Status ss = _dropIndexByKeyPattern(txn,toDeleteNs,coll,f.embeddedObject());
-        if( !ss.isOK() )
-           return ss;
+        }
+    } else if (f.type() == Object) {
+        // 4.5.6
+        Status ss = _dropIndexByKeyPattern(txn, toDeleteNs, coll, f.embeddedObject());
+        if (!ss.isOK())
+            return ss;
     }
-    log()<<coll.getIndex();
-    uassertStatusOK(grid.catalogClient(txn)->updateCollection(txn,toDeleteNs, coll));
+    index_log()<<"pre update collection indexes: "<<coll.getIndex();
+    uassertStatusOK(grid.catalogClient(txn)->updateCollection(txn, toDeleteNs, coll));
     return Status::OK();
 }
 Status wrappedRun(OperationContext* txn,
@@ -184,7 +243,7 @@ Status wrappedRun(OperationContext* txn,
     if (!serverGlobalParams.quiet) {
         LOG(0) << "CMD: dropIndexes " << toDeleteNs;
     }
-    Collection* collection = db ? db->getCollection(toDeleteNs) : nullptr;
+    Collection* collection = db ? db->getCollection(toDeleteNs, true) : nullptr;
 
     // If db/collection does not exist, short circuit and return.
     if (!db || !collection) {
@@ -194,6 +253,10 @@ Status wrappedRun(OperationContext* txn,
         }
 
         return Status(ErrorCodes::NamespaceNotFound, "ns not found");
+    }
+    collection = db ? db->getCollection(toDeleteNs) : nullptr;
+    if (!collection) {
+        return Status(ErrorCodes::ChunkNotAssigned, "chunk not assigned");
     }
 
     OldClientContext ctx(txn, toDeleteNs);
@@ -270,57 +333,84 @@ Status wrappedRun(OperationContext* txn,
 }  // namespace
 const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
 Status dropIndexesOnCfgSrv(OperationContext* txn,
-                   const string& dbname,
-                   const NamespaceString& nss,
-                   const BSONObj& idxDescriptor,
-                   BSONObjBuilder& result) {
-    //1.get chunks
-    //2.send cmd to every chunk
-    //3.deal error
-    //4.delete index on configServer
-    log()<<"nss: "<<nss<<" cmd: "<<idxDescriptor.toString();
-    //1.
+                           const string& dbname,
+                           const NamespaceString& nss,
+                           const BSONObj& idxDescriptor,
+                           BSONObjBuilder& result,
+                           bool update) {
+    // 1.get chunks
+    // 2.send cmd to every chunk
+    // 3.deal error
+    // 4.delete index on configServer
+    index_log() << "dropIndexesOnCfgSrv nss: " << nss;
+    // 1.
     vector<ChunkType> chunks;
     vector<Status> statuses;
-    uassertStatusOK(grid.catalogClient(txn)->getChunks(txn,
-                BSON(ChunkType::ns(nss.ns())),
-                BSONObj(),
-                0,
-                &chunks,
-                nullptr,
-                repl::ReadConcernLevel::kMajorityReadConcern));
-    //2.
-    for(ChunkType chunk: chunks){
-        log()<<"[dropIndexesOnCfgSrv :]"<<chunk;
+    uassertStatusOK(
+        grid.catalogClient(txn)->getChunks(txn,
+                                           BSON(ChunkType::ns(nss.ns())),
+                                           BSONObj(),
+                                           0,
+                                           &chunks,
+                                           nullptr,
+                                           repl::ReadConcernLevel::kMajorityReadConcern));
+    // 2.
+    for (ChunkType chunk : chunks) {
+        index_log() << "[dropIndexesOnCfgSrv :]" << chunk.getID();
         BSONObjBuilder builder;
-        for(BSONElement elm:idxDescriptor){
+        for (BSONElement elm : idxDescriptor) {
             builder.append(elm);
         }
-        builder.append("chunkId",chunk.getName());
+        builder.append("chunkId", chunk.getName());
         const auto shardStatus = grid.shardRegistry()->getShard(txn, chunk.getShard());
-        if( !shardStatus.isOK()){
-                log()<<"[dropIndexesOnCfgSrv ] get shard fail";
-                return Status(ErrorCodes::InternalError, "cannot get chunk");
+        if (!shardStatus.isOK()) {
+            index_log() << "[dropIndexesOnCfgSrv ] get shard fail";
+            return Status(ErrorCodes::InternalError, "cannot get chunk");
         }
         const auto createindexShard = shardStatus.getValue();
-	BSONObj cmdObj = builder.obj();
-	auto cmdResponseStatus = uassertStatusOK(createindexShard->runCommand(txn,kPrimaryOnlyReadPreference,dbname,cmdObj,Shard::RetryPolicy::kIdempotent));
-	if (!cmdResponseStatus.commandStatus.isOK()){
-	    log()<<"[dropIndexesOnCfgSrv ]run cmd fail,cmdObj:" << cmdObj;
-	    statuses.push_back(cmdResponseStatus.commandStatus);
-	}
+        BSONObj cmdObj = builder.obj();
+        int retry = 100;
+        while (retry > 0) {
+            auto cmdResponseStatus = uassertStatusOK(createindexShard->runCommand(
+                txn, kPrimaryOnlyReadPreference, dbname, cmdObj, Shard::RetryPolicy::kNoRetry));
+            if (cmdResponseStatus.commandStatus == ErrorCodes::ChunkNotAssigned) {
+                retry--;
+                usleep(100);
+                continue;
+            }
+
+            if (!cmdResponseStatus.commandStatus.isOK()) {
+                if (cmdResponseStatus.commandStatus == ErrorCodes::NamespaceNotFound) {
+                    statuses.push_back(Status(ErrorCodes::ChunkNotAssigned, "chunk not exist"));
+                    break;
+                } else if (cmdResponseStatus.commandStatus == ErrorCodes::IndexNotFound) {
+                    break;
+                }
+                index_log() << "[dropIndexesOnCfgSrv ]run cmd fail";
+                statuses.push_back(cmdResponseStatus.commandStatus);
+            }
+            break;
+        }
     }
-    //3.
-    if( !statuses.empty() ){
+    // 3.
+    if (!statuses.empty()) {
         return statuses[0];
     }
-    //4.
-    //Lock::CollectionLock colLock(txn->lockState(), nss.ns(), MODE_IX);
-    if (dbname != "admin" && dbname != "config")
-    {
-        Status  status = updateCollectionOnCfg(txn, nss.ns(), idxDescriptor, result);
-        if(!status.isOK()) {
-            return status;
+    // 4.
+    // Lock::CollectionLock colLock(txn->lockState(), nss.ns(), MODE_IX);
+    if (update) {  // for ReIndex
+        if (dbname != "admin" && dbname != "config") {
+            Status status = updateButNotDeleteIndexMetaData(txn, nss.ns(), idxDescriptor, result);
+            if (!status.isOK()) {
+                return status;
+            }
+        }
+    } else {
+        if (dbname != "admin" && dbname != "config") {
+            Status status = updateCollectionOnCfg(txn, nss.ns(), idxDescriptor, result);
+            if (!status.isOK()) {
+                return status;
+            }
         }
     }
     return Status::OK();
@@ -333,8 +423,7 @@ Status dropIndexes(OperationContext* txn,
     StringData dbName = nss.db();
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         ScopedTransaction transaction(txn, MODE_IX);
-        AutoGetDb autoDb(txn, dbName, MODE_IX);
-        Lock::CollectionLock collLock(txn->lockState(), nss.ns(), MODE_X);
+        AutoGetDb autoDb(txn, dbName, MODE_X);
 
         bool userInitiatedWritesAndNotPrimary = txn->writesAreReplicated() &&
             !repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(nss);
@@ -353,18 +442,16 @@ Status dropIndexes(OperationContext* txn,
         auto opObserver = getGlobalServiceContext()->getOpObserver();
         if (opObserver)
             opObserver->onDropIndex(txn, dbName.toString() + ".$cmd", idxDescriptor);
-          
-        //get all indexes
+
+        // get all indexes
         BSONArray indexes;
         Database* db = dbHolder().get(txn, nss.db());
         Collection* collection = db->getCollection(nss.ns());
-        collection->getAllIndexes(txn,indexes);
-        //update chunkMeatadata
+        collection->getAllIndexes(txn, indexes);
         uassert(90553, "database dropped during index build", db);
         uassert(90554, "collection dropped during index build", db->getCollection(nss.ns()));
-        db->toUpdateChunkMetadata(txn,nss.ns(),indexes);
-        //end
-
+        //toUpdateChunkMetadata not rollback.
+        db->toUpdateChunkMetadata(txn, nss.ns(), indexes);
         wunit.commit();
     }
     MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "dropIndexes", dbName);
@@ -372,17 +459,17 @@ Status dropIndexes(OperationContext* txn,
 }
 
 Status reIndexesOnCfgSrv(OperationContext* txn,
-                   const string& dbname,
-                   const NamespaceString& nss,
-                   const BSONObj& idxDescriptor,
-                   BSONObjBuilder& result) {
-    //1. get collection
+                         const string& dbname,
+                         const NamespaceString& nss,
+                         const BSONObj& idxDescriptor,
+                         BSONObjBuilder& result) {
+    // 1. get collection
     CollectionType coll;
-    auto collStatus = grid.catalogClient(txn)->getCollection(txn,nss.ns());
-    if(collStatus.isOK()){
+    auto collStatus = grid.catalogClient(txn)->getCollection(txn, nss.ns());
+    if (collStatus.isOK()) {
         coll = collStatus.getValue().value;
-    }else{
-        log()<<"[catalog/drop_index.cpp:79] "<< nss.ns() << " collection not found";
+    } else {
+        index_log() << "[reIndexesOnCfgSrv] " << nss.ns() << " collection not found";
         return Status(ErrorCodes::NamespaceNotFound, "_______collection not found");
     }
     BSONArrayBuilder indexArrayBuilder;
@@ -390,23 +477,26 @@ Status reIndexesOnCfgSrv(OperationContext* txn,
     BSONObjIterator indexspecs(coll.getIndex());
     while (indexspecs.more()) {
         BSONObj existingIndex = indexspecs.next().Obj();
-        auto indexDescriptores = existingIndex.removeField("prefix").removeField("ns").removeField("v");
+        // auto indexDescriptores =
+        // existingIndex.removeField("prefix").removeField("ns").removeField("v");
+        auto indexDescriptores = existingIndex.removeField("prefix");
         indexSpecs.push_back(indexDescriptores);
         indexArrayBuilder.append(indexDescriptores);
     }
-    //3. delete all indexes
+    // 3. delete all indexes
     BSONObjBuilder cmdBuilder;
-    cmdBuilder.append("deleteIndexes",nss.coll());
-    cmdBuilder.append("index","*");
-    Status dropstatus = dropIndexesOnCfgSrv(txn,dbname,nss,cmdBuilder.obj(),result);
-    if( !dropstatus.isOK() )
+    cmdBuilder.append("deleteIndexes", nss.coll());
+    cmdBuilder.append("index", "*");
+    Status dropstatus = dropIndexesOnCfgSrv(txn, dbname, nss, cmdBuilder.obj(), result, true);
+    if (!dropstatus.isOK())
         return dropstatus;
-    //4. create new indexes
+    // 4. create new indexes
     BSONObjBuilder cmd;
-    cmd.append("createIndexes",nss.coll().toString());
-    cmd.append("indexes",indexArrayBuilder.arr());
+    cmd.append("createIndexes", nss.coll().toString());
+    cmd.append("indexes", indexArrayBuilder.arr());
     BSONObj cmdObj = cmd.obj();
-    auto createstatus = createIndexMetadata(txn,nss,indexSpecs,cmdObj,dbname,result);
+    auto createstatus =
+        mongo::createIndexMetadata(txn, nss, indexSpecs, cmdObj, dbname, result, true);
     return createstatus;
 }
 }  // namespace mongo

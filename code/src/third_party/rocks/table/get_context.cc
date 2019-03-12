@@ -80,7 +80,7 @@ void GetContext::SaveValue(const Slice& value, SequenceNumber seq) {
   state_ = kFound;
   if (value_ != nullptr) {
     
-    Log(InfoLogLevel::WARN_LEVEL, info_log_,
+    Log(InfoLogLevel::DEBUG_LEVEL, info_log_,
           "get-context save value len (%d)  data(%-20s)", value.size(),value.data());
     value_->assign(value.data(), value.size());
   }
@@ -113,9 +113,6 @@ bool GetContext::SaveValue(const ParsedInternalKey& parsed_key,
           state_ = kFound;
           if (value_ != nullptr) {
             value_->assign(value.data(), value.size());
-            Log(InfoLogLevel::DEBUG_LEVEL, info_log_,
-                  "get-context save value len (%d)  data(%-20s) key len(%d) data(%s)  %p  %-20s ", 
-                  value.size(),value.data(),parsed_key.user_key.size(), parsed_key.user_key.data(), value_, value_->c_str());
           }
         } else if (kMerge == state_) {
           assert(merge_operator_ != nullptr);

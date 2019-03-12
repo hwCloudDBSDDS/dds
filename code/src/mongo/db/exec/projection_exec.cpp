@@ -349,7 +349,7 @@ Status ProjectionExec::transform(WorkingSetMember* member) const {
             if (!sortKeyMetaStatus.isOK()) {
                 return sortKeyMetaStatus;
             }
-        } else if (META_RECORDID == it->second) {            
+        } else if (META_RECORDID == it->second) {
             member->recordId.AppendTo(bob, it->first);
         }
     }

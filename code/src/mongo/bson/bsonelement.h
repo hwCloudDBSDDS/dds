@@ -198,6 +198,12 @@ public:
     std::string jsonString(JsonStringFormat format,
                            bool includeFieldNames = true,
                            int pretty = 0) const;
+
+    void jsonString(std::stringstream& s,
+                    JsonStringFormat format,
+                    bool includeFieldNames = true,
+                    int pretty = 0) const;
+
     operator std::string() const {
         return toString();
     }

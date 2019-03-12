@@ -41,7 +41,6 @@
 #include "mongo/s/chunk.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/config.h"
-
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/sharding_raii.h"
@@ -298,6 +297,7 @@ Status ChunkManagerTargeter::init(OperationContext* txn) {
     auto scopedDb = std::move(dbStatus.getValue());
     _tabType = scopedDb.db()->getCollTabType(_nss.ns());
     scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
+    // not check success or not
     return Status::OK();
 }
 
@@ -380,7 +380,7 @@ Status ChunkManagerTargeter::targetUpdate(OperationContext* txn,
 
     BSONObj shardKey;
 
-    if (_tabType== CollectionType::TableType::kSharded) {
+    if (_tabType == CollectionType::TableType::kSharded) {
         //
         // Sharded collections have the following futher requirements for targeting:
         //
@@ -429,7 +429,7 @@ Status ChunkManagerTargeter::targetUpdate(OperationContext* txn,
     // We failed to target a single shard.
 
     // Upserts are required to target a single shard.
-    if (_tabType== CollectionType::TableType::kSharded && updateDoc.getUpsert()) {
+    if (_tabType == CollectionType::TableType::kSharded && updateDoc.getUpsert()) {
         return Status(ErrorCodes::ShardKeyNotFound,
                       str::stream() << "An upsert on a sharded collection must contain the shard "
                                        "key and have the simple collation. Update request: "
@@ -452,7 +452,8 @@ Status ChunkManagerTargeter::targetUpdate(OperationContext* txn,
     }
 
     // Single (non-multi) updates must target a single shard or be exact-ID.
-    if (_tabType== CollectionType::TableType::kSharded && !updateDoc.getMulti() && !isExactIdQuery(txn, *cq.getValue(), _manager.get())) {
+    if (_tabType == CollectionType::TableType::kSharded && !updateDoc.getMulti() &&
+        !isExactIdQuery(txn, *cq.getValue(), _manager.get())) {
         return Status(ErrorCodes::ShardKeyNotFound,
                       str::stream()
                           << "A single update on a sharded collection must contain an exact "
@@ -476,7 +477,7 @@ Status ChunkManagerTargeter::targetDelete(OperationContext* txn,
                                           vector<ShardEndpoint*>* endpoints) const {
     BSONObj shardKey;
 
-    if (_tabType== CollectionType::TableType::kSharded) {
+    if (_tabType == CollectionType::TableType::kSharded) {
         //
         // Sharded collections have the following further requirements for targeting:
         //
@@ -524,7 +525,7 @@ Status ChunkManagerTargeter::targetDelete(OperationContext* txn,
     }
 
     // Single deletes must target a single shard or be exact-ID.
-    if (_tabType== CollectionType::TableType::kSharded && deleteDoc.getLimit() == 1 &&
+    if (_tabType == CollectionType::TableType::kSharded && deleteDoc.getLimit() == 1 &&
         !isExactIdQuery(txn, *cq.getValue(), _manager.get())) {
         return Status(ErrorCodes::ShardKeyNotFound,
                       str::stream()
@@ -566,9 +567,8 @@ Status ChunkManagerTargeter::targetQuery(OperationContext* txn,
             return ex.toStatus();
         }
     } else {
-        endpoints->push_back(new ShardEndpoint(ChunkId(), 
-                                          _primary->getId(), 
-                                          ChunkVersion::UNSHARDED()));
+        endpoints->push_back(
+            new ShardEndpoint(ChunkId(), _primary->getId(), ChunkVersion::UNSHARDED()));
     }
 
     return Status::OK();
@@ -592,7 +592,8 @@ Status ChunkManagerTargeter::targetShardKey(OperationContext* txn,
         _stats->chunkSizeDelta[chunk.getValue()->getMin()] += estDataSize;
     }
 
-    *endpoint = new ShardEndpoint(chunk.getValue()->getChunkId(), chunk.getValue()->getShardId(),
+    *endpoint = new ShardEndpoint(chunk.getValue()->getChunkId(),
+                                  chunk.getValue()->getShardId(),
                                   chunk.getValue()->getLastmod());
 
     return Status::OK();
@@ -640,7 +641,7 @@ Status ChunkManagerTargeter::targetAllShards(vector<ShardEndpoint*>* endpoints) 
 }
 
 Status ChunkManagerTargeter::targetAllChunks(OperationContext* txn,
-                                                vector<ShardEndpoint*>* endpoints) const {
+                                             vector<ShardEndpoint*>* endpoints) const {
     if (!_primary && !_manager) {
         return Status(ErrorCodes::NamespaceNotFound,
                       str::stream() << "could not target every shard with versions for "
@@ -654,7 +655,7 @@ Status ChunkManagerTargeter::targetAllChunks(OperationContext* txn,
     } else {
         vector<ShardId> shardIds;
         grid.shardRegistry()->getAllShardIds(&shardIds);
-        
+
         for (const ShardId& shardId : shardIds) {
             endpoints->push_back(new ShardEndpoint(shardId, ChunkVersion::UNSHARDED()));
         }
@@ -696,7 +697,7 @@ void ChunkManagerTargeter::noteStaleResponse(const ShardEndpoint& endpoint,
 }
 
 void ChunkManagerTargeter::noteCouldNotTarget() {
-    //dassert(_remoteShardVersions.empty());
+    // dassert(_remoteShardVersions.empty());
     _needsTargetingRefresh = true;
 }
 
@@ -707,7 +708,9 @@ Status ChunkManagerTargeter::refreshIfNeeded(OperationContext* txn, bool* wasCha
     }
 
     *wasChanged = false;
-
+    index_log() << "ChunkManagerTargeter::refreshIfNeeded _needsTargetingRefresh :"
+                << _needsTargetingRefresh
+                << ", _remoteShardVersions.size():" << _remoteShardVersions.size();
     //
     // Did we have any stale config or targeting errors at all?
     //
@@ -729,7 +732,9 @@ Status ChunkManagerTargeter::refreshIfNeeded(OperationContext* txn, bool* wasCha
     }
 
     auto scopedDb = std::move(dbStatus.getValue());
-    auto cmOrPrimaryStatus = scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
+    auto cmOrPrimaryStatus =
+        scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
+    _tabType = scopedDb.db()->getCollTabType(_nss.ns());
     if (!cmOrPrimaryStatus.isOK()) {
         return cmOrPrimaryStatus;
     }
@@ -743,7 +748,7 @@ Status ChunkManagerTargeter::refreshIfNeeded(OperationContext* txn, bool* wasCha
 
     // there might be a situation that we couldn't target some shards (not all shards),
     // also some other shards return shardversion error(mismatch), so we donnt need
-    //dassert(!(_needsTargetingRefresh && !_remoteShardVersions.empty()));
+    // dassert(!(_needsTargetingRefresh && !_remoteShardVersions.empty()));
 
     if (_needsTargetingRefresh && !_remoteShardVersions.empty()) {
         // Reset the field
@@ -809,28 +814,17 @@ Status ChunkManagerTargeter::refreshNow(OperationContext* txn, RefreshType refre
     refreshBackoff();
 
     // TODO: Improve synchronization and make more explicit
-    if (refreshType == RefreshType_RefreshChunkManager) {
-        try {
-            // Forces a remote check of the collection info, synchronization between threads happens
-            // internally
-            scopedDb.db()->getChunkManagerIfExists(txn, _nss.ns(), true);
-        } catch (const DBException& ex) {
-            return Status(ErrorCodes::UnknownError, ex.toString());
-        }
-
-        return scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
-    } else if (refreshType == RefreshType_ReloadDatabase) {
-        try {
-            // Dumps the db info, reloads it all, synchronization between threads happens internally
-            scopedDb.db()->reload(txn);
-        } catch (const DBException& ex) {
-            return Status(ErrorCodes::UnknownError, ex.toString());
-        }
-
-        return scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
+    try {
+        // Forces a remote check of the collection info, synchronization between threads happens
+        // internally
+        scopedDb.db()->getChunkManagerIfExists(txn, _nss.ns(), true);
+    } catch (const DBException& ex) {
+        return Status(ErrorCodes::UnknownError, ex.toString());
     }
 
-    return Status::OK();
+    auto status = scopedDb.db()->getChunkManagerOrPrimary(txn, _nss.ns(), _manager, _primary);
+    _tabType = scopedDb.db()->getCollTabType(_nss.ns());
+    return status;
 }
 
 }  // namespace mongo

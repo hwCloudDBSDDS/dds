@@ -75,10 +75,8 @@ TEST(ReplicaSetConfig, ParseMinimalConfigAndCheckDefaults) {
     ASSERT_EQUALS(1, config.getDefaultWriteConcern().wNumNodes);
     ASSERT_EQUALS("", config.getDefaultWriteConcern().wMode);
     ASSERT_EQUALS(kDefaultConfigHeartbeatInterval, config.getHeartbeatInterval());
-    ASSERT_EQUALS(kDefaultConfigHeartbeatTimeoutPeriod,
-                  config.getHeartbeatTimeoutPeriod());
-    ASSERT_EQUALS(kDefaultConfigElectionTimeoutPeriod,
-                  config.getElectionTimeoutPeriod());
+    ASSERT_EQUALS(kDefaultConfigHeartbeatTimeoutPeriod, config.getHeartbeatTimeoutPeriod());
+    ASSERT_EQUALS(kDefaultConfigElectionTimeoutPeriod, config.getElectionTimeoutPeriod());
     ASSERT_TRUE(config.isChainingAllowed());
     ASSERT_FALSE(config.getWriteConcernMajorityShouldJournal());
     ASSERT_FALSE(config.isConfigServer());

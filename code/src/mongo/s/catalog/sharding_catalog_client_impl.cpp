@@ -43,6 +43,8 @@
 #include "mongo/client/remote_command_targeter.h"
 #include "mongo/client/replica_set_monitor.h"
 #include "mongo/db/audit.h"
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/client.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/namespace_string.h"
@@ -55,6 +57,7 @@
 #include "mongo/executor/task_executor.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
+#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/catalog/config_server_version.h"
 #include "mongo/s/catalog/dist_lock_manager.h"
 #include "mongo/s/catalog/type_changelog.h"
@@ -64,7 +67,6 @@
 #include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/catalog/type_tags.h"
-#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/chunk_manager.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_connection.h"
@@ -102,8 +104,13 @@ const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOn
 const ReadPreferenceSetting kConfigReadSelector(ReadPreference::Nearest, TagSet{});
 const ReadPreferenceSetting kConfigPrimaryPreferredSelector(ReadPreference::PrimaryPreferred,
                                                             TagSet{});
+const ReadPreferenceSetting kCustomerConfigPrimaryPreferredSelector(
+    ReadPreference::PrimaryPreferred, TagSet{}, true);
+
+
 const int kMaxReadRetry = 3;
 const int kMaxWriteRetry = 3;
+const Milliseconds kCommandTimeout = Seconds{30};
 
 const std::string kActionLogCollectionName("actionlog");
 const int kActionLogCollectionSizeMB = 2 * 1024 * 1024;
@@ -124,7 +131,7 @@ void toBatchError(const Status& status, BatchedCommandResponse* response) {
 
 ShardingCatalogClientImpl::ShardingCatalogClientImpl(
     std::unique_ptr<DistLockManager> distLockManager)
-    : _distLockManager(std::move(distLockManager)) {}
+    : _distLockManager(std::move(distLockManager)), _rand(_newRand()) {}
 
 ShardingCatalogClientImpl::~ShardingCatalogClientImpl() = default;
 
@@ -224,6 +231,7 @@ Status ShardingCatalogClientImpl::createDatabase(OperationContext* txn, const st
     db.setName(dbName);
     db.setPrimary(newShardId);
     db.setSharded(true);
+    db.setEnableSharding(false);
 
     status = insertConfigDocument(
         txn, DatabaseType::ConfigNS, db.toBSON(), ShardingCatalogClient::kMajorityWriteConcern);
@@ -346,15 +354,16 @@ Status ShardingCatalogClientImpl::enableSharding(OperationContext* txn, const st
         db.setName(dbName);
         db.setPrimary(newShardId);
         db.setSharded(true);
+        db.setEnableSharding(true);
     } else if (status.code() == ErrorCodes::NamespaceExists) {
-        if (db.getSharded()) {
-            //return Status(ErrorCodes::AlreadyInitialized,
-            //              str::stream() << "sharding already enabled for database " << dbName);
-            return Status::OK();
+        if (db.getEnableSharding()) {
+            return Status(ErrorCodes::AlreadyInitialized,
+                          str::stream() << "sharding already enabled for database " << dbName);
         }
 
         // Database exists, so just update it
         db.setSharded(true);
+        db.setEnableSharding(true);
     } else {
         return status;
     }
@@ -370,7 +379,7 @@ Status ShardingCatalogClientImpl::_log(OperationContext* txn,
                                        const std::string& operationNS,
                                        const BSONObj& detail,
                                        const WriteConcernOptions& writeConcern) {
-    Date_t now = Grid::get(txn)->getNetwork()->now();
+    Date_t now = Date_t::now(Date_t::ClockType::kSystemClock);
     const std::string hostName = Grid::get(txn)->getNetwork()->getHostName();
     const string changeId = str::stream() << hostName << "-" << now.toString() << "-" << OID::gen();
 
@@ -384,7 +393,6 @@ Status ShardingCatalogClientImpl::_log(OperationContext* txn,
     changeLog.setDetails(detail);
 
     BSONObj changeLogBSON = changeLog.toBSON();
-    log() << "about to log metadata event into " << logCollName << ": " << redact(changeLogBSON);
 
     const NamespaceString nss("config", logCollName);
     Status result = insertConfigDocument(txn, nss.ns(), changeLogBSON, writeConcern);
@@ -410,8 +418,10 @@ Status ShardingCatalogClientImpl::shardCollection(OperationContext* txn,
     auto scopedDistLock = getDistLockManager()->lock(
         txn, ns, "shardCollection", DistLockManager::kDefaultLockTimeout);
     if (!scopedDistLock.isOK()) {
+        index_log() << "[ShardingCatalogClientImpl] shardCollection getDistLock error, ns: " << ns;
         return scopedDistLock.getStatus();
     }
+    index_log() << "[ShardingCatalogClientImpl] shardCollection getDistLock ns: " << ns;
 
     // Record start in changelog
     {
@@ -435,31 +445,41 @@ Status ShardingCatalogClientImpl::shardCollection(OperationContext* txn,
                   ShardingCatalogClientImpl::kMajorityWriteConcern);
     }
 
-    //send cmd to config, holding dist lock
+    // send cmd to config, holding dist lock
     BSONObjBuilder cmdBuilder;
     cmdBuilder.append("shardCollection", ns);
     cmdBuilder.append("key", fieldsAndOrder.toBSON());
     auto configshard = Grid::get(txn)->shardRegistry()->getConfigShard();
-    auto cmdResponseStatus = configshard->runCommand(
-                                                    txn,
-                                                    kPrimaryOnlyReadPreference,
-                                                    "admin",
-                                                    cmdObj.isEmpty()?cmdBuilder.obj():cmdObj,
-                                                    Shard::RetryPolicy::kIdempotent);
+    auto cmdResponseStatus = configshard->runCommandWithFixedRetryAttempts(txn,
+                                                     kPrimaryOnlyReadPreference,
+                                                     "admin",
+                                                     cmdObj.isEmpty() ? cmdBuilder.obj() : cmdObj,
+                                                     Shard::RetryPolicy::kIdempotent);
+    if (!cmdResponseStatus.isOK()) {
+        index_log() << "[ShardingCatalogClientImpl] shardCollection runCommand failed, ns: " << ns
+                    << cmdResponseStatus.getStatus().toString();
+        return cmdResponseStatus.getStatus();
+    }
     if (!cmdResponseStatus.getValue().commandStatus.isOK()) {
+        index_log()
+            << "[ShardingCatalogClientImpl] shardCollection runCommand on configShard failed, ns: "
+            << ns << cmdResponseStatus.getValue().commandStatus.toString();
         return cmdResponseStatus.getValue().commandStatus;
     }
 
     auto dbconfigstatus = grid.catalogCache()->getDatabase(txn, nsToDatabase(ns));
     if (!dbconfigstatus.isOK()) {
+        index_log() << "[ShardingCatalogClientImpl] shardCollection getDatabase failed, ns: " << ns
+                    << dbconfigstatus.getStatus().toString();
         return dbconfigstatus.getStatus();
     }
 
     shared_ptr<DBConfig> conf = dbconfigstatus.getValue();
-    auto manager = conf->getChunkManagerIfExists(txn, ns, true);
+    auto manager = conf->getChunkManager(txn, ns, true);
     if (NULL == manager) {
+        index_log() << "[ShardingCatalogClientImpl] getChunkManagerIfExists failed, ns: " << ns;
         return Status(ErrorCodes::AlreadyInitialized,
-                      str::stream() << "collection " << ns << " get chunkm fail");
+                      str::stream() << "collection " << ns << " get chunkmanager failed");
     }
 
     logChange(txn,
@@ -555,8 +575,15 @@ StatusWith<ShardDrainingStatus> ShardingCatalogClientImpl::removeShard(Operation
     // Draining is done, now finish removing the shard.
     log() << "going to remove shard: " << name;
     audit::logRemoveShard(txn->getClient(), name);
+    Status status = removeShardFromMap(txn,name);
+    
+    if (!status.isOK()) {
+        index_err() << "Error concluding removeShard operation on: " << name
+              << "; err: " << status.reason();
+        return status;
+    }
 
-    Status status = removeConfigDocuments(txn,
+    status = removeConfigDocuments(txn,
                                           ShardType::ConfigNS,
                                           BSON(ShardType::name() << name),
                                           ShardingCatalogClient::kMajorityWriteConcern);
@@ -597,7 +624,7 @@ StatusWith<repl::OpTimeWith<DatabaseType>> ShardingCatalogClientImpl::getDatabas
         return repl::OpTimeWith<DatabaseType>(dbt);
     }
 
-    auto result = _fetchDatabaseMetadata(txn, dbName, kConfigReadSelector);
+    auto result = _fetchDatabaseMetadata(txn, dbName, kPrimaryOnlyReadPreference);
     if (result == ErrorCodes::NamespaceNotFound) {
         // If we failed to find the database metadata on the 'nearest' config server, try again
         // against the primary, in case the database was recently created.
@@ -644,10 +671,59 @@ StatusWith<repl::OpTimeWith<DatabaseType>> ShardingCatalogClientImpl::_fetchData
     return repl::OpTimeWith<DatabaseType>(parseStatus.getValue(), docsWithOpTime.opTime);
 }
 
+StatusWith<bool> ShardingCatalogClientImpl::isCollectionExist(OperationContext* txn,
+                                                              const std::string& collNs) {
+    auto statusFind = _exhaustiveFindOnConfig(txn,
+                                              kPrimaryOnlyReadPreference,
+                                              repl::ReadConcernLevel::kMajorityReadConcern,
+                                              NamespaceString(CollectionType::ConfigNS),
+                                              BSON(CollectionType::fullNs(collNs)),
+                                              BSONObj(),
+                                              1);
+    if (!statusFind.isOK()) {
+        index_LOG(0) << "[ShardingCatalogClientImpl] _exhaustiveFindOnConfig error :"
+                     << statusFind.getStatus();
+        return statusFind.getStatus();
+    }
+    const auto& retOpTimePair = statusFind.getValue();
+    const auto& retVal = retOpTimePair.value;
+    if (retVal.empty()) {
+        index_LOG(0)
+            << "[ShardingCatalogClientImpl] isCollectionExist _exhaustiveFindOnConfig collection "
+            << collNs << " not found";
+        return false;
+    }
+    invariant(retVal.size() == 1);
+    bool collDropped;
+    BSONField<bool> kDropped("dropped");
+    Status status = bsonExtractBooleanField(retVal.front(), kDropped.name(), &collDropped);
+    if (status.isOK()) {
+        if (collDropped) {
+            index_LOG(0) << "[ShardingCatalogClientImpl] isCollectionExist collection " << collNs
+                         << " is dropped";
+            return false;
+        }
+    } else {
+        return status;
+    }
+    bool collCreated;
+    BSONField<bool> kCreated("created");
+    status = bsonExtractBooleanField(retVal.front(), kCreated.name(), &collCreated);
+    if (status.isOK()) {
+        if (!collCreated) {
+            return false;
+        }
+    } else {
+        return status;
+    }
+    return true;
+}
+
+
 StatusWith<repl::OpTimeWith<CollectionType>> ShardingCatalogClientImpl::getCollection(
     OperationContext* txn, const std::string& collNs) {
     auto statusFind = _exhaustiveFindOnConfig(txn,
-                                              kConfigReadSelector,
+                                              kPrimaryOnlyReadPreference,
                                               repl::ReadConcernLevel::kMajorityReadConcern,
                                               NamespaceString(CollectionType::ConfigNS),
                                               BSON(CollectionType::fullNs(collNs)),
@@ -727,17 +803,18 @@ Status ShardingCatalogClientImpl::dropCollection(OperationContext* txn, const Na
               BSONObj(),
               ShardingCatalogClientImpl::kMajorityWriteConcern);
 
-    LOG(0) << "dropCollection " << ns << " started";
+    index_LOG(0) << "[ShardingCatalogClientImpl] dropCollection " << ns << " started";
 
-    vector<ChunkType> chunks;
-    uassertStatusOK(grid.catalogClient(txn)->getChunks(txn,
-                                                        BSON(ChunkType::ns(ns.ns())),
-                                                        BSONObj(),
-                                                        0,
-                                                        &chunks,
-                                                        nullptr,
-                                                        repl::ReadConcernLevel::kMajorityReadConcern));
-
+    /*vector<ChunkType> chunks;
+    uassertStatusOK(
+        grid.catalogClient(txn)->getChunks(txn,
+                                           BSON(ChunkType::ns(ns.ns())),
+                                           BSONObj(),
+                                           0,
+                                           &chunks,
+                                           nullptr,
+                                           repl::ReadConcernLevel::kMajorityReadConcern));
+    */
     // Lock the collection globally so that split/migrate cannot run
     Seconds waitFor(DistLockManager::kDefaultLockTimeout);
     MONGO_FAIL_POINT_BLOCK(setDropCollDistLockWait, customWait) {
@@ -747,99 +824,46 @@ Status ShardingCatalogClientImpl::dropCollection(OperationContext* txn, const Na
 
     auto scopedDistLock = getDistLockManager()->lock(txn, ns.ns(), "drop", waitFor);
     if (!scopedDistLock.isOK()) {
+        index_LOG(0) << "[ShardingCatalogClientImpl] dropCollection getDistLock error, ns: " << ns;
         return scopedDistLock.getStatus();
     }
 
-    LOG(0) << "dropCollection " << ns << " locked";
+    index_LOG(0) << "[ShardingCatalogClientImpl] dropCollection getDistLock ns: " << ns;
 
-    std::map<string, BSONObj> errors;
-    auto* shardRegistry = grid.shardRegistry();
-    LOG(0) << "[drop collection] chunk.szie : "<<chunks.size();
-    for(ChunkType chunk: chunks){
-        BSONObjBuilder builder;
-        auto shardStatus = shardRegistry->getShard(txn, chunk.getShard());
-        if (!shardStatus.isOK()) {
-            log()<<"[drop collection] get shard fail";
-            return shardStatus.getStatus();
+    auto configshard = Grid::get(txn)->shardRegistry()->getConfigShard();
+    auto dropResult = configshard->runCommandWithFixedRetryAttempts(txn,
+                                                    kPrimaryOnlyReadPreference,
+                                                    ns.db().toString(),
+                                                    BSON("drop" << ns.coll() << WriteConcernOptions::kWriteConcernField
+                                                    << txn->getWriteConcern().toBSON()),
+                                                    Shard::RetryPolicy::kIdempotent);
+    
+    if (!dropResult.isOK())  {
+        index_err() << "[dropCollection] run dropCollection on config server failed, ns: " << ns 
+            << " ,status: " << dropResult.getStatus();
+        return dropResult.getStatus();
+    }                                                   
+    
+    auto dropStatus = std::move(dropResult.getValue().commandStatus);
+    auto wcStatus = std::move(dropResult.getValue().writeConcernStatus);
+    if (!dropStatus.isOK() || !wcStatus.isOK()) {
+        if (dropStatus.code() == ErrorCodes::NamespaceNotFound && wcStatus.isOK()) {
+            index_log() << "[dropCollection] ns: " << ns << " is not found.";
         }
-        auto dropResult = shardStatus.getValue()->runCommandWithFixedRetryAttempts(
-                txn,
-                ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-                ns.db().toString(),
-                BSON("drop" << ns.coll() <<"chunkId"<<chunk.getName() << WriteConcernOptions::kWriteConcernField
-                    << txn->getWriteConcern().toBSON()),
-                Shard::RetryPolicy::kIdempotent);
-
-        if (!dropResult.isOK()) {
-            return Status(dropResult.getStatus().code(),
-                    dropResult.getStatus().reason() + " at " + chunk.getName());
-        }
-        auto dropStatus = std::move(dropResult.getValue().commandStatus);
-        auto wcStatus = std::move(dropResult.getValue().writeConcernStatus);
-        if (!dropStatus.isOK() || !wcStatus.isOK()) {
-            if (dropStatus.code() == ErrorCodes::NamespaceNotFound && wcStatus.isOK()) {
-                // Generally getting NamespaceNotFound is okay to ignore as it simply means that
-                // the collection has already been dropped or doesn't exist on this shard.
-                // If, however, we get NamespaceNotFound but also have a write concern error then we
-                // can't confirm whether the fact that the namespace doesn't exist is actually
-                // committed.  Thus we must still fail on NamespaceNotFound if there is also a write
-                // concern error. This can happen if we call drop, it succeeds but with a write
-                // concern error, then we retry the drop.
-                continue;
-            }
-
-            errors.emplace(chunk.getName(), std::move(dropResult.getValue().response));
+        else {
+            index_err() << "[dropCollection] return error from config server, dropStatus: " << dropStatus 
+                << " ,writeConcern status: " << wcStatus;
+            return {ErrorCodes::OperationFailed, "dropCollection failed"};
         }
     }
 
-    if (!errors.empty()) {
-        StringBuilder sb;
-        sb << "Dropping collection failed on the following hosts: ";
-
-        for (auto it = errors.cbegin(); it != errors.cend(); ++it) {
-            if (it != errors.cbegin()) {
-                sb << ", ";
-            }
-
-            sb << it->first << ": " << it->second;
-        }
-
-        return {ErrorCodes::OperationFailed, sb.str()};
-    }
-    LOG(1) << "dropCollection " << ns << " shard data deleted";
-
-    // Remove chunk data
-    Status result = removeConfigDocuments(txn,
-            ChunkType::ConfigNS,
-            BSON(ChunkType::ns(ns.ns())),
-            ShardingCatalogClient::kMajorityWriteConcern);
-    if (!result.isOK()) {
-        return result;
-    }
-
-    LOG(1) << "dropCollection " << ns << " chunk data deleted";
-
-    // Mark the collection as dropped
-    CollectionType coll;
-    coll.setNs(ns);
-    coll.setDropped(true);
-    coll.setEpoch(ChunkVersion::DROPPED().epoch());
-    coll.setUpdatedAt(Grid::get(txn)->getNetwork()->now());
-    coll.setPrefix(1);
-
-    result = updateCollection(txn, ns.ns(), coll);
-    if (!result.isOK()) {
-        return result;
-    }
-
-    LOG(1) << "dropCollection " << ns << " collection marked as dropped";
-    LOG(0) << "dropCollection " << ns << " completed";
+    index_LOG(0) << "[ShardingCatalogClientImpl] dropCollection " << ns << " completed";
 
     logChange(txn,
-            "dropCollection",
-            ns.ns(),
-            BSONObj(),
-            ShardingCatalogClientImpl::kMajorityWriteConcern);
+              "dropCollection",
+              ns.ns(),
+              BSONObj(),
+              ShardingCatalogClientImpl::kMajorityWriteConcern);
 
     return Status::OK();
 }
@@ -945,62 +969,60 @@ Status ShardingCatalogClientImpl::getDatabasesForShard(OperationContext* txn,
 }
 
 
-Status ShardingCatalogClientImpl::generateNewChunkID(OperationContext* txn, std::string  &chunkID){
+Status ShardingCatalogClientImpl::generateNewChunkID(OperationContext* txn, std::string& chunkID) {
     invariant(serverGlobalParams.clusterRole == ClusterRole::ConfigServer);
 
     uint64_t id = 0;
-    if (serverGlobalParams.chunkCount == 0){
+    if (serverGlobalParams.chunkCount == 0) {
         // Lock the chunk globally so that no other guys can get the chunkID
         auto scopedDistLock = getDistLockManager()->lock(
             txn, ChunkType::ConfigNS, "generateNewChunkID", DistLockManager::kDefaultLockTimeout);
         if (!scopedDistLock.isOK()) {
             return scopedDistLock.getStatus();
-        }        
+        }
 
-        if (serverGlobalParams.chunkCount == 0){
+        if (serverGlobalParams.chunkCount == 0) {
             auto longLimit = 1;
             BSONObjBuilder validChunkFilter;
-            validChunkFilter.append(ChunkType::rootFolder(), BSON("$ne" << "stalerootfolder"));
+            validChunkFilter.append(ChunkType::rootFolder(),
+                                    BSON("$ne"
+                                         << "stalerootfolder"));
 
             auto findStatus = _exhaustiveFindOnConfig(txn,
-                                                  kConfigReadSelector,
-                                                  repl::ReadConcernLevel::kMajorityReadConcern,
-                                                  NamespaceString(ChunkType::ConfigNS),
-                                                  validChunkFilter.obj(),
-                                                  BSON("_id" << -1),
-                                                  longLimit);
+                                                      kConfigReadSelector,
+                                                      repl::ReadConcernLevel::kMajorityReadConcern,
+                                                      NamespaceString(ChunkType::ConfigNS),
+                                                      validChunkFilter.obj(),
+                                                      BSON("_id" << -1),
+                                                      longLimit);
             if (!findStatus.isOK()) {
-                log () << "failed to get chunkID";
+                index_log() << "failed to get chunkID";
                 return {findStatus.getStatus().code(),
                         str::stream() << "Failed to get chunks due to "
                                       << findStatus.getStatus().reason()};
             }
-        
+
             const auto& chunkDocs = findStatus.getValue().value;
 
             uint64_t unIntializedValue = 0;
-            if (!chunkDocs.empty()){
-                LOG(0) << "generateNewChunkID : " << chunkDocs.front()["_id"].String();     
-                unsigned long long chunkNum = strtoull (chunkDocs.front()["_id"].String().c_str(), nullptr, 16);
-                serverGlobalParams.chunkCount.compare_exchange_strong( unIntializedValue, chunkNum + 1048576 );
-            } 
-            else {
-                serverGlobalParams.chunkCount.compare_exchange_strong( unIntializedValue, 1 );
+            if (!chunkDocs.empty()) {
+                index_LOG(0) << "generateNewChunkID : ";
+                unsigned long long chunkNum =
+                    strtoull(chunkDocs.front()["_id"].String().c_str(), nullptr, 16);
+                serverGlobalParams.chunkCount.compare_exchange_strong(unIntializedValue,
+                                                                      chunkNum + 1048576);
+            } else {
+                serverGlobalParams.chunkCount.compare_exchange_strong(unIntializedValue, 1);
             }
-        }   
-
+        }
     }
 
     id = serverGlobalParams.chunkCount.fetch_add(1);
-
-    std::stringstream stringStream;
-    stringStream << std::hex << id;
-    chunkID = stringStream.str();
-
+    chunkID = ChunkType::toSex(id);
     return Status::OK();
 }
 
-/*Status ShardingCatalogClientImpl::generateNewChunkID(OperationContext* txn, std::string  &chunkID){
+/*Status ShardingCatalogClientImpl::generateNewChunkID(OperationContext* txn, std::string &chunkID){
     invariant(serverGlobalParams.clusterRole == ClusterRole::ConfigServer);
 
     uint64_t id = 0;
@@ -1008,7 +1030,7 @@ Status ShardingCatalogClientImpl::generateNewChunkID(OperationContext* txn, std:
         // Lock the chunk globally so that no other guys can get the chunkID
         auto scopedDistLock = getDistLockManager()->lock(
             txn, ChunkType::ConfigNS, "generateNewChunkID", DistLockManager::kDefaultLockTimeout);
-        
+
         if (serverGlobalParams.chunkCount == 0){
             auto longLimit = 1;
             BSONObjBuilder validChunkFilter;
@@ -1034,12 +1056,12 @@ Status ShardingCatalogClientImpl::generateNewChunkID(OperationContext* txn, std:
                 std::istringstream is(chunkDocs.front()["_id"].String());
                 is >> count;
                 count++;
-            } 
+            }
             if (count > 99999){
-               return Status(ErrorCodes::OperationFailed, "unable to generate new chunkID"); 
+               return Status(ErrorCodes::OperationFailed, "unable to generate new chunkID");
             }
             serverGlobalParams.chunkCount.compare_exchange_strong( unIntializedValue, count);
-        }   
+        }
 
     }
     id = serverGlobalParams.chunkCount.fetch_add(1);
@@ -1136,16 +1158,16 @@ StatusWith<repl::OpTimeWith<std::vector<ShardType>>> ShardingCatalogClientImpl::
     OperationContext* txn, repl::ReadConcernLevel readConcern) {
     std::vector<ShardType> shards;
     BSONObjBuilder queryBuilder{};
-    queryBuilder.append(ShardType::state(), 
-                             static_cast<std::underlying_type<ShardType::ShardState>::type>(
-                                ShardType::ShardState::kShardActive));
+    queryBuilder.append(ShardType::state(),
+                        static_cast<std::underlying_type<ShardType::ShardState>::type>(
+                            ShardType::ShardState::kShardActive));
     auto findStatus = _exhaustiveFindOnConfig(txn,
                                               kConfigReadSelector,
                                               readConcern,
                                               NamespaceString(ShardType::ConfigNS),
-                                              queryBuilder.obj(),   // no query filter
-                                              BSONObj(),     // no sort
-                                              boost::none);  // no limit
+                                              queryBuilder.obj(),  // no query filter
+                                              BSONObj(),           // no sort
+                                              boost::none);        // no limit
     if (!findStatus.isOK()) {
         return findStatus.getStatus();
     }
@@ -1223,10 +1245,15 @@ bool ShardingCatalogClientImpl::runUserManagementWriteCommand(OperationContext* 
         cmdToRun = modifiedCmd.obj();
     }
 
+    auto readPreferenceSetting = ReadPreferenceSetting{ReadPreference::PrimaryOnly};
+    if (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser()) {
+        readPreferenceSetting.customerMeta = true;
+    }
+
     auto response =
         Grid::get(txn)->shardRegistry()->getConfigShard()->runCommandWithFixedRetryAttempts(
             txn,
-            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+            readPreferenceSetting,
             dbname,
             cmdToRun,
             Shard::kDefaultConfigCommandTimeout,
@@ -1285,6 +1312,30 @@ bool ShardingCatalogClientImpl::runUserManagementReadCommand(OperationContext* t
     return Command::appendCommandStatus(*result, resultStatus.getStatus());
 }
 
+
+bool ShardingCatalogClientImpl::runUserManagementReadCommandWithCheckTxn(OperationContext* txn,
+                                                                         const std::string& dbname,
+                                                                         const BSONObj& cmdObj,
+                                                                         BSONObjBuilder* result) {
+    bool isCustomerCmd =
+        AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser();
+    auto resultStatus =
+        Grid::get(txn)->shardRegistry()->getConfigShard()->runCommandWithFixedRetryAttempts(
+            txn,
+            isCustomerCmd ? kCustomerConfigPrimaryPreferredSelector
+                          : kConfigPrimaryPreferredSelector,
+            dbname,
+            cmdObj,
+            Shard::kDefaultConfigCommandTimeout,
+            Shard::RetryPolicy::kIdempotent);
+    if (resultStatus.isOK()) {
+        result->appendElements(resultStatus.getValue().response);
+        return resultStatus.getValue().commandStatus.isOK();
+    }
+
+    return Command::appendCommandStatus(*result, resultStatus.getStatus());
+}
+
 Status ShardingCatalogClientImpl::applyChunkOpsDeprecated(OperationContext* txn,
                                                           const BSONArray& updateOps,
                                                           const BSONArray& preCondition,
@@ -1295,6 +1346,7 @@ Status ShardingCatalogClientImpl::applyChunkOpsDeprecated(OperationContext* txn,
     invariant(serverGlobalParams.clusterRole == ClusterRole::ConfigServer ||
               (readConcern == repl::ReadConcernLevel::kMajorityReadConcern &&
                writeConcern.wMode == WriteConcernOptions::kMajority));
+
     BSONObj cmd = BSON("applyOps" << updateOps << "preCondition" << preCondition
                                   << WriteConcernOptions::kWriteConcernField
                                   << writeConcern.toBSON());
@@ -1440,8 +1492,8 @@ Status ShardingCatalogClientImpl::insertConfigDocument(OperationContext* txn,
             if (!fetchDuplicate.isOK()) {
                 const Milliseconds totalTime = Date_t::now() - start;
                 if (totalTime >= Milliseconds(500)) {
-                    warning() << "time-consuming insertConfigDocument with request " << request
-                        << ", total time: " << totalTime;
+                    index_warning() << "time-consuming insertConfigDocument with request "
+                                    << request << ", total time: " << totalTime;
                 }
                 return fetchDuplicate.getStatus();
             }
@@ -1450,8 +1502,8 @@ Status ShardingCatalogClientImpl::insertConfigDocument(OperationContext* txn,
             if (existingDocs.empty()) {
                 const Milliseconds totalTime = Date_t::now() - start;
                 if (totalTime >= Milliseconds(500)) {
-                    warning() << "time-consuming insertConfigDocument with request " << request
-                        << ", total time: " << totalTime;
+                    index_warning() << "time-consuming insertConfigDocument with request "
+                                    << request << ", total time: " << totalTime;
                 }
                 return {ErrorCodes::DuplicateKey,
                         stream() << "DuplicateKey error was returned after a retry attempt, but no "
@@ -1466,8 +1518,8 @@ Status ShardingCatalogClientImpl::insertConfigDocument(OperationContext* txn,
             if (existing.woCompare(doc) == 0) {
                 const Milliseconds totalTime = Date_t::now() - start;
                 if (totalTime >= Milliseconds(500)) {
-                    warning() << "time-consuming insertConfigDocument with request " << request
-                        << ", total time: " << totalTime;
+                    index_warning() << "time-consuming insertConfigDocument with request "
+                                    << request << ", total time: " << totalTime;
                 }
                 // Documents match, so treat the operation as success
                 return Status::OK();
@@ -1475,8 +1527,8 @@ Status ShardingCatalogClientImpl::insertConfigDocument(OperationContext* txn,
         }
         const Milliseconds totalTime = Date_t::now() - start;
         if (totalTime >= Milliseconds(500)) {
-            warning() << "time-consuming insertConfigDocument with request " << request
-                   << ", total time: " << totalTime;
+            index_warning() << "time-consuming insertConfigDocument with request " << request
+                            << ", total time: " << totalTime;
         }
         return status;
     }
@@ -1519,8 +1571,8 @@ StatusWith<bool> ShardingCatalogClientImpl::updateConfigDocument(
     if (!status.isOK()) {
         const Milliseconds totalTime = Date_t::now() - start;
         if (totalTime >= Milliseconds(500)) {
-            warning() << "time-consuming updateConfigDocument with request " << request
-                   << ", total time: " << totalTime;
+            index_warning() << "time-consuming updateConfigDocument with request " << request
+                            << ", total time: " << totalTime;
         }
         return status;
     }
@@ -1529,21 +1581,20 @@ StatusWith<bool> ShardingCatalogClientImpl::updateConfigDocument(
     invariant(nSelected == 0 || nSelected == 1);
     const Milliseconds totalTime = Date_t::now() - start;
     if (totalTime >= Milliseconds(500)) {
-        warning() << "time-consuming updateConfigDocument with request " << request
-               << ", total time: " << totalTime;
+        index_warning() << "time-consuming updateConfigDocument with request " << request
+                        << ", total time: " << totalTime;
     }
     return (nSelected == 1);
 }
 
-Status ShardingCatalogClientImpl::updateConfigDocuments(
-    OperationContext* txn,
-    const string& ns,
-    const BSONObj& query,
-    const BSONObj& update,
-    bool upsert,
-    const WriteConcernOptions& writeConcern) {
+Status ShardingCatalogClientImpl::updateConfigDocuments(OperationContext* txn,
+                                                        const string& ns,
+                                                        const BSONObj& query,
+                                                        const BSONObj& update,
+                                                        bool upsert,
+                                                        const WriteConcernOptions& writeConcern) {
     const auto start = Date_t::now();
-    
+
     const NamespaceString nss(ns);
     invariant(nss.db() == "config");
 
@@ -1563,11 +1614,11 @@ Status ShardingCatalogClientImpl::updateConfigDocuments(
     auto configShard = Grid::get(txn)->shardRegistry()->getConfigShard();
     auto response =
         configShard->runBatchWriteCommandOnConfig(txn, request, Shard::RetryPolicy::kIdempotent);
-    
+
     const Milliseconds totalTime = Date_t::now() - start;
     if (totalTime >= Milliseconds(500)) {
-        warning() << "time-consuming updateConfigDocuments with request " << request
-               << ", total time: " << totalTime;
+        index_warning() << "time-consuming updateConfigDocuments with request " << request
+                        << ", total time: " << totalTime;
     }
     return response.toStatus();
 }
@@ -1596,10 +1647,26 @@ Status ShardingCatalogClientImpl::removeConfigDocuments(OperationContext* txn,
         configShard->runBatchWriteCommandOnConfig(txn, request, Shard::RetryPolicy::kIdempotent);
     const Milliseconds totalTime = Date_t::now() - start;
     if (totalTime >= Milliseconds(500)) {
-        warning() << "time-consuming removeConfigDocuments with request " << request
-               << ", total time: " << totalTime;
+        index_warning() << "time-consuming removeConfigDocuments with request " << request
+                        << ", total time: " << totalTime;
     }
     return response.toStatus();
+}
+
+Status ShardingCatalogClientImpl::removeShardFromMap(OperationContext* txn,string& shardName) {
+    BSONObjBuilder cmdBuilder;
+    cmdBuilder.append("removeShardMap", "admin");
+    cmdBuilder.append("shardName", shardName);
+    auto configShard = Grid::get(txn)->shardRegistry()->getConfigShard();
+    auto cmdResponse = uassertStatusOK(configShard->runCommandWithFixedRetryAttempts(
+                txn,
+                kPrimaryOnlyReadPreference,
+                "admin",
+                cmdBuilder.obj(),
+                kCommandTimeout,
+                Shard::RetryPolicy::kIdempotent)); 
+   uassertStatusOK(cmdResponse.commandStatus);
+   return Status::OK();
 }
 
 Status ShardingCatalogClientImpl::_checkDbDoesNotExist(OperationContext* txn,
@@ -1787,7 +1854,9 @@ Status ShardingCatalogClientImpl::appendInfoForConfigServerDatabases(OperationCo
     return Status::OK();
 }
 
-Status ShardingCatalogClientImpl::createIndexOnShards(OperationContext* txn, NamespaceString ns, BSONObj& cmdObj){
+Status ShardingCatalogClientImpl::createIndexOnShards(OperationContext* txn,
+                                                      NamespaceString ns,
+                                                      BSONObj& cmdObj) {
 
     logChange(txn,
               "createIndexOnShards.start",
@@ -1801,11 +1870,11 @@ Status ShardingCatalogClientImpl::createIndexOnShards(OperationContext* txn, Nam
     }
     vector<ShardType> allShards = std::move(shardsStatus.getValue().value);
 
-    log() << "create index on Shards " << ns << " started";
+    index_log() << "create index on Shards " << ns << " started";
 
     Status result = Status::OK();
     auto* shardRegistry = grid.shardRegistry();
-    
+
     for (const auto& shardEntry : allShards) {
         auto shardStatus = shardRegistry->getShard(txn, shardEntry.getName());
         if (!shardStatus.isOK()) {
@@ -1818,16 +1887,15 @@ Status ShardingCatalogClientImpl::createIndexOnShards(OperationContext* txn, Nam
             cmdObj,
             Shard::RetryPolicy::kIdempotent);
 
-        //to aggregate failure results 
-        if (!createIndex.isOK()){
-            result = Status( ErrorCodes::BadValue,
-                        str::stream() << result.reason()
-                                      << shardEntry.getName() << ":" << 
-                                      createIndex.getStatus().reason());
+        // to aggregate failure results
+        if (!createIndex.isOK()) {
+            result = Status(ErrorCodes::BadValue,
+                            str::stream() << result.reason() << shardEntry.getName() << ":"
+                                          << createIndex.getStatus().reason());
         }
     }
 
-    log() << "create index on Shards " << ns << " end";
+    index_log() << "create index on Shards " << ns << " end";
     logChange(txn,
               "createIndexOnShards",
               ns.ns(),
@@ -1835,8 +1903,18 @@ Status ShardingCatalogClientImpl::createIndexOnShards(OperationContext* txn, Nam
               ShardingCatalogClientImpl::kMajorityWriteConcern);
 
     return result;
+}
 
 
+std::string ShardingCatalogClientImpl::createNewIdent(void) {
+    StringBuilder buf;
+    buf << "collection-";
+    buf << _next.fetchAndAdd(1) << '-' << _rand;
+    return buf.str();
+}
+
+std::string ShardingCatalogClientImpl::_newRand() {
+    return str::stream() << std::unique_ptr<SecureRandom>(SecureRandom::create())->nextInt64();
 }
 
 }  // namespace mongo

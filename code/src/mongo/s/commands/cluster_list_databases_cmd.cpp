@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
+
 #include "mongo/platform/basic.h"
 
 #include <map>
@@ -39,6 +41,7 @@
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -117,6 +120,10 @@ public:
                 const string name = dbObj["name"].String();
                 const long long size = dbObj["sizeOnDisk"].numberLong();
 
+                if (hideDataBase(name)) {
+                    continue;
+                }
+
                 long long& totalSize = sizes[name];
                 if (size == 1) {
                     if (totalSize <= 1) {
@@ -167,6 +174,7 @@ public:
         auto catalogClient = grid.catalogClient(txn);
         auto appendStatus = catalogClient->appendInfoForConfigServerDatabases(txn, &dbListBuilder);
         if (!appendStatus.isOK()) {
+            dbListBuilder.done();
             return Command::appendCommandStatus(result, appendStatus);
         }
 

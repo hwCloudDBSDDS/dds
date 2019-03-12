@@ -50,6 +50,12 @@ class StatisticsImpl : public Statistics {
   virtual std::vector<std::string> ToFormatString() const override;
   virtual bool HistEnabledForType(uint32_t type) const override;
 
+  static long* getStreamStatsArray()
+  {
+    static long streamStatsValueArray[STREAM_METRIC_ENUM_MAX] = {0};
+    return streamStatsValueArray;
+  }
+  
  private:
   std::shared_ptr<Statistics> stats_shared_;
   Statistics* stats_;

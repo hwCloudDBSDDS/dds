@@ -56,7 +56,7 @@ public:
         UsageData(const UsageData& older, const UsageData& newer);
         long long time;
         long long count;
-
+        
         void inc(long long micros) {
             count++;
             time += micros;
@@ -118,6 +118,11 @@ public:
      */
     void appendGlobalLatencyStats(bool includeHistograms, BSONObjBuilder* builder);
 
+    /**
+     * computer all chunk statistics.
+     */
+    void computeChunkTpsInterval(std::map<std::string, long long> *chunkTpsCount) ;
+
 private:
     void _appendToUsageMap(BSONObjBuilder& b, const UsageMap& map) const;
 
@@ -135,10 +140,15 @@ private:
                              OperationLatencyHistogram* histogram,
                              Command::ReadWriteType readWriteType);
 
+
     mutable SimpleMutex _lock;
     OperationLatencyHistogram _globalHistogramStats;
     UsageMap _usage;
+    //add for dfv-mongo begin: old tps and all old usage on the shard
+    UsageMap _old;
+      //add for dfv-mongo begin: old tps and all old usage on the shard
     std::string _lastDropped;
+
 };
 
 }  // namespace mongo

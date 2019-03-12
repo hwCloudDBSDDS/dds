@@ -236,7 +236,7 @@ LockResult CondVarLockGrantNotification::wait(unsigned timeoutMs) {
     while (_result == LOCK_INVALID) {
         if (stdx::cv_status::timeout ==
             _cond.wait_for(lock,
-                           Milliseconds(static_cast<int64_t>(timeoutMs)).toSystemDuration())) {
+                           Milliseconds(static_cast<int64_t>(timeoutMs)).toSteadyDuration())) {
             // Timeout
             return LOCK_TIMEOUT;
         }

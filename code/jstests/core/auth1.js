@@ -1,15 +1,16 @@
 var mydb = db.getSiblingDB('auth1_db');
 mydb.dropAllUsers();
 
-pass = "a" + Math.random();
-// print( "password [" + pass + "]" );
+pass = "bcaTEST@333331";
+print("password [" + pass + "]");
 
-mydb.createUser({user: "eliot", pwd: pass, roles: jsTest.basicUserRoles});
+mydb.createUser(
+    {user: "eliot", pwd: pass, roles: jsTest.basicUserRoles, passwordDigestor: "server"});
 
 assert(mydb.auth("eliot", pass), "auth failed");
 assert(!mydb.auth("eliot", pass + "a"), "auth should have failed");
 
-pass2 = "b" + Math.random();
+pass2 = "bTEST#344444";
 mydb.changeUserPassword("eliot", pass2);
 
 assert(!mydb.auth("eliot", pass), "failed to change password failed");
@@ -21,15 +22,16 @@ assert(!mydb.auth("eliot", pass2), "didn't drop user");
 
 var a = mydb.getMongo().getDB("admin");
 a.dropAllUsers();
-pass = "c" + Math.random();
-a.createUser({user: "super", pwd: pass, roles: jsTest.adminUserRoles});
+pass = "cTEST$42223";
+a.createUser({user: "super", pwd: pass, roles: jsTest.adminUserRoles, passwordDigestor: "server"});
 assert(a.auth("super", pass), "auth failed");
 assert(!a.auth("super", pass + "a"), "auth should have failed");
 
 mydb.dropAllUsers();
-pass = "a" + Math.random();
+pass = "aTEST%333335";
 
-mydb.createUser({user: "eliot", pwd: pass, roles: jsTest.basicUserRoles});
+mydb.createUser(
+    {user: "eliot", pwd: pass, roles: jsTest.basicUserRoles, passwordDigestor: "server"});
 
 assert.commandFailed(mydb.runCommand({authenticate: 1, user: "eliot", nonce: "foo", key: "bar"}));
 

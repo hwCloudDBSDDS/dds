@@ -41,6 +41,7 @@
 #include "mongo/db/catalog/cursor_manager.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
+#include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/list_collections_filter.h"
@@ -56,8 +57,11 @@
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/views/view_catalog.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/grid.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
 
 namespace mongo {
 
@@ -68,6 +72,8 @@ using std::vector;
 using stdx::make_unique;
 
 namespace {
+const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
+
 
 /**
  * Determines if 'matcher' is an exact match on the "name" field. If so, returns a vector of all the
@@ -130,6 +136,52 @@ void _addWorkingSetMember(OperationContext* txn,
     member->transitionToOwnedObj();
     root->pushBack(id);
 }
+
+bool _runListCollectionOnConfigServer(OperationContext* txn,
+                                      const string& dbname,
+                                      BSONObjBuilder* result) {
+
+    vector<CollectionType> collections;
+    auto status =
+        Grid::get(txn)->catalogClient(txn)->getCollections(txn, &dbname, &collections, nullptr);
+    if (!status.isOK()) {
+        index_log() << "[config] [_runListCollectionOnConfigServer] dbname :" << dbname
+                    << " not contain tables";
+        result->append("code", static_cast<int>(status.code()));
+        result->append("ok", 0);
+        return false;
+    }
+    index_log() << "[config] [_runListCollectionOnConfigServer] get Collections size : "
+                << collections.size();
+    BSONArrayBuilder firstBatch;
+    for (auto collection : collections) {
+        BSONObjBuilder collectionBuilder;
+        if (collection.getDropped()) {
+            continue;
+        }
+        collectionBuilder.append("name", collection.getNs().coll());
+        collectionBuilder.append("type", "collection");
+        CollectionOptions collOptions;
+        BSONObj options = collection.getOptions();
+        collOptions.parse(options);
+        collectionBuilder.append("options", collOptions.toBSON());
+        collectionBuilder.append("info", BSON("readOnly" << false));
+        BSONObjIterator indexspecs(collection.getIndex());
+        while (indexspecs.more()) {
+            BSONObj index = indexspecs.next().Obj();
+            if ("_id_" == index["name"].valueStringData()) {
+                collectionBuilder.append("idIndex", index);
+            }
+        }
+        BSONObj maybe = collectionBuilder.obj();
+        firstBatch.append(maybe);
+    }
+    // CursorId cursorId = 0LL;
+    // appendCursorResponseObject(cursorId,"list", firstBatch.arr(), result);
+    result->append("firstBatch", firstBatch.arr());
+    return true;
+}
+
 
 BSONObj buildViewBson(const ViewDefinition& view) {
     BSONObjBuilder b;
@@ -218,49 +270,48 @@ public:
 
     CmdListCollections() : Command("listCollections") {}
 
-    bool run(OperationContext* txn,
-             const string& dbname,
-             BSONObj& jsobj,
-             int,
-             string& errmsg,
-             BSONObjBuilder& result) {
-        unique_ptr<MatchExpression> matcher;
-        BSONElement filterElt = jsobj["filter"];
-        if (!filterElt.eoo()) {
-            if (filterElt.type() != mongo::Object) {
-                return appendCommandStatus(
-                    result, Status(ErrorCodes::BadValue, "\"filter\" must be an object"));
-            }
-            // The collator is null because collection objects are compared using binary comparison.
-            const CollatorInterface* collator = nullptr;
-            StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
-                filterElt.Obj(), ExtensionsCallbackDisallowExtensions(), collator);
-            if (!statusWithMatcher.isOK()) {
-                return appendCommandStatus(result, statusWithMatcher.getStatus());
-            }
-            matcher = std::move(statusWithMatcher.getValue());
-        }
-
-        const long long defaultBatchSize = std::numeric_limits<long long>::max();
-        long long batchSize;
-        Status parseCursorStatus =
-            CursorRequest::parseCommandCursorOptions(jsobj, defaultBatchSize, &batchSize);
-        if (!parseCursorStatus.isOK()) {
-            return appendCommandStatus(result, parseCursorStatus);
-        }
-
-        ScopedTransaction scopedXact(txn, MODE_IS);
-        AutoGetDb autoDb(txn, dbname, MODE_S);
-
-        Database* db = autoDb.getDb();
-
-        auto ws = make_unique<WorkingSet>();
+    Status getCollectionNames(OperationContext* txn,
+                               const string& dbname,
+                             BSONObjBuilder& result,
+			               Database* db,
+                                       bool flag,
+                             unique_ptr<MatchExpression>& matcher,
+                             BSONElement &filterElt,
+                             long long batchSize){
+		auto ws = make_unique<WorkingSet>();
         auto root = make_unique<QueuedDataStage>(txn, ws.get());
-
         if (db) {
+            if ( (serverGlobalParams.clusterRole == ClusterRole::ShardServer) &&
+                 (!flag) && 
+                 dbname != "admin" && 
+                 dbname != "config"){
+                auto configshard = Grid::get(txn)->shardRegistry()->getConfigShard();
+                auto cmdResponseStatus =
+                    configshard->runCommand(txn,
+                                            kPrimaryOnlyReadPreference,
+                                            dbname,
+                                            BSON("listCollections" << 1 << "filter" << 1),
+                                            Milliseconds(3 * 60 * 1000),
+                                            Shard::RetryPolicy::kNoRetry);
+                if (!cmdResponseStatus.isOK()) {
+                    return cmdResponseStatus.getStatus();
+                }
+                if (!cmdResponseStatus.getStatus().isOK()) {
+                    return cmdResponseStatus.getStatus();
+                }
+                BSONObj res = cmdResponseStatus.getValue().response;
+                // BSONObj cursor = res.getObjectField("cursor");
+                for (auto coll : res.getObjectField("firstBatch")) {
+                    _addWorkingSetMember(
+                        txn, coll.Obj().getOwned(), matcher.get(), ws.get(), root.get());
+                }
+            }
             if (auto collNames = _getExactNameMatches(matcher.get())) {
                 for (auto&& collName : *collNames) {
                     auto nss = NamespaceString(db->name(), collName);
+                    if (nss.coll().find("$") != std::string::npos && !flag) {
+                        continue;
+                    }
                     Collection* collection = db->getCollection(nss);
                     BSONObj collBson = buildCollectionBson(txn, collection);
                     if (!collBson.isEmpty()) {
@@ -269,6 +320,9 @@ public:
                 }
             } else {
                 for (auto&& collection : *db) {
+                    if (collection->ns().coll().find("$") != std::string::npos && !flag) {
+                        continue;
+                    }
                     BSONObj collBson = buildCollectionBson(txn, collection);
                     if (!collBson.isEmpty()) {
                         _addWorkingSetMember(txn, collBson, matcher.get(), ws.get(), root.get());
@@ -276,7 +330,6 @@ public:
                 }
             }
 
-            // Skipping views is only necessary for internal cloning operations.
             bool skipViews = filterElt.type() == mongo::Object &&
                 SimpleBSONObjComparator::kInstance.evaluate(
                     filterElt.Obj() == ListCollectionsFilter::makeTypeCollectionFilter());
@@ -289,13 +342,12 @@ public:
                 });
             }
         }
-
         const NamespaceString cursorNss = NamespaceString::makeListCollectionsNSS(dbname);
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             txn, std::move(ws), std::move(root), cursorNss.ns(), PlanExecutor::YIELD_MANUAL);
         if (!statusWithPlanExecutor.isOK()) {
-            return appendCommandStatus(result, statusWithPlanExecutor.getStatus());
+            return statusWithPlanExecutor.getStatus();
         }
         unique_ptr<PlanExecutor> exec = std::move(statusWithPlanExecutor.getValue());
 
@@ -331,7 +383,76 @@ public:
         }
 
         appendCursorResponseObject(cursorId, cursorNss.ns(), firstBatch.arr(), &result);
+		return Status::OK();
+	}
+	
+    bool run(OperationContext* txn,
+             const string& dbname,
+             BSONObj& jsobj,
+             int,
+             string& errmsg,
+             BSONObjBuilder& result) {
 
+        if (hideDataBase(dbname)) {
+            index_err() << "faild: listCollections dbName: " << dbname;
+            return appendCommandStatus(
+                result, Status(ErrorCodes::NamespaceNotFound, "Database not exist!"));
+        }
+
+        bool flag = false;
+        auto msg = jsobj.getField("mgs");  
+
+        if (msg.eoo()) {   //not from mongos
+            flag = true;
+        } else {     // from mongos 
+            jsobj = jsobj.removeField("mgs");
+        }
+        if ((serverGlobalParams.clusterRole == ClusterRole::ConfigServer) && dbname != "admin" &&
+            dbname != "config" && dbname != "system" && dbname != "local") {
+            return _runListCollectionOnConfigServer(txn, dbname, &result);
+        }
+        unique_ptr<MatchExpression> matcher;
+        BSONElement filterElt = jsobj["filter"];
+        if (!filterElt.eoo()) {
+            if (filterElt.type() != mongo::Object) {
+                return appendCommandStatus(
+                    result, Status(ErrorCodes::BadValue, "\"filter\" must be an object"));
+            }
+            // The collator is null because collection objects are compared using binary comparison.
+            const CollatorInterface* collator = nullptr;
+            StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
+                filterElt.Obj(), ExtensionsCallbackDisallowExtensions(), collator);
+            if (!statusWithMatcher.isOK()) {
+                return appendCommandStatus(result, statusWithMatcher.getStatus());
+            }
+            matcher = std::move(statusWithMatcher.getValue());
+        }
+
+        const long long defaultBatchSize = std::numeric_limits<long long>::max();
+        long long batchSize;
+        Status parseCursorStatus =
+            CursorRequest::parseCommandCursorOptions(jsobj, defaultBatchSize, &batchSize);
+        if (!parseCursorStatus.isOK()) {
+            return appendCommandStatus(result, parseCursorStatus);
+        }
+	if(serverGlobalParams.clusterRole == ClusterRole::ShardServer){
+            ScopedTransaction scopedXact(txn, MODE_IX);
+	    AutoGetOrCreateDb autoDb(txn,dbname,MODE_X);
+	    Database* db = autoDb.getDb();
+	    autoDb.lock().relockWithMode(MODE_S);
+	    Status status = getCollectionNames(txn,dbname,result,db,flag,matcher,filterElt,batchSize);
+	    if(!status.isOK()){
+	        return appendCommandStatus(result,status);			
+            }
+	}else{
+	    ScopedTransaction scopedXact(txn, MODE_IS);
+	    AutoGetDb autoDb(txn, dbname, MODE_S);
+	    Database* db = autoDb.getDb();
+	    auto status = getCollectionNames(txn,dbname,result,db,flag,matcher,filterElt,batchSize);
+	    if(!status.isOK()){
+	    	return appendCommandStatus(result,status);			
+	    }
+        }
         return true;
     }
 } cmdListCollections;

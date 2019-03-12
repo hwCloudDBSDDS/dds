@@ -32,8 +32,8 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/catalog/type_collection.h"
 
 
 namespace mongo {
@@ -105,19 +105,19 @@ struct CollectionOptions {
     // Storage engine collection options. Always owned or empty.
     BSONObj storageEngine;
 
-    //prefix for collection
+    // prefix for collection
     int64_t prefix;
 
-    //db path for collection
+    // db path for collection
     std::string dbPath;
 
-    //to create rocksdb instance or just open it
+    // to create rocksdb instance or just open it
     bool toCreate;
 
-    //chunkmetadata
+    // chunkmetadata
     mutable CollectionType collection;
     mutable ChunkType chunk;
-	
+
     // Default options for indexes created on the collection. Always owned or empty.
     BSONObj indexOptionDefaults;
 

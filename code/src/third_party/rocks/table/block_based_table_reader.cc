@@ -49,6 +49,7 @@
 #include "util/string_util.h"
 #include "util/sync_point.h"
 
+
 namespace rocksdb {
 
 extern const uint64_t kBlockBasedTableMagicNumber;
@@ -113,7 +114,7 @@ Slice GetCacheKeyFromOffset(const char* cache_key_prefix,
   assert(cache_key != nullptr);
   assert(cache_key_prefix_size != 0);
   assert(cache_key_prefix_size <= BlockBasedTable::kMaxCacheKeyPrefixSize);
-  memcpy(cache_key, cache_key_prefix, cache_key_prefix_size);
+  CommonMemCopy(cache_key, cache_key_prefix_size, cache_key_prefix, cache_key_prefix_size);
   char* end = EncodeVarint64(cache_key + cache_key_prefix_size, offset);
   return Slice(cache_key, static_cast<size_t>(end - cache_key));
 }
@@ -572,7 +573,7 @@ Slice BlockBasedTable::GetCacheKey(const char* cache_key_prefix,
   assert(cache_key != nullptr);
   assert(cache_key_prefix_size != 0);
   assert(cache_key_prefix_size <= kMaxCacheKeyPrefixSize);
-  memcpy(cache_key, cache_key_prefix, cache_key_prefix_size);
+  CommonMemCopy(cache_key, cache_key_prefix_size, cache_key_prefix, cache_key_prefix_size);
   char* end =
       EncodeVarint64(cache_key + cache_key_prefix_size, handle.offset());
   return Slice(cache_key, static_cast<size_t>(end - cache_key));
@@ -594,6 +595,9 @@ Status BlockBasedTable::Open(const ImmutableCFOptions& ioptions,
   auto s = ReadFooterFromFile(file.get(), file_size, &footer,
                               kBlockBasedTableMagicNumber);
   if (!s.ok()) {
+    Log(InfoLogLevel::WARN_LEVEL, ioptions.info_log,
+        "ReadFooterFromFile file return %s",
+        s.ToString().c_str());
     return s;
   }
   if (!BlockBasedTableSupportedVersion(footer.version())) {
@@ -642,6 +646,9 @@ Status BlockBasedTable::Open(const ImmutableCFOptions& ioptions,
   std::unique_ptr<InternalIterator> meta_iter;
   s = ReadMetaBlock(rep, &meta, &meta_iter);
   if (!s.ok()) {
+    Log(InfoLogLevel::WARN_LEVEL, rep->ioptions.info_log,
+        "ReadMetaBlock file return %s",
+        s.ToString().c_str());
     return s;
   }
 
@@ -868,8 +875,9 @@ Status BlockBasedTable::ReadMetaBlock(Rep* rep,
 
   if (!s.ok()) {
     Log(InfoLogLevel::ERROR_LEVEL, rep->ioptions.info_log,
-        "Encountered error while reading data from properties"
-        " block %s", s.ToString().c_str());
+        "ReadMetaBlock return block %s,file_sn(%lu) handle(%lu,%lu)",
+        s.ToString().c_str(),rep->file.get(),rep->footer.metaindex_handle().offset(),
+        rep->footer.metaindex_handle().size());
     return s;
   }
 
@@ -901,7 +909,6 @@ Status BlockBasedTable::GetDataBlockFromCache(
       return s;
     }
   }
-
   // If not found, search from the compressed block cache.
   assert(block->cache_handle == nullptr && block->value == nullptr);
 
@@ -1301,6 +1308,9 @@ InternalIterator* BlockBasedTable::NewDataBlockIterator(
       iter->RegisterCleanup(&DeleteHeldResource<Block>, block.value, nullptr);
     }
   } else {
+    Log(InfoLogLevel::ERROR_LEVEL, rep->ioptions.info_log,
+           "NewDataBlockIterator return err,%s, handle(%llu,%llu)",
+           s.ToString().c_str(), handle.offset(),handle.size());
     assert(block.value == nullptr);
     if (input_iter != nullptr) {
       input_iter->SetStatus(s);
@@ -1308,6 +1318,11 @@ InternalIterator* BlockBasedTable::NewDataBlockIterator(
     } else {
       iter = NewErrorInternalIterator(s);
     }
+  }
+
+  if (!s.ok()) {
+    Log(InfoLogLevel::ERROR_LEVEL, rep->ioptions.info_log,
+        "NewDataBlockIterator file return %s", s.ToString().c_str());
   }
   return iter;
 }
@@ -1345,6 +1360,11 @@ Status BlockBasedTable::MaybeLoadDataBlockToCache(
         key, ckey, block_cache, block_cache_compressed, rep->ioptions, ro,
         block_entry, rep->table_options.format_version, compression_dict,
         rep->table_options.read_amp_bytes_per_bit);
+
+    Log(InfoLogLevel::DEBUG_LEVEL, rep->ioptions.info_log,
+            "cache_key(%s)(%u, %u,%p) block(%llu, %llu)",
+            rep->cache_key_prefix, no_io, ro.fill_cache, block_entry->value,
+            handle.offset(), handle.size());
 
     if (block_entry->value == nullptr && !no_io && ro.fill_cache) {
       std::unique_ptr<Block> raw_block;
@@ -2134,11 +2154,15 @@ Status BlockBasedTable::DumpDataBlocks(WritableFile* out_file) {
 void BlockBasedTable::DumpKeyValue(const Slice& key, const Slice& value,
                                    WritableFile* out_file) {
   InternalKey ikey;
+  ParsedInternalKey pikey;
+  ParseInternalKey(key, &pikey);
   ikey.DecodeFrom(key);
-
+ 
   out_file->Append("  HEX    ");
   out_file->Append(ikey.user_key().ToString(true).c_str());
-  out_file->Append(": ");
+  out_file->Append(":###### ");
+  out_file->Append(pikey.DebugString(true).c_str());
+  out_file->Append(":##### ");
   out_file->Append(value.ToString(true).c_str());
   out_file->Append("\n");
 

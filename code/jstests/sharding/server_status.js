@@ -15,12 +15,15 @@
     // Initialize shard metadata in shards
     testDB.user.insert({x: 1});
 
-    var checkShardingServerStatus = function(doc, isCSRS) {
+    var checkShardingServerStatus = function(st,doc, isCSRS) {
         var shardingSection = doc.sharding;
         assert.neq(shardingSection, null);
 
-        var configConnStr = shardingSection.configsvrConnectionString;
+        //var configConnStr = shardingSection.configsvrConnectionString;
+        var configConnStr = st.configRS.getURL();
+        print("xiangyu "+configConnStr);
         var configConn = new Mongo(configConnStr);
+        //var configConn = new Mongo(st.configRS.getURL());
         var configIsMaster = configConn.getDB('admin').runCommand({isMaster: 1});
 
         var configOpTimeObj = shardingSection.lastSeenConfigServerOpTime;
@@ -41,10 +44,10 @@
 
     var mongosServerStatus = testDB.adminCommand({serverStatus: 1});
     var isCSRS = st.configRS != null;
-    checkShardingServerStatus(mongosServerStatus, isCSRS);
+    checkShardingServerStatus(st,mongosServerStatus, isCSRS);
 
     var mongodServerStatus = st.d0.getDB('admin').runCommand({serverStatus: 1});
-    checkShardingServerStatus(mongodServerStatus, isCSRS);
+    checkShardingServerStatus(st,mongodServerStatus, isCSRS);
 
     st.stop();
 })();

@@ -34,8 +34,8 @@
 #include "mongo/bson/bsonobj_comparator_interface.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/s/ns_targeter.h"
 #include "mongo/s/catalog/type_collection.h"
+#include "mongo/s/ns_targeter.h"
 
 namespace mongo {
 

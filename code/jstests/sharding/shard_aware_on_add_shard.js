@@ -35,7 +35,8 @@
 
     // Add a shard that is a standalone mongod.
 
-    var standaloneConn = MongoRunner.runMongod({shardsvr: ''});
+    var standaloneConn = MongoRunner.runMongod(
+        {shardsvr: '', "configdb": st.configRS.getURL(), "bind_ip": getHostName()});
     waitForIsMaster(standaloneConn);
 
     jsTest.log("Going to add standalone as shard: " + standaloneConn);

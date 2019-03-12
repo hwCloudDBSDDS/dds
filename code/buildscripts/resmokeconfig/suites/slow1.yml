@@ -2,7 +2,12 @@ selector:
   js_test:
     roots:
     - jstests/slow1/*.js
-
+    exclude_files:
+    - jstests/slow1/initial_sync_many_dbs.js
+    - jstests/slow1/mr_during_migrate.js
+    - jstests/slow1/sharding_multiple_collections.js
+    - jstests/slow1/replsets_priority1.js
+    - jstests/slow1/large_role_chain_cluster.js
 executor:
   js_test:
     config:

@@ -32,6 +32,7 @@
 
 #include "mongo/client/remote_command_retry_scheduler.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/write_ops/batched_command_request.h"
@@ -91,8 +92,8 @@ Status Shard::CommandResponse::processBatchWriteResponse(
     return status;
 }
 
-const Milliseconds Shard::kDefaultConfigCommandTimeout = Seconds{10};
-const Milliseconds Shard::kDefaultCommandTimeout = Seconds{10};
+const Milliseconds Shard::kDefaultConfigCommandTimeout = Seconds{60};
+const Milliseconds Shard::kDefaultCommandTimeout = Seconds{60};
 
 bool Shard::shouldErrorBePropagated(ErrorCodes::Error code) {
     return std::find(RemoteCommandRetryScheduler::kAllRetriableErrors.begin(),
@@ -154,7 +155,7 @@ StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
     const BSONObj& cmdObj,
     RetryPolicy retryPolicy) {
     return runCommandWithFixedRetryAttempts(
-        txn, readPref, dbName, cmdObj, kDefaultCommandTimeout, retryPolicy);
+        txn, readPref, dbName, cmdObj, Milliseconds::max(), retryPolicy);
 }
 
 StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
@@ -167,7 +168,7 @@ StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
     for (int retry = 1; retry <= kOnErrorNumRetries; ++retry) {
         auto interruptStatus = txn->checkForInterruptNoAssert();
         if (!interruptStatus.isOK()) {
-            LOG(1) << "!interruptStatus.isOK() cause by " << interruptStatus;
+            index_LOG(1) << "!interruptStatus.isOK() cause by " << interruptStatus;
             return interruptStatus;
         }
 
@@ -176,11 +177,11 @@ StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
         auto commandStatus = _getEffectiveCommandStatus(swCmdResponse);
 
         if (retry < kOnErrorNumRetries && isRetriableError(commandStatus.code(), retryPolicy)) {
-            LOG(0) << "Command " << redact(cmdObj)
-                   << " failed with retriable error and will be retried"
+            LOG(2) << " failed with retriable error and will be retried"
                    << causedBy(redact(commandStatus));
             continue;
         }
+
         return swCmdResponse;
     }
     MONGO_UNREACHABLE;
@@ -230,7 +231,7 @@ StatusWith<Shard::QueryResponse> Shard::exhaustiveFindOnConfig(
     const BSONObj& sort,
     const boost::optional<long long> limit) {
     const auto start = Date_t::now();
-    
+
     // Do not allow exhaustive finds to be run against regular shards.
     invariant(isConfig());
 
@@ -242,16 +243,63 @@ StatusWith<Shard::QueryResponse> Shard::exhaustiveFindOnConfig(
             isRetriableError(result.getStatus().code(), RetryPolicy::kIdempotent)) {
             continue;
         }
-        
+
         const Milliseconds totalTime = Date_t::now() - start;
         if (totalTime >= Milliseconds(500)) {
-            warning() << "time-consuming exhaustiveFindOnConfig (namespace: " << nss
-                   << ", query: " << query << "), total time: " << totalTime;
+            index_warning() << "time-consuming exhaustiveFindOnConfig (namespace: " << nss
+                            << ", query: " << query << "), total time: " << totalTime;
+        }
+
+        if (result.isOK()) {
+            if (ChunkType::ConfigNS == nss.toString()) {
+                for (BSONObj& doc : result.getValue().docs) {
+                    BSONObj newDoc;
+                    fixupNewDoc(doc, newDoc, true);
+                    doc.swap(newDoc);
+                }
+            }
         }
 
         return result;
     }
     MONGO_UNREACHABLE;
+}
+
+void Shard::fixupNewDoc(const BSONObj& doc, BSONObj& newDoc, bool addDataPath) {
+    StringData rootFolder(ChunkType::rootFolder.name());
+    if (!doc.hasField(rootFolder) || doc.getField(rootFolder).type() != BSONType::String) {
+        newDoc = doc.copy();
+        return;
+    }
+
+    index_LOG(3) << "fixupNewDoc type: " << doc.getField(rootFolder).type();
+
+    std::string newFolder(doc[rootFolder].valuestrsafe());
+
+    if (!addDataPath) {
+        if ((newFolder.find(getDataPath()) != std::string::npos)) {
+            int dbpathLen = (int)(getDataPath().length());
+            newFolder.assign(newFolder, dbpathLen + 1, newFolder.length() - dbpathLen - 1);
+        }
+    } else {
+        if (newFolder.find(getDataPath()) == std::string::npos) {
+            newFolder = getDataPath() + "/" + newFolder;
+        }
+    }
+
+    BSONObjBuilder b;
+    BSONObjIterator i(doc);
+    while (i.more()) {
+        BSONElement e = i.next();
+        const char* fname = e.fieldName();
+        if (ChunkType::rootFolder.name() != fname) {
+            b.append(e);
+        } else {
+            b.append(rootFolder.toString(), newFolder);
+        }
+    }
+
+    newDoc = b.obj();
 }
 
 }  // namespace mongo

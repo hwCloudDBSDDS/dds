@@ -500,12 +500,13 @@ void BackgroundSync::_produce(OperationContext* txn) {
         stop();
     } else if (fetcherReturnStatus == ErrorCodes::InvalidBSON) {
         Seconds blacklistDuration(60);
-        warning() << "Fetcher got invalid BSON while querying oplog. Blacklisting sync source "
-                  << source << " for " << blacklistDuration << ".";
+        index_warning()
+            << "Fetcher got invalid BSON while querying oplog. Blacklisting sync source " << source
+            << " for " << blacklistDuration << ".";
         _replCoord->blacklistSyncSource(source, Date_t::now() + blacklistDuration);
     } else if (!fetcherReturnStatus.isOK()) {
-        warning() << "Fetcher stopped querying remote oplog with error: "
-                  << redact(fetcherReturnStatus);
+        index_warning() << "Fetcher stopped querying remote oplog with error: "
+                        << redact(fetcherReturnStatus);
     }
 }
 

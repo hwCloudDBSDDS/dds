@@ -36,6 +36,7 @@ networkEnv.Library(
         "hostname_canonicalization.cpp",
         "httpclient.cpp",
         "listen.cpp",
+        "whitelist.cpp",
         "message.cpp",
         "message_port.cpp",
         "message_port_startup_param.cpp",

@@ -225,7 +225,6 @@ public:
 
         return true;
     }
-
 } cmdCopyDB;
 
 }  // namespace

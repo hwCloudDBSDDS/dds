@@ -37,6 +37,7 @@
 #include <set>
 
 #include "mongo/client/remote_command_retry_scheduler.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/commands/list_collections_filter.h"
 #include "mongo/db/repl/storage_interface.h"
@@ -114,7 +115,7 @@ DatabaseCloner::DatabaseCloner(executor::TaskExecutor* executor,
                                          stdx::placeholders::_2,
                                          stdx::placeholders::_3),
                               rpc::ServerSelectionMetadata(true, boost::none).toBSON(),
-                              RemoteCommandRequest::kNoTimeout,
+                              Milliseconds(kListCollectionsTimeoutMS),
                               RemoteCommandRetryScheduler::makeRetryPolicy(
                                   numInitialSyncListCollectionsAttempts,
                                   executor::RemoteCommandRequest::kNoTimeout,

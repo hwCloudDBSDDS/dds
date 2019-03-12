@@ -65,6 +65,7 @@ public:
     void doDetachFromOperationContext() final;
     void doReattachToOperationContext() final;
     void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) final;
+    void doReleaseCursor() final;
 
     StageType stageType() const final {
         return STAGE_FETCH;

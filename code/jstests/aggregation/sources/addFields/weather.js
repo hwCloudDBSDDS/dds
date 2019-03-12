@@ -93,9 +93,9 @@
     print("Success! Standalone execution weather test for $addFields passed.");
 
     // Test against a sharded cluster.
-    let st = new ShardingTest({shards: 2});
+    /*let st = new ShardingTest({shards: 2});
     doExecutionTest(st.s0);
     st.stop();
     print("Success! Sharding weather test for $addFields passed.");
-
+    */
 }());

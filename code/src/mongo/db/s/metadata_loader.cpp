@@ -39,9 +39,9 @@
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/chunk_diff.h"
+#include "mongo/s/chunk_id.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/util/log.h"
-#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -100,9 +100,10 @@ Status MetadataLoader::makeCollectionMetadata(OperationContext* txn,
                                               const string& shard,
                                               const CollectionMetadata* oldMetadata,
                                               CollectionMetadata* metadata) {
-    const NamespaceString nss(ns);    
+    const NamespaceString nss(ns);
 
-    Status initCollectionStatus = _initCollection(txn, catalogClient, nss.nsFilteredOutChunkId(), shard, metadata);
+    Status initCollectionStatus =
+        _initCollection(txn, catalogClient, nss.nsFilteredOutChunkId(), shard, metadata);
     if (!initCollectionStatus.isOK()) {
         return initCollectionStatus;
     }
@@ -176,13 +177,12 @@ Status MetadataLoader::_initChunks(OperationContext* txn,
 
     // Exposes the new metadata's range map and version to the "differ" which would ultimately be
     // responsible for filling them up
-    SCMConfigDiffTracker differ(
-                            nss.nsFilteredOutChunkId(),
-                            &metadata->_chunksMap,
-                            &metadata->_collVersion,
-                            &versionMap,
-                            shard,
-                            nss.extractChunkId());
+    SCMConfigDiffTracker differ(nss.nsFilteredOutChunkId(),
+                                &metadata->_chunksMap,
+                                &metadata->_collVersion,
+                                &versionMap,
+                                shard,
+                                nss.extractChunkId());
 
     try {
         std::vector<ChunkType> chunks;

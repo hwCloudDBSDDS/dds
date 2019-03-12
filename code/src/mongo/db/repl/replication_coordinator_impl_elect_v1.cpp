@@ -40,6 +40,8 @@
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/util/util_extend/default_parameters.h"
 
 namespace mongo {
 namespace repl {
@@ -136,8 +138,9 @@ void ReplicationCoordinatorImpl::_startElectSelfV1() {
     log() << "conducting a dry run election to see if we could be elected";
     _voteRequester.reset(new VoteRequester);
 
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "dryRunElection");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("dryRunElection");
 
     // This is necessary because the voteRequester may call directly into winning an
     // election, if there are no other MaybeUp nodes.  Winning an election attempts to lock
@@ -187,9 +190,10 @@ void ReplicationCoordinatorImpl::_onDryRunComplete(long long originalTerm) {
 
     log() << "dry election run succeeded, running for election";
 
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "runningForElection");
-    
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("runningForElection");
+
     // Stepdown is impossible from this term update.
     TopologyCoordinator::UpdateTermResult updateTermResult;
     _updateTerm_incallback(originalTerm + 1, &updateTermResult);
@@ -280,6 +284,7 @@ void ReplicationCoordinatorImpl::_onVoteRequestComplete(long long originalTerm) 
             return;
         case VoteRequester::Result::kSuccessfullyElected:
             log() << "election succeeded, assuming primary role in term " << _topCoord->getTerm();
+            //_topCoord->resetConfigClusterDegradeAlarmParameters();
             break;
     }
 

@@ -225,7 +225,7 @@ Status WiredTigerRecoveryUnit::setReadFromMajorityCommittedSnapshot() {
     return Status::OK();
 }
 
-void WiredTigerRecoveryUnit::clearReadFromMajorityCommittedSnapshot() {
+void WiredTigerRecoveryUnit::clearSnapshotInfo() {
     _readFromMajorityCommittedSnapshot = false;
     return;
 }

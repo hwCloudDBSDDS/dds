@@ -43,12 +43,12 @@
 #include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/chunk_manager.h"
 #include "mongo/s/client/shard_connection.h"
+#include "mongo/s/client/shard_registry.h"
 #include "mongo/s/config.h"
+#include "mongo/s/config_server_client.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_util.h"
 #include "mongo/util/log.h"
-#include "mongo/s/client/shard_registry.h"
-#include "mongo/s/config_server_client.h"
 
 
 namespace mongo {
@@ -105,10 +105,6 @@ public:
                      int options,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
-
-
-
-        LOG(0)<<"[split] run, dbname:"<<dbname<<", cmdObj:"<<cmdObj<< ", options:"<<options;                   
         const NamespaceString nss(parseNs(dbname, cmdObj));
         auto status = grid.catalogCache()->getDatabase(txn, nss.db().toString());
         if (!status.isOK()) {
@@ -198,7 +194,7 @@ public:
                 errmsg = stream() << "no shard key found in chunk query " << find;
                 return false;
             }
-            
+
             chunk = info->findIntersectingChunkWithSimpleCollation(txn, shardKey);
         } else if (!bounds.isEmpty()) {
             if (!info->getShardKeyPattern().isShardKey(bounds[0].Obj()) ||
@@ -217,6 +213,8 @@ public:
             invariant(chunk.get());
 
             if (chunk->getMin().woCompare(minKey) != 0 || chunk->getMax().woCompare(maxKey) != 0) {
+                index_err() << "input bounds [" << minKey << " , " << maxKey << "], but we get ["
+                            << chunk->getMin() << " , " << chunk->getMax() << "]";
                 errmsg = stream() << "no chunk found with the shard key bounds "
                                   << "[" << minKey << "," << maxKey << ")";
                 return false;
@@ -252,17 +250,18 @@ public:
         invariant(chunk.get());
 
         LOG(0) << "[split] chunk [" << redact(chunk->getMin().toString()) << ","
-              << redact(chunk->getMax().toString()) << ")"
-              << " in collection " << nss.ns() << " on shard " << chunk->getShardId();
+               << redact(chunk->getMax().toString()) << ")"
+               << " in collection " << nss.ns() << " on shard " << chunk->getShardId()
+               << ", middle: " << middle;
 
 
         ChunkType chunkType;
         chunkType.setNS(nss.ns());
         chunk->constructChunkType(&chunkType);
 
-        LOG(0) << "[splitCollectionCmd] split point is : " << middle;
         auto splitStatus = configsvr_client::splitChunk(txn, chunkType, middle);
         if (!splitStatus.isOK()) {
+            index_err() << "splitChunk failed. middle:" << middle << ", status: " << splitStatus;
             return appendCommandStatus(result, splitStatus);
         }
         // Proactively refresh the chunk manager. Not really necessary, but this way it's

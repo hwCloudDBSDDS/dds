@@ -31,16 +31,16 @@
 
 #include <list>
 #include <map>
-#include <string>
 #include <memory>
+#include <string>
 #include <unordered_set>
 
 #include <boost/optional.hpp>
 
 #include <rocksdb/cache.h>
 #include <rocksdb/rate_limiter.h>
-#include <rocksdb/status.h>
 #include <rocksdb/statistics.h>
+#include <rocksdb/status.h>
 #include "rocksdb/options.h"
 #include "rocksdb/table.h"
 
@@ -51,12 +51,11 @@
 
 #include "rocks_compaction_scheduler.h"
 #include "rocks_counter_manager.h"
-#include "rocks_transaction.h"
-#include "rocks_snapshot_manager.h"
 #include "rocks_durability_manager.h"
+#include "rocks_snapshot_manager.h"
+#include "rocks_transaction.h"
 
 #include "Chunk/ChunkRocksDBInstance.h"
-#include "config/config_reader.h"
 
 namespace rocksdb {
     class ColumnFamilyHandle;
@@ -72,7 +71,7 @@ namespace rocksdb {
 
 namespace mongo {
 
-    const std::string ROCKSDB_PATH = "/dfvrocks";
+    const std::string ROCKSDB_PATH = "/db";
     const std::string TRANS_LOG_PATH = "/translog";
     const std::string CHUNK_META_PATH = "/chunkmeta";
 
@@ -80,13 +79,102 @@ namespace mongo {
     class RocksIndexBase;
     class RocksRecordStore;
     class JournalListener;
+    class ChunkJounalFlush;
 
-    extern rocksdb::Status createDir(rocksdb::Env* fileSystem, const std::string& path);
-    extern rocksdb::Status deleteDir(const std::string& path);
-    extern bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix);
+    inline rocksdb::Env* initEnv() {
+        rocksdb::Status status;
+        rocksdb::Env* env = nullptr;
+        status = rocksdb::NewHdfsEnv(&env, GLOBAL_CONFIG_GET(hdfsUri));
+
+        invariant(status.ok());
+        invariant(env != nullptr);
+        return env;
+    }
+
+    inline rocksdb::Env* getGlobalEnv() {
+        static rocksdb::Env* env = nullptr;
+        if (!env) {
+            env = initEnv();
+        }
+        return env;
+    }
+
+    inline rocksdb::Status createDir(const std::string& path) {
+        return getGlobalEnv()->CreateDirIfMissing(path);
+        
+
+        std::string filepath = path;
+        size_t pos = 1;
+
+        while (true) {
+            if (pos == std::string::npos) {
+                filepath = path;
+                pos = path.size();
+            } else {
+                filepath.assign(path, 0, path.find("/", pos));
+            }
+
+            auto s = getGlobalEnv()->FileExists(filepath);
+            if (s == rocksdb::Status::NotFound()) {
+                s = getGlobalEnv()->CreateDir(filepath);
+                if (!s.ok()) {
+                    s = getGlobalEnv()->FileExists(filepath);
+                    if (!s.ok()) {
+                        return s;
+                    }
+                }
+            } else if (!s.ok()) {
+                return s;
+            }
+
+            pos += 1;
+            if (pos >= path.length()) {
+                break;
+            }
+
+            pos = path.find("/", pos);
+        }
+
+        return rocksdb::Status::OK();
+    }
+
+    inline rocksdb::Status deleteDir(const std::string& path) {
+        return getGlobalEnv()->DeleteDir(path);
+    }
+
+    inline rocksdb::Status deleteFile(const std::string& file) {
+        auto status = getGlobalEnv()->DeleteFile(file);
+        if (!status.ok()) {
+            if (status.ToString().find("No such file or directory") != std::string::npos ||
+                status.ToString().find("Success") != std::string::npos) {
+                    return rocksdb::Status::OK();
+            } else {
+                return status;
+            }
+        }
+
+        return rocksdb::Status::OK();
+    }
+
+    inline uint32_t decodePrefix(const rocksdb::Slice& key) {
+        return endian::bigToNative(*(uint32_t*)key.data());
+    }
+
+    inline std::string encodePrefix(uint32_t prefix) {
+        uint32_t bigEndianPrefix = endian::nativeToBig(prefix);
+        return std::string(reinterpret_cast<const char*>(&bigEndianPrefix), sizeof(uint32_t));
+    }
+    inline bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
+        if (slice.size() < sizeof(uint32_t)) {
+            return false;
+        }
+        *prefix = endian::bigToNative(*reinterpret_cast<const uint32_t*>(slice.data()));
+        return true;
+    }
 
     class RocksEngine : public KVEngine {
-        MONGO_DISALLOW_COPYING( RocksEngine );
+        MONGO_DISALLOW_COPYING(RocksEngine);
+
     public:
         RocksEngine(const std::string& path, bool durable, int formatVersion);
 
@@ -94,14 +182,12 @@ namespace mongo {
 
         virtual RecoveryUnit* newRecoveryUnit() override;
 
-        virtual Status createRecordStore(OperationContext* opCtx,
-                                         StringData ns,
-                                         StringData ident,
+        virtual Status createRecordStore(OperationContext* opCtx, StringData ns, StringData ident,
                                          const CollectionOptions& options) override;
 
-        virtual std::unique_ptr<RecordStore> getRecordStore(OperationContext* opCtx, StringData ns,
-                                            StringData ident,
-                                            const CollectionOptions& options) override;
+        virtual std::unique_ptr<RecordStore> getRecordStore(
+            OperationContext* opCtx, StringData ns, StringData ident,
+            const CollectionOptions& options) override;
 
         virtual Status createSortedDataInterface(OperationContext* opCtx, StringData ident,
                                                  const IndexDescriptor* desc) override;
@@ -110,19 +196,15 @@ namespace mongo {
                                                             StringData ident,
                                                             const IndexDescriptor* desc) override;
 
-        virtual Status dropIdent(OperationContext* opCtx, StringData ident) override;
+        virtual Status dropIdent(OperationContext* opCtx, StringData ident, StringData ns=StringData()) override;
 
         virtual bool hasIdent(OperationContext* opCtx, StringData ident) const override;
 
-        virtual std::vector<std::string> getAllIdents( OperationContext* opCtx ) const override;
+        virtual std::vector<std::string> getAllIdents(OperationContext* opCtx) const override;
 
-        virtual bool supportsDocLocking() const override {
-            return true;
-        }
+        virtual bool supportsDocLocking() const override { return true; }
 
-        virtual bool supportsDirectoryPerDB() const override {
-            return false;
-        }
+        virtual bool supportsDirectoryPerDB() const override { return false; }
 
         virtual int flushAllFiles(bool sync) override;
 
@@ -136,23 +218,19 @@ namespace mongo {
 
         virtual int64_t getIdentSize(OperationContext* opCtx, StringData ident);
 
-        virtual Status repairIdent(OperationContext* opCtx,
-                                    StringData ident) {
+        virtual Status repairIdent(OperationContext* opCtx, StringData ident) {
             return Status::OK();
         }
 
         virtual void cleanShutdown();
 
         virtual SnapshotManager* getSnapshotManager() const final {
-            return (SnapshotManager*) &_snapshotManager;
+            return (SnapshotManager*)&_snapshotManager;
         }
 
         virtual void resetEngineStats() override;
 
-        virtual void getEngineStats( std::vector<std::string> & vs) override;
-
-        static rocksdb::CompressionType getCompressLevelByName(const std::string cmprsLvl);
-        static uint32_t getAllConfig(rocksdb::Options &option, rocksdb::BlockBasedTableOptions & blkBasedTblOption);
+        virtual void getEngineStats(std::vector<std::string>& vs) override;
         /**
          * Initializes a background job to remove excess documents in the oplog collections.
          * This applies to the capped collections in the local.oplog.* namespaces (specifically
@@ -182,44 +260,63 @@ namespace mongo {
 
         Status backup(const std::string& path);
 
-        rocksdb::Statistics* getStatistics() const {
-          return _statistics.get();
-        }
+        rocksdb::Statistics* getStatistics() const { return _statistics.get(); }
+
+        virtual Status prepareSnapshot(BSONObj& cmdObj, BSONObjBuilder& result);
+
+        virtual Status compact() override;
+
+        virtual Status endSnapshot();
+
+        virtual Status rmCollectionDir(OperationContext* txn, const std::string& path);
+
+        virtual Status dropFromIdentCollectionMap(const mongo::StringData& ident) override;
+
+        virtual void setStorageEngineLogLevel(int level) override;
 
         static bool IsSystemCollection(const StringData& ns);
 
-        static bool IsPLogUsed(); 
+        virtual Status destroyRocksDB(const std::string& nss) { return Status::OK(); }
 
-        static bool IsStreamUsed();
+        virtual Status reNameNss(const std::string& srcName, const std::string& destName) {
+            return Status::OK();
+        }
 
-        static std::string encodePrefix(uint32_t prefix);
+        virtual void getTransactionEngineStat(long long& numKey, long long& numActiveSnapshot);
+
+        std::string getConfigInfo() const;
+
     private:
-        void _initMemPlan();
-        void _initMemPlanForShardConfigSvr(unsigned long long systemSizeMB);
-
+        void _setFixRocksOptions(rocksdb::Options& options) const;
+        void _setFixRocksTableOptions(rocksdb::BlockBasedTableOptions& table_options) const;
+        void _setRocksOptionsWithFlavor(rocksdb::Options& options) const;
+        void _setRocksTableOptionWithFlavor(rocksdb::BlockBasedTableOptions& table_options) const;
 
     protected:
-        virtual std::unique_ptr<RocksRecordStore> populateRecordStore(StringData ns, StringData ident,
-                const std::string& prefix, const CollectionOptions& options);
+        virtual std::unique_ptr<RocksRecordStore> populateRecordStore(
+            StringData ns, StringData ident, const std::string& prefix,
+            const CollectionOptions& options);
 
-        virtual RocksIndexBase* populateIndex(
-                    StringData ident,
-                    const IndexDescriptor* desc,
-                    const std::string& prefix,
-                    BSONObj&& config
-                    );
+        virtual RocksIndexBase* populateIndex(StringData ident, const IndexDescriptor* desc,
+                                              const std::string& prefix, BSONObj&& config);
 
-        RocksIndexBase* populateIndex(
-                    mongo::ChunkRocksDBInstance* db,
-                    const std::string& ident,
-                    const IndexDescriptor* desc,
-                    const std::string& prefix,
-                    BSONObj&& config
-                    );
+        RocksIndexBase* populateIndex(mongo::ChunkRocksDBInstance* db, const std::string& ident,
+                                      const IndexDescriptor* desc, const std::string& prefix,
+                                      BSONObj&& config);
 
-        virtual void Init();
+        void Init();
 
-        mongo::Status OpenDB(const std::string& path, std::unique_ptr<mongo::ChunkRocksDBInstance>& db) const;
+        virtual bool pauseGC(void) { return true; }
+        virtual void stopGC(void) {}
+        virtual bool continueGC(void) { return true; }
+        virtual void setGCInfo(const std::string& ns, const std::string& dataPath) {}
+        virtual Status openChunkDbInstance(OperationContext* txn, StringData ns,
+                                           const mongo::CollectionOptions& options) {
+            return Status::OK();
+        }
+
+        virtual Status OpenDB(const std::string& path, ChunkRocksDBInstance* db,
+                             const CollectionOptions* options = nullptr) const;
         void LoadMetadata();
 
         Status _createIdent(StringData ident, BSONObjBuilder* configBuilder);
@@ -233,8 +330,12 @@ namespace mongo {
 
         // shard or config svr memory plan
         std::shared_ptr<rocksdb::Cache> _block_cache = nullptr;
+        std::shared_ptr<rocksdb::Cache> _row_cache = nullptr;
+        std::shared_ptr<rocksdb::WriteBufferManager> _write_buf = nullptr;
         std::shared_ptr<rocksdb::Cache> _block_cache_compressed = nullptr;
         std::shared_ptr<rocksdb::Cache> _table_cache = nullptr;
+        // std::shared_ptr<BufferSizeCtrl> _bufferSizeCtrl = nullptr;
+        std::shared_ptr<rocksdb::PersistentCache> _persistent_cache = nullptr;
 
         int _maxWriteMBPerSec;
         std::shared_ptr<rocksdb::RateLimiter> _rateLimiter;
@@ -269,6 +370,14 @@ namespace mongo {
 
         static const std::string kMetadataPrefix;
         static const std::string kDroppedPrefix;
+
+        enum State {
+            kRunning,  // kRunning
+            kPause,
+        };
+
+        std::atomic<State> pauseState{kRunning};
+        stdx::mutex pauseMutex;
 
     };
 }

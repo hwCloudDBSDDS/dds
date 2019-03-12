@@ -34,9 +34,9 @@ namespace mongo {
 
 using CursorId = long long;
 
-struct CursorObj{
-    CursorId    cursorId;
-    BSONObj     cursorObj;
+struct CursorObj {
+    CursorId cursorId;
+    BSONObj cursorObj;
 };
 
 }  // namespace mongo

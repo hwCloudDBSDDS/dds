@@ -80,4 +80,6 @@ Status storeServerOptions(const moe::Environment& params);
 
 void printCommandLineOpts();
 
+bool parseAuditOpFilter(const std::string& filterStr, int& filter);
+
 }  // namespace mongo

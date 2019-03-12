@@ -37,6 +37,7 @@
 #include "mongo/s/catalog/type_tags.h"
 #include "mongo/util/log.h"
 #include "mongo/util/stringutils.h"
+#include "mongo/platform/random.h"
 
 namespace mongo {
 
@@ -225,7 +226,12 @@ Status BalancerPolicy::isShardSuitableReceiver(const ClusterStatistics::ShardSta
                 str::stream() << stat.shardId
                               << " has already reached the maximum total chunk size."};
     }
-    
+    if (stat.isSizeMaxed()) {
+        return {ErrorCodes::IllegalOperation,
+                str::stream() << stat.shardId
+                              << " has already reached the maximum total chunk size."};
+    }
+
     if (stat.isDraining) {
         return {ErrorCodes::IllegalOperation,
                 str::stream() << stat.shardId << " is currently draining."};
@@ -291,9 +297,9 @@ ShardId BalancerPolicy::_getMostOverloadedShard(const ShardStatisticsVector& sha
 }
 
 ChunkId BalancerPolicy::_getSmallestChunk(const ShardStatisticsVector& shardStats,
-                                               const std::string& ns,
-                                               const ShardId& shardId) {
-    ChunkId  smallest;
+                                          const std::string& ns,
+                                          const ShardId& shardId) {
+    ChunkId smallest;
     uint64_t minSize = 0;
 
     for (const auto& stat : shardStats) {
@@ -305,13 +311,13 @@ ChunkId BalancerPolicy::_getSmallestChunk(const ShardStatisticsVector& shardStat
 
                 if (!smallest.isValid()) {
                     smallest = chunk.chunkId;
-                    minSize  = chunk.currSizeMB;
+                    minSize = chunk.currSizeMB;
                     continue;
                 }
 
                 if (chunk.currSizeMB < minSize) {
                     smallest = chunk.chunkId;
-                    minSize  = chunk.currSizeMB;
+                    minSize = chunk.currSizeMB;
                 }
             }
         }
@@ -333,7 +339,7 @@ vector<MigrateInfo> BalancerPolicy::balance(const ShardStatisticsVector& shardSt
     // chunks moved off of them
     {
         for (const auto& stat : shardStats) {
-            if (!stat.isDraining && !stat.isAboveThreshold())
+            if (!stat.isDraining && !stat.isSizeExceeded())
                 continue;
 
             if (usedShards.count(stat.shardId))
@@ -349,7 +355,13 @@ vector<MigrateInfo> BalancerPolicy::balance(const ShardStatisticsVector& shardSt
             unsigned numJumboChunks = 0;
 
             // Since we have to move all chunks, lets just do in order
-            for (const auto& chunk : chunks) {
+            // choose chunk randomly
+            PseudoRandom pRandom(static_cast<int64_t>(time(0)));
+            std::set<int32_t> handledIndexes; 
+            while(handledIndexes.size() < chunks.size()) {
+                auto index = pRandom.nextInt32(chunks.size());
+                auto chunk = chunks[index];
+                handledIndexes.insert(index);
                 if (chunk.getJumbo()) {
                     numJumboChunks++;
                     continue;
@@ -502,7 +514,7 @@ bool BalancerPolicy::_singleZoneBalance(const ShardStatisticsVector& shardStats,
     const size_t max = distribution.numberOfChunksInShardWithTag(from, tag);
 
     // Do not use a shard if it already has less entries than the optimal per-shard chunk count
-    if (max <= idealNumberOfChunksPerShardForTag)
+    if (max < idealNumberOfChunksPerShardForTag)
         return false;
 
     const ShardId to = _getLeastLoadedReceiverShard(shardStats, distribution, tag, *usedShards);
@@ -529,8 +541,10 @@ bool BalancerPolicy::_singleZoneBalance(const ShardStatisticsVector& shardStats,
     LOG(1) << "threshold  : " << imbalanceThreshold;
 
     // Check whether it is necessary to balance within this zone
-    if (imbalance < imbalanceThreshold)
+    if ((imbalance < imbalanceThreshold) && (max - min <= 1)) {
         return false;
+    }
+
 
     const vector<ChunkType>& chunks = distribution.getChunks(from);
 
@@ -579,8 +593,8 @@ std::string MigrateInfo::getName() const {
 }
 
 string MigrateInfo::toString() const {
-    return str::stream() << id << ns << ": [" << minKey << ", " << maxKey << "), from " << from << ", to "
-                         << to;
+    return str::stream() << id << ns << ": [" << minKey << ", " << maxKey << "), from " << from
+                         << ", to " << to;
 }
 
 }  // namespace mongo

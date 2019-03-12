@@ -256,11 +256,12 @@ public:
                    ExplainCommon::Verbosity verbosity,
                    const rpc::ServerSelectionMetadata&,
                    BSONObjBuilder* out) const override {
-        const NamespaceString fullNs = parseNsCollectionRequired(dbName, cmdObj);
-        Status allowedWriteStatus = userAllowedWriteNS(fullNs.ns());
+        const NamespaceString ns = parseNsCollectionRequired(dbName, cmdObj);
+        Status allowedWriteStatus = userAllowedWriteNS(ns.ns());
         if (!allowedWriteStatus.isOK()) {
             return allowedWriteStatus;
         }
+        const NamespaceString fullNs(parseNs(dbName, cmdObj));
 
         StatusWith<FindAndModifyRequest> parseStatus =
             FindAndModifyRequest::parseFromBSON(NamespaceString(fullNs.ns()), cmdObj);
@@ -351,15 +352,12 @@ public:
         if (!allowedWriteStatus.isOK()) {
             return appendCommandStatus(result, allowedWriteStatus);
         }
-
         const NamespaceString fullNs(parseNs(dbName, cmdObj));
         StatusWith<FindAndModifyRequest> parseStatus =
             FindAndModifyRequest::parseFromBSON(NamespaceString(fullNs.ns()), cmdObj);
         if (!parseStatus.isOK()) {
             return appendCommandStatus(result, parseStatus.getStatus());
         }
-
-        txn->setNs(fullNs);
 
         const FindAndModifyRequest& args = parseStatus.getValue();
         const NamespaceString& nsString = args.getNamespaceString();
@@ -401,15 +399,13 @@ public:
                 AutoGetOrCreateDb autoDb(txn, dbName, MODE_IX);
                 Lock::CollectionLock collLock(txn->lockState(), nsString.ns(), MODE_IX);
 
+                ON_BLOCK_EXIT([&] { txn->recoveryUnit()->abandonSnapshot(); });
                 // Attach the namespace and database profiling level to the current op.
                 {
                     stdx::lock_guard<Client> lk(*txn->getClient());
                     CurOp::get(txn)->enter_inlock(nsString.ns().c_str(),
                                                   autoDb.getDb()->getProfilingLevel());
                 }
-
-                auto css = CollectionShardingState::get(txn, nsString);
-                css->checkChunkVersionOrThrow(txn);
 
                 Status isPrimary = checkCanAcceptWritesForDatabase(nsString);
                 if (!isPrimary.isOK()) {
@@ -418,17 +414,19 @@ public:
 
                 Collection* const collection = autoDb.getDb()->getCollection(nsString.ns());
 
-                // if find with chunkid, but no collection here, we should return stale config, so mongos will retry
+                // if find with chunkid, but no collection here, we should return stale config, so
+                // mongos will retry
                 if (!collection && fullNs.isChunk()) {
-                    LOG(1)<<"remove fm: no collection "
-                         <<reinterpret_cast<unsigned long long>(autoDb.getDb())
-                         <<" "
-                         <<fullNs.ns()
-                         <<" "
-                         <<nsString.ns();
+                    index_LOG(1) << "remove fm: no collection "
+                                 << reinterpret_cast<unsigned long long>(autoDb.getDb()) << " "
+                                 << fullNs.ns() << " " << nsString.ns();
                     return appendCommandStatus(
-                        result, {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});
+                        result,
+                        {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});
                 }
+
+                auto css = CollectionShardingState::get(txn, nsString);
+                css->checkChunkVersionOrThrow(txn);
 
                 if (!collection && autoDb.getDb()->getViewCatalog()->lookup(txn, nsString.ns())) {
                     return appendCommandStatus(result,
@@ -486,8 +484,11 @@ public:
                 if (!parsedUpdateStatus.isOK()) {
                     return appendCommandStatus(result, parsedUpdateStatus);
                 }
+
+
                 AutoGetOrCreateDb autoDb(txn, dbName, MODE_IX);
                 Lock::CollectionLock collLock(txn->lockState(), nsString.ns(), MODE_IX);
+                ON_BLOCK_EXIT([&] { txn->recoveryUnit()->abandonSnapshot(); });
                 // Attach the namespace and database profiling level to the current op.
                 {
                     stdx::lock_guard<Client> lk(*txn->getClient());
@@ -495,8 +496,6 @@ public:
                                                   autoDb.getDb()->getProfilingLevel());
                 }
 
-                auto css = CollectionShardingState::get(txn, nsString);
-                css->checkChunkVersionOrThrow(txn);
 
                 Status isPrimary = checkCanAcceptWritesForDatabase(nsString);
                 if (!isPrimary.isOK()) {
@@ -505,26 +504,31 @@ public:
 
                 Collection* collection = autoDb.getDb()->getCollection(nsString.ns());
 
-                // if find with chunkid, but no collection here, we should return stale config, so mongos will retry
+                // if find with chunkid, but no collection here, we should return stale config, so
+                // mongos will retry
                 if (!collection && fullNs.isChunk()) {
-                    LOG(1)<<"fm: no collection "
-                         <<reinterpret_cast<unsigned long long>(autoDb.getDb())
-                         <<" "
-                         <<fullNs.ns()
-                         <<" "
-                         <<nsString.ns();
+                    index_LOG(1) << "fm: no collection "
+                                 << reinterpret_cast<unsigned long long>(autoDb.getDb()) << " "
+                                 << fullNs.ns() << " " << nsString.ns();
                     return appendCommandStatus(
-                        result, {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});
+                        result,
+                        {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});
                 }
+
+                auto css = CollectionShardingState::get(txn, nsString);
+                css->checkChunkVersionOrThrow(txn);
 
                 if (!collection && autoDb.getDb()->getViewCatalog()->lookup(txn, nsString.ns())) {
                     return appendCommandStatus(result,
                                                {ErrorCodes::CommandNotSupportedOnView,
                                                 "findAndModify not supported on a view"});
                 }
+
+
                 // Create the collection if it does not exist when performing an upsert
                 // because the update stage does not create its own collection.
                 if (!collection && args.isUpsert()) {
+
                     // Release the collection lock and reacquire a lock on the database
                     // in exclusive mode in order to create the collection.
                     collLock.relockAsDatabaseExclusive(autoDb.lock());
@@ -539,7 +543,7 @@ public:
                     } else {
                         if (!nsString.supportImplicitCreation()) {
                             return appendCommandStatus(result,
-                                                        {ErrorCodes::ImplicitCreationNotSupported,
+                                                       {ErrorCodes::ImplicitCreationNotSupported,
                                                         str::stream() << "implicit creation of "
                                                                       << nsString.ns()
                                                                       << " is not supported"});
@@ -557,6 +561,7 @@ public:
                         invariant(collection);
                     }
                 }
+                // already add ftds tracepoint in getExecutorUpdate
                 auto statusWithPlanExecutor =
                     getExecutorUpdate(txn, opDebug, collection, &parsedUpdate);
                 if (!statusWithPlanExecutor.isOK()) {
@@ -570,8 +575,11 @@ public:
                     CurOp::get(txn)->setPlanSummary_inlock(Explain::getPlanSummary(exec.get()));
                 }
 
+
                 StatusWith<boost::optional<BSONObj>> advanceStatus =
                     advanceExecutor(txn, exec.get(), args.isRemove());
+
+
                 if (!advanceStatus.isOK()) {
                     return appendCommandStatus(result, advanceStatus.getStatus());
                 }
@@ -605,7 +613,6 @@ public:
             // that case.
             lastOpSetterGuard.Dismiss();
         }
-
         return true;
     }
 

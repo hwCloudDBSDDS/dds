@@ -93,8 +93,7 @@ void* runFunc(void* ptr) {
     if (!serverGlobalParams.quiet) {
         auto conns = tl->sessionStats().numOpenSessions;
         const char* word = (conns == 1 ? " connection" : " connections");
-        LOG(2) << "end connection " << ctx->session->remote() << " (" << conns << word
-              << " now open)";
+        LOG(2) << "end connection (" << conns << word << " now open)";
     }
 
     Client::destroy();

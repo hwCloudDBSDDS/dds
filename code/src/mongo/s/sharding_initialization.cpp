@@ -50,6 +50,7 @@
 #include "mongo/rpc/metadata/metadata_hook.h"
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/catalog_cache.h"
+#include "mongo/s/catalog/catalog_extend/sharding_catalog_client_extend.h"
 #include "mongo/s/catalog/dist_lock_catalog_impl.h"
 #include "mongo/s/catalog/replset_dist_lock_manager.h"
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
@@ -110,7 +111,7 @@ std::unique_ptr<ShardingCatalogClient> makeCatalogClient(ServiceContext* service
                                                   ReplSetDistLockManager::kDistLockPingInterval,
                                                   ReplSetDistLockManager::kDistLockExpirationTime);
 
-    return stdx::make_unique<ShardingCatalogClientImpl>(std::move(distLockManager));
+    return stdx::make_unique<ShardingCatalogClientExtend>(std::move(distLockManager));
 }
 
 std::unique_ptr<TaskExecutorPool> makeTaskExecutorPool(

@@ -35,6 +35,7 @@
 #include "util/string_util.h"
 #include "util/sync_point.h"
 
+
 namespace rocksdb {
 
 // A wrapper for fadvise, if the platform doesn't support fadvise,
@@ -494,7 +495,7 @@ Status PosixMmapFile::Append(const Slice& data) {
     }
 
     size_t n = (left <= avail) ? left : avail;
-    memcpy(dst_, src, n);
+    CommonMemCopy(dst_, n, src, n);
     dst_ += n;
     src += n;
     left -= n;
@@ -617,6 +618,7 @@ PosixWritableFile::~PosixWritableFile() {
 
 Status PosixWritableFile::Append(const Slice& data) {
   assert(!use_direct_io() || (IsSectorAligned(data.size()) && IsPageAligned(data.data())));
+
   const char* src = data.data();
   size_t left = data.size();
   while (left != 0) {

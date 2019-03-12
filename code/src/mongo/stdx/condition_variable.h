@@ -28,14 +28,16 @@
 
 #pragma once
 
-#include <condition_variable>
+#define BOOST_THREAD_HAS_CONDATTR_SET_CLOCK_MONOTONIC
+#define BOOST_THREAD_USES_CHRONO
+#include <boost/thread/condition_variable.hpp>
 
 namespace mongo {
 namespace stdx {
 
-using condition_variable = ::std::condition_variable;          // NOLINT
-using condition_variable_any = ::std::condition_variable_any;  // NOLINT
-using cv_status = ::std::cv_status;                            // NOLINT
+using condition_variable = boost::condition_variable;          // NOLINT
+using condition_variable_any = boost::condition_variable_any;  // NOLINT
+using cv_status = boost::cv_status;                            // NOLINT
 
 }  // namespace stdx
 }  // namespace mongo

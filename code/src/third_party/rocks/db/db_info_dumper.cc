@@ -38,8 +38,8 @@ void DumpDBFileSummary(const ImmutableDBOptions& options,
   Header(options.info_log, "DB SUMMARY   dbname(%s)\n", dbname.c_str());
   // Get files in dbname dir
   if (!env->GetChildren(dbname, &files).ok()) {
-    Error(options.info_log,
-          "Error when reading %s dir\n", dbname.c_str());
+    Warn(options.info_log,
+          "warning when reading %s dir\n", dbname.c_str());
   }
   std::sort(files.begin(), files.end());
   for (std::string file : files) {
@@ -79,8 +79,8 @@ void DumpDBFileSummary(const ImmutableDBOptions& options,
   for (auto& db_path : options.db_paths) {
     if (dbname.compare(db_path.path) != 0) {
       if (!env->GetChildren(db_path.path, &files).ok()) {
-        Error(options.info_log,
-            "Error when reading %s dir\n",
+        Warn(options.info_log,
+            "Warn when reading %s dir\n",
             db_path.path.c_str());
         continue;
       }
@@ -103,8 +103,8 @@ void DumpDBFileSummary(const ImmutableDBOptions& options,
   // Get wal file in wal_dir
   if (dbname.compare(options.wal_dir) != 0) {
     if (!env->GetChildren(options.wal_dir, &files).ok()) {
-      Error(options.info_log,
-          "Error when reading %s dir\n",
+      Warn(options.info_log,
+          "Warn when reading %s dir\n",
           options.wal_dir.c_str());
       return;
     }

@@ -33,6 +33,7 @@
 #include <algorithm>
 
 #include "mongo/base/status.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/elect_cmd_runner.h"
 #include "mongo/db/repl/freshness_checker.h"
@@ -55,8 +56,8 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
 #include "mongo/util/util_extend/default_parameters.h"
-#include "mongo/db/modules/rocks/src/GlobalConfig.h"
 
 namespace mongo {
 namespace repl {
@@ -98,7 +99,8 @@ void ReplicationCoordinatorImpl::_doMemberHeartbeat(ReplicationExecutor::Callbac
             _topCoord->prepareHeartbeatRequest(now, _settings.ourSetName(), target);
         heartbeatObj = hbRequest.first.toBSON();
         timeout = hbRequest.second;
-    }   
+    }
+
     const RemoteCommandRequest request(
         target, "admin", heartbeatObj, BSON(rpc::kReplSetMetadataFieldName << 1), nullptr, timeout);
     const ReplicationExecutor::RemoteCommandCallbackFn callback =
@@ -113,7 +115,8 @@ void ReplicationCoordinatorImpl::_doMemberHeartbeat(ReplicationExecutor::Callbac
 void ReplicationCoordinatorImpl::_scheduleHeartbeatToTarget(const HostAndPort& target,
                                                             int targetIndex,
                                                             Date_t when) {
-    LOG(2) << "Scheduling heartbeat to " << target << " at " << dateToISOStringUTC(when);
+    LOG(2) << "Scheduling heartbeat to " << target << " after "
+           << (Milliseconds)(when - _replExecutor.now());
     _trackHeartbeatHandle(
         _replExecutor.scheduleWorkAt(when,
                                      stdx::bind(&ReplicationCoordinatorImpl::_doMemberHeartbeat,
@@ -157,9 +160,9 @@ void ReplicationCoordinatorImpl::_handleHeartbeatResponse(
             _rsConfig.getReplicaSetId() != replMetadata.getValue().getReplicaSetId()) {
             responseStatus = Status(ErrorCodes::InvalidReplicaSetConfig,
                                     stream() << "replica set IDs do not match, ours: "
-                                                  << _rsConfig.getReplicaSetId()
-                                                  << "; remote node's: "
-                                                  << replMetadata.getValue().getReplicaSetId());
+                                             << _rsConfig.getReplicaSetId()
+                                             << "; remote node's: "
+                                             << replMetadata.getValue().getReplicaSetId());
             // Ignore metadata.
             replMetadata = responseStatus;
         }
@@ -308,9 +311,10 @@ void remoteStepdownCallback(const ReplicationExecutor::RemoteCommandCallbackArgs
 }  // namespace
 
 void ReplicationCoordinatorImpl::_requestRemotePrimaryStepdown(const HostAndPort& target) {
-    RemoteCommandRequest request(target, "admin", BSON("replSetStepDown" << 20), nullptr);
+    RemoteCommandRequest request(
+        target, "admin", BSON("replSetStepDown" << 20), nullptr);
 
-    log() << "Requesting " << target << " step down from primary";
+    log() << "Requesting " << target << " step down from primary, stepDownForSecs: "<< 20;
     CBHStatus cbh = _replExecutor.scheduleRemoteCommand(request, remoteStepdownCallback);
     if (cbh.getStatus() != ErrorCodes::ShutdownInProgress) {
         fassert(18808, cbh.getStatus());
@@ -324,6 +328,7 @@ ReplicationExecutor::EventHandle ReplicationCoordinatorImpl::_stepDownStart(bool
             lk.emplace(_mutex);
         }
         _stepDownPending = true;
+        _isWaitingForDrainToComplete = false;
     }
     auto finishEvent = _makeEvent();
     if (!finishEvent) {
@@ -800,11 +805,16 @@ void ReplicationCoordinatorImpl::_cancelAndRescheduleElectionTimeout_inlock() {
         return;
     }
 
-    Milliseconds randomOffset = Milliseconds(_replExecutor.nextRandomInt64(
-        durationCount<Milliseconds>(_rsConfig.getElectionTimeoutPeriod()) *
-        _externalState->getElectionTimeoutOffsetLimitFraction()));
     auto now = _replExecutor.now();
-    auto when = now + _rsConfig.getElectionTimeoutPeriod() + randomOffset;
+    Date_t when;
+    if (_firstSecondaryState) {
+        when = now + _rsConfig.getHeartbeatInterval() * 2 +
+            kDefaultConfigElectionTimeoutOffsetSkew * _selfIndex;
+        _firstSecondaryState = false;
+    } else {
+        when = now + _rsConfig.getElectionTimeoutPeriod() +
+            kDefaultConfigElectionTimeoutOffsetSkew * _selfIndex;
+    }
     invariant(when > now);
     LOG(4) << "Scheduling election timeout callback at " << when;
     _handleElectionTimeoutWhen = when;
@@ -851,8 +861,9 @@ void ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1(bool isPriorityTake
               << _rsConfig.getElectionTimeoutPeriod();
     }
     getGlobalServiceContext()->registerProcessStageTime("secondaryToPrimary");
-    getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-        "startElectSelfV1");
+    getGlobalServiceContext()
+        ->getProcessStageTime("secondaryToPrimary")
+        ->noteStageStart("startElectSelfV1");
     _startElectSelfV1();
 }
 

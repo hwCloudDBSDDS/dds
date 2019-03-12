@@ -65,9 +65,8 @@ std::string BalancerChunkSelectionPolicy::SplitInfo::toString() const {
                          << " and collection version " << collectionVersion.toString();
 }
 
-BalancerChunkSelectionPolicy::IndexSplitInfo::IndexSplitInfo(ChunkType inChunk, 
+BalancerChunkSelectionPolicy::IndexSplitInfo::IndexSplitInfo(const ChunkType& inChunk,
                                                              BSONObj inSplitPoint)
-    : chunk(std::move(inChunk)),
-      splitPoint(std::move(inSplitPoint)) {}
+    : chunk(std::move(inChunk)), splitPoint(std::move(inSplitPoint)) {}
 
 }  // namespace mongo

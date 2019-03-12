@@ -4,9 +4,9 @@
     'use strict';
     load("jstests/replsets/rslib.js");
 
-    var adminUser = {db: "admin", username: "foo", password: "bar"};
+    var adminUser = {db: "admin", username: "foo", password: "WEak@2password"};
 
-    var testUser = {db: "test", username: "bar", password: "baz"};
+    var testUser = {db: "test", username: "bar", password: "WEak@3password"};
 
     var testUserReadOnly = {db: "test", username: "sad", password: "bat"};
 
@@ -50,7 +50,8 @@
     s.getDB(adminUser.db).createUser({
         user: adminUser.username,
         pwd: adminUser.password,
-        roles: jsTest.adminUserRoles
+        roles: jsTest.adminUserRoles,
+        passwordDigestor: "server"
     });
     login(adminUser);
 
@@ -116,12 +117,14 @@
     s.getDB(testUser.db).createUser({
         user: testUser.username,
         pwd: testUser.password,
-        roles: jsTest.basicUserRoles
+        roles: jsTest.basicUserRoles,
+        passwordDigestor: "server"
     });
     s.getDB(testUserReadOnly.db).createUser({
         user: testUserReadOnly.username,
         pwd: testUserReadOnly.password,
-        roles: jsTest.readOnlyUserRoles
+        roles: jsTest.readOnlyUserRoles,
+        passwordDigestor: "server"
     });
 
     logout(adminUser);
@@ -252,14 +255,22 @@
     // add admin on shard itself, hack to prevent localhost auth bypass
     d1.getPrimary()
         .getDB(adminUser.db)
-        .createUser(
-            {user: adminUser.username, pwd: adminUser.password, roles: jsTest.adminUserRoles},
-            {w: 3, wtimeout: 60000});
+        .createUser({
+            user: adminUser.username,
+            pwd: adminUser.password,
+            roles: jsTest.adminUserRoles,
+            passwordDigestor: "server"
+        },
+                    {w: 3, wtimeout: 60000});
     d2.getPrimary()
         .getDB(adminUser.db)
-        .createUser(
-            {user: adminUser.username, pwd: adminUser.password, roles: jsTest.adminUserRoles},
-            {w: 3, wtimeout: 60000});
+        .createUser({
+            user: adminUser.username,
+            pwd: adminUser.password,
+            roles: jsTest.adminUserRoles,
+            passwordDigestor: "server"
+        },
+                    {w: 3, wtimeout: 60000});
 
     login(testUser);
     print("testing map reduce");

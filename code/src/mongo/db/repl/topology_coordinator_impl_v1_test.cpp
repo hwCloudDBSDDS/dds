@@ -4385,8 +4385,7 @@ TEST_F(HeartbeatResponseTestV1, NodeDoesNotRetryHeartbeatIfTheFirstFailureTakesT
     ASSERT_EQUALS(HeartbeatResponseAction::NoAction, action.getAction());
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     // Because the heartbeat timed out, we'll retry in half of the election timeout.
-    ASSERT_EQUALS(firstRequestDate + Milliseconds(5000) +
-                      kDefaultConfigElectionTimeoutPeriod / 2,
+    ASSERT_EQUALS(firstRequestDate + Milliseconds(5000) + kDefaultConfigElectionTimeoutPeriod / 2,
                   action.getNextHeartbeatStartDate());
 }
 
@@ -4570,8 +4569,7 @@ TEST_F(HeartbeatResponseTestOneRetryV1,
     ASSERT_EQUALS(HeartbeatResponseAction::NoAction, action.getAction());
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     // Because the heartbeat timed out, we'll retry in half of the election timeout.
-    ASSERT_EQUALS(firstRequestDate() + Milliseconds(5010) +
-                      kDefaultConfigElectionTimeoutPeriod / 2,
+    ASSERT_EQUALS(firstRequestDate() + Milliseconds(5010) + kDefaultConfigElectionTimeoutPeriod / 2,
                   action.getNextHeartbeatStartDate());
 }
 
@@ -4644,8 +4642,7 @@ TEST_F(HeartbeatResponseTestTwoRetriesV1, NodeDoesNotRetryHeartbeatsAfterFailing
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     // Because this is the second retry, rather than retry again, we expect to wait for half
     // of the election timeout interval of 2 seconds to elapse.
-    ASSERT_EQUALS(firstRequestDate() + Milliseconds(4800) +
-                      kDefaultConfigElectionTimeoutPeriod / 2,
+    ASSERT_EQUALS(firstRequestDate() + Milliseconds(4800) + kDefaultConfigElectionTimeoutPeriod / 2,
                   action.getNextHeartbeatStartDate());
 
     // Ensure a third failed heartbeat caused the node to be marked down
@@ -4691,8 +4688,7 @@ TEST_F(HeartbeatResponseTestTwoRetriesV1, HeartbeatThreeNonconsecutiveFailures) 
     ASSERT_EQUALS(HeartbeatResponseAction::NoAction, action.getAction());
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     // Because the heartbeat succeeded, we'll retry in half of the election timeout.
-    ASSERT_EQUALS(firstRequestDate() + Milliseconds(4500) +
-                      kDefaultConfigElectionTimeoutPeriod / 2,
+    ASSERT_EQUALS(firstRequestDate() + Milliseconds(4500) + kDefaultConfigElectionTimeoutPeriod / 2,
                   action.getNextHeartbeatStartDate());
 
     // request next heartbeat

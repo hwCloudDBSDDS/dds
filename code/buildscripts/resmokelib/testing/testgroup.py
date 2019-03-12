@@ -92,6 +92,7 @@ class TestGroup(object):
             for (i, line) in enumerate(bulleter_sb):
                 # Only bullet first line, indent others.
                 prefix = "* " if i == 0 else "  "
+                prefix = ""
                 sb.append(prefix + line)
 
         return combined_summary
@@ -116,16 +117,16 @@ class TestGroup(object):
         summary = _summary.Summary(num_run, time_taken, report.num_succeeded, num_skipped,
                                    report.num_failed, report.num_errored)
 
-        sb.append("%d test(s) ran in %0.2f seconds"
-                  " (%d succeeded, %d were skipped, %d failed, %d errored)" % summary)
+        #sb.append("%d test(s) ran in %0.2f seconds"
+        #          " (%d succeeded, %d were skipped, %d failed, %d errored)" % summary)
 
         if report.num_failed > 0:
-            sb.append("The following tests failed (with exit code):")
+            #sb.append("The following tests failed (with exit code):")
             for test_info in report.get_failed():
                 sb.append("    %s (%d)" % (test_info.test_id, test_info.return_code))
 
         if report.num_errored > 0:
-            sb.append("The following tests had errors:")
+            #sb.append("The following tests had errors:")
             for test_info in report.get_errored():
                 sb.append("    %s" % (test_info.test_id))
 

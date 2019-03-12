@@ -156,4 +156,9 @@ void User::decrementRefCount() {
     dassert(_refCount > 0);
     --_refCount;
 }
+
+bool User::isBuildInUser() const {
+    return _name.isBuildinUser();
+}
+
 }  // namespace mongo

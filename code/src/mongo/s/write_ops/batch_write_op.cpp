@@ -755,7 +755,7 @@ void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
             WriteErrorDetail* error = new WriteErrorDetail();
             writeOp.getOpError().cloneTo(error);
             batchResp->addToErrDetails(error);
-            //batchResp->setOk(false);
+            // batchResp->setOk(false);
         }
     }
 
@@ -785,7 +785,7 @@ void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
 
         error->setErrMessage(msg.str());
         batchResp->setWriteConcernError(error);
-       // batchResp->setOk(false);
+        // batchResp->setOk(false);
     }
 
     //

@@ -238,7 +238,7 @@ void NetworkInterfaceASIO::_beginCommunication(AsyncOp* op) {
     // so we can proceed with user operations after they return to this
     // codepath.
     if (op->_inSetup) {
-        log() << "Successfully connected to " << op->request().target.toString();
+        LOG(2) << "Successfully connected to " << op->request().target.toString();
         op->_inSetup = false;
         op->finish(RemoteCommandResponse());
         return;
@@ -292,7 +292,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         MONGO_ASIO_INVARIANT(!resp.isOK(), "Failed to connect in setup", op);
         // If we fail during connection, we won't be able to access any of op's members after
         // calling finish(), so we return here.
-        log() << "Failed to connect to " << op->request().target << " - " << resp.status;
+        index_log() << "Failed to connect to " << op->request().target << " - " << resp.status;
         op->finish(resp);
         return;
     }
@@ -302,8 +302,8 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         MONGO_ASIO_INVARIANT(!resp.isOK(), "In refresh, but did not fail to heartbeat", op);
         // If we fail during heartbeating, we won't be able to access any of op's members after
         // calling finish(), so we return here.
-        log() << "Failed asio heartbeat to " << op->request().target << " - "
-              << redact(resp.status);
+        index_log() << "Failed asio heartbeat to " << op->request().target << " - "
+                    << redact(resp.status);
         _numFailedOps.fetchAndAdd(1);
         op->finish(resp);
         return;
@@ -369,7 +369,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
 }
 
 void NetworkInterfaceASIO::_asyncRunCommand(AsyncOp* op, NetworkOpHandler handler) {
-    LOG(2) << "Starting asynchronous command " << op->request().id << " on host "
+    LOG(2) << "Starting asynchronous RemoteCommand " << op->request().id << " on host "
            << op->request().target.toString();
 
     if (MONGO_FAIL_POINT(NetworkInterfaceASIOasyncRunCommandFail)) {
@@ -400,12 +400,11 @@ void NetworkInterfaceASIO::_asyncRunCommand(AsyncOp* op, NetworkOpHandler handle
             uint32_t expectedId = cmd->toSend().header().getId();
             uint32_t actualId = cmd->header().constView().getResponseToMsgId();
             if (actualId != expectedId) {
-                LOG(3) << "got wrong response:"
+                LOG(0) << "got wrong response:"
                        << " expected response id: " << expectedId
                        << ", got response id: " << actualId;
                 return handler(make_error_code(ErrorCodes::ProtocolError), bytes);
             }
-
             asyncRecvMessageBody(cmd->conn().stream(),
                                  &cmd->header(),
                                  &cmd->toRecv(),
@@ -416,6 +415,7 @@ void NetworkInterfaceASIO::_asyncRunCommand(AsyncOp* op, NetworkOpHandler handle
     // Step 2
     auto sendMessageCallback = [this, cmd, handler, recvHeaderCallback, op](std::error_code ec,
                                                                             size_t bytes) {
+
         _validateAndRun(op, ec, [this, cmd, op, recvHeaderCallback] {
             asyncRecvMessageHeader(
                 cmd->conn().stream(), &cmd->header(), std::move(recvHeaderCallback));

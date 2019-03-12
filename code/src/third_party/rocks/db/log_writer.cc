@@ -54,9 +54,9 @@ Status Writer::AddRecord(const Slice& slice) {
       if (leftover > 0) {
         // Fill the trailer (literal below relies on kHeaderSize and
         // kRecyclableHeaderSize being <= 11)
-        assert(header_size <= 11);
+        assert(header_size <= kRecyclableHeaderSize);
         dest_->Append(
-            Slice("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", leftover));
+            Slice("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", leftover));
       }
       block_offset_ = 0;
     }
@@ -88,15 +88,17 @@ Status Writer::AddRecord(const Slice& slice) {
 }
 
 Status Writer::EmitPhysicalRecord(RecordType t, const char* ptr, size_t n) {
-  assert(n <= 0xffff);  // Must fit in two bytes
+  assert(n <= 0xfffff);  // Must fit in two bytes
 
   size_t header_size;
   char buf[kRecyclableHeaderSize];
 
   // Format the header
   buf[4] = static_cast<char>(n & 0xff);
-  buf[5] = static_cast<char>(n >> 8);
-  buf[6] = static_cast<char>(t);
+  buf[5] = static_cast<char>((n >> 8) & 0xff);
+  buf[6] = static_cast<char>((n >> 16) & 0xff);
+  buf[7] = static_cast<char>((n >> 24) & 0xff);
+  buf[8] = static_cast<char>(t);
 
   uint32_t crc = type_crc_[t];
   if (t < kRecyclableFullType) {
@@ -113,8 +115,8 @@ Status Writer::EmitPhysicalRecord(RecordType t, const char* ptr, size_t n) {
     // ~4 billion logs ago, but that is effectively impossible, and
     // even if it were we'dbe far more likely to see a false positive
     // on the 32-bit CRC.
-    EncodeFixed32(buf + 7, static_cast<uint32_t>(log_number_));
-    crc = crc32c::Extend(crc, buf + 7, 4);
+    EncodeFixed32(buf + kHeaderSize, static_cast<uint32_t>(log_number_));
+    crc = crc32c::Extend(crc, buf + kHeaderSize, 4);
   }
 
   // Compute the crc of the record type and the payload.
@@ -123,12 +125,23 @@ Status Writer::EmitPhysicalRecord(RecordType t, const char* ptr, size_t n) {
   EncodeFixed32(buf, crc);
 
   // Write the header and the payload
-  Status s = dest_->Append(Slice(buf, header_size));
+  //Status s = dest_->Append(Slice(buf, header_size));
+  Status s;
+  char* merge = new char[header_size+n+1];
+  if(NULL != merge)
+  {
+      CommonMemCopy(merge, header_size+n, buf, header_size);
+      CommonMemCopy(merge+header_size, n, ptr, n);
+      s = dest_->Append(Slice(merge, header_size+n));
+      delete[] merge;
+  }else{
+      s = dest_->Append(Slice(buf, header_size));
+      if(s.ok()){
+          s = dest_->Append(Slice(ptr, n));
+      }
+  }
   if (s.ok()) {
-    s = dest_->Append(Slice(ptr, n));
-    if (s.ok()) {
       s = dest_->Flush();
-    }
   }
   block_offset_ += header_size + n;
   return s;

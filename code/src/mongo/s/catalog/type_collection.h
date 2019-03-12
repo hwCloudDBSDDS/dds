@@ -49,13 +49,12 @@ class StatusWith;
  */
 class CollectionType {
 public:
-
     // Event type, used in the recovery process
     enum class TableType : int {
-        kNonShard     = 0,
-        kCapped       = 1,
-        kSharded      = 2,
-        kView         = 3,
+        kNonShard = 0,
+        kCapped = 1,
+        kSharded = 2,
+        kView = 3,
     };
 
     // Name of the collections collection in the config server.
@@ -68,10 +67,16 @@ public:
     static const BSONField<BSONObj> defaultCollation;
     static const BSONField<bool> unique;
     static const BSONField<TableType> tabType;
-    static const BSONField<long long> prefix; 
-    static const BSONField<BSONObj> index; 
-    static const BSONField<BSONObj> options; 
-    
+    static const BSONField<long long> prefix;
+    static const BSONField<BSONObj> index;
+    static const BSONField<BSONObj> options;
+    static const BSONField<std::string> ident;
+
+    static const BSONField<bool> kNoBalance;
+    static const BSONField<bool> kDropped;
+    static const BSONField<bool> kCreated;
+    static const BSONField<std::unordered_set<uint32_t>> kDroppedPrefixes;
+
     /**
      * Constructs a new DatabaseType object from BSON. Also does validation of the contents.
      */
@@ -121,6 +126,13 @@ public:
         _dropped = dropped;
     }
 
+    bool getCreated() const {
+        return _created.get_value_or(false);
+    }
+    void setCreated(bool created) {
+        _created = created;
+    }
+
     const KeyPattern& getKeyPattern() const {
         return _keyPattern.get();
     }
@@ -143,30 +155,49 @@ public:
     TableType getTabType() const {
         return _tableType;
     }
-    void setTabType(TableType tabType) ;
+    void setTabType(TableType tabType);
 
 
     bool getAllowBalance() const {
         return _allowBalance.get_value_or(true);
     }
 
-    
+    void setAllowBalance(bool allow) {
+        _allowBalance = allow;
+    }
+
     long long getPrefix() const {
         return _prefix.get_value_or(0);
     }
 
-    void setPrefix (long long prefix);
-   
+    void setPrefix(long long prefix);
+
     const BSONArray& getIndex() const {
         return _index;
     }
-    void setIndex (const BSONArray& index);
-    void setOptions(const BSONObj& options){
+    void setIndex(const BSONArray& index);
+    void setOptions(const BSONObj& options) {
         _options = options;
     }
-    const BSONObj& getOptions(){
-       return _options;
-    }  
+    const BSONObj& getOptions() const{
+        return _options;
+    }
+
+    const std::string getIdent() const {
+        return _ident.get();
+    }
+
+    void setIdent(const std::string& ident) {
+        _ident = ident;
+    }
+    const std::unordered_set<uint32_t>&getDroppedPrefixes()const{
+        return _droppedPrefixes;
+    }
+    
+    void setDroppedPrefixes(const std::unordered_set<uint32_t>& prefixes) {
+        _droppedPrefixes = prefixes;
+    }
+
 private:
     // Required full namespace (with the database prefix).
     boost::optional<NamespaceString> _fullNs;
@@ -179,6 +210,8 @@ private:
 
     // Optional, whether the collection has been dropped. If missing, implies false.
     boost::optional<bool> _dropped;
+    // collection create status 0 creating, 1 created
+    boost::optional<bool> _created;
 
     // Sharding key. Required, if collection is not dropped.
     boost::optional<KeyPattern> _keyPattern;
@@ -192,15 +225,20 @@ private:
     // Optional whether balancing is allowed for this collection. If missing, implies true.
     boost::optional<bool> _allowBalance;
 
-    // prefix for collection and index 
+    // prefix for collection and index
     boost::optional<long long> _prefix;
 
     // metadata for indexes of collection
     BSONArray _index;
 
     TableType _tableType = TableType::kNonShard;
-    //Optional collection options,include capped,autoIndexId,size,max,storageEngine,validator and so on
+    // Optional collection options,include capped,autoIndexId,size,max,storageEngine,validator and
+    // so on
     BSONObj _options;
+
+    boost::optional<std::string> _ident;
+    //index dropped prefixes set
+    std::unordered_set<uint32_t> _droppedPrefixes; 
 };
 
 }  // namespace mongo

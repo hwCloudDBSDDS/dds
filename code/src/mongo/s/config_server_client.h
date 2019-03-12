@@ -57,14 +57,20 @@ Status moveChunk(OperationContext* txn,
  * Requests the balancer to move the specified chunk off of its current shard to a shard, considered
  * more appropriate under the balancing policy which is currently in effect.
  */
-Status rebalanceChunk(OperationContext* txn, const ChunkType& chunk);
+//Status rebalanceChunk(OperationContext* txn, const ChunkType& chunk);
 
-//Requests the balancer to offload the specified chunk off of its current shard.
-Status offloadChunk(OperationContext* txn, const ChunkType& chunk);
+// Requests the balancer to offload the specified chunk off of its current shard.
+//Status offloadChunk(OperationContext* txn, const ChunkType& chunk);
 
-//Requests the balancer to assign the specified chunk whitch blongs no shard to a new shard.
-Status assignChunk(OperationContext* txn, const ChunkType& chunk, const ShardId& newShardId);
+// Requests the balancer to assign the specified chunk whitch blongs no shard to a new shard.
+//Status assignChunk(OperationContext* txn, const ChunkType& chunk, const ShardId& newShardId);
 
 Status splitChunk(OperationContext* txn, const ChunkType& chunk, const BSONObj& splitpoint);
+
+Status renameCollection(OperationContext* txn,
+                        NamespaceString& fromNS,
+                        NamespaceString& toNS,
+                        bool dropTarget,
+                        bool stayTemp);
 }  // namespace configsvr_client
 }  // namespace mongo

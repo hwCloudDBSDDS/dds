@@ -202,7 +202,7 @@ bool RandomAccessCacheFile::OpenImpl(const bool enable_direct_reads) {
 
   Debug(log_, "Opening cache file %s", Path().c_str());
 
-  Status status = NewRandomAccessCacheFile(env_, Path(), &file_);
+  Status status = NewRandomAccessCacheFile(env_, Path(), &file_, enable_direct_reads);
   if (!status.ok()) {
     Error(log_, "Error opening random access file %s. %s", Path().c_str(),
           status.ToString().c_str());

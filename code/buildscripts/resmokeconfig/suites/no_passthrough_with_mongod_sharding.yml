@@ -1,0 +1,14 @@
+selector:
+  js_test:
+    roots:
+    - jstests/noPassthroughWithMongod/sharding_migrate_large_docs.js
+    - jstests/noPassthroughWithMongod/no_balance_collection.js
+    - jstests/noPassthroughWithMongod/ttl_sharded.js
+    exclude_files:
+
+executor:
+  js_test:
+    config:
+      shell_options:
+        nodb: ''
+        readMode: commands

@@ -63,14 +63,14 @@ void QueryYield::yieldAllLocks(OperationContext* txn,
         fetcher->setup();
     }
 
+    // Top-level locks are freed, release any potential low-level (storage engine-specific
+    // locks). If we are yielding, we are at a safe place to do so.
+    txn->recoveryUnit()->abandonSnapshot();
+
     // Nothing was unlocked, just return, yielding is pointless.
     if (!locker->saveLockStateAndUnlock(&snapshot)) {
         return;
     }
-
-    // Top-level locks are freed, release any potential low-level (storage engine-specific
-    // locks). If we are yielding, we are at a safe place to do so.
-    txn->recoveryUnit()->abandonSnapshot();
 
     MONGO_FAIL_POINT_PAUSE_WHILE_SET(setYieldAllLocksHang);
 

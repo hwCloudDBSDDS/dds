@@ -404,8 +404,8 @@ Status ReplicationCoordinatorMock::processHeartbeatV1(const ReplSetHeartbeatArgs
     return Status::OK();
 }
 
-Status ReplicationCoordinatorMock::processShardServerHeartbeat(OperationContext* txn,
-                                   const ShardServerHeartbeatArgs& args) {
+Status ReplicationCoordinatorMock::processShardServerHeartbeat(
+    OperationContext* txn, const ShardServerHeartbeatArgs& args) {
     return Status::OK();
 }
 

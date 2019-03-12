@@ -257,15 +257,21 @@ StatusWith<ClusterCursorManager::PinnedCursor> ClusterCursorManager::checkOutCur
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
     if (_inShutdown) {
+        index_err() << "[ClusterCursorManager] checkOutCursor error,  we are in the process of "
+                       "shutting down";
         return Status(ErrorCodes::ShutdownInProgress,
                       "Cannot check out cursor as we are in the process of shutting down");
     }
 
     CursorEntry* entry = getEntry_inlock(nss, cursorId);
     if (!entry) {
+        index_err() << "[ClusterCursorManager] checkOutCursor error, cursorNotFound, cursorid: "
+                    << cursorId;
         return cursorNotFoundStatus(nss, cursorId);
     }
     if (entry->getKillPending()) {
+        index_log() << "[ClusterCursorManager] checkOutCursor error, killPending, cursorid: "
+                    << cursorId;
         return cursorNotFoundStatus(nss, cursorId);
     }
     std::unique_ptr<ClusterClientCursor> cursor = entry->releaseCursor();
@@ -322,13 +328,13 @@ void ClusterCursorManager::checkInCursor(std::unique_ptr<ClusterClientCursor> cu
 }
 
 Status ClusterCursorManager::killCursor(const NamespaceString& nss, CursorId cursorId) {
+    index_LOG(1) << "[ClusterCursorManager] killCursor, cursorid: " << cursorId;
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
     CursorEntry* entry = getEntry_inlock(nss, cursorId);
     if (!entry) {
         return cursorNotFoundStatus(nss, cursorId);
     }
-
     entry->setKillPending();
 
     return Status::OK();
@@ -343,8 +349,9 @@ void ClusterCursorManager::killMortalCursorsInactiveSince(Date_t cutoff) {
             if (entry.getLifetimeType() == CursorLifetime::Mortal &&
                 entry.getLastActive() <= cutoff) {
                 entry.setInactive();
-                log() << "Marking cursor id " << cursorIdEntryPair.first
-                      << " for deletion, idle since " << entry.getLastActive().toString();
+                index_log() << "[ClusterCursorManager] Marking cursor id "
+                            << cursorIdEntryPair.first << " for deletion, idle since "
+                            << entry.getLastActive().toString();
                 entry.setKillPending();
             }
         }
@@ -352,6 +359,7 @@ void ClusterCursorManager::killMortalCursorsInactiveSince(Date_t cutoff) {
 }
 
 void ClusterCursorManager::killAllCursors() {
+    index_LOG(1) << "[ClusterCursorManager] killAllCursors";
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
     for (auto& nsContainerPair : _namespaceToContainerMap) {

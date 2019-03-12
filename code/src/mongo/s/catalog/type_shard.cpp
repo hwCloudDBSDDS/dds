@@ -144,9 +144,8 @@ StatusWith<ShardType> ShardType::fromBSON(const BSONObj& source) {
         } else {
             shard._extendIPs = extendIPsStr;
         }
-
     }
-    
+
     {
         std::string processIdentityStr;
         Status status = bsonExtractStringField(source, processIdentity.name(), &processIdentityStr);
@@ -173,9 +172,9 @@ Status ShardType::validate() const {
     if (_maxSizeMB.is_initialized() && getMaxSizeMB() < 0) {
         return Status(ErrorCodes::BadValue, str::stream() << "maxSize can't be negative");
     }
-    
+
     if (!_processIdentity.is_initialized() || _processIdentity->empty()) {
-        return Status(ErrorCodes::NoSuchKey, 
+        return Status(ErrorCodes::NoSuchKey,
                       str::stream() << "missing " << processIdentity.name() << " field");
     }
     return Status::OK();
@@ -197,7 +196,7 @@ BSONObj ShardType::toBSON() const {
     if (_state)
         builder.append(state(), static_cast<std::underlying_type<ShardState>::type>(getState()));
     if (_extendIPs)
-        builder.append(extendIPs(), getExtendIPs());    
+        builder.append(extendIPs(), getExtendIPs());
     if (_processIdentity)
         builder.append(processIdentity(), getProcessIdentity());
 

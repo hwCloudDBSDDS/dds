@@ -334,12 +334,10 @@ void KeyString::resetToKey(const BSONObj& obj, Ordering ord, Discriminator discr
 // ----------------------------------------------------------------------
 // -----------   APPEND CODE  -------------------------------------------
 // ----------------------------------------------------------------------
-void KeyString::_appendElements(
-    const BSONObj& obj,
-    Ordering ord,
-    Discriminator discriminator,
-    bool ignoreFieldNames)
-{
+void KeyString::_appendElements(const BSONObj& obj,
+                                Ordering ord,
+                                Discriminator discriminator,
+                                bool ignoreFieldNames) {
     int elemCount = 0;
     BSONObjIterator it(obj);
     while (auto elem = it.next()) {
@@ -348,7 +346,7 @@ void KeyString::_appendElements(
 
         _appendBsonValue(elem, invert, NULL);
 
-        if(ignoreFieldNames)
+        if (ignoreFieldNames)
             continue;
 
         dassert(elem.fieldNameSize() < 3);  // fieldNameSize includes the NUL
@@ -381,6 +379,13 @@ void KeyString::_appendElements(
     }
 }
 
+void KeyString::_appendElementsOnly(const BSONObj& obj) {
+    BSONObjIterator it(obj);
+    while (auto elem = it.next()) {
+        _appendBsonValue(elem, false, NULL);
+    }
+}
+
 void KeyString::_appendAllElementsForIndexing(const BSONObj& obj,
                                               Ordering ord,
                                               Discriminator discriminator) {
@@ -391,8 +396,7 @@ void KeyString::_appendAllElementsForIndexing(const BSONObj& obj,
     _appendKeyEnd();
 }
 
-void KeyString::_appendKeyEnd()
-{
+void KeyString::_appendKeyEnd() {
     _append(uint8_t(kEnd), false);
 }
 
@@ -410,18 +414,18 @@ void KeyString::appendRecordId(const RecordId& loc) {
     // are combined with the bits of the in-between bytes to store the 64-bit RecordId in
     // big-endian order. This does not encode negative RecordIds to give maximum space to
     // positive RecordIds which are the only ones that are allowed to be stored in an index.
-    
-    //int64_t raw = loc.repr();
+
+    // int64_t raw = loc.repr();
     int64_t raw;
-    const char *data = NULL;
+    const char* data = NULL;
     RecordIdVariant var = loc.repr();
-    if( var.IsConvertableToInt64() ){
-        raw  = var.ToInt64();
-    }else{
+    if (var.IsConvertableToInt64()) {
+        raw = var.ToInt64();
+    } else {
         data = var.Data();
-        StringData d(data,var.Size());
-        _appendString(d,true);
-        return ;
+        StringData d(data, var.Size());
+        _appendString(d, true);
+        return;
     }
     if (raw < 0) {
         // Note: we encode RecordId::min() and RecordId() the same which is ok, as they are
@@ -797,8 +801,6 @@ void KeyString::_appendNumberDecimal(const Decimal128 dec, bool invert) {
 void KeyString::_appendBsonValue(const BSONElement& elem, bool invert, const StringData* name) {
     if (name) {
         _appendBytes(name->rawData(), name->size() + 1, invert);  // + 1 for NUL
-        LOG(1)<<"KeyString::_appendBsonValue elem.type():"<<(int)elem.type()
-            <<", elem:"<<elem <<", invert:"<<invert<<", name:"<<name->toString();
     }
 
     switch (elem.type()) {
@@ -1710,8 +1712,11 @@ Decimal128 adjustDecimalExponent(TypeBits::Reader* typeBits, Decimal128 num) {
 
 }  // namespace
 
-BSONObj KeyString::toBson(const char* buffer, size_t len, Ordering ord, const TypeBits& typeBits,
-    const KeyPattern* keyPattern) {
+BSONObj KeyString::toBson(const char* buffer,
+                          size_t len,
+                          Ordering ord,
+                          const TypeBits& typeBits,
+                          const KeyPattern* keyPattern) {
     BSONObjBuilder builder;
     BufReader reader(buffer, len);
     TypeBits::Reader typeBitsReader(typeBits);
@@ -1732,13 +1737,13 @@ BSONObj KeyString::toBson(const char* buffer, size_t len, Ordering ord, const Ty
             break;
 
         const char* fieldName = "";
-        if(keyPattern != nullptr)
-        {
+        if (keyPattern != nullptr) {
             fieldName = (*keyFieldIterator).fieldName();
-            keyFieldIterator.next(true);   //  Check the end
+            keyFieldIterator.next(true);  //  Check the end
         }
-         
-        toBsonValue(ctype, &reader, &typeBitsReader, invert, typeBits.version, &(builder << fieldName));
+
+        toBsonValue(
+            ctype, &reader, &typeBitsReader, invert, typeBits.version, &(builder << fieldName));
     }
     return builder.obj();
 }
@@ -1802,54 +1807,46 @@ int KeyString::compare(const KeyString& other) const {
     return a < b ? -1 : 1;
 }
 
-void KeyString::TypeBits::Write(StackBufBuilder& buffer, bool readFromEnd) const
-{
+void KeyString::TypeBits::Write(StackBufBuilder& buffer, bool readFromEnd) const {
     // As an optimization, encode AllZeros as a single 0 byte.
-    if (isAllZeros())
-    {
+    if (isAllZeros()) {
         buffer.appendUChar(0);
         return;
     }
 
-    if(readFromEnd)
-    {        
-        buffer.appendBuf(getBuffer()+1, getSize()-1);
+    if (readFromEnd) {
+        buffer.appendBuf(getBuffer() + 1, getSize() - 1);
         buffer.appendUChar(*getBuffer());
-    }
-    else
+    } else
         buffer.appendBuf(getBuffer(), getSize());
 }
 
 
-size_t KeyString::TypeBits::getRemainingBytesSize(uint8_t firstByte)
-{
+size_t KeyString::TypeBits::getRemainingBytesSize(uint8_t firstByte) {
     return (firstByte & 0x80) ? getSizeByte(firstByte) : 0;
 }
 
-Status KeyString::TypeBits::readFromEnd(uint8_t* buffer, size_t bufferSize)
-{    
-    if(bufferSize == 0)
-    {
+Status KeyString::TypeBits::readFromEnd(uint8_t* buffer, size_t bufferSize) {
+    if (bufferSize == 0) {
         reset();
         return Status::OK();
     }
 
-    const uint8_t firstByte = *(buffer+bufferSize-1);
+    const uint8_t firstByte = *(buffer + bufferSize - 1);
     const size_t remainingBytes = getRemainingBytesSize(firstByte);
-    if(bufferSize < remainingBytes+1)
+    if (bufferSize < remainingBytes + 1)
         return Status(ErrorCodes::InvalidLength, "Buffer doesn't contain valid TypeBits");
 
-    if(remainingBytes == 0)
+    if (remainingBytes == 0)
         resetFromBuffer(firstByte, nullptr);
     else
-        resetFromBuffer(firstByte, buffer+bufferSize-remainingBytes-1);
+        resetFromBuffer(firstByte, buffer + bufferSize - remainingBytes - 1);
 
     return Status::OK();
 }
 
 
-void KeyString::TypeBits::resetFromBuffer(uint8_t firstByte, uint8_t* remainingBuffer)
-{
+void KeyString::TypeBits::resetFromBuffer(uint8_t firstByte, uint8_t* remainingBuffer) {
     if (firstByte & 0x80) {
         // firstByte is the size byte.
         _isAllZeros = false;  // it wouldn't be encoded like this if it was.
@@ -1871,7 +1868,6 @@ void KeyString::TypeBits::resetFromBuffer(uint8_t firstByte, uint8_t* remainingB
     _isAllZeros = false;
     setSizeByte(1);
     _buf[1] = firstByte;
-
 }
 
 void KeyString::TypeBits::resetFromBuffer(BufReader* reader) {
@@ -1883,7 +1879,7 @@ void KeyString::TypeBits::resetFromBuffer(BufReader* reader) {
 
     const uint8_t firstByte = readType<uint8_t>(reader, false);
     const uint8_t remainingBytes = getRemainingBytesSize(firstByte);
-    if(remainingBytes == 0)
+    if (remainingBytes == 0)
         resetFromBuffer(firstByte, nullptr);
     else
         resetFromBuffer(firstByte, (uint8_t*)reader->skip(remainingBytes));

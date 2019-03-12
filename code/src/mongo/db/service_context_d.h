@@ -42,7 +42,7 @@ class StorageEngineLockFile;
 class ServiceContextMongoD final : public ServiceContext {
 public:
     typedef std::map<std::string, const StorageEngine::Factory*> FactoryMap;
-    typedef std::map<std::string, std::unique_ptr<ProcessStageTime>> ProcessStageTimeMap;
+    typedef std::map<std::string, std::shared_ptr<ProcessStageTime>> ProcessStageTimeMap;
 
     ServiceContextMongoD();
 
@@ -69,7 +69,7 @@ public:
 
     void registerProcessStageTime(const std::string& processName) override;
 
-    ProcessStageTime* getProcessStageTime(const std::string& processName) override;
+    std::shared_ptr<ProcessStageTime> getProcessStageTime(const std::string& processName) override;
 
     void cancelProcessStageTime(const std::string& processName) override;
 

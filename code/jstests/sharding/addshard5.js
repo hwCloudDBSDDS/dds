@@ -36,7 +36,9 @@
     assert.commandWorked(mongos.adminCommand({removeShard: shards[1]._id}));
     assert.commandWorked(mongos.adminCommand({removeShard: shards[1]._id}));
 
-    var shard2 = MongoRunner.runMongod({'shardsvr': ''});
+    var shard2 = MongoRunner.runMongod(
+        {'shardsvr': '', "configdb": st.configRS.getURL(), "bind_ip": getHostName()});
+    sleep(1000);
     assert.commandWorked(mongos.adminCommand({addShard: shard2.host, name: shards[1]._id}));
 
     jsTest.log('Shard was dropped and re-added with same name...');

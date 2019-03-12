@@ -176,9 +176,12 @@ enum UpdateStatus {    // Return status For inplace update callback
 struct DbPath {
   std::string path;
   uint64_t target_size;  // Target size of total files under the path, in byte.
+//  std::shared_ptr<SharedResource>  shared_checker;
 
   DbPath() : target_size(0) {}
   DbPath(const std::string& p, uint64_t t) : path(p), target_size(t) {}
+ // DbPath(const std::string& p, uint64_t t, std::shared_ptr<SharedResource>  checker) 
+ //   : path(p), target_size(t), shared_checker(checker) {}
 };
 
 // split-feature: support split DB
@@ -872,6 +875,9 @@ struct ColumnFamilyOptions {
   // range_checker is used to check if records or key ranges belong to db
   const IKeyRangeChecker* range_checker;
 
+  //enable row_cache or not, will enable row_cache for this CF if set parameter true and global row_cache is not null
+  bool enable_row_cache = true;
+
   // Create ColumnFamilyOptions with default values for all fields
   ColumnFamilyOptions();
   // Create ColumnFamilyOptions from Options
@@ -1422,7 +1428,7 @@ struct DBOptions {
   // Dynamically changeable through SetDBOptions() API.
   bool avoid_flush_during_shutdown;
 
-  // support DB split and merge,need add option used by jerousrb to mongo-rocks
+  // support DB split and merge,need add option used by mongo-rocks
   DbInstanceOption instance_option;
 
 };
@@ -1717,6 +1723,8 @@ struct IngestExternalFileOptions {
   // (memtable flush required), IngestExternalFile will fail.
   bool allow_blocking_flush = true;
 };
+
+
 
 }  // namespace rocksdb
 

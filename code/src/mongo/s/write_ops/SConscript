@@ -62,23 +62,24 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'batch_write_types',
+        '$BUILD_DIR/mongo/db/storage/storage_options',
     ]
 )
 
-env.CppUnitTest(
-    target='cluster_write_op_test',
-    source=[
-        'write_op_test.cpp',
-        'batch_write_op_test.cpp',
-        'batch_write_exec_test.cpp',
-    ],
-    LIBDEPS=[
-        'cluster_write_op',
-        '$BUILD_DIR/mongo/db/range_arithmetic',
-        '$BUILD_DIR/mongo/db/service_context',
-        '$BUILD_DIR/mongo/s/sharding_test_fixture',
-    ]
-)
+#env.CppUnitTest(
+#    target='cluster_write_op_test',
+#    source=[
+#        'write_op_test.cpp',
+#        'batch_write_op_test.cpp',
+#        'batch_write_exec_test.cpp',
+#    ],
+#    LIBDEPS=[
+#        'cluster_write_op',
+#        '$BUILD_DIR/mongo/db/range_arithmetic',
+#        '$BUILD_DIR/mongo/db/service_context',
+#        '$BUILD_DIR/mongo/s/sharding_test_fixture',
+#    ]
+#)
 
 env.CppUnitTest(
     target='cluster_write_op_conversion_test',

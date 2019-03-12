@@ -32,8 +32,11 @@
 
 #include "mongo/client/read_preference.h"
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
+#include "mongo/db/modules/rocks/src/gc_common.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/views/resolved_view.h"
@@ -42,6 +45,8 @@
 #include "mongo/s/commands/strategy.h"
 #include "mongo/s/query/cluster_find.h"
 #include "mongo/util/log.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+
 
 namespace mongo {
 namespace {
@@ -55,7 +60,9 @@ const char kTermField[] = "term";
 /**
  * Implements the find command on mongos.
  */
-class ClusterFindCmd : public Command { MONGO_DISALLOW_COPYING(ClusterFindCmd); 
+class ClusterFindCmd : public Command {
+    MONGO_DISALLOW_COPYING(ClusterFindCmd);
+
 public:
     ClusterFindCmd() : Command("find") {}
 
@@ -150,6 +157,48 @@ public:
         return result;
     }
 
+    bool hasField(const BSONObj& obj, const std::string& field, std::vector<std::string>& values) {
+        if (obj.hasField(field)) {
+
+            if (obj.getField(field).type() != BSONType::String) {
+                return false;
+            }
+
+            std::string value = obj.getField(field).String();
+
+            index_log() << "mongos value: " << value;
+            for (auto v : values) {
+                if (value == v) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    bool hideInterInfo(const std::string& dbname, const BSONObj& obj) {
+        if (dbname != "config") {
+            return false;
+        }
+
+        if (GLOBAL_CONFIG_GET(ShowInternalInfo)) {
+            return false;
+        }
+
+        std::vector<std::string> nss = {GcRefNs, GcRemoveInfoNs, GcDbName};
+
+        if (hasField(obj, "ns", nss)) {
+            return true;
+        }
+
+        if (hasField(obj, "_id", nss)) {
+            return true;
+        }
+
+        return false;
+    }
+
     bool run(OperationContext* txn,
              const std::string& dbname,
              BSONObj& cmdObj,
@@ -159,11 +208,61 @@ public:
         // We count find command as a query op.
         globalOpCounters.gotQuery();
 
-        const NamespaceString nss(parseNs(dbname, cmdObj));
+        const std::string fullns = parseNs(dbname, cmdObj);
+        const NamespaceString nss(fullns);
+
         if (!nss.isValid()) {
+            index_log() << "[MONGOS] find error ns: " << nss.ns() << " , Invalid collection name";
             return appendCommandStatus(result,
                                        {ErrorCodes::InvalidNamespace,
                                         str::stream() << "Invalid collection name: " << nss.ns()});
+        }
+
+        if (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser()) {
+            bool flag = false;
+            BSONObj buildinfilter;
+            if (fullns == "admin.system.users") {
+                std::set<std::string> buildinUsers;
+                UserName::getBuildinUsers(buildinUsers);
+
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+            if (fullns == "admin.system.roles") {
+                std::set<std::string> buildinRoles;
+                RoleName::getBuildinRoles(buildinRoles);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+
+            if (flag) {
+                std::string filterName = "filter";
+                BSONElement filterField = cmdObj[filterName];
+                BSONObj newFilter;
+                if (filterField.isABSONObj()) {
+                    BSONObj filter = filterField.embeddedObject();
+                    newFilter = BSON("$and" << BSON_ARRAY(filter << buildinfilter));
+                } else {
+                    newFilter = buildinfilter;
+                }
+
+                BSONObjBuilder nb(64);
+                nb.append(filterName, newFilter);
+                BSONForEach(e, cmdObj) {
+                    if (!str::equals(filterName.c_str(), e.fieldName())) {
+                        nb.append(e);
+                    }
+                }
+                cmdObj = nb.obj();
+            }
         }
 
         const bool isExplain = false;
@@ -192,7 +291,6 @@ public:
         BSONObj viewDefinition;
         auto cursorId = ClusterFind::runQuery(
             txn, *cq.getValue(), readPref.getValue(), &batch, &viewDefinition);
-        
         if (!cursorId.isOK()) {
             if (cursorId.getStatus() == ErrorCodes::CommandOnShardedViewNotSupportedOnMongod) {
                 auto aggCmdOnView = cq.getValue()->getQueryRequest().asAggregationCommand();
@@ -219,15 +317,18 @@ public:
                 appendCommandStatus(result, status);
                 return status.isOK();
             }
-            
-            error()<<"@@ERR@@ ClusterFind cmdObj:"<<cmdObj
-                   <<", status:" << cursorId.getStatus();
+
+            index_err() << "[MONGOS] Find status status:" << cursorId.getStatus();
             return appendCommandStatus(result, cursorId.getStatus());
         }
 
         // Build the response document.
         CursorResponseBuilder firstBatch(/*firstBatch*/ true, &result);
         for (const auto& obj : batch) {
+            if (hideInterInfo(dbname, obj)) {
+                continue;
+            }
+
             firstBatch.append(obj);
         }
         firstBatch.done(cursorId.getValue(), nss.ns());

@@ -324,9 +324,7 @@ Message getMore(OperationContext* txn,
                 ns == cc->ns());
         *isCursorAuthorized = true;
 
-        auto guard = MakeGuard([&] {
-            txn->recoveryUnit()->clearReadFromMajorityCommittedSnapshot();
-        });
+        auto guard = MakeGuard([&] { txn->recoveryUnit()->clearSnapshotInfo(); });
 
         if (cc->isReadCommitted())
             uassertStatusOK(txn->recoveryUnit()->setReadFromMajorityCommittedSnapshot());
@@ -512,8 +510,6 @@ std::string runQuery(OperationContext* txn,
     invariant(!ns.isCommand());
 
     NamespaceString nss = ns2chunkHolder().getNsWithChunkId(ns);
-    LOG(1)<<"runQuery ns:"<<ns <<", QueryMessage: "<<q.query;
-
 
     // Set CurOp information.
     beginQueryOp(txn, nss, q.query, q.ntoreturn, q.ntoskip);
@@ -654,7 +650,8 @@ std::string runQuery(OperationContext* txn,
     // Caller expects exceptions thrown in certain cases.
     if (PlanExecutor::FAILURE == state || PlanExecutor::DEAD == state) {
         error() << "Plan executor error during find: " << PlanExecutor::statestr(state)
-                << ", stats: " << redact(Explain::getWinningPlanStats(exec.get()));
+                << ", stats: " << redact(Explain::getWinningPlanStats(exec.get()))
+                << ", ns: " << ns;
         uasserted(17144, "Executor error: " + WorkingSetCommon::toStatusString(obj));
     }
 
@@ -683,8 +680,8 @@ std::string runQuery(OperationContext* txn,
                              qr.getFilter());
         ccId = cc->cursorid();
 
-        LOG(5) << "caching executor with cursorid " << ccId << " after returning " << numResults
-               << " results";
+        index_LOG(5) << "caching executor with cursorid " << ccId << " after returning "
+                     << numResults << " results";
 
         // TODO document
         if (qr.isOplogReplay() && !slaveReadTill.isNull()) {

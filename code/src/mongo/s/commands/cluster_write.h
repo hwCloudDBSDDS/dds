@@ -47,9 +47,11 @@ public:
     const BatchWriteExecStats& getStats();
 
 private:
+    Status checkDocs(const BatchedCommandRequest* request);
+
+private:
     const bool _autoSplit;
     const int _timeoutMillis;
-
     BatchWriteExecStats _stats;
 };
 

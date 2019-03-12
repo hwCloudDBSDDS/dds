@@ -34,6 +34,7 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/ftdc/collector.h"
+#include "mongo/db/s/balancer/statistics_collect.h"
 #include "mongo/db/ftdc/config.h"
 #include "mongo/db/ftdc/file_manager.h"
 #include "mongo/db/jsobj.h"
@@ -200,6 +201,9 @@ private:
 
     // Background collection and writing thread
     stdx::thread _thread;
+    // backgroud collect
+
+    StatisticsCollector _statisticsCollector;
 };
 
 }  // namespace mongo

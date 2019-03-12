@@ -54,6 +54,10 @@ public:
         return _nss;
     }
 
+    void setQuery(BSONObj query) {
+        _query = query;
+    }
+
     const BSONObj getQuery() const {
         return _query;
     }
@@ -118,7 +122,7 @@ private:
     const NamespaceString _nss;
 
     // A predicate describing the set of documents to count.
-    const BSONObj _query;
+    BSONObj _query;
 
     // Optional. An integer limiting the number of documents to count.
     boost::optional<long long> _limit;

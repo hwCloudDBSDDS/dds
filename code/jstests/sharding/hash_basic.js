@@ -22,7 +22,8 @@
 
     // Assumption: There are documents in the MinKey chunk, otherwise, splitVector will
     // fail. Note: This chunk will have 267 documents if collection was presplit to 4.
-    var cmdRes = testDB.adminCommand({split: 'test.user', bounds: [min, max]});
+    // var cmdRes = testDB.adminCommand({split: 'test.user', bounds: [min, max]});
+    var cmdRes = testDB.adminCommand({split: 'test.user', middle: {x: 499}});
     assert(cmdRes.ok,
            'split on bounds failed on chunk[' + tojson(chunkDoc) + ']: ' + tojson(cmdRes));
 
@@ -32,7 +33,8 @@
     cmdRes = testDB.adminCommand({split: 'test.user', middle: {x: middle}});
     assert(cmdRes.ok, 'split failed with middle [' + middle + ']: ' + tojson(cmdRes));
 
-    cmdRes = testDB.adminCommand({split: 'test.user', find: {x: 7}});
+    // cmdRes = testDB.adminCommand({split: 'test.user', find: {x: 7}});
+    cmdRes = testDB.adminCommand({split: 'test.user', middle: {x: 249}});
     assert(cmdRes.ok, 'split failed with find: ' + tojson(cmdRes));
 
     var chunkList = configDB.chunks.find().sort({min: 1}).toArray();

@@ -44,19 +44,14 @@ private:
 class HdfsEnv : public Env {
 
  public:
-  explicit HdfsEnv(const std::string& fsname, bool posix_flag=false) : fsname_(fsname) {
+  explicit HdfsEnv(const std::string& fsname) : fsname_(fsname) {
     posixEnv = Env::Default();
-    use_posix_ = posix_flag;
-    if(!posix_flag){
     fileSys_ = connectToPath(fsname_);
-    }
   }
 
   virtual ~HdfsEnv() {
     fprintf(stderr, "Destroying HdfsEnv::Default()\n");
-    if(!use_posix_){
-    	hdfsDisconnect(fileSys_);
-    }
+    hdfsDisconnect(fileSys_);
   }
 
   virtual Status NewSequentialFile(const std::string& fname,
@@ -180,12 +175,6 @@ class HdfsEnv : public Env {
   }
 
  private:
-  void CheckFilePath(const std::string& old_fname, std::string& new_fname);
-  
-  // split-feature: support split DB by renbo
-  bool use_posix_;
-  std::shared_ptr<SharedResource>  shared_checker_;
-  std::shared_ptr<Logger> info_log_;
   std::string db_name_;
   std::string fsname_;  // string of the form "hdfs://hostname:port/"
   hdfsFS fileSys_;      //  a single FileSystem object for all files
@@ -261,7 +250,7 @@ static const Status notsup;
 class HdfsEnv : public Env {
 
  public:
-  explicit HdfsEnv(const std::string& fsname, bool posix_flag=false) {
+  explicit HdfsEnv(const std::string& fsname) {
     fprintf(stderr, "You have not build rocksdb with HDFS support\n");
     fprintf(stderr, "Please see hdfs/README for details\n");
     abort();

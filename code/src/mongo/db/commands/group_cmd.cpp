@@ -36,6 +36,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/db_raii.h"
@@ -46,7 +47,6 @@
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/server_options.h"
 #include "mongo/util/log.h"
-#include "mongo/db/catalog/database_holder.h"
 
 namespace mongo {
 
@@ -152,7 +152,7 @@ private:
             warning() << "The group command is deprecated. See "
                          "http://dochub.mongodb.org/core/group-command-deprecation.";
         }
-        LOG(1)<<"[GroupCommand] dbname:"<<dbname<<", cmdObj:"<<cmdObj;
+        index_LOG(1) << "[GroupCommand] dbname:" << dbname;
         GroupRequest groupRequest;
         Status parseRequestStatus = _parseRequest(dbname, cmdObj, &groupRequest);
         if (!parseRequestStatus.isOK()) {
@@ -233,8 +233,7 @@ private:
                          GroupRequest* request) const {
 
         const NamespaceString ns(parseNs(dbname, cmdObj));
-        LOG(1) <<"GroupCommand _parseRequest cmdObj: " << cmdObj << "; ns:" << ns;
-        request->ns = ns2chunkHolder().getNsWithChunkId(ns).ns();  
+        request->ns = ns2chunkHolder().getNsWithChunkId(ns).ns();
         // By default, group requests are regular group not explain of group.
         request->explain = false;
 

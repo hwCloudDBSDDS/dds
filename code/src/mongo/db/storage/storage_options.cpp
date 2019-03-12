@@ -35,6 +35,8 @@
 
 namespace mongo {
 
+const std::string DATA_PATH = "data";
+
 StorageGlobalParams storageGlobalParams;
 
 /**
@@ -92,4 +94,26 @@ public:
         return Status::OK();
     }
 } journalCommitIntervalSetting;
+
+std::string getDataPath(void) {
+    if (StorageGlobalParams::kDefaultDbPath == storageGlobalParams.dbpath) {
+        return storageGlobalParams.dbpath;
+    }
+
+    std::string datapath = storageGlobalParams.dbpath;
+
+    while (datapath.rfind("/") == datapath.length() - 1) {
+        datapath.assign(datapath, 0, datapath.rfind("/"));
+    }
+
+    for (auto i = 0; i < 2; i++) {
+        if (datapath.rfind("/") == std::string::npos) {
+            return storageGlobalParams.dbpath;
+        }
+        datapath.assign(datapath, 0, datapath.rfind("/"));
+    }
+
+    return datapath;
+}
+
 }  // namespace mongo

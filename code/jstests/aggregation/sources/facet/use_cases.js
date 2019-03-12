@@ -108,7 +108,7 @@
     const conn = db.getMongo();
     populateData(conn, nDocs);
     doExecutionTest(conn);
-
+    /* 
     // Test against a sharded cluster.
     const st = new ShardingTest({shards: 2});
     populateData(st.s0, nDocs);
@@ -170,4 +170,5 @@
     doExecutionTest(st.s0);
 
     st.stop();
+    */
 }());

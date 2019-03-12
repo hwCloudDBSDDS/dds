@@ -13,6 +13,16 @@ env.Library(
 )
 
 env.Library(
+        target='index_description_onCfg',
+        source=[
+            'index_description_onCfg.cpp',
+        ],
+        LIBDEPS=[
+            '$BUILD_DIR/mongo/base',
+        ],
+)
+
+env.Library(
         target='key_generator',
         source=[
             'btree_key_generator.cpp',
@@ -101,4 +111,5 @@ serveronlyEnv.Library(
         'index_descriptor',
         'key_generator',
     ],
+	SYSLIBDEPS=["rocksdb"]
 )

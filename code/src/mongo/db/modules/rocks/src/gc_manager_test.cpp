@@ -1,18 +1,12 @@
 
-#include "mongo/unittest/unittest.h"
 #include "gc_manager.h"
 #include <mongo/bson/json.h>
+#include "mongo/unittest/unittest.h"
 
+namespace mongo {
 
-namespace mongo
-{
-
-
-TEST(GCManagerTest, StartAndStop)
-{
-    GCManager::Get().Start();
-    GCManager::Get().Stop();
-
-}
-
+    TEST(GCManagerTest, StartAndStop) {
+        GCManager::Get().Start();
+        GCManager::Get().Stop();
+    }
 }

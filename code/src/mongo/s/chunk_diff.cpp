@@ -110,7 +110,7 @@ int ConfigDiffTracker<ValType>::calculateConfigDiff(OperationContext* txn,
         const ChunkVersion& chunkVersion = chunk.getVersion();
 
         if (!chunkVersion.hasEqualEpoch(currEpoch)) {
-            warning() << "got invalid chunk version " << chunkVersion << " in document "
+            index_log() << "got invalid chunk version " << chunkVersion << " in document "
                       << redact(chunk.toString())
                       << " when trying to load differing chunks at version "
                       << ChunkVersion(
@@ -160,7 +160,6 @@ int ConfigDiffTracker<ValType>::calculateConfigDiff(OperationContext* txn,
         // TODO: This checks for overlap, we also should check for holes here iff we're
         // tracking all chunks.
         if (_isOverlapping(chunk.getMin(), chunk.getMax())) {
-            LOG(3) << "overchunk: " << chunk;
             return -1;
         }
 

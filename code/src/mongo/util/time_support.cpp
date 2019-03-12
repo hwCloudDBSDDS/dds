@@ -61,12 +61,9 @@ Date_t Date_t::max() {
     return fromMillisSinceEpoch(std::numeric_limits<long long>::max());
 }
 
-Date_t Date_t::now() {
-    return fromMillisSinceEpoch(curTimeMillis64());
+Date_t Date_t::now(ClockType clockType) {
+    return fromMillisSinceEpoch(curTimeMillis64(clockType));
 }
-
-Date_t::Date_t(stdx::chrono::system_clock::time_point tp)
-    : millis(durationCount<Milliseconds>(tp - stdx::chrono::system_clock::from_time_t(0))) {}
 
 stdx::chrono::system_clock::time_point Date_t::toSystemTimePoint() const {
     return stdx::chrono::system_clock::from_time_t(0) + toDurationSinceEpoch().toSystemDuration();
@@ -718,14 +715,14 @@ bool toPointInTime(const string& str, boost::posix_time::ptime* timeOfDay) {
 }
 
 void sleepsecs(int s) {
-    stdx::this_thread::sleep_for(Seconds(s).toSystemDuration());
+    stdx::this_thread::sleep_for(Seconds(s).toSteadyDuration());
 }
 
 void sleepmillis(long long s) {
-    stdx::this_thread::sleep_for(Milliseconds(s).toSystemDuration());
+    stdx::this_thread::sleep_for(Milliseconds(s).toSteadyDuration());
 }
 void sleepmicros(long long s) {
-    stdx::this_thread::sleep_for(Microseconds(s).toSystemDuration());
+    stdx::this_thread::sleep_for(Microseconds(s).toSteadyDuration());
 }
 
 void Backoff::nextSleepMillis() {
@@ -797,124 +794,44 @@ long long getJSTimeVirtualThreadSkew() {
 
 /** Date_t is milliseconds since epoch */
 Date_t jsTime() {
-    return Date_t::now() + Milliseconds(getJSTimeVirtualThreadSkew()) +
-        Milliseconds(getJSTimeVirtualSkew());
+    return Date_t::now(Date_t::ClockType::kSystemClock) +
+        Milliseconds(getJSTimeVirtualThreadSkew()) + Milliseconds(getJSTimeVirtualSkew());
 }
 
-#ifdef _WIN32  // no gettimeofday on windows
-unsigned long long curTimeMillis64() {
-    using stdx::chrono::system_clock;
-    return static_cast<unsigned long long>(
-        durationCount<Milliseconds>(system_clock::now() - system_clock::from_time_t(0)));
-}
+unsigned long long curTimeMillis64(Date_t::ClockType clockType) {
+    invariant((clockType == Date_t::ClockType::kSteadyClock) ||
+              (clockType == Date_t::ClockType::kSystemClock));
 
-static unsigned long long getFiletime() {
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-    return *reinterpret_cast<unsigned long long*>(&ft);
-}
-
-static unsigned long long getPerfCounter() {
-    LARGE_INTEGER li;
-    QueryPerformanceCounter(&li);
-    return li.QuadPart;
-}
-
-static unsigned long long baseFiletime = 0;
-static unsigned long long basePerfCounter = 0;
-static unsigned long long resyncInterval = 0;
-static SimpleMutex _curTimeMicros64ReadMutex;
-static SimpleMutex _curTimeMicros64ResyncMutex;
-
-typedef WINBASEAPI VOID(WINAPI* pGetSystemTimePreciseAsFileTime)(
-    _Out_ LPFILETIME lpSystemTimeAsFileTime);
-
-static pGetSystemTimePreciseAsFileTime GetSystemTimePreciseAsFileTimeFunc;
-
-MONGO_INITIALIZER(Init32TimeSupport)(InitializerContext*) {
-    HINSTANCE kernelLib = LoadLibraryA("kernel32.dll");
-    if (kernelLib) {
-        GetSystemTimePreciseAsFileTimeFunc = reinterpret_cast<pGetSystemTimePreciseAsFileTime>(
-            GetProcAddress(kernelLib, "GetSystemTimePreciseAsFileTime"));
+    unsigned long long millis64;
+    if (clockType == Date_t::ClockType::kSteadyClock) {
+        using stdx::chrono::steady_clock;
+        millis64 = static_cast<unsigned long long>(
+            durationCount<Milliseconds>(steady_clock::now().time_since_epoch()));
+    } else {
+        using stdx::chrono::system_clock;
+        millis64 = static_cast<unsigned long long>(
+            durationCount<Milliseconds>(system_clock::now().time_since_epoch()));
     }
 
-    return Status::OK();
+    return millis64;
 }
 
-static unsigned long long resyncTime() {
-    stdx::lock_guard<SimpleMutex> lkResync(_curTimeMicros64ResyncMutex);
-    unsigned long long ftOld;
-    unsigned long long ftNew;
-    ftOld = ftNew = getFiletime();
-    do {
-        ftNew = getFiletime();
-    } while (ftOld == ftNew);  // wait for filetime to change
+unsigned long long curTimeMicros64(Date_t::ClockType clockType) {
+    invariant((clockType == Date_t::ClockType::kSteadyClock) ||
+              (clockType == Date_t::ClockType::kSystemClock));
 
-    unsigned long long newPerfCounter = getPerfCounter();
-
-    // Make sure that we use consistent values for baseFiletime and basePerfCounter.
-    //
-    stdx::lock_guard<SimpleMutex> lkRead(_curTimeMicros64ReadMutex);
-    baseFiletime = ftNew;
-    basePerfCounter = newPerfCounter;
-    resyncInterval = 60 * SystemTickSource::get()->getTicksPerSecond();
-    return newPerfCounter;
-}
-
-unsigned long long curTimeMicros64() {
-    // Windows 8/2012 & later support a <1us time function
-    if (GetSystemTimePreciseAsFileTimeFunc != NULL) {
-        FILETIME time;
-        GetSystemTimePreciseAsFileTimeFunc(&time);
-        return boost::date_time::winapi::file_time_to_microseconds(time);
+    unsigned long long micros64;
+    if (clockType == Date_t::ClockType::kSteadyClock) {
+        using stdx::chrono::steady_clock;
+        micros64 = static_cast<unsigned long long>(
+            durationCount<Microseconds>(steady_clock::now().time_since_epoch()));
+    } else {
+        using stdx::chrono::system_clock;
+        micros64 = static_cast<unsigned long long>(
+            durationCount<Microseconds>(system_clock::now().time_since_epoch()));
     }
 
-    // Get a current value for QueryPerformanceCounter; if it is not time to resync we will
-    // use this value.
-    //
-    unsigned long long perfCounter = getPerfCounter();
-
-    // Periodically resync the timer so that we don't let timer drift accumulate.  Testing
-    // suggests that we drift by about one microsecond per minute, so resynching once per
-    // minute should keep drift to no more than one microsecond.
-    //
-    if ((perfCounter - basePerfCounter) > resyncInterval) {
-        perfCounter = resyncTime();
-    }
-
-    // Make sure that we use consistent values for baseFiletime and basePerfCounter.
-    //
-    stdx::lock_guard<SimpleMutex> lkRead(_curTimeMicros64ReadMutex);
-
-    // Compute the current time in FILETIME format by adding our base FILETIME and an offset
-    // from that time based on QueryPerformanceCounter.  The math is (logically) to compute the
-    // fraction of a second elapsed since 'baseFiletime' by taking the difference in ticks
-    // and dividing by the tick frequency, then scaling this fraction up to units of 100
-    // nanoseconds to match the FILETIME format.  We do the multiplication first to avoid
-    // truncation while using only integer instructions.
-    //
-    unsigned long long computedTime = baseFiletime +
-        ((perfCounter - basePerfCounter) * 10 * 1000 * 1000) /
-            SystemTickSource::get()->getTicksPerSecond();
-
-    // Convert the computed FILETIME into microseconds since the Unix epoch (1/1/1970).
-    //
-    return boost::date_time::winapi::file_time_to_microseconds(computedTime);
+    return micros64;
 }
-
-#else
-#include <sys/time.h>
-unsigned long long curTimeMillis64() {
-    timeval tv;
-    gettimeofday(&tv, NULL);
-    return ((unsigned long long)tv.tv_sec) * 1000 + tv.tv_usec / 1000;
-}
-
-unsigned long long curTimeMicros64() {
-    timeval tv;
-    gettimeofday(&tv, NULL);
-    return (((unsigned long long)tv.tv_sec) * 1000 * 1000) + tv.tv_usec;
-}
-#endif
 
 }  // namespace mongo

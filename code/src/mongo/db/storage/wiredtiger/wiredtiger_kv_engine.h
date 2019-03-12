@@ -99,7 +99,7 @@ public:
                                                         StringData ident,
                                                         const IndexDescriptor* desc);
 
-    virtual Status dropIdent(OperationContext* opCtx, StringData ident);
+    virtual Status dropIdent(OperationContext* opCtx, StringData ident, StringData ns=StringData());
 
     virtual Status okToRename(OperationContext* opCtx,
                               StringData fromNS,

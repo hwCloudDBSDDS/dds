@@ -220,11 +220,11 @@ Status ReplicaSetConfig::_parseSettingsSubdocument(const BSONObj& settings) {
     // Parse heartbeatIntervalMillis
     //
     long long heartbeatIntervalMillis;
-    Status hbIntervalStatus =
-        bsonExtractIntegerFieldWithDefault(settings,
-                                           kHeartbeatIntervalFieldName,
-                                           durationCount<Milliseconds>(kDefaultConfigHeartbeatInterval),
-                                           &heartbeatIntervalMillis);
+    Status hbIntervalStatus = bsonExtractIntegerFieldWithDefault(
+        settings,
+        kHeartbeatIntervalFieldName,
+        durationCount<Milliseconds>(kDefaultConfigHeartbeatInterval),
+        &heartbeatIntervalMillis);
     if (!hbIntervalStatus.isOK()) {
         return hbIntervalStatus;
     }
@@ -251,13 +251,13 @@ Status ReplicaSetConfig::_parseSettingsSubdocument(const BSONObj& settings) {
     // Parse heartbeatTimeoutSecs
     //
     long long heartbeatTimeoutSecs;
-    Status heartbeatTimeoutStatus =
-        bsonExtractIntegerFieldWithDefaultIf(settings,
-                                             kHeartbeatTimeoutFieldName,
-                                             durationCount<Seconds>(kDefaultConfigHeartbeatTimeoutPeriod),
-                                             greaterThanZero,
-                                             "heartbeat timeout must be greater than 0",
-                                             &heartbeatTimeoutSecs);
+    Status heartbeatTimeoutStatus = bsonExtractIntegerFieldWithDefaultIf(
+        settings,
+        kHeartbeatTimeoutFieldName,
+        durationCount<Seconds>(kDefaultConfigHeartbeatTimeoutPeriod),
+        greaterThanZero,
+        "heartbeat timeout must be greater than 0",
+        &heartbeatTimeoutSecs);
     if (!heartbeatTimeoutStatus.isOK()) {
         return heartbeatTimeoutStatus;
     }

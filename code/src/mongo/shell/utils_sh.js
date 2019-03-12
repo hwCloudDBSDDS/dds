@@ -82,8 +82,10 @@ sh.help = function() {
     print("\tsh.disableAutoSplit()                   disable autoSplit on one collection");
     print("\tsh.enableAutoSplit()                    re-eable autoSplit on one colleciton");
     print("\tsh.getShouldAutoSplit()                 returns whether autosplit is enabled");
-    print("\tsh.offloadChunk(fullName,find)          offload the chunk that find is in at the median");
-    print("\tsh.assignChunk(fullName,find,to)        assign the chunk where 'find' is to 'to' (name of shard)");
+    print(
+        "\tsh.offloadChunk(fullName,find)          offload the chunk that find is in at the median");
+    print(
+        "\tsh.assignChunk(fullName,find,to)        assign the chunk where 'find' is to 'to' (name of shard)");
 };
 
 sh.status = function(verbose, configDB) {
@@ -210,6 +212,14 @@ sh.startBalancer = function(timeoutMs, interval) {
     }
 
     return assert.commandWorked(result);
+};
+
+sh.enableFailover = function() {
+    return db.adminCommand({enableFailover: 1});
+};
+
+sh.disableFailover = function() {
+    return db.adminCommand({disableFailover: 1});
 };
 
 sh.enableAutoSplit = function(configDB) {
@@ -823,7 +833,7 @@ function printShardingStatus(configDB, verbose) {
                         output("\t\t\tchunks:");
 
                         res = configDB.chunks
-                                  .aggregate({$match: {ns: coll._id}},
+                                  .aggregate({$match: {ns: coll._id, "status": 1}},
                                              {$group: {_id: "$shard", cnt: {$sum: 1}}},
                                              {$project: {_id: 0, shard: "$_id", nChunks: "$cnt"}},
                                              {$sort: {shard: 1}})
@@ -835,7 +845,7 @@ function printShardingStatus(configDB, verbose) {
                         });
 
                         if (totalChunks < 20 || verbose) {
-                            configDB.chunks.find({"ns": coll._id})
+                            configDB.chunks.find({"ns": coll._id, "status": 1})
                                 .sort({min: 1})
                                 .forEach(function(chunk) {
                                     output("\t\t\t" + tojson(chunk.min) + " -->> " +

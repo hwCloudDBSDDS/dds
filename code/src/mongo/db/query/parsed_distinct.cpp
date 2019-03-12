@@ -32,6 +32,8 @@
 
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/query_request.h"
 #include "mongo/stdx/memory.h"
@@ -135,6 +137,32 @@ StatusWith<ParsedDistinct> ParsedDistinct::parse(OperationContext* txn,
     auto cq = CanonicalQuery::canonicalize(txn, std::move(qr), extensionsCallback);
     if (!cq.isOK()) {
         return cq.getStatus();
+    }
+
+    BSONObj originQuery = (cq.getValue())->getQueryObj();
+
+    if (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+        txn->isCustomerTxn()) {
+        if (nss.ns() == "admin.system.users") {
+            std::set<std::string> buildinUsers;
+            UserName::getBuildinUsers(buildinUsers);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            BSONObj querynew = BSON("$and" << BSON_ARRAY(originQuery << filter));
+            (cq.getValue())->setQueryObj(querynew);
+        }
+        if (nss.ns() == "admin.system.roles") {
+            std::set<std::string> buildinRoles;
+            RoleName::getBuildinRoles(buildinRoles);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            BSONObj querynew = BSON("$and" << BSON_ARRAY(originQuery << filter));
+            (cq.getValue())->setQueryObj(querynew);
+        }
     }
 
     return ParsedDistinct(std::move(cq.getValue()), std::move(key));

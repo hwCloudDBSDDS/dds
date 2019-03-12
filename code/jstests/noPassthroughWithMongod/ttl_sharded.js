@@ -51,9 +51,9 @@ var shard0 = s._connections[0].getDB(dbname);
 var shard1 = s._connections[1].getDB(dbname);
 
 print("Shard 0 coll stats:");
-printjson(shard0.getCollection(coll).stats());
+printjson(s.getDB(dbname).getCollection(coll).stats());
 print("Shard 1 coll stats:");
-printjson(shard1.getCollection(coll).stats());
+printjson(s.getDB(dbname).getCollection(coll).stats());
 
 function getTTLTime(theCollection, theKey) {
     var indexes = theCollection.getIndexes();
@@ -65,13 +65,13 @@ function getTTLTime(theCollection, theKey) {
 }
 
 // Check that TTL index (with expireAfterSeconds field) appears on both shards
-assert.eq(20000, getTTLTime(shard0.getCollection(coll), {x: 1}));
-assert.eq(20000, getTTLTime(shard1.getCollection(coll), {x: 1}));
+assert.eq(20000, getTTLTime(s.getDB(dbname).getCollection(coll), {x: 1}));
+assert.eq(20000, getTTLTime(s.getDB(dbname).getCollection(coll), {x: 1}));
 
 // Check that the collMod command successfully updates the expireAfterSeconds field
 s.getDB(dbname).runCommand({collMod: coll, index: {keyPattern: {x: 1}, expireAfterSeconds: 10000}});
-assert.eq(10000, getTTLTime(shard0.getCollection(coll), {x: 1}));
-assert.eq(10000, getTTLTime(shard1.getCollection(coll), {x: 1}));
+assert.eq(10000, getTTLTime(s.getDB(dbname).getCollection(coll), {x: 1}));
+assert.eq(10000, getTTLTime(s.getDB(dbname).getCollection(coll), {x: 1}));
 
 assert.soon(function() {
     return t.count() < 6;

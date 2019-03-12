@@ -11,7 +11,7 @@
     }
 
     // admin user object
-    var adminUser = {db: "admin", username: "foo", password: "bar"};
+    var adminUser = {db: "admin", username: "admin", password: "WEak@2password"};
 
     // set up a 2 shard cluster with keyfile
     var st = new ShardingTest({shards: 1, mongos: 1, other: {keyFile: 'jstests/libs/key1'}});
@@ -26,7 +26,8 @@
     mongos.getDB(adminUser.db).createUser({
         user: adminUser.username,
         pwd: adminUser.password,
-        roles: jsTest.adminUserRoles
+        roles: jsTest.adminUserRoles,
+        passwordDigestor: "server"
     });
 
     // login as admin user
@@ -35,7 +36,8 @@
     assert.eq(1, st.config.shards.count(), "initial server count wrong");
 
     // start a mongod with NO keyfile
-    var conn = MongoRunner.runMongod({shardsvr: ""});
+    var conn = MongoRunner.runMongod(
+        {shardsvr: "", "configdb": st.configRS.getURL(), "bind_ip": getHostName()});
     print(conn);
 
     // --------------- Test 1 --------------------
@@ -47,7 +49,10 @@
 
     //--------------- Test 2 --------------------
     // start mongod again, this time with keyfile
-    var conn = MongoRunner.runMongod({keyFile: "jstests/libs/key1", shardsvr: ""});
+    var conn = MongoRunner.runMongod({
+        keyFile: "jstests/libs/key1",
+        shardsvr: "", "configdb": st.configRS.getURL(), "bind_ip": getHostName()
+    });
     // try adding the new shard
     assert.commandWorked(admin.runCommand({addShard: conn.host}));
 
@@ -82,7 +87,7 @@
     //--------------- Test 3 --------------------
     // now drain the shard
     assert.commandWorked(admin.runCommand({removeShard: conn.host}));
-
+    sleep(4000);
     // give it some time to drain
     assert.soon(function() {
         var result = admin.runCommand({removeShard: conn.host});

@@ -34,6 +34,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <rocksdb/env.h>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/bson/util/builder.h"
@@ -202,7 +203,8 @@ private:
     const Settings _settings;
     std::string _fileName;
     std::shared_ptr<sorter::FileDeleter> _fileDeleter;  // Must outlive _file
-    std::ofstream _file;
+    //std::ofstream _file;
+    std::unique_ptr<rocksdb::WritableFile> _wFile;
     BufBuilder _buffer;
 };
 }

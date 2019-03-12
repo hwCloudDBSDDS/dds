@@ -1249,34 +1249,7 @@ static UChar32 linenoiseReadChar(void) {
     bool escSeen = false;
     while (true) {
         ReadConsoleInputW(console_in, &rec, 1, &count);
-#if 0  // helper for debugging keystrokes, display info in the debug "Output" window in the debugger
-        {
-            if ( rec.EventType == KEY_EVENT ) {
-                //if ( rec.Event.KeyEvent.uChar.UnicodeChar ) {
-                    char buf[1024];
-                    sprintf(
-                            buf,
-                            "Unicode character 0x%04X, repeat count %d, virtual keycode 0x%04X, "
-                            "virtual scancode 0x%04X, key %s%s%s%s%s\n",
-                            rec.Event.KeyEvent.uChar.UnicodeChar,
-                            rec.Event.KeyEvent.wRepeatCount,
-                            rec.Event.KeyEvent.wVirtualKeyCode,
-                            rec.Event.KeyEvent.wVirtualScanCode,
-                            rec.Event.KeyEvent.bKeyDown ? "down" : "up",
-                                (rec.Event.KeyEvent.dwControlKeyState & LEFT_CTRL_PRESSED)  ?
-                                    " L-Ctrl" : "",
-                                (rec.Event.KeyEvent.dwControlKeyState & RIGHT_CTRL_PRESSED) ?
-                                    " R-Ctrl" : "",
-                                (rec.Event.KeyEvent.dwControlKeyState & LEFT_ALT_PRESSED)   ?
-                                    " L-Alt"  : "",
-                                (rec.Event.KeyEvent.dwControlKeyState & RIGHT_ALT_PRESSED)  ?
-                                    " R-Alt"  : ""
-                           );
-                    OutputDebugStringA( buf );
-                //}
-            }
-        }
-#endif
+
         if (rec.EventType != KEY_EVENT) {
             continue;
         }

@@ -26,6 +26,8 @@
  */
 
 #include "mongo/s/shard_id.h"
+#include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/bson/bsonobj.h"
 
 #include "mongo/base/string_data.h"
 #include "mongo/platform/basic.h"
@@ -36,6 +38,20 @@ namespace {
 
 using std::string;
 using namespace mongo;
+using unittest::assertGet;
+
+TEST(ShardId, FromBSON) {
+    BSONObjBuilder builder;
+    builder.append("shardId", "shard0000");
+    builder.append("processIdentity", "123456");
+    auto shardId = assertGet(ShardIdent::fromBSON(builder.done()));
+    ShardId newShard("shard0000");
+    string processIdent = "123456";
+    ShardIdent newShardIdent(newShard, processIdent);
+    ASSERT_EQ(newShardIdent.isValid(), true);
+    ASSERT_EQ(newShardIdent == shardId, true);
+    ASSERT_EQ(newShardIdent != shardId, false);
+}
 
 TEST(ShardId, Valid) {
     ShardId shardId("my_shard_id");

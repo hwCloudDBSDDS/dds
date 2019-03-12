@@ -105,4 +105,6 @@ int versionCmp(const StringData rhs, const StringData lhs);
  */
 std::string escape(StringData s, bool escape_slash = false);
 
+void escape(std::stringstream& os, const char* s, size_t len, bool escape_slash = false);
+
 }  // namespace mongo

@@ -38,8 +38,8 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/log.h"
+#include "mongo/util/mongoutils/str.h"
 namespace mongo {
 
 using std::string;
@@ -719,7 +719,6 @@ Status QueryRequest::init(int ntoskip,
                           const BSONObj& proj,
                           bool fromQueryMessage) {
     _proj = proj.getOwned();
-    LOG(3)<<"ntoskip:"<<ntoskip<<" ntoreturn:"<<ntoreturn <<" queryOptions:"<<queryOptions <<" queryObj:" << queryObj.toString()<<" proj: "<<proj.toString();
     if (ntoskip) {
         _skip = ntoskip;
     }

@@ -224,4 +224,43 @@ std::string escape(StringData sd, bool escape_slash) {
     return ret.str();
 }
 
+// used by jsonString()
+void escape(std::stringstream& os, const char* s, size_t len, bool escape_slash) {
+    for (size_t i = 0; i < len; ++i, ++s) {
+        switch (*s) {
+            case '"':
+                os << "\\\"";
+                break;
+            case '\\':
+                os << "\\\\";
+                break;
+            case '/':
+                os << (escape_slash ? "\\/" : "/");
+                break;
+            case '\b':
+                os << "\\b";
+                break;
+            case '\f':
+                os << "\\f";
+                break;
+            case '\n':
+                os << "\\n";
+                break;
+            case '\r':
+                os << "\\r";
+                break;
+            case '\t':
+                os << "\\t";
+                break;
+            default:
+                if (*s >= 0 && *s <= 0x1f) {
+                    char c = *s;
+                    os << "\\u00" << toHexLower(&c, 1);
+                } else {
+                    os << *s;
+                }
+        }
+    }
+}
+
 }  // namespace mongo

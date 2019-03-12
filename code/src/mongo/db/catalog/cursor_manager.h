@@ -117,6 +117,8 @@ public:
     bool ownsCursorId(CursorId cursorId) const;
 
     void getCursorIds(std::set<CursorId>* openCursors) const;
+
+    bool cursorsEmpty() const;
     std::size_t numCursors() const;
 
     /**

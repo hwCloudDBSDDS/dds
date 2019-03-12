@@ -141,14 +141,15 @@
 
     var st = new ShardingTest({shards: 1});
 
-    var mongod = MongoRunner.runMongod({shardsvr: ''});
+    var mongod = MongoRunner.runMongod(
+        {shardsvr: '', "configdb": st.configRS.getURL(), "bind_ip": getHostName()});
 
     runTest(mongod, st.configRS.getURL());
 
     MongoRunner.stopMongod(mongod.port);
 
     var replTest = new ReplSetTest({nodes: 1});
-    replTest.startSet({shardsvr: ''});
+    replTest.startSet({shardsvr: '', "configdb": st.configRS.getURL(), "bind_ip": getHostName()});
     replTest.initiate();
 
     runTest(replTest.getPrimary(), st.configRS.getURL());

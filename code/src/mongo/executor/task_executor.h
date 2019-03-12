@@ -240,6 +240,8 @@ public:
      */
     virtual void appendConnectionStats(ConnectionPoolStats* stats) const = 0;
 
+    virtual uint32_t getTaskCountInNetwork() const = 0;
+
 protected:
     // Retrieves the Callback from a given CallbackHandle
     static CallbackState* getCallbackFromHandle(const CallbackHandle& cbHandle);

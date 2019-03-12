@@ -93,6 +93,8 @@ baseSource=[
     'logger/logstream_builder.cpp',    
     'logger/message_event_utf8_encoder.cpp',
     'logger/message_log_domain.cpp',
+	'logger/audit_event_utf8_encoder.cpp',
+    'logger/audit_log_domain.cpp',
     'logger/ramlog.cpp',
     'logger/redaction.cpp',
     'logger/rotatable_file_manager.cpp',
@@ -125,7 +127,8 @@ baseSource=[
     'util/startup_test.cpp',
     'util/static_observer.cpp',
     'util/util_extend/default_parameters.cpp',
-    'util/util_extend/job_registry.cpp',
+    'util/util_extend/GlobalConfig.cpp',
+	'util/util_extend/config_reader.cpp',
     'util/util_extend/process_stage_time.cpp',
     'util/stringutils.cpp',
     'util/system_clock_source.cpp',
@@ -156,6 +159,13 @@ env.Library(
     LIBDEPS=baseLibDeps,
 )
 
+env.Library(
+    target='status_renewal',
+    source=[
+        'util/util_extend/status_renewal.cpp',
+    ],
+    LIBDEPS=['base']
+)
 js_engine_ver = get_option("js-engine") if get_option("server-js") == "on" else "none"
 
 # On windows, we need to escape the backslashes in the command-line
@@ -183,16 +193,16 @@ module_list = '{ %s }' % ', '.join([ '"{0}"'.format(x) for x in env['MONGO_MODUL
 # 3.1.1-rc2-123 = 3010103
 # 3.1.1         = 3010199
 #
-version_parts = [ x for x in re.match(r'^(\d+)\.(\d+)\.(\d+)-?((?:(rc)(\d+))?.*)?',
+version_parts = [ x for x in re.match(r'^(\d+)\.(\d+)\.(\d+)\.(\d+)-?((?:(rc)(\d+))?.*)?',
     env['MONGO_VERSION']).groups() ]
 version_extra = version_parts[3] if version_parts[3] else ""
 if version_parts[4] == 'rc':
     version_parts[3] = int(version_parts[5]) + -50
-elif version_parts[3]:
-    version_parts[2] = int(version_parts[2]) + 1
-    version_parts[3] = -100
-else:
-    version_parts[3] = 0
+#elif version_parts[3]:
+    #version_parts[2] = int(version_parts[2]) + 1
+    #version_parts[3] = -100
+#else:
+    #version_parts[3] = 0
 version_parts = [ int(x) for x in version_parts[:4]]
 
 # This turns the MONGO_BUILDINFO_ENVIRONMENT_DATA tuples into a std::vector of

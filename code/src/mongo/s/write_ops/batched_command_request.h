@@ -31,11 +31,11 @@
 #include <boost/optional.hpp>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/s/chunk_id.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/write_ops/batched_delete_request.h"
 #include "mongo/s/write_ops/batched_insert_request.h"
 #include "mongo/s/write_ops/batched_update_request.h"
-#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 

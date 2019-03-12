@@ -1,18 +1,3 @@
-/******************************************************************************
-                Copyright 1999 - 2017, Huawei Tech. Co., Ltd.
-                           ALL RIGHTS RESERVED
-  File Name     : assign_chunk_request.cpp
-  Version       : Initial Draft
-  Author        : 
-  Created       : 2017/6/21
-  Description   : implment of assign chunk request
-  History       :
-  1.Date        : 2017/6/21
-    Author      : 
-    Modification: Created file
-
-******************************************************************************/
-
 #include "mongo/platform/basic.h"
 
 #include "mongo/base/status_with.h"
@@ -33,24 +18,24 @@ const char kTargetProcessIdentity[] = "processIdentity";
 
 }  // namespace
 
-AssignChunkRequest::AssignChunkRequest(CollectionType &coll,
-                                       ChunkType &chunk,
+AssignChunkRequest::AssignChunkRequest(CollectionType& coll,
+                                       ChunkType& chunk,
                                        bool newChunkFlag,
                                        std::string shardName,
                                        std::string processIdentity)
-        : _coll(coll),
-          _chunk(chunk),
-          _newChunkFlag(newChunkFlag),
-          _shardName(std::move(shardName)),
-          _processIdentity(std::move(processIdentity)) {}
+    : _coll(coll),
+      _chunk(chunk),
+      _newChunkFlag(newChunkFlag),
+      _shardName(std::move(shardName)),
+      _processIdentity(std::move(processIdentity)) {}
 
 StatusWith<AssignChunkRequest> AssignChunkRequest::createFromCommand(const BSONObj& cmdobj) {
 
-    ChunkType      chunk;
+    ChunkType chunk;
     CollectionType coll;
-    bool           newflag;
-    std::string    shardName;
-    std::string    processIdentity;
+    bool newflag;
+    std::string shardName;
+    std::string processIdentity;
     {
         BSONElement source;
         Status status = bsonExtractTypedField(cmdobj, kCollInfo, BSONType::Object, &source);
@@ -101,14 +86,14 @@ StatusWith<AssignChunkRequest> AssignChunkRequest::createFromCommand(const BSONO
             return status;
         }
     }
-   
+
     AssignChunkRequest request(coll, chunk, newflag, shardName, processIdentity);
     return request;
 }
 
 void AssignChunkRequest::appendAsCommand(BSONObjBuilder* builder,
-                                         const ChunkType &chunk,
-                                         const CollectionType &coll,
+                                         const ChunkType& chunk,
+                                         const CollectionType& coll,
                                          bool newflag,
                                          const std::string& shardName,
                                          const std::string& processIdentity) {
@@ -124,15 +109,15 @@ void AssignChunkRequest::appendAsCommand(BSONObjBuilder* builder,
 
 std::string AssignChunkRequest::toString() const {
     std::stringstream ss;
-    ss << "assign: " << _coll.toBSON() << ", " << _chunk.toBSON()
-       << ", " << "newchunkflag=" << _newChunkFlag
-       << ", " << "shardName=" << _shardName
-       << ", " << "processIdentity=" << _processIdentity;
+    ss << "assign: " << _coll.toBSON() << ", " << _chunk.toBSON() << ", "
+       << "newchunkflag=" << _newChunkFlag << ", "
+       << "shardName=" << _shardName << ", "
+       << "processIdentity=" << _processIdentity;
     return ss.str();
 }
 
-void AssignChunkRequest::setNs(const NamespaceString & ns) {
-    _coll.setNs (ns);
+void AssignChunkRequest::setNs(const NamespaceString& ns) {
+    _coll.setNs(ns);
 }
 
 void AssignChunkRequest::setNewChunkFlag(bool newChunkFlag) {

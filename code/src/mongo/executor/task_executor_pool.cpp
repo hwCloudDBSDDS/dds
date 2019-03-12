@@ -91,6 +91,22 @@ TaskExecutor* TaskExecutorPool::getArbitraryExecutor() {
     return _executors[idx].get();
 }
 
+TaskExecutor* TaskExecutorPool::getIdleExecutor() {
+    invariant(!_executors.empty());
+    unsigned int minTaskCount = std::numeric_limits<unsigned int>::max();
+    unsigned int idx = 0;
+    unsigned int i = 0;
+    for (auto&& exec : _executors) {
+        if (exec->getTaskCountInNetwork() < minTaskCount) {
+            minTaskCount = exec->getTaskCountInNetwork();
+            idx = i;
+        }
+        i++;
+    }
+    return _executors[idx].get();
+}
+
+
 TaskExecutor* TaskExecutorPool::getFixedExecutor() {
     invariant(_fixedExecutor);
     return _fixedExecutor.get();

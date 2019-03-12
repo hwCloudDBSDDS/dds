@@ -899,10 +899,11 @@ std::pair<ReplSetHeartbeatArgs, Milliseconds> TopologyCoordinatorImpl::prepareHe
         hbArgs.setConfigVersion(-2);
     }
 
-    const Milliseconds timeoutPeriod(
-        _rsConfig.isInitialized() ? _rsConfig.getHeartbeatTimeoutPeriodMillis()
-                                  : Milliseconds{kDefaultConfigHeartbeatTimeoutPeriod});
-    const Milliseconds timeout = std::min(timeoutPeriod - alreadyElapsed, kDefaultConfigHeartbeatInterval);
+    const Milliseconds timeoutPeriod(_rsConfig.isInitialized()
+                                         ? _rsConfig.getHeartbeatTimeoutPeriodMillis()
+                                         : Milliseconds{kDefaultConfigHeartbeatTimeoutPeriod});
+    const Milliseconds timeout =
+        std::min(timeoutPeriod - alreadyElapsed, kDefaultConfigHeartbeatInterval);
     return std::make_pair(hbArgs, timeout);
 }
 
@@ -935,10 +936,11 @@ std::pair<ReplSetHeartbeatArgsV1, Milliseconds> TopologyCoordinatorImpl::prepare
         hbArgs.setTerm(OpTime::kInitialTerm);
     }
 
-    const Milliseconds timeoutPeriod(
-        _rsConfig.isInitialized() ? _rsConfig.getHeartbeatTimeoutPeriodMillis()
-                                  : Milliseconds{kDefaultConfigHeartbeatTimeoutPeriod});
-    const Milliseconds timeout(std::min(timeoutPeriod - alreadyElapsed, kDefaultConfigHeartbeatInterval));
+    const Milliseconds timeoutPeriod(_rsConfig.isInitialized()
+                                         ? _rsConfig.getHeartbeatTimeoutPeriodMillis()
+                                         : Milliseconds{kDefaultConfigHeartbeatTimeoutPeriod});
+    const Milliseconds timeout(
+        std::min(timeoutPeriod - alreadyElapsed, kDefaultConfigHeartbeatInterval));
     return std::make_pair(hbArgs, timeout);
 }
 
@@ -967,20 +969,7 @@ HeartbeatResponseAction TopologyCoordinatorImpl::processHeartbeatResponse(
         }
     }
 
-    // If a node is not PRIMARY and has no sync source,
-    // we increase the heartbeat rate in order
-    // to help it find a sync source more quickly,
-    // which helps ensure the PRIMARY will continue to
-    // see the majority of the cluster.
-    //
-    // Arbiters also use half the election timeout period for their heartbeat frequency
-    Milliseconds heartbeatInterval;
-    if (_rsConfig.getProtocolVersion() == 1 &&
-        (getMemberState().arbiter() || (getSyncSourceAddress().empty() && !_iAmPrimary()))) {
-        heartbeatInterval = _rsConfig.getElectionTimeoutPeriod() / 2;
-    } else {
-        heartbeatInterval = _rsConfig.getHeartbeatInterval();
-    }
+    Milliseconds heartbeatInterval = _rsConfig.getHeartbeatInterval();
 
     const Milliseconds alreadyElapsed = now - hbStats.getLastHeartbeatStartDate();
     Date_t nextHeartbeatStartDate;
@@ -1710,7 +1699,7 @@ void TopologyCoordinatorImpl::prepareStatusResponse(const ReplSetStatusArgs& rsS
     sort(membersOut.begin(), membersOut.end(), SimpleBSONObjComparator::kInstance.makeLessThan());
 
     response->append("set", _rsConfig.isInitialized() ? _rsConfig.getReplSetName() : "");
-    response->append("date", now);
+    response->append("date", Date_t::now(Date_t::ClockType::kSystemClock));
     response->append("myState", myState.s);
     response->append("term", _term);
 
@@ -2503,9 +2492,16 @@ void TopologyCoordinatorImpl::processReplSetRequestVotes(const ReplSetRequestVot
                                                          const OpTime& lastAppliedOpTime) {
     response->setTerm(_term);
 
-    if (args.getTerm() < _term) {
+    long long termIncrementIfElectionSucceed;
+    if (args.isADryRun()) {
+        termIncrementIfElectionSucceed = 1;
+    } else {
+        termIncrementIfElectionSucceed = 0;
+    }
+
+    if (args.getTerm() + termIncrementIfElectionSucceed < _term) {
         response->setVoteGranted(false);
-        response->setReason("candidate's term is lower than mine");
+        response->setReason("candidate's new term is lower than mine");
     } else if (args.getConfigVersion() != _rsConfig.getConfigVersion()) {
         response->setVoteGranted(false);
         response->setReason("candidate's config version differs from mine");
@@ -2568,5 +2564,16 @@ void TopologyCoordinatorImpl::setStorageEngineSupportsReadCommitted(bool support
         supported ? ReadCommittedSupport::kYes : ReadCommittedSupport::kNo;
 }
 
+unsigned int TopologyCoordinatorImpl::_getFailedConfigCountInCluster() {
+    stdx::lock_guard<stdx::mutex> clusterHealthLock(_downCountMutex);
+    unsigned int downNodeCount = 0;
+    for (std::vector<MemberHeartbeatData>::const_iterator it = _hbdata.begin(); it != _hbdata.end();
+         ++it) {
+        if (it->getHealth() == 0) {
+            ++downNodeCount;
+        }
+    }
+    return downNodeCount;
+}
 }  // namespace repl
 }  // namespace mongo

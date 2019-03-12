@@ -37,6 +37,7 @@
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_create.h"
@@ -48,9 +49,8 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/service_context.h"
-#include "mongo/util/scopeguard.h"
-#include "mongo/db/catalog/database_holder.h"
 #include "mongo/util/log.h"
+#include "mongo/util/scopeguard.h"
 
 
 namespace mongo {
@@ -72,11 +72,11 @@ Status renameCollection(OperationContext* txn,
                         bool sharded) {
     NamespaceString source = sourceNoChunkId;
     NamespaceString target = targetNoChunkId;
-    
+
     DisableDocumentValidation validationDisabler(txn);
     if (sharded) {
-       source = ns2chunkHolder().getNsWithChunkId(sourceNoChunkId);
-       target = ns2chunkHolder().getNsWithChunkId(targetNoChunkId);
+        source = ns2chunkHolder().getNsWithChunkId(sourceNoChunkId);
+        target = ns2chunkHolder().getNsWithChunkId(targetNoChunkId);
     }
 
     ScopedTransaction transaction(txn, MODE_X);
@@ -108,7 +108,7 @@ Status renameCollection(OperationContext* txn,
         // Make sure the source collection is not sharded.
         if (CollectionShardingState::get(txn, source)->getMetadata()) {
             return {ErrorCodes::IllegalOperation, "source namespace cannot be sharded"};
-         }
+        }
 
         // Ensure that collection name does not exceed maximum length.
         // Ensure that index names do not push the length over the max.
@@ -131,7 +131,6 @@ Status renameCollection(OperationContext* txn,
                << longestAllowed << ", allowing for index names";
             return Status(ErrorCodes::InvalidLength, sb.str());
         }
-
     }
     Collection* targetColl;
     if (sharded) {
@@ -141,14 +140,14 @@ Status renameCollection(OperationContext* txn,
 
     BackgroundOperation::assertNoBgOpInProgForNs(source.ns());
 
-    if (!sharded)
-    {
+    if (!sharded) {
         targetDB = dbHolder().openDb(txn, target.db());
         WriteUnitOfWork wunit(txn);
 
         // Check if the target namespace exists and if dropTarget is true.
         // Return a non-OK status if target exists and dropTarget is not true or if the collection
         // is sharded.
+        bool deleteTaget = false;
         if (targetDB->getCollection(target)) {
             if (CollectionShardingState::get(txn, target)->getMetadata()) {
                 return {ErrorCodes::IllegalOperation, "cannot rename to a sharded collection"};
@@ -162,6 +161,7 @@ Status renameCollection(OperationContext* txn,
             if (!s.isOK()) {
                 return s;
             }
+            deleteTaget = true;
         } else if (targetDB->getViewCatalog()->lookup(txn, target.ns())) {
             return Status(ErrorCodes::NamespaceExists,
                           str::stream() << "a view already exists with that name: " << target.ns());
@@ -179,10 +179,20 @@ Status renameCollection(OperationContext* txn,
                 txn, NamespaceString(source), NamespaceString(target), dropTarget, stayTemp);
 
             wunit.commit();
+
+            if (!source.isSystemCollection() && !target.isSystemCollection()) {
+                getGlobalServiceContext()->getGlobalStorageEngine()->reNameNss(source.toString(),
+                                                                               target.toString());
+            }
+
             return Status::OK();
         }
 
         wunit.commit();
+
+        if (deleteTaget && !target.isSystemCollection()) {
+            getGlobalServiceContext()->getGlobalStorageEngine()->destroyRocksDB(target.toString());
+        }
 
         // If we get here, we are renaming across databases, so we must copy all the data and
         // indexes, then remove the source collection.
@@ -199,9 +209,9 @@ Status renameCollection(OperationContext* txn,
             bool shouldReplicateWrites = txn->writesAreReplicated();
             txn->setReplicatedWrites(false);
             targetColl = targetDB->createCollection(txn,
-                                                target.ns(),
-                                                options,
-                                                false);  // _id index build with others later.
+                                                    target.ns(),
+                                                    options,
+                                                    false);  // _id index build with others later.
             txn->setReplicatedWrites(shouldReplicateWrites);
             if (!targetColl) {
                 return Status(ErrorCodes::OutOfDiskSpace, "Failed to create target collection.");
@@ -214,11 +224,10 @@ Status renameCollection(OperationContext* txn,
     // Dismissed on success
     ScopeGuard targetCollectionDropper = MakeGuard(dropCollection, txn, targetDB, target.ns());
     MultiIndexBlock indexer(txn, targetColl);
-    //MultiIndexBlock indexer(txn, targetColl);
+    // MultiIndexBlock indexer(txn, targetColl);
     indexer.allowInterruption();
     std::vector<MultiIndexBlock*> indexers{&indexer};
-    if (!sharded)
-    {
+    if (!sharded) {
         // Copy the index descriptions from the source collection, adjusting the ns field.
         {
             std::vector<BSONObj> indexesToCopy;
@@ -227,7 +236,8 @@ Status renameCollection(OperationContext* txn,
             while (sourceIndIt.more()) {
                 const BSONObj currIndex = sourceIndIt.next()->infoObj();
 
-                // Process the source index, adding fields in the same order as they were originally.
+                // Process the source index, adding fields in the same order as they were
+                // originally.
                 BSONObjBuilder newIndex;
                 for (auto&& elem : currIndex) {
                     if (elem.fieldNameStringData() == "ns") {
@@ -258,8 +268,7 @@ Status renameCollection(OperationContext* txn,
                 Status status = targetColl->insertDocument(txn, obj, indexers, true);
                 if (!status.isOK())
                     return status;
-            }
-            else {
+            } else {
                 OpDebug* opDebug = nullptr;
                 Status status = targetColl->insertDocument(txn, obj, opDebug, true);
                 if (!status.isOK())
@@ -269,7 +278,7 @@ Status renameCollection(OperationContext* txn,
             wunit.commit();
         }
     }
-    
+
     if (!sharded) {
         Status status = indexer.doneInserting();
         if (!status.isOK())
@@ -283,14 +292,16 @@ Status renameCollection(OperationContext* txn,
 
         bool shouldReplicateWrites = txn->writesAreReplicated();
         txn->setReplicatedWrites(false);
+        bool deleteTaget = false;
         if (!sharded) {
             Status status = sourceDB->dropCollection(txn, source.ns());
             if (!status.isOK()) {
                 return status;
             }
+            deleteTaget = true;
         }
         txn->setReplicatedWrites(shouldReplicateWrites);
-        
+
         if (!sharded) {
             indexer.commit();
         }
@@ -299,6 +310,10 @@ Status renameCollection(OperationContext* txn,
             txn, NamespaceString(source), NamespaceString(target), dropTarget, stayTemp);
 
         wunit.commit();
+
+        if (deleteTaget && !source.isSystemCollection()) {
+            getGlobalServiceContext()->getGlobalStorageEngine()->destroyRocksDB(source.toString());
+        }
     }
 
     targetCollectionDropper.Dismiss();

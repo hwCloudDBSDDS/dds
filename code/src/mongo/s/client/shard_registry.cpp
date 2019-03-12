@@ -219,7 +219,7 @@ void ShardRegistry::startup() {
 void ShardRegistry::_internalReload(const CallbackArgs& cbArgs) {
     LOG(1) << "Reloading shardRegistry";
     if (!cbArgs.status.isOK()) {
-        warning() << "cant reload ShardRegistry " << causedBy(cbArgs.status);
+        index_warning() << "cant reload ShardRegistry " << causedBy(cbArgs.status);
         return;
     }
 

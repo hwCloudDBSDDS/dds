@@ -81,6 +81,8 @@ public:
 
     void addChild(unique_ptr<PlanStage> child);
 
+    void addChildren(Children childrenToAdd);
+
     bool isEOF() final;
 
     StageState doWork(WorkingSetID* out) final;
@@ -90,6 +92,7 @@ public:
     void doDetachFromOperationContext() final;
     void doReattachToOperationContext() final;
     void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) final;
+    void doReleaseCursor() final;
 
     StageType stageType() const final {
         return STAGE_TEXT_OR;

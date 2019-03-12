@@ -31,9 +31,9 @@
 #include <boost/optional.hpp>
 
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/chunk_id.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/client/shard.h"
-#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 
@@ -104,7 +104,7 @@ public:
     // chunk version support
     //
 
-    void appendShortVersion(const char* name, BSONObjBuilder& b) const;
+    //void appendShortVersion(const char* name, BSONObjBuilder& b) const;
 
     ChunkVersion getLastmod() const {
         return _lastmod;
@@ -118,8 +118,8 @@ public:
      * Get/increment/set the estimation of how much data was written for this chunk.
      */
     uint64_t getBytesWritten() const;
-    void addBytesWritten(uint64_t bytesWrittenIncrement);
-    void setBytesWritten(uint64_t newBytesWritten);
+    //void addBytesWritten(uint64_t bytesWrittenIncrement);
+    //void setBytesWritten(uint64_t newBytesWritten);
 
     /**
      * if the amount of data written nears the max size of a shard
@@ -185,7 +185,7 @@ public:
         return _rootFolder;
     }
 
-    void constructChunkType(ChunkType *chunkType) {
+    void constructChunkType(ChunkType* chunkType) {
         chunkType->setMin(getMin());
         chunkType->setMax(getMax());
         chunkType->setJumbo(isJumbo());
@@ -200,7 +200,7 @@ private:
     /**
      * Returns the connection string for the shard on which this chunk resides.
      */
-    ConnectionString _getShardConnectionString(OperationContext* txn) const;
+    //ConnectionString _getShardConnectionString(OperationContext* txn) const;
 
     // if min/max key is pos/neg infinity
     bool _minIsInf() const;
@@ -233,7 +233,7 @@ private:
      *          is simply an ordered list of ascending/descending field names. Examples:
      *          {a : 1, b : -1} is not special. {a : "hashed"} is.
      */
-    BSONObj _getExtremeKey(OperationContext* txn, bool doSplitAtLower) const;
+    //BSONObj _getExtremeKey(OperationContext* txn, bool doSplitAtLower) const;
 
     /**
      * Determines the appropriate split points for this chunk.

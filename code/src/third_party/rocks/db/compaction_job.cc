@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+
 #include "db/builder.h"
 #include "db/db_iter.h"
 #include "db/dbformat.h"
@@ -300,6 +301,7 @@ CompactionJob::CompactionJob(
                                     db_options_.enable_thread_tracking);
   ThreadStatusUtil::SetThreadOperation(ThreadStatus::OP_COMPACTION);
   ReportStartedCompaction(compaction);
+  //env_options_.io_pri = EnvOptions::IO_PRIORITY_LOW;
 }
 
 CompactionJob::~CompactionJob() {
@@ -1086,7 +1088,7 @@ Status CompactionJob::FinishCompactionOutputFile(
       tp = sub_compact->builder->GetTableProperties();
       sub_compact->current_output()->table_properties =
           std::make_shared<TableProperties>(tp);
-      Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
+      Log(InfoLogLevel::DEBUG_LEVEL, db_options_.info_log,
           "[%s] [JOB %d] Generated table #%" PRIu64 ": %" PRIu64
           " keys, %" PRIu64 " bytes%s",
           cfd->GetName().c_str(), job_id_, output_number, current_entries,
@@ -1158,12 +1160,18 @@ Status CompactionJob::InstallCompactionResults(
 
   // Add compaction outputs
   compaction->AddInputDeletions(compact_->compaction->edit());
+    int filen = 0;//add
 
   for (const auto& sub_compact : compact_->sub_compact_states) {
+    filen += sub_compact.outputs.size();//add
+
     for (const auto& out : sub_compact.outputs) {
       compaction->edit()->AddFile(compaction->output_level(), out.meta);
     }
   }
+  //statis level's filen
+
+
   return versions_->LogAndApply(compaction->column_family_data(),
                                 mutable_cf_options, compaction->edit(),
                                 db_mutex_, db_directory_);
@@ -1197,7 +1205,9 @@ Status CompactionJob::OpenCompactionOutputFile(
 #endif  // !ROCKSDB_LITE
   // Make the output file
   unique_ptr<WritableFile> writable_file;
-  Status s = NewWritableFile(env_, fname, &writable_file, env_options_);
+  EnvOptions new_options(env_options_);
+  new_options.io_pri = IO_PRIORITY_LOW;
+  Status s = NewWritableFile(env_, fname, &writable_file, new_options);
   if (!s.ok()) {
     Log(InfoLogLevel::ERROR_LEVEL, db_options_.info_log,
         "[%s] [JOB %d] OpenCompactionOutputFiles for table #%" PRIu64
@@ -1363,6 +1373,8 @@ void CompactionJob::UpdateCompactionJobStats(
           CompactionJobStats::kMaxPrefixLength,
           &compaction_job_stats_->largest_output_key_prefix);
     }
+
+
   }
 #endif  // !ROCKSDB_LITE
 }

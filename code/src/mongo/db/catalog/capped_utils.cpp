@@ -28,12 +28,14 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 
+#include "mongo/db/catalog/capped_utils.h"
 #include "mongo/platform/basic.h"
 #include <string>
 #include <vector>
-#include "mongo/db/catalog/capped_utils.h"
 
 #include "mongo/base/error_codes.h"
+#include "mongo/bson/bsonobj.h"
+#include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/background.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
@@ -48,53 +50,54 @@
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/query/plan_yield_policy.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/s/balancer/balancer.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/views/view.h"
-#include "mongo/util/scopeguard.h"
-#include "mongo/s/grid.h"
-#include "mongo/s/client/shard_registry.h"
-#include "mongo/bson/bsonobj.h"
 #include "mongo/s/client/shard.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/grid.h"
 #include "mongo/util/log.h"
-#include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/db/s/balancer/balancer.h"
-#include "mongo/db/modules/rocks/src/GlobalConfig.h"
+#include "mongo/util/scopeguard.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/db/commands/operation_util.h"
 
 namespace mongo {
 using std::vector;
 using std::string;
 const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
-Status emptyCappedOnCfgSrv(OperationContext* txn, const NamespaceString& ns){
-    log()<<"[capped_util.cpp: emptyCappedOnCfgSrv]  on ConfigServer";
-    log()<<"[capped_util.cpp: emptyCappedOnCfgSrv] ns: "<<ns.ns();
+Status emptyCappedOnCfgSrv(OperationContext* txn, const NamespaceString& ns) {
+    index_log() << "[capped_util.cpp: emptyCappedOnCfgSrv]  on ConfigServer";
+    index_log() << "[capped_util.cpp: emptyCappedOnCfgSrv] ns: " << ns.ns();
     vector<ChunkType> chunks;
-    uassertStatusOK(grid.catalogClient(txn)->getChunks(txn,
-                BSON(ChunkType::ns(ns.ns())),
-                BSONObj(),
-                0,
-                &chunks,
-                nullptr,
-                repl::ReadConcernLevel::kMajorityReadConcern));
-    LOG(0) << "[drop collection] chunk.szie : "<<chunks.size();
+    uassertStatusOK(
+        grid.catalogClient(txn)->getChunks(txn,
+                                           BSON(ChunkType::ns(ns.ns())),
+                                           BSONObj(),
+                                           0,
+                                           &chunks,
+                                           nullptr,
+                                           repl::ReadConcernLevel::kMajorityReadConcern));
+    index_LOG(0) << "[drop collection] chunk.size : " << chunks.size();
     std::map<string, BSONObj> errors;
     auto* shardRegistry = grid.shardRegistry();
-    for(ChunkType chunk: chunks){
+    for (ChunkType chunk : chunks) {
         BSONObjBuilder builder;
         auto shardStatus = shardRegistry->getShard(txn, chunk.getShard());
         if (!shardStatus.isOK()) {
-            log()<<"[drop collection] get shard fail";
+            index_log() << "[drop collection] get shard fail";
             return shardStatus.getStatus();
         }
         auto dropResult = shardStatus.getValue()->runCommandWithFixedRetryAttempts(
-                txn,
-                ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-                ns.db().toString(),
-                BSON("drop" << ns.coll() <<"chunkId"<<chunk.getName() << WriteConcernOptions::kWriteConcernField
-                    << txn->getWriteConcern().toBSON()),
-                Shard::RetryPolicy::kIdempotent);
+            txn,
+            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+            ns.db().toString(),
+            BSON("drop" << ns.coll() << "chunkId" << chunk.getName()
+                        << WriteConcernOptions::kWriteConcernField
+                        << txn->getWriteConcern().toBSON()),
+            Shard::RetryPolicy::kIdempotent);
         if (!dropResult.isOK()) {
             return Status(dropResult.getStatus().code(),
-                   dropResult.getStatus().reason() + " at " + chunk.getName());
+                          dropResult.getStatus().reason() + " at " + chunk.getName());
         }
         auto dropStatus = std::move(dropResult.getValue().commandStatus);
         auto wcStatus = std::move(dropResult.getValue().writeConcernStatus);
@@ -116,34 +119,32 @@ Status emptyCappedOnCfgSrv(OperationContext* txn, const NamespaceString& ns){
         }
         return {ErrorCodes::OperationFailed, sb.str()};
     }
-    LOG(0) << "dropCollection " << ns << " shard data deleted"; 
-    for(ChunkType chunk: chunks){  
+    index_LOG(0) << "dropCollection " << ns << " shard data deleted";
+    for (ChunkType chunk : chunks) {
 
         auto shardId = chunk.getShard();
-        auto assignStatus = Balancer::get(txn)->assignChunk(txn,
-                                                        chunk,
-                                                        true,
-                                                        false,
-                                                        shardId);
-   
+        auto assignStatus = Balancer::get(txn)->assignChunk(txn, chunk, true, false, shardId);
+
         if (!assignStatus.isOK()) {
-            log()<<"[CS_SHARDCOLL]assign fail";
+            index_log() << "[CS_SHARDCOLL]assign fail";
             return assignStatus;
         }
     }
     return Status::OK();
 }
 Status emptyCapped(OperationContext* txn, const NamespaceString& collectionName) {
-    if (!GLOBAL_CONFIG_GET(IsCoreTest))
-    {
+    if (ClusterRole::ShardServer == serverGlobalParams.clusterRole) {
         auto configshard = Grid::get(txn)->shardRegistry()->getConfigShard();
-        auto cmdResponseStatus = configshard->runCommand(
-            txn,
-            kPrimaryOnlyReadPreference,
-            collectionName.db().toString(),
-            BSON("emptycapped"<<collectionName.coll()),
-            Shard::RetryPolicy::kIdempotent);   
-        if(cmdResponseStatus.getValue().commandStatus.isOK()){
+        auto cmdResponseStatus =
+            configshard->runCommand(txn,
+                                    kPrimaryOnlyReadPreference,
+                                    collectionName.db().toString(),
+                                    BSON("emptycapped" << collectionName.coll()),
+                                    Shard::RetryPolicy::kIdempotent);
+        if (!cmdResponseStatus.isOK()) {
+            cmdResponseStatus.getStatus();
+        }
+        if (cmdResponseStatus.getValue().commandStatus.isOK()) {
             return Status::OK();
         }
     }
@@ -214,6 +215,12 @@ Status cloneCollectionAsCapped(OperationContext* txn,
                                bool temp) {
     std::string fromNs = db->name() + "." + shortFrom;
     std::string toNs = db->name() + "." + shortTo;
+
+    if (fromNs == "admin.system.users" || fromNs == "admin.system.roles") {
+        return Status(ErrorCodes::Unauthorized,
+                      str::stream() << "source collection " << fromNs
+                                    << " does not allow to cloneCollectionAsCapped");
+    }
 
     Collection* fromCollection = db->getCollection(fromNs);
     if (!fromCollection) {
@@ -400,4 +407,205 @@ Status convertToCapped(OperationContext* txn, const NamespaceString& collectionN
     return Status::OK();
 }
 
+
+Status createCappedCollection(OperationContext* txn, const NamespaceString& collectionName, double size) {
+    Command* createCmd = Command::findCommand("create");
+    BSONObjBuilder cmdBuilder;
+    cmdBuilder.append("create", collectionName.coll());
+    cmdBuilder.append("capped", true);
+    cmdBuilder.append("size", size);
+
+    string errmsg;
+    BSONObjBuilder result;
+    int options = 0;
+    bool ret = false;
+    BSONObj cmdObj = cmdBuilder.done();
+    try {
+        ret = createCmd->run(txn, collectionName.db().toString(), cmdObj, options, errmsg, result);
+    } catch(const DBException& e) {
+        index_err() << "[createCappedCollection] create collection " << collectionName.ns() << " failed, code: " 
+	    << static_cast<int>(e.getCode()) << ", msg: " << e.what();
+	return Status(ErrorCodes::OperationFailed, "create capped collection failed");
+    }
+    if (!ret) {
+        BSONObj tmp = result.asTempObj();
+        BSONElement code_el = tmp.getField("code");
+        if (!code_el.eoo() && code_el.isNumber() && code_el.numberInt() == ErrorCodes::BadValue) {
+            return Status(ErrorCodes::BadValue,
+                          tmp.hasField("errmsg") ? tmp.getStringField("errmsg")
+                                                 : "create capped collection failed");
+        }
+        return Status(ErrorCodes::OperationFailed, "create capped collection failed");
+    }
+
+    return Status::OK();
+
+}
+
+Status rollBackConvertOnConfig(OperationContext* txn,
+                               NamespaceString& nss) {
+    StringData dbname = nss.db();
+    StringData shortSource = nss.coll();
+        
+    std::string shortTmpName = str::stream() << "tmp.convertToCapped." << shortSource;
+    std::string longTmpName = str::stream() << dbname << "." << shortTmpName;
+    bool sourceCollExist = false;
+
+    auto tmpCollStatus = grid.catalogClient(txn)->getCollection(txn, longTmpName);
+    if (tmpCollStatus == ErrorCodes::NamespaceNotFound) {
+	return Status::OK();
+    }
+    else if (!tmpCollStatus.isOK()) {
+	return tmpCollStatus.getStatus();
+    }
+
+    auto collStatus = grid.catalogClient(txn)->getCollection(txn, nss.ns());
+    if (!collStatus.isOK() && collStatus != ErrorCodes::NamespaceNotFound) {
+        return collStatus.getStatus();
+    }
+    else if (collStatus.isOK()) {
+	CollectionType coll = collStatus.getValue().value;
+	if (!coll.getDropped() && coll.getCreated()) {
+	    sourceCollExist = true;
+	}
+    }
+    //check whether source collection exist
+    //if source collection exist, just drop temp collection
+    if (sourceCollExist) {
+	ChunkType chunk;
+	string errmsg;
+	bool getRet = operationutil::getChunk(txn, nss.ns(), chunk, errmsg);
+	if (!getRet) {
+	    return Status(ErrorCodes::OperationFailed, "get chunk failed");
+	}
+
+	auto assignStatus = 
+	    Balancer::get(txn)->assignChunk(txn, chunk, false, true, chunk.getShard());
+	if (!assignStatus.isOK()) {
+	    index_err() << "[rollBackConvertOnConfig] assignChunk failed, status " << assignStatus.toString();
+	    return assignStatus;
+	}
+        BSONObjBuilder removeResult;
+	auto status = operationutil::removeCollAndIndexMetadata(txn, NamespaceString(longTmpName), removeResult);
+	if (!status.isOK()) {
+	    index_err() << "[rollBackConvertOnConfig] removeCollAndIndexMetadata failed, ns " << longTmpName 
+	        << " status " << status.toString();
+	    return status;
+	}
+    }
+    //else drop source collection and rename temp collection to source
+    else {
+        BSONObjBuilder removeResult;
+	auto status = operationutil::removeCollAndIndexMetadata(txn, nss, removeResult);
+	if (!status.isOK()) {
+	    index_err() << "[rollBackConvertOnConfig] removeCollAndIndexMetadata failed, ns " << longTmpName 
+	        << " status " << status.toString();
+	    return status;
+	}
+        BSONObjBuilder result;
+	string errmsg;
+	bool renameRet = operationutil::renameCollection(txn, longTmpName, nss.ns(), errmsg, result);
+	if (!renameRet) {
+	    index_err() << "[rollBackConvertOnConfig] renameCollection failed, ns " << longTmpName
+	        << " target " << nss.ns();
+	    return Status(ErrorCodes::OperationFailed, "rename collection failed");
+	}
+    }
+    return Status::OK();
+}
+
+
+
+bool copyDataOnCappedCollection(OperationContext* txn, 
+                                string& source,
+				string& target,
+				double size,
+				string& errmsg,
+				BSONObjBuilder& result) {
+    index_LOG(1) << "[copyDataOnCappedCollection] source: " << source << ", target: " << target 
+        << ",size: " << size;
+    NamespaceString sourceNs(source);
+    string dbname = sourceNs.db().toString();
+    return operationutil::copyData(txn, source, target, true, size, errmsg, result);
+}
+
+Status convertToCappedOnConfig(OperationContext* txn, const NamespaceString& collectionName, double size) {
+    StringData dbname = collectionName.db();
+    StringData shortSource = collectionName.coll();
+
+    auto collStatus = grid.catalogClient(txn)->getCollection(txn, collectionName.ns());
+    if (collStatus == ErrorCodes::NamespaceNotFound) {
+        return Status(ErrorCodes::NamespaceNotFound,
+	    str::stream() << "source collection " << collectionName.ns() << " does not exist");
+    }
+    else if (!collStatus.isOK()) {
+        return collStatus.getStatus();
+    }
+
+    CollectionType coll = collStatus.getValue().value;
+
+    if (coll.getTabType() == CollectionType::TableType::kSharded) {
+        return Status(ErrorCodes::IllegalOperation,
+	    str::stream() << "can't do command: convertToCapped" << " on sharded collection");
+    }
+
+    if (coll.getDropped()) {
+        return Status(ErrorCodes::NamespaceNotFound,
+	    str::stream() << "source collection " << collectionName.ns() << " does not exist");
+    }
+
+    //add dis lock 
+    /*auto scopedDistLock = Grid::get(txn)->catalogClient(txn)->getDistLockManager()->lock(
+        txn, collectionName.ns(), "convertToCapped", DistLockManager::kDefaultLockTimeout);
+    if (!scopedDistLock.isOK()) {
+        index_err() << "[convertToCappedOnConfig] getDistLock error, ns:" << collectionName.ns();
+	return scopedDistLock.getStatus();
+    }
+
+    index_LOG(0) << "[convertToCappedOnConfig] getDistLock ns: " << collectionName.ns();
+    */
+    //create tmp capped collection
+    std::string shortTmpName = str::stream() << "tmp.convertToCapped." << shortSource;
+    std::string longTmpName = str::stream() << dbname << "." << shortTmpName;
+    NamespaceString tmpCollName(longTmpName);
+    auto createStatus = createCappedCollection(txn, tmpCollName, size);
+    if (!createStatus.isOK()) {
+        return createStatus;
+    }
+
+    //create indexes on tm capped collection, this is not need for capped collection
+    string errmsg;
+    BSONObjBuilder result;
+    /*bool ret = operationutil::copyIndexes(txn, collectionName.ns(), longTmpName, errmsg, result);
+    if (!ret) {
+        index_err() << "[convertToCappedOnConfig] create indexes on capped collection failed, errmsg: "
+	    << errmsg;
+        return Status(ErrorCodes::OperationFailed, "create indexes on capped collection failed");
+    }*/
+    bool ret = false;
+
+    //insert data into tmp capped collection
+    {
+        string source = collectionName.ns();
+        ret = copyDataOnCappedCollection(txn, source, longTmpName, size, errmsg, result);
+        if (!ret) {
+            index_err() << "[convertToCappedOnConfig] copy data to capped collection failed";
+            return Status(ErrorCodes::OperationFailed, "copy data to capped collection failed");
+        }
+    }
+    
+    //rename tmp cappped collection to source collection
+    {
+	string errmsg;
+        BSONObjBuilder result;
+        bool ret = operationutil::renameCollection(txn, longTmpName, collectionName.ns(), errmsg, result);
+	if (!ret) {
+	    index_err() << "[convertToCappedOnConfig] copy data to capped collection failed, errmsg: "
+	        << errmsg;
+	    return Status(ErrorCodes::OperationFailed, "rename capped collection failed");
+	}
+    }
+
+    return Status::OK();
+}
 }  // namespace mongo

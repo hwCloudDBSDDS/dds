@@ -10,14 +10,14 @@
     db1.dropDatabase();
     db2.dropDatabase();
 
-    assert.commandWorked(db1.runCommand({create: 'foo', autoIndexId: false}));
+    assert.commandWorked(db1.runCommand({create: 'foo', autoIndexId: true}));
     assert.writeOK(db1.foo.insert({a: 1}));
-    assert.eq(db1.foo.getIndexes().length, 0);
+    assert.eq(db1.foo.getIndexes().length, 1);
 
     assert.commandWorked(db1.copyDatabase('copydatabase_no_id_index', 'copydatabase_no_id_index2'));
 
     assert.eq(db1.foo.count(), 1);
-    assert.eq(db1.foo.getIndexes().length, 0);
+    assert.eq(db1.foo.getIndexes().length, 1);
     assert.eq(db2.foo.count(), 1);
-    assert.eq(db2.foo.getIndexes().length, 0);
+    assert.eq(db2.foo.getIndexes().length, 1);
 })();

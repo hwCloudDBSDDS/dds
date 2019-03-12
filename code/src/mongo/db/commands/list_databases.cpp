@@ -34,9 +34,11 @@
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/modules/rocks/src/gc_common.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
 
 namespace mongo {
 
@@ -73,6 +75,16 @@ public:
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
 
+    void hideInterInfo(vector<string>& dbNames) {
+        if (!GLOBAL_CONFIG_GET(ShowInternalInfo)) {
+            for (auto it = dbNames.begin(); it != dbNames.end(); ++it) {
+                if (*it == GcDbName) {
+                    dbNames.erase(it);
+                }
+            }
+        }
+    }
+
     CmdListDatabases() : Command("listDatabases", true) {}
 
     bool run(OperationContext* txn,
@@ -88,6 +100,8 @@ public:
             Lock::GlobalLock lk(txn->lockState(), MODE_IS, UINT_MAX);
             storageEngine->listDatabases(&dbNames);
         }
+
+        hideInterInfo(dbNames);
 
         vector<BSONObj> dbInfos;
 

@@ -368,7 +368,7 @@ public:
              int options,
              string& errmsg,
              BSONObjBuilder& result) {
-        return Grid::get(txn)->catalogClient(txn)->runUserManagementReadCommand(
+        return Grid::get(txn)->catalogClient(txn)->runUserManagementReadCommandWithCheckTxn(
             txn, dbname, cmdObj, &result);
     }
 
@@ -736,7 +736,7 @@ public:
              int options,
              string& errmsg,
              BSONObjBuilder& result) {
-        return Grid::get(txn)->catalogClient(txn)->runUserManagementReadCommand(
+        return Grid::get(txn)->catalogClient(txn)->runUserManagementReadCommandWithCheckTxn(
             txn, dbname, cmdObj, &result);
     }
 

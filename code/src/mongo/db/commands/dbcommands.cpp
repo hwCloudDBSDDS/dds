@@ -53,6 +53,7 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/create_collection.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/drop_collection.h"
 #include "mongo/db/catalog/drop_database.h"
 #include "mongo/db/catalog/index_key_validate.h"
@@ -111,7 +112,8 @@
 #include "mongo/util/md5.hpp"
 #include "mongo/util/print.h"
 #include "mongo/util/scopeguard.h"
-#include "mongo/db/catalog/database_holder.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+
 #include <vector>
 
 namespace mongo {
@@ -197,6 +199,17 @@ public:
                                               "with --configsvr"));
         }
 
+        // because user may connect with inner network because some case in our clould instance,
+        // add temp fix that : when user is auth, do not check the connection way.
+        // TODO: when our cloud instance is fix, need fix this back.
+        if (dbname == "admin" &&
+            (AuthorizationSession::get(txn->getClient())->isAuthWithCustomer() ||
+             (txn->getClient()->isCustomerConnection() &&
+              AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser()))) {
+            return appendCommandStatus(
+                result, Status(ErrorCodes::IllegalOperation, "Cannot drop 'admin' database"));
+        }
+
         if ((repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
              repl::ReplicationCoordinator::modeNone) &&
             (dbname == "local")) {
@@ -274,7 +287,6 @@ public:
             CurOp::get(txn)->setNS_inlock(dbname);
         }
 
-        log() << "repairDatabase " << dbname;
         BackgroundOperation::assertNoBgOpInProgForDb(dbname);
 
         e = cmdObj.getField("preserveClonedFilesOnFailure");
@@ -485,13 +497,11 @@ public:
                      int,
                      string& errmsg,
                      BSONObjBuilder& result) {
-        LOG(1)<<"[dropCollection] cmdObj : "<< cmdObj.toString();
         const NamespaceString ns = parseNsCollectionRequired(dbname, cmdObj);
         if (NamespaceString::virtualized(ns.ns())) {
             errmsg = "can't drop a virtual collection";
             return false;
         }
-        
         const NamespaceString nsToDrop(parseNs(dbname, cmdObj));
         if ((repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
              repl::ReplicationCoordinator::modeNone) &&
@@ -499,11 +509,10 @@ public:
             errmsg = "can't drop live oplog while replicating";
             return false;
         }
-        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer 
-                && !nsToDrop.isSystemCollection()){
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer &&
+            !nsToDrop.isSystemCollection()) {
             return appendCommandStatus(result, dropCollectionOnCfgSrv(txn, nsToDrop, result));
-        }else{
-            txn->setCmdFlag(OperationContext::DROP_COLLECTION);
+        } else {
             return appendCommandStatus(result, dropCollection(txn, nsToDrop, result));
         }
     }
@@ -538,14 +547,13 @@ public:
     }
 
     virtual bool run(OperationContext* txn,
-        const string& dbname,
-        BSONObj& cmdObj,
-        int,
-        string& errmsg,
-        BSONObjBuilder& result){
+                     const string& dbname,
+                     BSONObj& cmdObj,
+                     int,
+                     string& errmsg,
+                     BSONObjBuilder& result) {
         const NamespaceString ns(parseNs(dbname, cmdObj));
-
-        index_log() << "[createColletion] dbname: " << dbname << "; cmdobj: ( " << cmdObj;
+        index_log() << "[createColletion] create : " << ns.ns();
         if (cmdObj.hasField("autoIndexId")) {
             const char* deprecationWarning =
                 "the autoIndexId option is deprecated and will be removed in a future release";
@@ -565,7 +573,6 @@ public:
                  "view with a default collation. See "
                  "http://dochub.mongodb.org/core/3.4-feature-compatibility."});
         }
-
         // Validate _id index spec and fill in missing fields.
         if (auto idIndexElem = cmdObj["idIndex"]) {
             if (cmdObj["viewOn"]) {
@@ -614,7 +621,6 @@ public:
             }
             idIndexSpec = uassertStatusOK(index_key_validate::validateIndexSpecCollation(
                 txn, idIndexSpec, defaultCollator.get()));
-            log()<<"idIndexSpec "<<idIndexSpec;
             std::unique_ptr<CollatorInterface> idIndexCollator;
             if (auto collationElem = idIndexSpec["collation"]) {
                 auto collatorStatus = CollatorFactoryInterface::get(txn->getServiceContext())
@@ -635,22 +641,39 @@ public:
             auto resolvedCmdObj = cmdObj.removeField("idIndex");
 
             // config server create metadata for user collections
-            if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer 
-                && !ns.isSystemCollection()){
-                return  appendCommandStatus(result,createCollectionMetadata (txn, ns, resolvedCmdObj, idIndexSpec));
+            if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer &&
+                !ns.isSystemCollection()) {
+                return appendCommandStatus(
+                    result, createCollectionMetadata(txn, ns, resolvedCmdObj, idIndexSpec));
             }
 
             return appendCommandStatus(result,
                                        createCollection(txn, dbname, resolvedCmdObj, idIndexSpec));
         }
 
-        log()<<"[createCollection] "<<cmdObj;
         BSONObj idIndexSpec;
-        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer 
-            && !ns.isOnInternalDb()){
-            return  appendCommandStatus(result,createCollectionMetadata (txn, ns, cmdObj, idIndexSpec));
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer && !ns.isOnInternalDb()) {
+            // if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+            return appendCommandStatus(result,
+                                       createCollectionMetadata(txn, ns, cmdObj, idIndexSpec));
         }
-
+        auto replMode = repl::getGlobalReplicationCoordinator()->getReplicationMode();
+        auto single_mongod= ClusterRole::None == serverGlobalParams.clusterRole && 
+                            replMode != repl::ReplicationCoordinator::Mode::modeReplSet;
+        if (single_mongod) {
+            if (cmdObj["viewOn"]) {
+                Status status = createCollection(txn,
+                                                 dbname,
+                                                 BSON("create"
+                                                      << "system.views"),
+                                                 idIndexSpec);
+                if (!status.isOK()) {
+                    if (status.code() != ErrorCodes::NamespaceExists) {
+                        return appendCommandStatus(result, status);
+                    }
+                }
+            }
+        }
         return appendCommandStatus(result, createCollection(txn, dbname, cmdObj, idIndexSpec));
     }
 } cmdCreate;
@@ -678,6 +701,13 @@ public:
         if (collectionName.empty())
             collectionName = "fs";
         collectionName += ".chunks";
+        BSONElement chunkidElement;
+        const char kChunkIdField[] = "chunkId";
+        Status chunkidElementStatus =
+            bsonExtractTypedField(cmdObj, kChunkIdField, BSONType::String, &chunkidElement);
+        if (chunkidElementStatus.isOK()) {
+            collectionName += ("$" + chunkidElement.valueStringData());
+        }
         return NamespaceString(dbname, collectionName).ns();
     }
 
@@ -694,7 +724,6 @@ public:
              string& errmsg,
              BSONObjBuilder& result) {
         const std::string ns = parseNs(dbname, jsobj);
-
         md5digest d;
         md5_state_t st;
         md5_init(&st);
@@ -874,13 +903,24 @@ public:
              string& errmsg,
              BSONObjBuilder& result) {
         Timer timer;
-
-        string ns = jsobj.firstElement().String();
+        string ns;
+        auto replMode = repl::getGlobalReplicationCoordinator()->getReplicationMode();
+        auto single_mongod= ClusterRole::None == serverGlobalParams.clusterRole && 
+                            replMode != repl::ReplicationCoordinator::Mode::modeReplSet;
+        if (single_mongod) {
+            ns = jsobj.firstElement().String();
+        } else {
+            if (jsobj.getField("chunkId")) {
+                ns = jsobj.firstElement().String() + "$" + jsobj.getField("chunkId").str();
+            } else {
+                ns = jsobj.firstElement().String();
+            }
+        }
+        // string ns = jsobj.firstElement().String();
         BSONObj min = jsobj.getObjectField("min");
         BSONObj max = jsobj.getObjectField("max");
         BSONObj keyPattern = jsobj.getObjectField("keyPattern");
         bool estimate = jsobj["estimate"].trueValue();
-
         AutoGetCollectionForRead ctx(txn, ns);
 
         Collection* collection = ctx.getCollection();
@@ -978,7 +1018,6 @@ public:
         if (!min.isEmpty()) {
             os << " between " << min << " and " << max;
         }
-
         result.appendNumber("size", size);
         result.appendNumber("numObjects", numObjects);
         result.append("millis", timer.millis());
@@ -1022,15 +1061,12 @@ public:
             errmsg = "No collection name specified";
             return false;
         }
-
-        result.append("ns", nss.ns());
+        // CollectionShardingState::get(txn, nss)->checkChunkVersionOrThrow(txn);
+        BSONElement collElement = jsobj.firstElement();
+        string ns = dbname + '.' + collElement.valuestr();
+        result.append("ns", ns);
         Status status = appendCollectionStorageStats(txn, nss, jsobj, &result);
-        if (!status.isOK()) {
-            errmsg = status.reason();
-            return false;
-        }
-
-        return true;
+        return appendCommandStatus(result, status);
     }
 
 } cmdCollectionStats;
@@ -1066,53 +1102,62 @@ public:
              string& errmsg,
              BSONObjBuilder& result) {
         const NamespaceString nss(parseNs(dbname, jsobj));
-        return appendCommandStatus(result, collMod(txn, nss, jsobj.removeField("chunkId"), &result));
+        return appendCommandStatus(result,
+                                   collMod(txn, nss, jsobj.removeField("chunkId"), &result));
     }
 
 } collectionModCommand;
 
-class RocksEngineStats : public Command{
+class RocksEngineStats : public Command {
 public:
-    RocksEngineStats() : Command("rocksStats"){}
-    virtual bool slaveOk() const{
+    RocksEngineStats() : Command("rocksStats") {}
+    virtual bool slaveOk() const {
         return true;
     }
 
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override{
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
 
-    virtual bool isWriteCommandForConfigServer() const{
+    virtual bool isWriteCommandForConfigServer() const {
         return false;
     }
 
-    virtual void help(stringstream& help) const{
+    virtual void help(stringstream& help) const {
         help << "Get RocksdbEngine statistic.\n";
     }
 
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) {
+        ActionSet actions;
+        actions.addAction(ActionType::find);
+        out->push_back(Privilege(ResourcePattern::forDatabaseName(dbname), actions));
+    }
+
+
     bool run(OperationContext* txn,
-        const string& dbname,
-        BSONObj& jsobj,
-        int,
-        string& errmsg,
-        BSONObjBuilder& result) {
-            int num = 1;
-            num = jsobj["num"].numberInt();
-            result.append("num",num);
-            auto *engine = getGlobalServiceContext()->getGlobalStorageEngine();
-            if(0 == num)
-            {
-                engine->resetEngineStats();
-            }else if(1 == num)
-            {
-                std::vector<std::string> vs;
-                engine->getEngineStats(vs);
-                result.append("rocks_stats", vs);
-            }
-            return true;
+             const string& dbname,
+             BSONObj& jsobj,
+             int,
+             string& errmsg,
+             BSONObjBuilder& result) {
+        int num = 0;
+        num = jsobj["num"].numberInt();
+        result.append("num", num);
+        auto* engine = getGlobalServiceContext()->getGlobalStorageEngine();
+        if (0 == num) {
+            engine->resetEngineStats();
+        } else if (1 == num) {
+            std::vector<std::string> vs;
+            engine->getEngineStats(vs);
+            result.append("rocks_stats", vs);
         }
+        return true;
+    }
 } cmdRocksEngineStats;
+
 
 class DBStats : public Command {
 public:
@@ -1358,20 +1403,25 @@ void Command::execCommand(OperationContext* txn,
                 // Execute command (except those listed below) only when shard server becomes active
                 stdx::lock_guard<stdx::mutex> initLock(serverGlobalParams.shardStateMutex);
                 if ((serverGlobalParams.shardState != ShardType::ShardState::kShardActive) &&
-                    !((command->getName() == "isMaster") || (command->getName() == "setShardVersion"))) {
-                    LOG(0) << "Command (" << command->getName() 
-                          << ") is not allowed before shard becomes aware"
-                          << ", ns:"<< commandNS;
-                    uasserted(ErrorCodes::NotYetInitialized, "shard has not become aware,cmd:" +
-                              command->getName() + ", ns:" + commandNS.toString()
-                              );
+                    !((command->getName() == "isMaster") ||
+                      (command->getName() == "setShardVersion"))) {
+                    index_LOG(0) << "Command (" << command->getName()
+                                 << ") is not allowed before shard becomes aware"
+                                 << ", ns:" << commandNS;
+                    uasserted(ErrorCodes::NotYetInitialized,
+                              "shard has not become aware,cmd:" + command->getName() + ", ns:" +
+                                  commandNS.toString());
                 }
-            }  
+            }
         }
         // TODO: move this back to runCommands when mongos supports OperationContext
         // see SERVER-18515 for details.
         uassertStatusOK(rpc::readRequestMetadata(txn, request.getMetadata()));
         rpc::TrackingMetadata::get(txn).initWithOperName(command->getName());
+
+        if (request.getMetadata().hasField("customerCmd")) {
+            txn->setCustomerTxn();
+        }
 
         dassert(replyBuilder->getState() == rpc::ReplyBuilderInterface::State::kCommandReply);
 
@@ -1472,7 +1522,6 @@ void Command::execCommand(OperationContext* txn,
 
             auto commandNS = NamespaceString(command->parseNs(dbname, request.getCommandArgs()));
             oss.initializeShardVersion(commandNS, extractedFields[kShardVersionFieldIdx]);
-
             auto shardingState = ShardingState::get(txn);
 
             if (oss.hasShardVersion()) {
@@ -1517,6 +1566,7 @@ void Command::execCommand(OperationContext* txn,
                 << rpc::TrackingMetadata::get(txn).toString();
             rpc::TrackingMetadata::get(txn).setIsLogged(true);
         }
+        // run liwei
         retval = command->run(txn, request, replyBuilder);
 
         dassert(replyBuilder->getState() == rpc::ReplyBuilderInterface::State::kOutputDocs);
@@ -1574,6 +1624,7 @@ bool Command::run(OperationContext* txn,
         return result;
     }
 
+    // wait for concern liwei
     Status rcStatus = waitForReadConcern(txn, readConcernArgsStatus.getValue());
     if (!rcStatus.isOK()) {
         if (rcStatus == ErrorCodes::ExceededTimeLimit) {
@@ -1614,11 +1665,36 @@ bool Command::run(OperationContext* txn,
                                                             wcResult.getValue().toBSON()));
 
         WriteConcernResult res;
-        auto waitForWCStatus =
-            waitForWriteConcern(txn,
-                                repl::ReplClientInfo::forClient(txn->getClient()).getLastOp(),
-                                wcResult.getValue(),
-                                &res);
+        // sync wal liwei
+
+        auto ns = NamespaceString(parseNs(db, request.getCommandArgs()));
+        index_LOG(2) << "Command::run writeConcern db: " << db << "; ns: " << ns;
+
+        auto waitForWCStatus = Status::OK();
+        if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer &&
+            GLOBAL_CONFIG_GET(UseMultiRocksDBInstanceEngine) && ns.isChunk()) {
+            AutoGetCollection collection(txn,
+                                         ns,
+                                         MODE_IX,  // DB is always IX, even if collection is X.
+                                         MODE_IX);
+
+            if (collection.getCollection()) {
+                waitForWCStatus = waitForWriteConcern(
+                    txn,
+                    repl::ReplClientInfo::forClient(txn->getClient()).getLastOp(),
+                    wcResult.getValue(),
+                    &res);
+            } else {
+                index_warning() << "[write] waitForWriteConcern but chunk offloaded ns: " << ns;
+            }
+        } else {
+            waitForWCStatus =
+                waitForWriteConcern(txn,
+                                    repl::ReplClientInfo::forClient(txn->getClient()).getLastOp(),
+                                    wcResult.getValue(),
+                                    &res);
+        }
+
         appendCommandWCStatus(inPlaceReplyBob, waitForWCStatus, res);
 
         // SERVER-22421: This code is to ensure error response backwards compatibility with the

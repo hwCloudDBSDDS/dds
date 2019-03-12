@@ -266,6 +266,7 @@ Status ReadBlock(RandomAccessFileReader* file, const Footer& footer,
     s = file->Read(handle.offset(), n + kBlockTrailerSize, contents, buf);
   }
 
+
   PERF_COUNTER_ADD(block_read_count, 1);
   PERF_COUNTER_ADD(block_read_byte, n + kBlockTrailerSize);
 
@@ -343,6 +344,7 @@ Status ReadBlockContents(RandomAccessFileReader* file, const Footer& footer,
     // lookup uncompressed cache mode p-cache
     status = PersistentCacheHelper::LookupRawPage(
         cache_options, handle, &heap_buf, n + kBlockTrailerSize);
+
   } else {
     status = Status::NotFound();
   }
@@ -367,7 +369,6 @@ Status ReadBlockContents(RandomAccessFileReader* file, const Footer& footer,
       heap_buf = std::unique_ptr<char[]>(new char[n + kBlockTrailerSize]);
       used_buf = heap_buf.get();
     }
-
     status = ReadBlock(file, footer, read_options, handle, &slice, used_buf);
     if (status.ok() && read_options.fill_cache &&
         cache_options.persistent_cache &&
@@ -398,7 +399,7 @@ Status ReadBlockContents(RandomAccessFileReader* file, const Footer& footer,
     // page is uncompressed, the buffer either stack or heap provided
     if (used_buf == &stack_buf[0]) {
       heap_buf = std::unique_ptr<char[]>(new char[n]);
-      memcpy(heap_buf.get(), stack_buf, n);
+      CommonMemCopy(heap_buf.get(),n, stack_buf, n);
     }
     *contents = BlockContents(std::move(heap_buf), n, true, compression_type);
   }
@@ -538,9 +539,10 @@ Status UncompressBlockContents(const char* data, size_t n,
                                const Slice& compression_dict,
                                const ImmutableCFOptions &ioptions) {
   assert(data[n] != kNoCompression);
-  return UncompressBlockContentsForCompressionType(
+  auto ret =  UncompressBlockContentsForCompressionType(
       data, n, contents, format_version, compression_dict,
       (CompressionType)data[n], ioptions);
+  return ret;
 }
 
 }  // namespace rocksdb

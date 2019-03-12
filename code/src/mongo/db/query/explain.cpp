@@ -31,6 +31,7 @@
 #include "mongo/db/query/explain.h"
 
 #include "mongo/base/owned_pointer_vector.h"
+#include "mongo/db/client.h"
 #include "mongo/db/exec/cached_plan.h"
 #include "mongo/db/exec/count_scan.h"
 #include "mongo/db/exec/distinct_scan.h"
@@ -782,7 +783,9 @@ void Explain::explainStages(PlanExecutor* exec,
         execBob.doneFast();
     }
 
-    generateServerInfo(out);
+    if (!exec->getOpCtx()->getClient()->isCustomerConnection()) {
+        generateServerInfo(out);
+    }
 }
 
 // static

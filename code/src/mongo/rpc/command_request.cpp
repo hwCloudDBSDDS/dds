@@ -91,7 +91,7 @@ CommandRequest::CommandRequest(const Message* message) : _message(message) {
     _commandName = std::move(str.value);
 
     uassert(28637,
-            str::stream() << "Command name parsed in OP_COMMAND message '" << _commandName 
+            str::stream() << "Command name parsed in OP_COMMAND message '" << _commandName
                           << "' must be between "
                           << kMinCommandNameLength
                           << " and "

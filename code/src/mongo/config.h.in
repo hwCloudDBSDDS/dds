@@ -52,7 +52,7 @@
 // Defined if unitstd.h is available
 @mongo_config_have_header_unistd_h@
 
-// Defined if memset_s is available
+// Defined if 6 is available
 @mongo_config_have_memset_s@
 
 // Defined if a POSIX monotonic clock is available

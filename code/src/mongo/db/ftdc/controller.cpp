@@ -43,6 +43,7 @@
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/time_support.h"
+#include "mongo/db/server_options.h"
 
 namespace mongo {
 
@@ -119,12 +120,24 @@ void FTDCController::start() {
         invariant(_state == State::kNotStarted);
         _state = State::kStarted;
     }
+
+    if (serverGlobalParams.clusterRole == ClusterRole::ShardServer)
+    {
+        _statisticsCollector.start();
+    }
+
+
 }
 
 void FTDCController::stop() {
     log() << "Shutting down full-time diagnostic data capture";
 
     {
+        if (serverGlobalParams.clusterRole == ClusterRole::ShardServer)
+        {
+            _statisticsCollector.stop();
+        }
+
         stdx::lock_guard<stdx::mutex> lock(_mutex);
 
         bool started = (_state == State::kStarted);
@@ -179,7 +192,8 @@ void FTDCController::doLoop() {
                 stdx::unique_lock<stdx::mutex> lock(_mutex);
 
                 // We ignore spurious wakeups by just doing an iteration of the loop
-                auto status = _condvar.wait_until(lock, next_time.toSystemTimePoint());
+                auto status =
+                    _condvar.wait_for(lock, Milliseconds(next_time - now).toSteadyDuration());
 
                 // Are we done running?
                 if (_state == State::kStopRequested) {

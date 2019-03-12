@@ -200,6 +200,10 @@ bool CollectionScan::isEOF() {
     return _commonStats.isEOF || _isDead;
 }
 
+bool CollectionScan::isDEAD() {
+    return _isDead;
+}
+
 void CollectionScan::doInvalidate(OperationContext* txn,
                                   const RecordId& id,
                                   InvalidationType type) {
@@ -245,6 +249,11 @@ void CollectionScan::doDetachFromOperationContext() {
 void CollectionScan::doReattachToOperationContext() {
     if (_cursor)
         _cursor->reattachToOperationContext(getOpCtx());
+}
+
+void CollectionScan::doReleaseCursor() {
+    if (_cursor)
+        _cursor->detachFromOperationContext();
 }
 
 unique_ptr<PlanStageStats> CollectionScan::getStats() {

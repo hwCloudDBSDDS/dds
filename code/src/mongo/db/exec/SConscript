@@ -102,7 +102,7 @@ env.Library(
     LIBDEPS_TAGS=[
         # A great number of undefined symbols in this library
         'incomplete',
-    ]
+    ],
 )
 
 env.CppUnitTest(

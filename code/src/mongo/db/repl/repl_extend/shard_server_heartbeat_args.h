@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <string>
@@ -44,7 +43,7 @@ public:
     HostAndPort getSenderHost() const {
         return _senderHost;
     }
-	
+
     /**
      * Returns a BSONified version of the object.
      * Should only be called if the mandatory fields have been set.
@@ -55,8 +54,8 @@ public:
     void addToBSON(BSONObjBuilder* builder) const;
 
 private:
-	bool _hasSender = false;
-	HostAndPort _senderHost;
+    bool _hasSender = false;
+    HostAndPort _senderHost;
 };
 
 }  // namespace repl

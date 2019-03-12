@@ -211,7 +211,7 @@ public:
         ChunkType chunkType;
         chunkType.setNS(nss.ns());
         chunk->constructChunkType(&chunkType);
-        
+
         uassertStatusOK(configsvr_client::moveChunk(txn,
                                                     chunkType,
                                                     to->getId(),

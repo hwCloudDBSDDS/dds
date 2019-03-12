@@ -85,7 +85,6 @@ public:
     virtual void run() {
         Client::initThread(name().c_str());
         AuthorizationSession::get(cc())->grantInternalAuthorization();
-
         while (!inShutdown()) {
             sleepsecs(ttlMonitorSleepSecs);
 
@@ -143,8 +142,21 @@ private:
             collEntry->getAllIndexes(&txn, &indexNames);
             for (const std::string& name : indexNames) {
                 BSONObj spec = collEntry->getIndexSpec(&txn, name);
+                BSONObjBuilder build;
+                for (auto&& ele : spec) {
+                    auto fieldName = ele.fieldNameStringData();
+                    if (fieldName == "ns") {
+                        build.append("ns", collectionNSS.ns());
+                    } else {
+                        build.append(ele);
+                    }
+                }
+
+                BSONObj new_spec = build.obj();
+
+
                 if (spec.hasField(secondsExpireField)) {
-                    ttlIndexes.push_back(spec.getOwned());
+                    ttlIndexes.push_back(new_spec.getOwned());
                 }
             }
         }
@@ -218,7 +230,8 @@ private:
 
         const Date_t kDawnOfTime =
             Date_t::fromMillisSinceEpoch(std::numeric_limits<long long>::min());
-        const Date_t expirationTime = Date_t::now() - Seconds(secondsExpireElt.numberLong());
+        const Date_t expirationTime =
+            Date_t::now(Date_t::ClockType::kSystemClock) - Seconds(secondsExpireElt.numberLong());
         const BSONObj startKey = BSON("" << kDawnOfTime);
         const BSONObj endKey = BSON("" << expirationTime);
         // The canonical check as to whether a key pattern element is "ascending" or

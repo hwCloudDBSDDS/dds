@@ -33,9 +33,9 @@
 
 #include "rocks_record_store.h"
 
-#include <mutex>
-#include <memory>
 #include <algorithm>
+#include <memory>
+#include <mutex>
 
 #include <boost/thread/locks.hpp>
 
@@ -53,12 +53,13 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/oplog_hack.h"
 #include "mongo/platform/endian.h"
+#include "mongo/s/stale_exception.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/background.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
-#include "mongo/s/stale_exception.h"
+
 #include "rocks_counter_manager.h"
 #include "rocks_durability_manager.h"
 #include "rocks_engine.h"
@@ -180,7 +181,8 @@ namespace mongo {
         });
     }
 
-    void CappedVisibilityManager::dealtWithCappedRecord(SortedRecordIds::iterator it, bool didCommit) {
+    void CappedVisibilityManager::dealtWithCappedRecord(SortedRecordIds::iterator it,
+                                                        bool didCommit) {
         stdx::lock_guard<stdx::mutex> lk(_uncommittedRecordIdsMutex);
         if (didCommit && _rs->_isOplog && *it != _oplog_highestSeen) {
             // Defer removal from _uncommittedRecordIds until it is durable. We don't need to wait
@@ -274,7 +276,7 @@ namespace mongo {
                                        std::string prefix, bool isCapped, int64_t cappedMaxSize,
                                        int64_t cappedMaxDocs, CappedCallback* cappedCallback)
         : RecordStore(ns),
-         dbInstancePtr(db),
+          dbInstancePtr(db),
           _db(nullptr),
           _counterManager(nullptr),
           _prefix(std::move(prefix)),
@@ -290,44 +292,43 @@ namespace mongo {
           _cappedOldestKeyHint(0),
 
           _ident(id.toString()),
-          //for counter function, the keyes have to be constant for a chunk, but the id(ident) will change when re-assigned
-          //so, the counter data will be lost after re-assigned
-          //we use ident as suffix for system collection, and no suffix for chunk
-          _dataSizeKey(std::string("\0\0\0\0", 4) + _dataSizeMetadataRecordName + "-" + id.toString()),
-          _numRecordsKey(std::string("\0\0\0\0", 4) + _numRecordsMetadataRecordName + "-" + id.toString()),
+          // for counter function, the keyes have to be constant for a chunk, but the id(ident) will
+          // change when re-assigned
+          // so, the counter data will be lost after re-assigned
+          // we use ident as suffix for system collection, and no suffix for chunk
+          _dataSizeKey(std::string("\0\0\0\0", 4) + _dataSizeMetadataRecordName + "-" +
+                       id.toString()),
+          _numRecordsKey(std::string("\0\0\0\0", 4) + _numRecordsMetadataRecordName + "-" +
+                         id.toString()),
           _shuttingDown(false) {
+        if (db) {
+            _db = db->GetDB();
+            _counterManager = db->GetCounterManager();
 
-        if (db){
-          _db = db->GetDB();
-          _counterManager = db->GetCounterManager();
+            _cappedVisibilityManager.reset(
+                (_isCapped || _isOplog)
+                    ? new CappedVisibilityManager(this, db->GetDurabilityManager())
+                    : nullptr);
 
-          _cappedVisibilityManager.reset((_isCapped || _isOplog) ? 
-                          new CappedVisibilityManager(this, db->GetDurabilityManager())
-                         : nullptr);
-
-          Init();
-        } else {
-          log() << " RocksRecordStore::RocksRecordStore db is null";
+            Init();
         }
 
         _oplogSinceLastCompaction.reset();
 
-        LOG(1) << "opening collection " << ns << " with prefix "
-               << rocksdb::Slice(_prefix).ToString(true);
+        index_LOG(1) << "opening collection " << ns << " with prefix "
+                     << rocksdb::Slice(_prefix).ToString(true);
 
         if (_isCapped) {
             invariant(_cappedMaxSize > 0);
             invariant(_cappedMaxDocs == -1 || _cappedMaxDocs > 0);
-        }
-        else {
+        } else {
             invariant(_cappedMaxSize == -1);
             invariant(_cappedMaxDocs == -1);
         }
     }
 
-    void RocksRecordStore::Init()
-    {
-        if (dbInstancePtr){
+    void RocksRecordStore::Init() {
+        if (dbInstancePtr) {
             // Get next id
             loadNextIdNum();
             // load metadata
@@ -335,24 +336,24 @@ namespace mongo {
             // in index column family, with shard key = min shard key
             _numRecords.store(_counterManager->loadCounter(_numRecordsKey));
             _dataSize.store(_counterManager->loadCounter(_dataSizeKey));
-            if (_dataSize.load() < 0) {
-                _dataSize.store(0);
+            NamespaceString nss(ns());
+            if (!nss.isChunk() || nss.isSystemCollection()) {
+                if (_dataSize.load() < 0) {
+                    _dataSize.store(0);
+                }
+                if (_numRecords.load() < 0) {
+                    _numRecords.store(0);
+                }
             }
-            if (_numRecords.load() < 0) {
-                _numRecords.store(0);
-            }
-            index_log() << "_dataSizeKey is :" << _dataSizeKey  << "; size is :" << _dataSize.load() 
-                        << "_numRecordsKey is :" << _numRecordsKey << "; num is :" << _numRecords.load();
+            index_LOG(2) << "_dataSizeKey is :" << _dataSizeKey << "; size is :" << _dataSize.load()
+                         << "_numRecordsKey is :" << _numRecordsKey
+                         << "; num is :" << _numRecords.load();
             _hasBackgroundThread = RocksEngine::initRsOplogBackgroundThread(ns());
-        } else {
-            log() << " RocksRecordStore::Init dbInstancePtr is null";
         }
     }
 
-    void RocksRecordStore::loadNextIdNum()
-    {
-        std::unique_ptr<RocksIterator> iter(
-            RocksRecoveryUnit::NewIteratorNoSnapshot(_db, _prefix));
+    void RocksRecordStore::loadNextIdNum() {
+        std::unique_ptr<RocksIterator> iter(RocksRecoveryUnit::NewIteratorNoSnapshot(_db, _prefix));
         // first check if the collection is empty
         iter->SeekPrefix("");
         bool emptyCollection = !iter->Valid();
@@ -372,12 +373,12 @@ namespace mongo {
         }
     }
 
-    void  RocksRecordStore::resetNs(StringData ns) 
-    {
+    void RocksRecordStore::resetNs(StringData ns) {
         _cappedDeleteCheckCount = 0;
         _cappedOldestKeyHint = RecordId(0);
         if (_isCapped || _isOplog)
-            _cappedVisibilityManager.reset(new CappedVisibilityManager(this, dbInstancePtr->GetDurabilityManager()));
+            _cappedVisibilityManager.reset(
+                new CappedVisibilityManager(this, dbInstancePtr->GetDurabilityManager()));
 
         RecordStore::resetNs(ns);
     }
@@ -388,9 +389,10 @@ namespace mongo {
             _shuttingDown = true;
         }
         delete _oplogKeyTracker;
+        _oplogKeyTracker = nullptr;
 
         if (_cappedVisibilityManager) {
-          _cappedVisibilityManager->joinOplogJournalThreadLoop();
+            _cappedVisibilityManager->joinOplogJournalThreadLoop();
         }
     }
 
@@ -408,7 +410,7 @@ namespace mongo {
         return rd;
     }
 
-    void RocksRecordStore::deleteRecord( OperationContext* txn, const RecordId& dl ) {
+    void RocksRecordStore::deleteRecord(OperationContext* txn, const RecordId& dl) {
         std::string key(_makePrefixedKey(_prefix, dl));
 
         RocksRecoveryUnit* ru = getRocksRecoveryUnit(txn);
@@ -437,20 +439,20 @@ namespace mongo {
     }
 
     long long RocksRecordStore::numRecords(OperationContext* txn) const {
-        RocksRecoveryUnit* ru = getRocksRecoveryUnit( txn );
+        RocksRecoveryUnit* ru = getRocksRecoveryUnit(txn);
 
-        LOG(1)<<"RocksRecordStore::numRecords _numRecords.load:"<< _numRecords.load(std::memory_order::memory_order_relaxed)
-              <<", Delta count:"<<ru->getDeltaCounter(_numRecordsKey);
+        index_LOG(1) << "RocksRecordStore::numRecords _numRecords.load:"
+                     << _numRecords.load(std::memory_order::memory_order_relaxed)
+                     << ", Delta count:" << ru->getDeltaCounter(_numRecordsKey);
         return _numRecords.load(std::memory_order::memory_order_relaxed) +
-            ru->getDeltaCounter(_numRecordsKey);
+               ru->getDeltaCounter(_numRecordsKey);
     }
 
     bool RocksRecordStore::cappedAndNeedDelete(long long dataSizeDelta,
                                                long long numRecordsDelta) const {
         invariant(_isCapped);
 
-        if (_dataSize.load() + dataSizeDelta > _cappedMaxSize)
-            return true;
+        if (_dataSize.load() + dataSizeDelta > _cappedMaxSize) return true;
 
         if ((_cappedMaxDocs != -1) && (_numRecords.load() + numRecordsDelta > _cappedMaxDocs))
             return true;
@@ -461,7 +463,7 @@ namespace mongo {
     int64_t RocksRecordStore::cappedDeleteAsNeeded(OperationContext* txn,
                                                    const RecordId& justInserted) {
         if (!_isCapped) {
-          return 0;
+            return 0;
         }
 
         // We only want to do the checks occasionally as they are expensive.
@@ -480,12 +482,11 @@ namespace mongo {
         }
 
         // ensure only one thread at a time can do deletes, otherwise they'll conflict.
-       boost::unique_lock<boost::timed_mutex> lock(_cappedDeleterMutex, boost::defer_lock);
+        boost::unique_lock<boost::timed_mutex> lock(_cappedDeleterMutex, boost::defer_lock);
 
         if (_cappedMaxDocs != -1) {
-            lock.lock(); // Max docs has to be exact, so have to check every time.
-        }
-        else if(_hasBackgroundThread) {
+            lock.lock();  // Max docs has to be exact, so have to check every time.
+        } else if (_hasBackgroundThread) {
             // We are foreground, and there is a background thread,
 
             // Check if we need some back pressure.
@@ -505,16 +506,13 @@ namespace mongo {
             if (!lock.try_lock()) {
                 // Someone else is deleting old records. Apply back-pressure if too far behind,
                 // otherwise continue.
-                if ((_dataSize.load() - _cappedMaxSize) < _cappedMaxSizeSlack)
-                    return 0;
+                if ((_dataSize.load() - _cappedMaxSize) < _cappedMaxSizeSlack) return 0;
 
-                if (!lock.try_lock_for(boost::chrono::milliseconds(200)))
-                    return 0;
+                if (!lock.try_lock_for(boost::chrono::milliseconds(200))) return 0;
 
                 // If we already waited, let someone else do cleanup unless we are significantly
                 // over the limit.
-                if ((_dataSize.load() - _cappedMaxSize) < (2 * _cappedMaxSizeSlack))
-                    return 0;
+                if ((_dataSize.load() - _cappedMaxSize) < (2 * _cappedMaxSizeSlack)) return 0;
             }
         }
 
@@ -527,9 +525,8 @@ namespace mongo {
         RocksRecoveryUnit* realRecoveryUnit =
             checked_cast<RocksRecoveryUnit*>(txn->releaseRecoveryUnit());
         invariant(realRecoveryUnit);
-        OperationContext::RecoveryUnitState const realRUstate =
-            txn->setRecoveryUnit(realRecoveryUnit->newRocksRecoveryUnit(),
-                                 OperationContext::kNotInUnitOfWork);
+        OperationContext::RecoveryUnitState const realRUstate = txn->setRecoveryUnit(
+            realRecoveryUnit->newRocksRecoveryUnit(), OperationContext::kNotInUnitOfWork);
 
         auto ru = getRocksRecoveryUnit(txn);
         int64_t dataSize = _dataSize.load() + realRecoveryUnit->getDeltaCounter(_dataSizeKey);
@@ -562,7 +559,6 @@ namespace mongo {
             RecordId newestOld;
             while ((sizeSaved < sizeOverCap || docsRemoved < docsOverCap) &&
                    (docsRemoved < 20000) && iter->Valid()) {
-
                 newestOld = _makeRecordId(iter->key());
 
                 if (_cappedVisibilityManager->isCappedHidden(newestOld)) {
@@ -582,7 +578,8 @@ namespace mongo {
 
                 std::string key(_makePrefixedKey(_prefix, newestOld));
                 if (!ru->transaction()->registerWrite(key)) {
-                    log() << "got conflict truncating capped, total docs removed " << docsRemoved;
+                    index_log() << "got conflict truncating capped, total docs removed "
+                                << docsRemoved;
                     break;
                 }
 
@@ -616,8 +613,8 @@ namespace mongo {
             }
 
             if (!iter->status().ok()) {
-                log() << "RocksDB iterator failure when trying to delete capped, ignoring: "
-                      << iter->status().ToString();
+                index_log() << "RocksDB iterator failure when trying to delete capped, ignoring: "
+                            << iter->status().ToString();
             }
 
             if (docsRemoved > 0) {
@@ -636,14 +633,12 @@ namespace mongo {
                     _cappedOldestKeyHint = oldestAliveRecordId;
                 }
             }
-        }
-        catch ( const WriteConflictException& wce ) {
+        } catch (const WriteConflictException& wce) {
             delete txn->releaseRecoveryUnit();
             txn->setRecoveryUnit(realRecoveryUnit, realRUstate);
-            log() << "got conflict truncating capped, ignoring";
+            index_log() << "got conflict truncating capped, ignoring";
             return 0;
-        }
-        catch ( ... ) {
+        } catch (...) {
             delete txn->releaseRecoveryUnit();
             txn->setRecoveryUnit(realRecoveryUnit, realRUstate);
             throw;
@@ -654,7 +649,7 @@ namespace mongo {
 
         if (_isOplog) {
             if (_oplogSinceLastCompaction.minutes() >= kOplogCompactEveryMins) {
-                log() << "Scheduling oplog compactions";
+                index_log() << "Scheduling oplog compactions";
                 _oplogSinceLastCompaction.reset();
                 // schedule compaction for oplog
                 std::string oldestAliveKey(_makePrefixedKey(_prefix, _cappedOldestKeyHint));
@@ -673,16 +668,14 @@ namespace mongo {
         return docsRemoved;
     }
 
-    StatusWith<RecordId> RocksRecordStore::insertRecord( OperationContext* txn,
-                                                        const char* data,
-                                                        int len,
-                                                        bool enforceQuota ) {
-        if ( _isCapped && len > _cappedMaxSize ) {
-            return StatusWith<RecordId>( ErrorCodes::BadValue,
-                                       "object to insert exceeds cappedMaxSize" );
+    StatusWith<RecordId> RocksRecordStore::insertRecord(OperationContext* txn, const char* data,
+                                                        int len, bool enforceQuota) {
+        if (_isCapped && len > _cappedMaxSize) {
+            return StatusWith<RecordId>(ErrorCodes::BadValue,
+                                        "object to insert exceeds cappedMaxSize");
         }
 
-        RocksRecoveryUnit* ru = getRocksRecoveryUnit( txn );
+        RocksRecoveryUnit* ru = getRocksRecoveryUnit(txn);
 
         RecordId loc;
         if (_isOplog) {
@@ -698,8 +691,7 @@ namespace mongo {
         } else {
             loc = generateRecordId(rocksdb::Slice(data, len));
             if (!loc.isNormal()) {
-                return StatusWith<RecordId>( ErrorCodes::BadValue,
-                                             "gen RecordId faild " );
+                return StatusWith<RecordId>(ErrorCodes::BadValue, "gen RecordId faild ");
             }
         }
 
@@ -710,24 +702,32 @@ namespace mongo {
             _oplogKeyTracker->insertKey(ru, loc, len);
         }
 
-        _changeNumRecords( txn, 1 );
-        _increaseDataSize( txn, len );
+        _changeNumRecords(txn, 1);
+        _increaseDataSize(txn, len);
 
         cappedDeleteAsNeeded(txn, loc);
 
-        return StatusWith<RecordId>( loc );
+        return StatusWith<RecordId>(loc);
     }
 
     Status RocksRecordStore::insertRecordsWithDocWriter(OperationContext* txn,
                                                         const DocWriter* const* docs, size_t nDocs,
                                                         RecordId* idsOut) {
+        if (0 == nDocs) {
+            return Status::OK();
+        }
+
         std::unique_ptr<Record[]> records(new Record[nDocs]);
 
         size_t totalSize = 0;
         for (size_t i = 0; i < nDocs; i++) {
             const size_t docSize = docs[i]->documentSize();
-            records[i].data = RecordData(nullptr, docSize);  // We fill in the real ptr in next loop.
+            records[i].data =
+                RecordData(nullptr, docSize);  // We fill in the real ptr in next loop.
             totalSize += docSize;
+        }
+        if (0 == totalSize) {
+            return Status::OK();
         }
 
         std::unique_ptr<char[]> buffer(new char[totalSize]);
@@ -742,10 +742,8 @@ namespace mongo {
 
         for (size_t i = 0; i < nDocs; ++i) {
             auto s = insertRecord(txn, records[i].data.data(), records[i].data.size(), true);
-            if (!s.isOK())
-                return s.getStatus();
-            if (idsOut)
-                idsOut[i] = s.getValue();
+            if (!s.isOK()) return s.getStatus();
+            if (idsOut) idsOut[i] = s.getValue();
         }
 
         return Status::OK();
@@ -755,16 +753,22 @@ namespace mongo {
                                           const char* data, int len, bool enforceQuota,
                                           UpdateNotifier* notifier) {
         std::string key(_makePrefixedKey(_prefix, loc));
-        RocksRecoveryUnit* ru = getRocksRecoveryUnit( txn );
+        RocksRecoveryUnit* ru = getRocksRecoveryUnit(txn);
         if (!ru->transaction()->registerWrite(key)) {
             throw WriteConflictException();
         }
 
-        std::string old_value;
-        auto status = ru->Get(key, &old_value);
-        invariantRocksOK(status);
-
-        int old_length = old_value.size();
+        /*Start: optimization for update get io times,get old record length from OperationContext,
+         * if the old record length is 0, then get from engine by liwei 00289470*/
+        int64_t old_length = txn->getOldLen();
+        if (0 == old_length) {
+            std::string old_value;
+            auto status = ru->Get(key, &old_value);
+            invariantRocksOK(status);
+            old_length = old_value.size();
+        }
+        /*End: optimization for update get io times,get old record length from OperationContext, if
+         * the old record length is 0, then get from engine by liwei 00289470*/
 
         ru->writeBatch()->Put(key, rocksdb::Slice(data, len));
         if (_isOplog) {
@@ -778,16 +782,11 @@ namespace mongo {
         return Status::OK();
     }
 
-    bool RocksRecordStore::updateWithDamagesSupported() const {
-        return false;
-    }
+    bool RocksRecordStore::updateWithDamagesSupported() const { return false; }
 
     StatusWith<RecordData> RocksRecordStore::updateWithDamages(
-        OperationContext* txn,
-        const RecordId& loc,
-        const RecordData& oldRec,
-        const char* damageSource,
-        const mutablebson::DamageVector& damages) {
+        OperationContext* txn, const RecordId& loc, const RecordData& oldRec,
+        const char* damageSource, const mutablebson::DamageVector& damages) {
         MONGO_UNREACHABLE;
     }
 
@@ -804,8 +803,7 @@ namespace mongo {
             ru->setOplogReadTill(_cappedVisibilityManager->oplogStartHack());
         }
 
-        return stdx::make_unique<Cursor>(txn, this, _cappedVisibilityManager, forward,
-                                         _isCapped);
+        return stdx::make_unique<Cursor>(txn, this, _cappedVisibilityManager, forward, _isCapped);
     }
 
     Status RocksRecordStore::truncate(OperationContext* txn) {
@@ -820,10 +818,8 @@ namespace mongo {
         return rocksToMongoStatus(iterator->status());
     }
 
-    Status RocksRecordStore::compact( OperationContext* txn,
-                                      RecordStoreCompactAdaptor* adaptor,
-                                      const CompactOptions* options,
-                                      CompactStats* stats ) {
+    Status RocksRecordStore::compact(OperationContext* txn, RecordStoreCompactAdaptor* adaptor,
+                                     const CompactOptions* options, CompactStats* stats) {
         std::string beginString(_makePrefixedKey(_prefix, RecordId()));
         std::string endString(_makePrefixedKey(_prefix, RecordId::max()));
         rocksdb::Slice beginRange(beginString);
@@ -831,12 +827,9 @@ namespace mongo {
         return rocksToMongoStatus(_db->CompactRange(&beginRange, &endRange));
     }
 
-    Status RocksRecordStore::validate( OperationContext* txn,
-                                       ValidateCmdLevel level,
-                                       ValidateAdaptor* adaptor,
-                                       ValidateResults* results,
-                                       BSONObjBuilder* output ) {
-
+    Status RocksRecordStore::validate(OperationContext* txn, ValidateCmdLevel level,
+                                      ValidateAdaptor* adaptor, ValidateResults* results,
+                                      BSONObjBuilder* output) {
         dbInstancePtr->GetRocksRecoveryUnit(txn);
         long long nrecords = 0;
         long long dataSizeTotal = 0;
@@ -880,9 +873,8 @@ namespace mongo {
         return Status::OK();
     }
 
-    void RocksRecordStore::appendCustomStats( OperationContext* txn,
-                                              BSONObjBuilder* result,
-                                              double scale ) const {
+    void RocksRecordStore::appendCustomStats(OperationContext* txn, BSONObjBuilder* result,
+                                             double scale) const {
         result->appendBool("capped", _isCapped);
         if (_isCapped) {
             result->appendIntOrLL("max", _cappedMaxDocs);
@@ -901,7 +893,7 @@ namespace mongo {
     }
 
     void RocksRecordStore::waitForAllEarlierOplogWritesToBeVisible(OperationContext* txn) const {
-      _cappedVisibilityManager->waitForAllEarlierOplogWritesToBeVisible(txn);
+        _cappedVisibilityManager->waitForAllEarlierOplogWritesToBeVisible(txn);
     }
 
     void RocksRecordStore::updateStatsAfterRepair(OperationContext* txn, long long numRecords,
@@ -924,7 +916,6 @@ namespace mongo {
      */
     boost::optional<RecordId> RocksRecordStore::oplogStartHack(
         OperationContext* txn, const RecordId& startingPosition) const {
-
         if (!_isOplog) {
             return boost::none;
         }
@@ -971,9 +962,8 @@ namespace mongo {
         return _makeRecordId(iter->key());
     }
 
-    void RocksRecordStore::temp_cappedTruncateAfter( OperationContext* txn,
-                                                     RecordId end,
-                                                     bool inclusive ) {
+    void RocksRecordStore::temp_cappedTruncateAfter(OperationContext* txn, RecordId end,
+                                                    bool inclusive) {
         // copied from WiredTigerRecordStore::temp_cappedTruncateAfter()
         WriteUnitOfWork wuow(txn);
         RecordId lastKeptId = end;
@@ -1016,13 +1006,10 @@ namespace mongo {
         return RecordId(_nextIdNum.fetchAndAdd(1));
     }
 
-    RecordId RocksRecordStore::generateRecordId(const rocksdb::Slice& data) {
-        return _nextId();
-    }
+    RecordId RocksRecordStore::generateRecordId(const rocksdb::Slice& data) { return _nextId(); }
 
     rocksdb::Slice RocksRecordStore::_makeKey(const RecordId& loc, int64_t* storage) {
-        if(loc.repr().IsConvertableToInt64())
-        {
+        if (loc.repr().IsConvertableToInt64()) {
             *storage = endian::nativeToBig((int64_t)loc.repr());
             return rocksdb::Slice(reinterpret_cast<const char*>(storage), sizeof(*storage));
         }
@@ -1033,8 +1020,7 @@ namespace mongo {
     std::string RocksRecordStore::_makePrefixedKey(const std::string& prefix, const RecordId& loc) {
         int64_t storage;
         auto encodedLoc = _makeKey(loc, &storage);
-        if(prefix.size() == 0)
-            return std::string(encodedLoc.data(), encodedLoc.size());
+        if (prefix.size() == 0) return std::string(encodedLoc.data(), encodedLoc.size());
         std::string key(prefix);
         key.append(encodedLoc.data(), encodedLoc.size());
         return key;
@@ -1047,11 +1033,10 @@ namespace mongo {
         return RecordId(repr);
     }
 
-    bool RocksRecordStore::findRecord( OperationContext* txn,
-                                       const RecordId& loc, RecordData* out ) const {
+    bool RocksRecordStore::findRecord(OperationContext* txn, const RecordId& loc,
+                                      RecordData* out) const {
         RecordData rd = _getDataFor(txn, loc);
-        if ( rd.data() == NULL )
-            return false;
+        if (rd.data() == NULL) return false;
         *out = rd;
         return true;
     }
@@ -1068,6 +1053,7 @@ namespace mongo {
 
         SharedBuffer data = SharedBuffer::allocate(valueStorage.size());
         memcpy(data.get(), valueStorage.data(), valueStorage.size());
+
         return RecordData(data, valueStorage.size());
     }
 
@@ -1077,18 +1063,16 @@ namespace mongo {
     }
 
     void RocksRecordStore::_increaseDataSize(OperationContext* txn, int64_t amount) {
-        RocksRecoveryUnit* ru = getRocksRecoveryUnit( txn );
+        RocksRecoveryUnit* ru = getRocksRecoveryUnit(txn);
         ru->incrementCounter(_dataSizeKey, &_dataSize, amount);
     }
 
     // --------
 
     RocksRecordStore::Cursor::Cursor(
-            OperationContext* txn,
-            const RocksRecordStore* recordStore,
-            std::shared_ptr<CappedVisibilityManager> cappedVisibilityManager,
-            bool forward,
-            bool isCapped)
+        OperationContext* txn, const RocksRecordStore* recordStore,
+        std::shared_ptr<CappedVisibilityManager> cappedVisibilityManager, bool forward,
+        bool isCapped)
         : _txn(txn),
           _recordStore(recordStore),
           _prefix(recordStore->_prefix),
@@ -1096,7 +1080,11 @@ namespace mongo {
           _forward(forward),
           _isCapped(isCapped),
           _readUntilForOplog(RocksRecoveryUnit::getRocksRecoveryUnit(txn)->getOplogReadTill()) {
-        _currentSequenceNumber = RocksRecoveryUnit::getRocksRecoveryUnit(txn)->snapshot()->GetSequenceNumber();
+        _currentSequenceNumber = 0;
+        if (RocksRecoveryUnit::getRocksRecoveryUnit(txn)->snapshot()) {
+            _currentSequenceNumber =
+                RocksRecoveryUnit::getRocksRecoveryUnit(txn)->snapshot()->GetSequenceNumber();
+        }
     }
 
     // requires !_eof
@@ -1111,16 +1099,14 @@ namespace mongo {
             // the next call to next().
             _skipNextAdvance =
                 !_iterator->Valid() || _lastLoc != _recordStore->_makeRecordId(_iterator->key());
-        }
-        else {
+        } else {
             // Seek() lands on or after the key, while reverse cursors need to land on or before.
             if (!_iterator->Valid()) {
                 // Nothing left on or after.
                 _iterator->SeekToLast();
                 invariantRocksOK(_iterator->status());
                 _skipNextAdvance = true;
-            }
-            else {
+            } else {
                 if (_lastLoc != _recordStore->_makeRecordId(_iterator->key())) {
                     // Landed after. This is true: iterator->key() > _lastLoc
                     // Since iterator is valid and Seek() landed after key,
@@ -1132,14 +1118,16 @@ namespace mongo {
         }
         // _lastLoc != _makeRecordId(_iterator->key()) indicates that the record _lastLoc was
         // deleted. In this case, mark _eof only if the collection is capped.
-        _eof = !_iterator->Valid() || (_isCapped && _lastLoc != _recordStore->_makeRecordId(_iterator->key()));
+        _eof = !_iterator->Valid() ||
+               (_isCapped && _lastLoc != _recordStore->_makeRecordId(_iterator->key()));
     }
 
     rocksdb::Iterator* RocksRecordStore::Cursor::iterator() {
         if (_iterator.get() != nullptr) {
             return _iterator.get();
         }
-        _iterator.reset(RocksRecoveryUnit::getRocksRecoveryUnit(_txn)->NewIterator(_prefix, /* isOplog */ !_readUntilForOplog.isNull()));
+        _iterator.reset(RocksRecoveryUnit::getRocksRecoveryUnit(_txn)->NewIterator(
+            _prefix, /* isOplog */ !_readUntilForOplog.isNull()));
         if (!_needFirstSeek) {
             positionIterator();
         }
@@ -1180,7 +1168,8 @@ namespace mongo {
         _skipNextAdvance = false;
         _iterator.reset();
 
-        rocksdb::Status status = RocksRecoveryUnit::getRocksRecoveryUnit(_txn)->Get(_makePrefixedKey(_prefix, id), &_seekExactResult);
+        rocksdb::Status status = RocksRecoveryUnit::getRocksRecoveryUnit(_txn)->Get(
+            _makePrefixedKey(_prefix, id), &_seekExactResult);
 
         if (status.IsNotFound()) {
             _eof = true;
@@ -1256,34 +1245,35 @@ namespace mongo {
             }
         }  // isCapped?
 
-        if (!_recordStore->GetChunkDBInstance()->isSystemChunk())
-        {
-            //so ugly, data columnfamily DoesRecordBelongToChunk function need the key include prefix.
-            auto prefix_key = rocksdb::Slice(_iterator->key().data() - _prefix.size(), _prefix.size()+ _iterator->key().size());          
+        if (!_recordStore->GetChunkDBInstance()->isSystemChunk()) {
+            // so ugly, data columnfamily DoesRecordBelongToChunk function need the key include
+            // prefix.
+            auto prefix_key = rocksdb::Slice(_iterator->key().data() - _prefix.size(),
+                                             _prefix.size() + _iterator->key().size());
             if (/*dbInstance->bockingReadIOofRight() && */
-                ! _recordStore->GetChunkDBInstance()->getColumnFamilyDescriptionInPreperSplit(rocksdb::kDefaultColumnFamilyName)
-                ->DoesRecordBelongToChunk(/*_iterator->key()*/prefix_key, _iterator->value())) {
-                    _eof = true;
-                    mongo::ChunkVersion received;
-                    mongo::ChunkVersion wanted;
-                    index_warning() << "RocksRecordStore::Cursor::curr() belong right dbns: "  << _txn->getNs();
-                    _recordStore->GetChunkDBInstance()->GetRocksRecoveryUnit(_txn)->getChunkVersion(
-                        _txn, _recordStore->GetChunkDBInstance(), received, wanted);
+                !_recordStore->GetChunkDBInstance()
+                     ->getColumnFamilyDescriptionInPreperSplit(rocksdb::kDefaultColumnFamilyName)
+                     ->DoesRecordBelongToChunk(/*_iterator->key()*/ prefix_key,
+                                               _iterator->value())) {
+                _eof = true;
+                mongo::ChunkVersion received;
+                mongo::ChunkVersion wanted;
+                NamespaceString nss = NamespaceString(_recordStore->ns());
+                index_warning() << "RocksRecordStore::Cursor::curr() belong right dbns: " << nss;
+                _recordStore->GetChunkDBInstance()->GetRocksRecoveryUnit(_txn)->getChunkVersion(
+                    _txn, _recordStore->GetChunkDBInstance(), received, wanted);
 
-                    throw mongo::SendStaleConfigException(_txn->getNs().ns(),
-                        str::stream() << "chunk " << _txn->getNs().ns() << " chunk version not equal:",
-                        received,
-                        wanted);
+                throw mongo::SendStaleConfigException(
+                    nss.ns(), str::stream() << "chunk " << nss.ns() << " chunk version not equal:",
+                    received, wanted);
             }
-           index_LOG(1) << "RocksRecordStore::Cursor::curr() not belong right dbns: "  << _txn->getNs();
         }
 
         auto dataSlice = _iterator->value();
         return {{_lastLoc, {dataSlice.data(), static_cast<int>(dataSlice.size())}}};
     }
 
-    RocksRecoveryUnit* RocksRecordStore::getRocksRecoveryUnit(OperationContext* txn) const
-    {
+    RocksRecoveryUnit* RocksRecordStore::getRocksRecoveryUnit(OperationContext* txn) const {
         //  Make sure correct DB is associated with RecoveryUnit
         return dbInstancePtr->GetRocksRecoveryUnit(txn);
     }

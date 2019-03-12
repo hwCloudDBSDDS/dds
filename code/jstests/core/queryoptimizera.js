@@ -32,7 +32,7 @@ notCapped = db[notCappedCollectionName];
 notCapped.drop();
 
 db.createCollection(testCollectionName, {capped: true, size: 1000});
-db.createCollection(notCappedCollectionName, {autoIndexId: false});
+db.createCollection(notCappedCollectionName, {autoIndexId: true});
 
 t.insert({});
 notCapped.insert({});

@@ -30,6 +30,7 @@ TEST(OffloadChunkRequest, Roundtrip) {
     BSONObj cmdObj = builder.obj();
 
     auto request = assertGet(OffloadChunkRequest::createFromCommand(cmdObj));
+    request.toString();
 
     ASSERT_BSONOBJ_EQ(BSON("Key" << -100), request.getMinKey());
     ASSERT_BSONOBJ_EQ(BSON("Key" << 100), request.getMaxKey());
@@ -37,4 +38,3 @@ TEST(OffloadChunkRequest, Roundtrip) {
 
 }  // namespace
 }  // namespace mongo
-

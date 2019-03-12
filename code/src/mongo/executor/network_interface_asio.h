@@ -50,6 +50,7 @@
 #include "mongo/platform/atomic_word.h"
 #include "mongo/rpc/metadata/metadata_hook.h"
 #include "mongo/rpc/protocol.h"
+#include "mongo/stdx/chrono.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"

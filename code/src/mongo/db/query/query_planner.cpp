@@ -53,6 +53,9 @@
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/db/query/query_solution.h"
 #include "mongo/util/log.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 
 namespace mongo {
 
@@ -717,20 +720,25 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
     LOG(5) << "Rated tree:" << endl << redact(query.root()->toString());
 
     // If there is a GEO_NEAR it must have an index it can use directly.
-    /*const MatchExpression* gnNode = NULL;
-    if (QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR, &gnNode)) {
-        // No index for GEO_NEAR?  No query.
-        RelevantTag* tag = static_cast<RelevantTag*>(gnNode->getTag());
-        if (!tag || (0 == tag->first.size() && 0 == tag->notFirst.size())) {
-            LOG(5) << "Unable to find index for $geoNear query.";
-            // Don't leave tags on query tree.
-            query.root()->resetTag();
-            return Status(ErrorCodes::BadValue, "unable to find index for $geoNear query");
+    // for geoa.js and so on ,it is not possible to run this code
+    // because none sharded collection while not use "getShardEndpointsForQuery" ,but we are!!
+    //single shard or replSet
+    if (ClusterRole::None == serverGlobalParams.clusterRole && serverGlobalParams.binaryName == "mongod") {
+        const MatchExpression* gnNode = NULL;
+        if (QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR, &gnNode)) {
+            // No index for GEO_NEAR?  No query.
+            RelevantTag* tag = static_cast<RelevantTag*>(gnNode->getTag());
+            if (!tag || (0 == tag->first.size() && 0 == tag->notFirst.size())) {
+                LOG(0) << "Unable to find index for $geoNear query.";
+                // Don't leave tags on query tree.
+                query.root()->resetTag();
+                return Status(ErrorCodes::BadValue, "unable to find index for $geoNear query");
+            }
+
+            LOG(5) << "Rated tree after geonear processing:" << redact(query.root()->toString());
         }
-
-        LOG(5) << "Rated tree after geonear processing:" << redact(query.root()->toString());
-    } end  */
-
+    }
+    // end
     // Likewise, if there is a TEXT it must have an index it can use directly.
     const MatchExpression* textNode = NULL;
     if (QueryPlannerCommon::hasNode(query.root(), MatchExpression::TEXT, &textNode)) {

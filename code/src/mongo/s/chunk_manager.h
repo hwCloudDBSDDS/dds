@@ -39,9 +39,9 @@
 #include "mongo/s/chunk.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/client/shard.h"
+#include "mongo/s/ns_targeter.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/concurrency/ticketholder.h"
-#include "mongo/s/ns_targeter.h"
 
 namespace mongo {
 
@@ -97,23 +97,23 @@ public:
     //
 
     // Creates new chunks based on info in chunk manager
-    Status createFirstChunks(OperationContext* txn,
+    /*Status createFirstChunks(OperationContext* txn,
                              const ShardId& primaryShardId,
                              const std::vector<BSONObj>* initPoints,
                              const std::set<ShardId>* initShardIds);
-
+    */
     // Loads existing ranges based on info in chunk manager
     void loadExistingRanges(OperationContext* txn, const ChunkManager* oldManager);
 
 
     // Helpers for load
-    void calcInitSplitsAndShards(OperationContext* txn,
+    /*void calcInitSplitsAndShards(OperationContext* txn,
                                  const ShardId& primaryShardId,
                                  const std::vector<BSONObj>* initPoints,
                                  const std::set<ShardId>* initShardIds,
                                  std::vector<BSONObj>* splitPoints,
                                  std::vector<ShardId>* shardIds) const;
-
+    */
     //
     // Methods to use once loaded / created
     //
@@ -144,6 +144,8 @@ public:
      */
     std::shared_ptr<Chunk> findIntersectingChunkWithSimpleCollation(OperationContext* txn,
                                                                     const BSONObj& shardKey) const;
+
+    std::shared_ptr<Chunk> findChunkByChunkId(const std::string& id) const;
 
     /**
      * Finds the shard IDs for a given filter and collation. If collation is empty, we use the
@@ -196,9 +198,12 @@ public:
     ChunkVersion getVersion(const ShardId& shardName) const;
     ChunkVersion getVersion() const;
 
+    ChunkVersion getStartingVersion() const;
+    void setStartingVersion(const ChunkVersion& version);
+
     void _printChunks() const;
 
-    uint64_t getCurrentDesiredChunkSize() const;
+    uint64_t getCurrentDesiredChunkSize(int shardNum) const;
 
     std::shared_ptr<ChunkManager> reload(OperationContext* txn,
                                          bool force = true) const;  // doesn't modify self!
@@ -209,15 +214,16 @@ public:
     repl::OpTime getConfigOpTime() const;
 
     void getShardEndpointsForQuery(OperationContext* txn,
-                             const BSONObj& query,
-                             const BSONObj& collation,
-                             vector<ShardEndpoint*>* endpoints,
-                             bool isUseLowerBoundForMax = false) const;
+                                   const BSONObj& query,
+                                   const BSONObj& collation,
+                                   vector<ShardEndpoint*>* endpoints,
+                                   bool isUseLowerBoundForMax = false) const;
 
     void getShardEndpointsForRange(vector<ShardEndpoint*>* endpoints,
-                             const BSONObj& min,
-                             const BSONObj& max,
-                             bool isUseLowerBoundForMax = false) const;
+                                   const BSONObj& min,
+                                   const BSONObj& max,
+                                   bool isUseLowerBoundForMax = false) const;
+    StatusWith<std::shared_ptr<Chunk>> getFirstChunk() const;
 
 private:
     /**
@@ -226,8 +232,15 @@ private:
      */
     class ShardAndChunkRange {
     public:
-        ShardAndChunkRange(ChunkId chunkId, ChunkVersion lastmod, const BSONObj& min, const BSONObj& max, ShardId inShardId)
-            : _chunkId(std::move(chunkId)), _lastmod(lastmod), _range(min, max), _shardId(std::move(inShardId)) {}
+        ShardAndChunkRange(ChunkId chunkId,
+                           ChunkVersion lastmod,
+                           const BSONObj& min,
+                           const BSONObj& max,
+                           ShardId inShardId)
+            : _chunkId(std::move(chunkId)),
+              _lastmod(lastmod),
+              _range(min, max),
+              _shardId(std::move(inShardId)) {}
 
         const ChunkId& getChunkId() const {
             return _chunkId;
@@ -298,6 +311,8 @@ private:
 
     // Max version across all chunks
     ChunkVersion _version;
+
+    ChunkVersion _startingVersion;
 
     // OpTime of config server the last time chunks were loaded.
     repl::OpTime _configOpTime;

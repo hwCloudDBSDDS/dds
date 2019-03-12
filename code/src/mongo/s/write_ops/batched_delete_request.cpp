@@ -45,6 +45,8 @@ const BSONField<BSONObj> BatchedDeleteRequest::writeConcern("writeConcern");
 const BSONField<bool> BatchedDeleteRequest::ordered("ordered", true);
 const BSONField<bool> BatchedDeleteRequest::atomicity("atomicity", false);
 const BSONField<bool> BatchedDeleteRequest::prewarm("prewarm", false);
+const std::string BatchedDeleteRequest::DELETE_IS_CMD_FROM_USER_MANAGER_KEY =
+    "deleteCmdFromUserManager";
 
 BatchedDeleteRequest::BatchedDeleteRequest() {
     clear();
@@ -103,6 +105,9 @@ BSONObj BatchedDeleteRequest::toBSON() const {
     if (_isPrewarmSet)
         builder.append(prewarm(), _prewarm);
 
+    if (_isCmdFromUserManager)
+        builder.append(DELETE_IS_CMD_FROM_USER_MANAGER_KEY, true);
+
     return builder.obj();
 }
 
@@ -138,12 +143,14 @@ bool BatchedDeleteRequest::parseBSON(StringData dbName, const BSONObj& source, s
             if (fieldState == FieldParser::FIELD_INVALID)
                 return false;
             _isOrderedSet = fieldState == FieldParser::FIELD_SET;
-        }else if (fieldName == atomicity.name()) {
-        	fieldState = FieldParser::extract(field, atomicity, &_atomicity, errMsg);
+        } else if (fieldName == DELETE_IS_CMD_FROM_USER_MANAGER_KEY) {
+            _isCmdFromUserManager = field.trueValue();
+        } else if (fieldName == atomicity.name()) {
+            fieldState = FieldParser::extract(field, atomicity, &_atomicity, errMsg);
             if (fieldState == FieldParser::FIELD_INVALID)
                 return false;
             _isAtomicitySet = fieldState == FieldParser::FIELD_SET;
-        }else if (fieldName == prewarm.name()) {
+        } else if (fieldName == prewarm.name()) {
             fieldState = FieldParser::extract(field, prewarm, &_prewarm, errMsg);
             if (fieldState == FieldParser::FIELD_INVALID)
                 return false;
@@ -178,6 +185,8 @@ void BatchedDeleteRequest::clear() {
 
     _prewarm = false;
     _isPrewarmSet = false;
+
+    _isCmdFromUserManager = false;
 }
 
 void BatchedDeleteRequest::cloneTo(BatchedDeleteRequest* other) const {
@@ -200,6 +209,7 @@ void BatchedDeleteRequest::cloneTo(BatchedDeleteRequest* other) const {
 
     other->_ordered = _ordered;
     other->_isOrderedSet = _isOrderedSet;
+    other->_isCmdFromUserManager = _isCmdFromUserManager;
 }
 
 std::string BatchedDeleteRequest::toString() const {

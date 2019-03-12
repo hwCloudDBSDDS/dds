@@ -91,13 +91,24 @@ Status TicketHolder::resize(int newSize) {
 
     if (newSize < 3)
         return Status(ErrorCodes::BadValue,
-                      str::stream() << "Minimum value for semaphore is 3; given " << newSize);
+                      str::stream() << "Minimum value for semaphore is 5; given " << newSize);
 
     if (newSize > SEM_VALUE_MAX)
         return Status(ErrorCodes::BadValue,
                       str::stream() << "Maximum value for semaphore is " << SEM_VALUE_MAX
                                     << "; given "
                                     << newSize);
+
+    int usedSize = used();
+    if (usedSize > newSize) {
+        std::stringstream ss;
+        ss << "can't resize since we're using (" << usedSize << ") "
+           << "more than newSize(" << newSize << ")";
+
+        std::string errmsg = ss.str();
+        log() << errmsg;
+        return Status(ErrorCodes::BadValue, errmsg);
+    }
 
     while (_outof.load() < newSize) {
         release();

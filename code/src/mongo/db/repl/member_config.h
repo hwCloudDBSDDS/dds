@@ -198,9 +198,9 @@ public:
 private:
     int _id;
     HostAndPort _host;
-    std::string _extendIPs; // Add extend IPs for OAM as manage IPs
-    double _priority;  // 0 means can never be primary
-    int _votes;        // Can this member vote? Only 0 and 1 are valid.  Default 1.
+    std::string _extendIPs;  // Add extend IPs for OAM as manage IPs
+    double _priority;        // 0 means can never be primary
+    int _votes;              // Can this member vote? Only 0 and 1 are valid.  Default 1.
     bool _arbiterOnly;
     Seconds _slaveDelay;
     bool _hidden;                      // if set, don't advertise to drivers in isMaster.

@@ -1,0 +1,13 @@
+selector:
+  js_test:
+    roots:
+    - jstests/views/*_cluster.js
+    - jstests/views/views_sharded.js
+    exclude_files:
+
+executor:
+  js_test:
+    config:
+      shell_options:
+        nodb: ''
+        readMode: commands

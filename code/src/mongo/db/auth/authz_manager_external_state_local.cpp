@@ -35,7 +35,9 @@
 #include "mongo/bson/mutable/element.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/user_document_parser.h"
+#include "mongo/db/client.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -259,6 +261,19 @@ Status AuthzManagerExternalStateLocal::getRoleDescription(OperationContext* txn,
                                                           const RoleName& roleName,
                                                           PrivilegeFormat showPrivileges,
                                                           BSONObj* result) {
+    // shouldAllowLocalhost is consider to remove,
+    // because the first user should use the mongodb buildin admin role, and
+    // no one will create a user with build in dbs role.
+    // DBS: TODO
+    // cuixin: mongodb 3.2.18.* also should move this code in front of lk, mark this dese here,
+    // when mongodb 3.2.18 change, remove this desc
+    if (!AuthorizationSession::get(txn->getClient())->shouldAllowLocalhost() &&
+        (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+         txn->isCustomerTxn()) &&
+        roleName.isBuildinRoles()) {
+        return Status(ErrorCodes::RoleNotFound, "No role named " + roleName.toString());
+    }
+
     if (showPrivileges == PrivilegeFormat::kShowAsUserFragment) {
         mutablebson::Document resultDoc;
         mutablebson::Element rolesElement = resultDoc.makeElementArray("roles");
@@ -278,18 +293,25 @@ Status AuthzManagerExternalStateLocal::getRolesDescription(OperationContext* txn
                                                            PrivilegeFormat showPrivileges,
                                                            BSONObj* result) {
     if (showPrivileges == PrivilegeFormat::kShowAsUserFragment) {
-        mutablebson::Document resultDoc;
-        mutablebson::Element rolesElement = resultDoc.makeElementArray("roles");
-        fassert(40274, resultDoc.root().pushBack(rolesElement));
-        addRoleNameObjectsToArrayElement(rolesElement, makeRoleNameIteratorForContainer(roles));
-        resolveUserRoles(&resultDoc, roles);
-        *result = resultDoc.getObject();
-        return Status::OK();
-    }
+      mutablebson::Document resultDoc;
+      mutablebson::Element rolesElement = resultDoc.makeElementArray("roles");
+      fassert(40274, resultDoc.root().pushBack(rolesElement));
+      addRoleNameObjectsToArrayElement(rolesElement, makeRoleNameIteratorForContainer(roles));
+      resolveUserRoles(&resultDoc, roles);
+      *result = resultDoc.getObject();
+      return Status::OK();
 
+    }
     stdx::lock_guard<stdx::mutex> lk(_roleGraphMutex);
     BSONArrayBuilder resultBuilder;
     for (const RoleName& role : roles) {
+        // skip buildin roles
+        if (role.isBuildinRoles() &&
+            (AuthorizationSession::get((txn->getClient()))->isAuthWithCustomerOrNoAuthUser() ||
+             txn->isCustomerTxn())) {
+            continue;
+        }
+
         BSONObj roleDoc;
         Status status = _getRoleDescription_inlock(role, showPrivileges, &roleDoc);
         if (!status.isOK()) {
@@ -371,6 +393,11 @@ Status AuthzManagerExternalStateLocal::getRoleDescriptionsForDB(OperationContext
         if (!showBuiltinRoles && _roleGraph.isBuiltinRole(it.get())) {
             continue;
         }
+        if ((AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+             txn->isCustomerTxn()) &&
+            it.get().isBuildinRoles()) {
+            continue;
+        }
         BSONObj roleDoc;
         Status status = _getRoleDescription_inlock(it.get(), showPrivileges, &roleDoc);
         if (!status.isOK()) {
@@ -406,12 +433,14 @@ Status AuthzManagerExternalStateLocal::_initializeRoleGraph(OperationContext* tx
     _roleGraph = RoleGraph();
 
     RoleGraph newRoleGraph;
+    txn->setBuildinMode();
     Status status =
         query(txn,
               AuthorizationManager::rolesCollectionNamespace,
               BSONObj(),
               BSONObj(),
               stdx::bind(addRoleFromDocumentOrWarn, &newRoleGraph, stdx::placeholders::_1));
+    txn->cleanBuildinMode();
     if (!status.isOK())
         return status;
 

@@ -79,11 +79,11 @@ StatusWith<std::tuple<bool, BSONObj>> unwrapCommand(const BSONObj& maybeWrapped)
     cmd.appendElements(inner.Obj());
     BSONElement chunkidElement;
     Status chunkidElementStatus =
-        bsonExtractTypedField(maybeWrapped,kChunkIdField,BSONType::String,&chunkidElement);
-    if(chunkidElementStatus.isOK()){
+        bsonExtractTypedField(maybeWrapped, kChunkIdField, BSONType::String, &chunkidElement);
+    if (chunkidElementStatus.isOK()) {
         cmd.append(chunkidElement);
     }
-    return std::make_tuple(true,cmd.obj());
+    return std::make_tuple(true, cmd.obj());
 }
 
 /**

@@ -34,6 +34,12 @@
 namespace mongo {
 namespace logger {
 
+std::string g_unknownSeverityString("UNKNOWN");
+std::string g_criticalSeverityString("CRITICAL");
+std::string g_errorSeverityString("ERROR");
+std::string g_warningSeverityString("WARN");
+std::string g_infoSeverityString("INFO");
+std::string g_debugSeverityString("DEBUG");
 namespace {
 constexpr auto unknownSeverityString = "UNKNOWN"_sd;
 constexpr auto severeSeverityString = "SEVERE"_sd;
@@ -42,6 +48,21 @@ constexpr auto warningSeverityString = "warning"_sd;
 constexpr auto infoSeverityString = "info"_sd;
 constexpr auto debugSeverityString = "debug"_sd;
 }  // namespace
+std::string LogSeverity::toString() const {
+    if (_severity > 0)
+        return g_debugSeverityString;
+    if (*this == LogSeverity::Severe())
+        return g_criticalSeverityString;
+    if (*this == LogSeverity::Error())
+        return g_errorSeverityString;
+    if (*this == LogSeverity::Warning())
+        return g_warningSeverityString;
+    if (*this == LogSeverity::Info())
+        return g_infoSeverityString;
+    if (*this == LogSeverity::Log())
+        return g_infoSeverityString;
+    return g_unknownSeverityString;
+}
 
 StringData LogSeverity::toStringData() const {
     if (_severity > 0)

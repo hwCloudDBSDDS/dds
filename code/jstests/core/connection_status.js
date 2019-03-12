@@ -72,8 +72,9 @@
     function test(userName) {
         var user = {user: userName, db: dbName};
         var role = {role: "root", db: "admin"};
-        myDB.createUser({user: userName, pwd: "weak password", roles: [role]});
-        myDB.auth(userName, "weak password");
+        myDB.createUser(
+            {user: userName, pwd: "WEak@2password", roles: [role], passwordDigestor: "server"});
+        myDB.auth(userName, "WEak@2password");
 
         // Validate with and without showPrivileges
         validateConnectionStatus(user, role, true);

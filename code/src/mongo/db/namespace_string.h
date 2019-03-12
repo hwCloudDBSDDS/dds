@@ -220,15 +220,11 @@ public:
 
     bool supportImplicitCreation() const {
 
-         return true;//support implicit create collection
-        if (isSystem()
-            || isLocal()
-            || isConfigDB()
-            || isOplog()
-            || isSpecial()) {
+        return true;  // maas support implicit create collection
+        if (isSystem() || isLocal() || isConfigDB() || isOplog() || isSpecial()) {
             return true;
         }
-    
+
         return false;
     }
 
@@ -239,6 +235,10 @@ public:
 
         StringData collname = coll();
         size_t dollarIndex = collname.find('$');
+        if (std::string::npos == dollarIndex) {
+            return "";
+        }
+
         return collname.substr(dollarIndex + 1, collname.size() - 1 - dollarIndex).toString();
     }
 
@@ -246,12 +246,16 @@ public:
         if (!isChunk()) {
             return ns();
         }
-    
+
         StringData collname = coll();
         size_t dollarIndex = collname.find('$');
+        if (std::string::npos == dollarIndex) {
+            return ns();
+        }
+
         return db().toString() + '.' + collname.substr(0, dollarIndex).toString();
     }
-    
+
     bool isSystemCollection() const;
 
     /**

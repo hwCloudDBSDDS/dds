@@ -28,10 +28,14 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/config_server_client.h"
 
 #include "mongo/client/read_preference.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/chunk_manager.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/config.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/balance_chunk_request_type.h"
 
@@ -57,6 +61,7 @@ Status moveChunk(OperationContext* txn,
         "admin",
         BalanceChunkRequest::serializeToMoveCommandForConfig(
             chunk, newShardId, maxChunkSizeBytes, secondaryThrottle, waitForDelete),
+        Milliseconds(6 * 60 * 1000),
         Shard::RetryPolicy::kIdempotent);
     if (!cmdResponseStatus.isOK()) {
         return cmdResponseStatus.getStatus();
@@ -65,7 +70,7 @@ Status moveChunk(OperationContext* txn,
     return cmdResponseStatus.getValue().commandStatus;
 }
 
-Status rebalanceChunk(OperationContext* txn, const ChunkType& chunk) {
+/*Status rebalanceChunk(OperationContext* txn, const ChunkType& chunk) {
     auto shardRegistry = Grid::get(txn)->shardRegistry();
     auto shard = shardRegistry->getConfigShard();
     auto cmdResponseStatus = shard->runCommandWithFixedRetryAttempts(
@@ -73,23 +78,25 @@ Status rebalanceChunk(OperationContext* txn, const ChunkType& chunk) {
         kPrimaryOnlyReadPreference,
         "admin",
         BalanceChunkRequest::serializeToRebalanceCommandForConfig(chunk),
+        Milliseconds(6 * 60 * 1000),
         Shard::RetryPolicy::kNotIdempotent);
     if (!cmdResponseStatus.isOK()) {
         return cmdResponseStatus.getStatus();
     }
 
     return cmdResponseStatus.getValue().commandStatus;
-}
+}*/
 
-Status offloadChunk(OperationContext* txn, const ChunkType& chunk) {
+/*Status offloadChunk(OperationContext* txn, const ChunkType& chunk) {
     auto shardRegistry = Grid::get(txn)->shardRegistry();
     auto shard = shardRegistry->getConfigShard();
-    auto cmdResponseStatus = shard->runCommand(
-        txn,
-        kPrimaryOnlyReadPreference,
-        "admin",
-        BalanceChunkRequest::serializeToOffloadCommandForConfig(chunk),
-        Shard::RetryPolicy::kIdempotent);
+    auto cmdResponseStatus =
+        shard->runCommand(txn,
+                          kPrimaryOnlyReadPreference,
+                          "admin",
+                          BalanceChunkRequest::serializeToOffloadCommandForConfig(chunk),
+                          Milliseconds(6 * 60 * 1000),
+                          Shard::RetryPolicy::kIdempotent);
     if (!cmdResponseStatus.isOK()) {
         return cmdResponseStatus.getStatus();
     }
@@ -100,33 +107,73 @@ Status offloadChunk(OperationContext* txn, const ChunkType& chunk) {
 Status assignChunk(OperationContext* txn, const ChunkType& chunk, const ShardId& newShardId) {
     auto shardRegistry = Grid::get(txn)->shardRegistry();
     auto shard = shardRegistry->getConfigShard();
-    auto cmdResponseStatus = shard->runCommand(
-        txn,
-        kPrimaryOnlyReadPreference,
-        "admin",
-        BalanceChunkRequest::serializeToAssignCommandForConfig(chunk, newShardId),
-        Shard::RetryPolicy::kIdempotent);
+    auto cmdResponseStatus =
+        shard->runCommand(txn,
+                          kPrimaryOnlyReadPreference,
+                          "admin",
+                          BalanceChunkRequest::serializeToAssignCommandForConfig(chunk, newShardId),
+                          Milliseconds(6 * 60 * 1000),
+                          Shard::RetryPolicy::kIdempotent);
     if (!cmdResponseStatus.isOK()) {
         return cmdResponseStatus.getStatus();
     }
 
     return cmdResponseStatus.getValue().commandStatus;
-}
+}*/
 
 Status splitChunk(OperationContext* txn, const ChunkType& chunk, const BSONObj& splitPoint) {
     auto shardRegistry = Grid::get(txn)->shardRegistry();
     auto shard = shardRegistry->getConfigShard();
-    auto cmdResponseStatus = shard->runCommand(
-        txn,
-        kPrimaryOnlyReadPreference,
-        "admin",
-        BalanceChunkRequest::serializeToSplitCommandForConfig(chunk, splitPoint),
-        Shard::RetryPolicy::kNotIdempotent);
+    auto cmdResponseStatus =
+        shard->runCommand(txn,
+                          kPrimaryOnlyReadPreference,
+                          "admin",
+                          BalanceChunkRequest::serializeToSplitCommandForConfig(chunk, splitPoint),
+                          Milliseconds(6 * 60 * 1000),
+                          Shard::RetryPolicy::kNotIdempotent);
     if (!cmdResponseStatus.isOK()) {
         return cmdResponseStatus.getStatus();
     }
 
     return cmdResponseStatus.getValue().commandStatus;
 }
+
+Status renameCollection(OperationContext* txn,
+                        NamespaceString& fromNS,
+                        NamespaceString& toNS,
+                        bool dropTarget,
+                        bool stayTemp) {
+    std::vector<ChunkType> Chunks;
+    uassertStatusOK(
+        grid.catalogClient(txn)->getChunks(txn,
+                                           BSON(ChunkType::ns(fromNS.ns())),
+                                           BSONObj(),
+                                           boost::none,
+                                           &Chunks,
+                                           nullptr,
+                                           repl::ReadConcernLevel::kMajorityReadConcern));
+
+    if (Chunks.size() == 0) {
+        return Status(ErrorCodes::NamespaceNotFound, "source namespace does not exist");
+    } else if (Chunks.size() != 1) {
+        return Status(ErrorCodes::IllegalOperation, "source namespace cannot be sharded");
+    }
+
+    auto shardRegistry = Grid::get(txn)->shardRegistry();
+    auto shard = shardRegistry->getConfigShard();
+    auto cmdResponseStatus =
+        shard->runCommandWithFixedRetryAttempts(txn,
+                          kPrimaryOnlyReadPreference,
+                          "admin",
+                          BalanceChunkRequest::serializeToRenameCommandForConfig(
+                              Chunks[0], toNS, dropTarget, stayTemp),
+                          Shard::RetryPolicy::kIdempotent);
+    if (!cmdResponseStatus.isOK()) {
+        return cmdResponseStatus.getStatus();
+    }
+
+    return cmdResponseStatus.getValue().commandStatus;
+}
+
 }  // namespace configsvr_client
 }  // namespace mongo

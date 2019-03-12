@@ -202,7 +202,7 @@ TEST(ImmediateDelete, ShouldWaitCursor) {
     env->removeCursorId(ns, 345);
 
     ASSERT_TRUE(stdx::future_status::ready ==
-                deleterFuture.wait_for(MAX_IMMEDIATE_DELETE_WAIT.toSystemDuration()));
+                deleterFuture.wait_for(MAX_IMMEDIATE_DELETE_WAIT.toSteadyDuration()));
     ASSERT_TRUE(deleterFuture.get());
     ASSERT_TRUE(env->deleteOccured());
 
@@ -254,7 +254,7 @@ TEST(ImmediateDelete, StopWhileWaitingCursor) {
     stop_deleter_guard.Execute();
 
     ASSERT_TRUE(stdx::future_status::ready ==
-                deleterFuture.wait_for(MAX_IMMEDIATE_DELETE_WAIT.toSystemDuration()));
+                deleterFuture.wait_for(MAX_IMMEDIATE_DELETE_WAIT.toSteadyDuration()));
     ASSERT_FALSE(deleterFuture.get());
     ASSERT_FALSE(env->deleteOccured());
 }

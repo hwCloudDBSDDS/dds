@@ -462,14 +462,18 @@ void ProcessInfo::getCpuInfo(BSONObjBuilder& info) {
     LinuxProc p(_pid);
     int64_t ticksPerSecond = sysconf(_SC_CLK_TCK);
 
-    info.appendNumber("utime_ms", 
-        static_cast<long long>(p._utime) / (static_cast<long long>(ticksPerSecond) / 1000.0));
-    info.appendNumber("stime_ms", 
-        static_cast<long long>(p._stime) / (static_cast<long long>(ticksPerSecond) / 1000.0));
-    info.appendNumber("cutime_ms", 
-        static_cast<long long>(p._cutime) / (static_cast<long long>(ticksPerSecond) / 1000.0));
-    info.appendNumber("cstime_ms", 
-        static_cast<long long>(p._cstime) / (static_cast<long long>(ticksPerSecond) / 1000.0));
+    info.appendNumber("utime_ms",
+                      static_cast<long long>(p._utime) /
+                          (static_cast<long long>(ticksPerSecond) / 1000.0));
+    info.appendNumber("stime_ms",
+                      static_cast<long long>(p._stime) /
+                          (static_cast<long long>(ticksPerSecond) / 1000.0));
+    info.appendNumber("cutime_ms",
+                      static_cast<long long>(p._cutime) /
+                          (static_cast<long long>(ticksPerSecond) / 1000.0));
+    info.appendNumber("cstime_ms",
+                      static_cast<long long>(p._cstime) /
+                          (static_cast<long long>(ticksPerSecond) / 1000.0));
 }
 
 /**

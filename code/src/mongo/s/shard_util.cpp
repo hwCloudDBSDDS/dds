@@ -42,6 +42,7 @@
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include <boost/lexical_cast.hpp>
 
 namespace mongo {
 namespace shardutil {
@@ -54,6 +55,7 @@ const char kShouldMigrate[] = "shouldMigrate";
 
 }  // namespace
 
+std::string balanceThreadId;
 StatusWith<long long> retrieveTotalShardSize(OperationContext* txn, const ShardId& shardId) {
     auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, shardId);
     if (!shardStatus.isOK()) {
@@ -81,7 +83,7 @@ StatusWith<long long> retrieveTotalShardSize(OperationContext* txn, const ShardI
     return totalSizeElem.numberLong();
 }
 
-StatusWith<BSONObj> selectMedianKey(OperationContext* txn,
+/*StatusWith<BSONObj> selectMedianKey(OperationContext* txn,
                                     const ShardId& shardId,
                                     const NamespaceString& nss,
                                     const ShardKeyPattern& shardKeyPattern,
@@ -249,29 +251,41 @@ StatusWith<boost::optional<ChunkRange>> splitChunkAtMultiplePoints(
 
     return boost::optional<ChunkRange>();
 }
-
+*/
 StatusWith<BSONObj> retrieveShardStatistics(OperationContext* txn, const ShardId& shardId) {
     auto shardStatus = Grid::get(txn)->shardRegistry()->getShard(txn, shardId);
     if (!shardStatus.isOK()) {
         return shardStatus.getStatus();
     }
+    std::string threadId=boost::lexical_cast<std::string>(stdx::this_thread::get_id());
 
-    auto getShardStatisticsStatus = shardStatus.getValue()->runCommandWithFixedRetryAttempts(
+    auto getShardStatisticsStatus = threadId == balanceThreadId ? shardStatus.getValue()->runCommandWithFixedRetryAttempts(
+        txn,
+        ReadPreferenceSetting{ReadPreference::PrimaryPreferred},
+        "admin",
+        BSON("getShardStatistics" << 1),
+        Milliseconds(1000 * 30),
+        Shard::RetryPolicy::kIdempotent) : shardStatus.getValue()->runCommandWithFixedRetryAttempts(
         txn,
         ReadPreferenceSetting{ReadPreference::PrimaryPreferred},
         "admin",
         BSON("getShardStatistics" << 1),
         Shard::RetryPolicy::kIdempotent);
     if (!getShardStatisticsStatus.isOK()) {
-        log() << "!getShardStatisticsStatus.isOK()";
+        index_warning() << "!getShardStatisticsStatus.isOK()";
         return std::move(getShardStatisticsStatus.getStatus());
     }
     if (!getShardStatisticsStatus.getValue().commandStatus.isOK()) {
-        log() << "!getShardStatisticsStatus.getValue().commandStatus.isOK()";
+        index_warning() << "!getShardStatisticsStatus.getValue().commandStatus.isOK()";
         return std::move(getShardStatisticsStatus.getValue().commandStatus);
     }
 
     return std::move(getShardStatisticsStatus.getValue().response);
+}
+
+
+void setBalanceThread(std::string& threadId) {
+    balanceThreadId = threadId;
 }
 
 }  // namespace shardutil

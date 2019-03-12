@@ -37,6 +37,7 @@
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/background.h"
 #include "mongo/db/commands.h"
@@ -274,12 +275,29 @@ public:
                      int,
                      string& errmsg,
                      BSONObjBuilder& result) {
+        bool customer = false;
+
+        // because user may connect with inner network because some case in our clould instance,
+        // add temp fix that : when user is auth, do not check the connection way.
+        // TODO: when our cloud instance is fix, need fix this back.
+        if (AuthorizationSession::get((txn->getClient()))->isAuthWithCustomer() ||
+            txn->isCustomerTxn() ||
+            (txn->getClient()->isCustomerConnection() &&
+             (AuthorizationSession::get((txn->getClient()))->isAuthWithCustomerOrNoAuthUser()))) {
+            customer = true;
+        }
+
         // sort the commands before building the result BSON
         std::vector<Command*> commands;
         for (CommandMap::const_iterator it = _commands->begin(); it != _commands->end(); ++it) {
             // don't show oldnames
-            if (it->first == it->second->getName())
+            if (it->first == it->second->getName()) {
+                // don't show disable commands
+                if (customer && Command::_checkIfDisableCommands(it->first)) {
+                    continue;
+                }
                 commands.push_back(it->second);
+            }
         }
         std::sort(commands.begin(), commands.end(), [](Command* lhs, Command* rhs) {
             return (lhs->getName()) < (rhs->getName());

@@ -39,6 +39,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/curop.h"
@@ -68,7 +69,6 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/string_map.h"
-#include "mongo/db/catalog/database_holder.h"
 
 namespace mongo {
 
@@ -547,7 +547,7 @@ public:
             // We occasionally log a deprecation warning.
             if (!request.isCursorCommand()) {
                 RARELY {
-                    warning()
+                    index_warning()
                         << "Use of the aggregate command without the 'cursor' "
                            "option is deprecated. See "
                            "http://dochub.mongodb.org/core/aggregate-without-cursor-deprecation.";
@@ -615,18 +615,22 @@ public:
             return false;
         }
         NamespaceString nss = ns2chunkHolder().getNsWithChunkId(NamespaceString(ns));
-        LOG(0)<<"[PipelineCommand]--Collection:"<< nss <<" ,cmdObj: "<<cmdObj;
-        AutoGetCollectionOrViewForRead ctx(txn, nss);
-        Collection* collection = ctx.getCollection();
-        if( collection == NULL){
-            LOG(1)<<"[PipelineCommand]--Collection:"<< nss <<" not found ";
+        index_LOG(0) << "[PipelineCommand]--Collection:" << nss;
+        {
+            AutoGetCollectionOrViewForRead ctx(txn, nss);
+            Collection* collection = ctx.getCollection();
+            if (collection == NULL) {
+                index_LOG(1) << "[PipelineCommand]--Collection:" << nss << " not found ";
+            }
+            // if find with chunkid, but no collection here, we should return stale config, so
+            // mongos
+            // will retry
+            if (!collection && nss.isChunk()) {
+                return appendCommandStatus(
+                    result,
+                    {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});
+            }
         }
-        // if find with chunkid, but no collection here, we should return stale config, so mongos will retry
-        if (!collection && nss.isChunk()) {
-            return appendCommandStatus(
-                result, {ErrorCodes::SendStaleConfig, str::stream() << "chunk not on this shard"});            
-        }
-
         // Parse the options for this request.
         auto request = AggregationRequest::parseFromBSON(nss, cmdObj);
         if (!request.isOK()) {

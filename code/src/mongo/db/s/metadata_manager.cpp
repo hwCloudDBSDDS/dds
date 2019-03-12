@@ -57,7 +57,6 @@ MetadataManager::~MetadataManager() {
 }
 
 ScopedCollectionMetadata MetadataManager::getActiveMetadata() {
-    stdx::lock_guard<stdx::mutex> scopedLock(_managerLock);
     if (!_activeMetadataTracker) {
         return ScopedCollectionMetadata();
     }
@@ -79,8 +78,9 @@ void MetadataManager::refreshActiveMetadata(std::unique_ptr<CollectionMetadata> 
 
     // Collection is becoming unsharded
     if (!remoteMetadata) {
-        log() << "Marking collection " << _nss.ns() << " with "
-              << _activeMetadataTracker->metadata->toStringBasic() << " as no longer sharded";
+        log() << "chunk " << _nss.ns() << " with "
+              << _activeMetadataTracker->metadata->toStringBasic()
+              << " as no longer sharded, maybe offloaded";
 
         _receivingChunks.clear();
         _rangesToClean.clear();
@@ -128,7 +128,7 @@ void MetadataManager::refreshActiveMetadata(std::unique_ptr<CollectionMetadata> 
         return;
     }
 
-    log() << "Refreshing metadata for collection " << _nss.ns() << " from "
+    log() << "Refreshing metadata for " << _nss.ns() << " from "
           << _activeMetadataTracker->metadata->toStringBasic() << " to "
           << remoteMetadata->toStringBasic();
 
@@ -467,8 +467,7 @@ ChunkRange MetadataManager::getNextRangeToClean() {
     return ChunkRange(it->first, it->second.getMax());
 }
 
-void MetadataManager::updateChunkInfo(OperationContext* txn, const ChunkType& chunkType)
-{
+void MetadataManager::updateChunkInfo(OperationContext* txn, const ChunkType& chunkType) {
     stdx::lock_guard<stdx::mutex> scopedLock(_managerLock);
     _setActiveMetadata_inlock(_activeMetadataTracker->metadata->cloneUpdateChunkInfo(chunkType));
 }

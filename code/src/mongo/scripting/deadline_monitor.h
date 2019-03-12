@@ -152,13 +152,13 @@ private:
                 if (_nearestDeadlineWallclock == Date_t::max()) {
                     if ((interruptInterval.count() > 0) &&
                         (_nearestDeadlineWallclock - now > interruptInterval)) {
-                        _newDeadlineAvailable.wait_for(lk, interruptInterval.toSystemDuration());
+                        _newDeadlineAvailable.wait_for(lk, interruptInterval.toSteadyDuration());
                     } else {
                         _newDeadlineAvailable.wait(lk);
                     }
                 } else {
-                    _newDeadlineAvailable.wait_until(lk,
-                                                     _nearestDeadlineWallclock.toSystemTimePoint());
+                    _newDeadlineAvailable.wait_for(
+                        lk, Milliseconds(_nearestDeadlineWallclock - now).toSteadyDuration());
                 }
                 continue;
             }

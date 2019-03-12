@@ -4,13 +4,13 @@
 #include <utility>
 #include <vector>
 
-#include "mongo/db/repl/replication_executor.h"
-#include "mongo/stdx/mutex.h"
-#include "mongo/util/net/hostandport.h"
 #include "mongo/db/repl/repl_extend/shard_server_heartbeat_args.h"
 #include "mongo/db/repl/repl_extend/shard_server_heartbeat_response_action.h"
+#include "mongo/db/repl/replication_executor.h"
 #include "mongo/executor/network_interface.h"
 #include "mongo/executor/network_interface_factory.h"
+#include "mongo/stdx/mutex.h"
+#include "mongo/util/net/hostandport.h"
 
 namespace mongo {
 
@@ -44,7 +44,6 @@ public:
     }
 
 private:
-
     typedef std::vector<ReplicationExecutor::CallbackHandle> HeartbeatHandles;
 
     /**
@@ -65,23 +64,22 @@ private:
     void _restartHeartbeats(const HostAndPort& primaryConfigServer);
 
     /**
-     * Schedules a heartbeat to be sent to "target" at "when". 
+     * Schedules a heartbeat to be sent to "target" at "when".
      */
     void _scheduleHeartbeatToTarget(const HostAndPort& target, Date_t when);
 
     /**
-     * Asynchronously sends a heartbeat to "target". 
+     * Asynchronously sends a heartbeat to "target".
      *
      * Scheduled by _scheduleHeartbeatToTarget.
      */
-    void _doHeartbeat(ReplicationExecutor::CallbackArgs cbData,
-                            const HostAndPort& target);
+    void _doHeartbeat(ReplicationExecutor::CallbackArgs cbData, const HostAndPort& target);
 
     /**
-     * Prepare a heartbeat request before scheduling a heartbeat to "target" at "now". 
+     * Prepare a heartbeat request before scheduling a heartbeat to "target" at "now".
      */
     std::pair<ShardServerHeartbeatArgs, Milliseconds> _prepareShardServerHeartbeatRequest(
-        Date_t now, const HostAndPort & target);
+        Date_t now, const HostAndPort& target);
 
     /**
      * Handle each heartbeat response.
@@ -93,17 +91,18 @@ private:
     void _untrackHeartbeatHandle(const ReplicationExecutor::CallbackHandle& handle);
 
     // Protects member data of the HeartbeatHandles.
-    mutable stdx::mutex _heartbeatHandlesMutex; 
+    mutable stdx::mutex _heartbeatHandlesMutex;
 
     // Handles to actively queued heartbeats.
     HeartbeatHandles _heartbeatHandles;
 
     // Executor that drives the heartbeat coordinator.
-    ReplicationExecutor* _replExecutor; 
+    ReplicationExecutor* _replExecutor;
 
-    Date_t _lastHeartbeatHitDate;    
+    Date_t _lastHeartbeatHitDate;
     int _heartbeatRetryCount = std::numeric_limits<int>::max();
-    
+    Date_t _doHeartbeatTime;
+    Date_t _doHeartbeatTimeExpect;
     std::vector<HostAndPort> _configServers;
 };
 

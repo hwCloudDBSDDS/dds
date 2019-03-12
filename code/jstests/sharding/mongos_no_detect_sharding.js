@@ -17,7 +17,7 @@
 
     var admin = mongos.getDB("admin");
 
-    assert.eq(coll.getShardVersion().ok, 0);
+    assert.eq(coll.getShardVersion().ok, 1);
 
     admin.runCommand({enableSharding: "test"});
     admin.runCommand({shardCollection: "test.foo", key: {_id: 1}});

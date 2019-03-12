@@ -17,6 +17,7 @@
 #include "port/port.h"
 #include "util/coding.h"
 #include "util/perf_context_imp.h"
+#include "common/common.h"
 
 namespace rocksdb {
 
@@ -55,7 +56,7 @@ void AppendInternalKeyFooter(std::string* result, SequenceNumber s,
 
 std::string ParsedInternalKey::DebugString(bool hex) const {
   char buf[50];
-  snprintf(buf, sizeof(buf), "' @ %" PRIu64 ": %d", sequence,
+  CommonSnprintf(buf, sizeof(buf), sizeof(buf) - 1, "' @ %" PRIu64 ": %d", sequence,
            static_cast<int>(type));
   std::string result = "'";
   result += user_key.ToString(hex);
@@ -166,7 +167,7 @@ LookupKey::LookupKey(const Slice& _user_key, SequenceNumber s) {
   // NOTE: We don't support users keys of more than 2GB :)
   dst = EncodeVarint32(dst, static_cast<uint32_t>(usize + 8));
   kstart_ = dst;
-  memcpy(dst, _user_key.data(), usize);
+  CommonMemCopy(dst, usize, _user_key.data(), usize);
   dst += usize;
   EncodeFixed64(dst, PackSequenceAndType(s, kValueTypeForSeek));
   dst += 8;

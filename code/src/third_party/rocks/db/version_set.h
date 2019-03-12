@@ -770,6 +770,8 @@ class VersionSet {
     for (auto cfd : *column_family_set_) {
       // It's safe to ignore dropped column families here:
       // cfd->IsDropped() becomes true after the drop is persisted in MANIFEST.
+      Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
+            "BEGIN MinLogNumber   cfd[%d], log number (%llu) \n", cfd->GetID(), cfd->GetLogNumber());
       if (min_log_num > cfd->GetLogNumber() && !cfd->IsDropped()) {
         min_log_num = cfd->GetLogNumber();
       }
@@ -822,9 +824,11 @@ class VersionSet {
     return split_state_.load(std::memory_order_acquire);}
 
   void SetSplitFlag(bool flag) {
-    Log(InfoLogLevel::WARN_LEVEL, db_options_->info_log,
+    Log(InfoLogLevel::DEBUG_LEVEL, db_options_->info_log,
           "split_state_ set to %u ", flag);
     return split_state_.store(flag, std::memory_order_release);}
+
+  void RemoveFilesNotBelongToChunk(InstrumentedMutex* mu);
 
  private:
   struct ManifestWriter;
@@ -892,6 +896,7 @@ class VersionSet {
   // env options used for compactions. This is a copy of
   // env_options_ but with readaheads set to readahead_compactions_.
   const EnvOptions env_options_compactions_;
+  EnvOptions new_compaction_options_;
 
   // split-feature: support split DB
   // if true, it means Db is splitting , create new manifest is not allowed

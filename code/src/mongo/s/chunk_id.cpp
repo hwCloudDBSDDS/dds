@@ -1,6 +1,4 @@
 /**
- *    Copyright (C) 2017 HUAWEI Inc.
- *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
  *    as published by the Free Software Foundation.
@@ -32,8 +30,8 @@
 #include <string.h>
 
 #include "mongo/base/status_with.h"
-#include "mongo/s/chunk_id.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/s/chunk_id.h"
 
 namespace mongo {
 

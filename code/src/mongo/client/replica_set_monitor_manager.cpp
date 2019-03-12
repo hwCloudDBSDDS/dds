@@ -97,12 +97,11 @@ shared_ptr<ReplicaSetMonitor> ReplicaSetMonitorManager::getOrCreateMonitor(
     if (monitor) {
         if (monitor->getServerAddress() == connStr.toString()) {
             return monitor;
-        }
-        else {
-            log() << "Removing old replica set monitor for " << monitor->getServerAddress();
+        } else {
+            index_log() << "Removing old replica set monitor for " << monitor->getServerAddress();
             monitor->markAsRemoved();
             _monitors.erase(setName);
-            log() << "Removed ReplicaSetMonitor for replica set " << setName;
+            index_log() << "Removed ReplicaSetMonitor for replica set " << setName;
         }
     }
 

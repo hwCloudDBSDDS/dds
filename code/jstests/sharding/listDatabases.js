@@ -42,8 +42,8 @@ dbInConfigEntryCheck(getDBSection(dbArray, "config"));
 dbInConfigEntryCheck(getDBSection(dbArray, 'admin'));
 
 // add doc in config/admin db on the shard
-mongod.getDB("config").foo.insert({_id: 1});
-mongod.getDB("admin").foo.insert({_id: 1});
+// wooo mongod.getDB("config").foo.insert({_id: 1});
+// wooo mongod.getDB("admin").foo.insert({_id: 1});
 
 // add doc in admin db (via mongos)
 mongos.getDB("admin").foo.insert({_id: 1});

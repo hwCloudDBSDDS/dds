@@ -443,6 +443,8 @@ private:
         return static_cast<bool>(_killReason);
     };
 
+    void releaseCusor();
+
     // The OperationContext that we're executing within.  We need this in order to release
     // locks.
     OperationContext* _opCtx;

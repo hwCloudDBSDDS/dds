@@ -56,9 +56,9 @@
     print("Success! Standalone execution use case test for $addFields passed.");
 
     // Test against a sharded cluster.
-    let st = new ShardingTest({shards: 2});
+    /*let st = new ShardingTest({shards: 2});
     doExecutionTest(st.s0);
     st.stop();
     print("Success! Sharding use case test for $addFields passed.");
-
+    */
 }());

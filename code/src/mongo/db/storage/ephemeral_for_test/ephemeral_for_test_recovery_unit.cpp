@@ -72,7 +72,7 @@ Status EphemeralForTestRecoveryUnit::setReadFromMajorityCommittedSnapshot() {
     return Status::OK();
 }
 
-void EphemeralForTestRecoveryUnit::clearReadFromMajorityCommittedSnapshot() {
+void EphemeralForTestRecoveryUnit::clearSnapshotInfo() {
     return;
 }
 }

@@ -2,6 +2,7 @@
     "use strict";
 
     const options = {setParameter: "jsHeapLimitMB=1000"};
+    options.configdb = "xxx/1.1.1.1";
     const conn = MongoRunner.runMongod(options);
 
     // verify JSHeapLimitMB set from the shell

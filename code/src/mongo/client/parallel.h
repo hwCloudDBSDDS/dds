@@ -158,7 +158,7 @@ public:
     bool more();
     BSONObj next();
 
-    //Returns the set of chunkIds with open cursors.
+    // Returns the set of chunkIds with open cursors.
     void getQueryShardIds(std::map<ChunkId, ShardId>& shardIdMap);
 
     DBClientCursorPtr getChunkCursor(const ChunkId& chunkId);
@@ -184,8 +184,7 @@ private:
                         bool fullReload);
 
     // when get exception like shard not exist or socket error, we should reload chunkmap and retry
-    void _reloadChunkManager(OperationContext* txn,
-                        const NamespaceString& nss);
+    void _reloadChunkManager(OperationContext* txn, const NamespaceString& nss);
 
     bool _didInit;
     bool _done;

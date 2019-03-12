@@ -365,7 +365,7 @@ bool MigrationDestinationManager::startCommit(const MigrationSessionId& sessionI
 
     while (_sessionId) {
         if (stdx::cv_status::timeout ==
-            _isActiveCV.wait_until(lock, deadline.toSystemTimePoint())) {
+            _isActiveCV.wait_for(lock, Milliseconds(deadline - Date_t::now()).toSteadyDuration())) {
             _state = FAIL;
             log() << "startCommit never finished!" << migrateLog;
             return false;
@@ -630,9 +630,7 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* txn,
 
         while (true) {
             BSONObj res;
-            if (!conn->runCommand("admin",
-                                  migrateCloneRequest,
-                                  res)) {  // gets array of objects to copy, in disk order
+            if (!conn->runCommand("admin", migrateCloneRequest, res)) {
                 setState(FAIL);
                 errmsg = "_migrateClone failed: ";
                 errmsg += redact(res.toString());

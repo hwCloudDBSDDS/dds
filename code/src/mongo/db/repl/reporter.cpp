@@ -33,6 +33,7 @@
 #include "mongo/db/repl/reporter.h"
 
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/db/repl/old_update_position_args.h"
 #include "mongo/db/repl/update_position_args.h"
 #include "mongo/rpc/get_status_from_command_result.h"
@@ -229,7 +230,11 @@ void Reporter::_sendCommand_inlock(BSONObj commandRequest) {
            << commandRequest;
 
     auto scheduleResult = _executor->scheduleRemoteCommand(
-        executor::RemoteCommandRequest(_target, "admin", commandRequest, nullptr),
+        executor::RemoteCommandRequest(_target,
+                                       "admin",
+                                       commandRequest,
+                                       nullptr,
+                                       Milliseconds(kSyncSourceFeedbackReporterTimeoutMS)),
         stdx::bind(&Reporter::_processResponseCallback, this, stdx::placeholders::_1));
 
     _status = scheduleResult.getStatus();

@@ -30,9 +30,9 @@
 
 #include <iosfwd>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
-
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/string_data.h"
@@ -83,6 +83,27 @@ public:
      */
     const std::string& toString() const {
         return getFullName();
+    }
+
+    static void getBuildinRoles(std::set<std::string>& buildInRoles) {
+        buildInRoles.insert("backupuser");
+        buildInRoles.insert("omuser");
+    }
+
+    static bool isBuildinRoles(const std::string rolename) {
+        if (rolename == "backupuser@admin" || rolename == "omuser@admin") {
+
+            return true;
+        }
+        return false;
+    }
+
+    bool isBuildinRoles() const {
+        return isBuildinRoles(_fullName);
+    }
+
+    bool isCustomer() const {
+        return !isBuildinRoles();
     }
 
 private:

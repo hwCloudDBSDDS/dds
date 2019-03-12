@@ -3,19 +3,14 @@
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
 //
-//  Copyright (c) 2018-present, Huawei, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
 
 #include "rocksdb/env.h"
 #include "hdfs/env_hdfs.h"
-using namespace std;
 
 #ifdef USE_HDFS
 #ifndef ROCKSDB_HDFS_FILE_C
 #define ROCKSDB_HDFS_FILE_C
-#include "rocksdb/options.h"
+
 #include <algorithm>
 #include <stdio.h>
 #include <sys/time.h>
@@ -24,9 +19,6 @@ using namespace std;
 #include <sstream>
 #include "rocksdb/status.h"
 #include "util/string_util.h"
-#include <string.h>
-#include <mutex>
-#include "util/coding.h"
 
 #define HDFS_EXISTS 0
 #define HDFS_DOESNT_EXIST -1
@@ -211,13 +203,13 @@ class HdfsWritableFile: public WritableFile {
     if (hfile_ != nullptr) {
       Log(InfoLogLevel::DEBUG_LEVEL, mylog,
           "[hdfs] HdfsWritableFile closing %s\n", filename_.c_str());
-      //hdfsCloseFile(fileSys_, hfile_);
+      hdfsCloseFile(fileSys_, hfile_);
       Log(InfoLogLevel::DEBUG_LEVEL, mylog,
           "[hdfs] HdfsWritableFile closed %s\n", filename_.c_str());
       hfile_ = nullptr;
     }
   }
-  bool IsSyncThreadSafe() const { return true; }
+
   // If the file was successfully created, then this returns true.
   // Otherwise returns false.
   bool isValid() {
@@ -244,7 +236,7 @@ class HdfsWritableFile: public WritableFile {
   }
 
   virtual Status Flush() {
-    return Sync();
+    return Status::OK();
   }
 
   virtual Status Sync() {
@@ -307,11 +299,6 @@ class HdfsLogger : public Logger {
     }
   }
 
-  virtual void Logv(const InfoLogLevel log_level, const char* format, va_list ap)
-  {
-     return Logger::Logv(log_level, format, ap);
-  }
-  
   virtual void Logv(const char* format, va_list ap) {
     const uint64_t thread_id = (*gettid_)();
 
@@ -321,7 +308,7 @@ class HdfsLogger : public Logger {
     for (int iter = 0; iter < 2; iter++) {
       char* base;
       int bufsize;
-      if (0 == iter) {
+      if (iter == 0) {
         bufsize = sizeof(buffer);
         base = buffer;
       } else {
@@ -357,7 +344,7 @@ class HdfsLogger : public Logger {
 
       // Truncate to available space if necessary
       if (p >= limit) {
-        if (0 == iter) {
+        if (iter == 0) {
           continue;       // Try again with larger buffer
         } else {
           p = limit - 1;
@@ -365,7 +352,7 @@ class HdfsLogger : public Logger {
       }
 
       // Add newline if necessary
-      if (p == base || '\n' != p[-1]) {
+      if (p == base || p[-1] != '\n') {
         *p++ = '\n';
       }
 
@@ -384,49 +371,14 @@ class HdfsLogger : public Logger {
 
 // Finally, the hdfs environment
 
-void HdfsEnv::CheckFilePath(const std::string& old_fname, std::string& new_fname){
-
-  if((nullptr == shared_checker_)  
-    || (strstr(old_fname.c_str(), ".sst") == nullptr)){
-    
-    Log(InfoLogLevel::DEBUG_LEVEL, info_log_, 
-                        "HDFS Env no need check the file(%s), shared_checker(%p)", 
-                        old_fname.c_str(), shared_checker_.get());
-    return ;
-  }
-
-  std::string id;
-  id.assign(old_fname, old_fname.rfind("/")+1, old_fname.size()-old_fname.rfind("/")-1);
-  
-  
-  bool s = shared_checker_->CheckSharedResource(id, new_fname);
-  if (true == s){
-    Log(InfoLogLevel::DEBUG_LEVEL, info_log_, 
-                        "HDFS Env check (%p) the resourceid %s, old_file(%s), new_file(%s) is shared", 
-                        shared_checker_.get(), id.c_str(), old_fname.c_str(), new_fname.c_str());
-  }else{
-  Log(InfoLogLevel::INFO_LEVEL, info_log_, 
-                      "HDFS Env check (%p) the resourceid %s, old_file(%s), new_file(%s) is no shared", 
-                      shared_checker_.get(), id.c_str(), old_fname.c_str(), new_fname.c_str());
-  }
-  return;
-}
 const std::string HdfsEnv::kProto = "hdfs://";
 const std::string HdfsEnv::pathsep = "/";
 
 // open a file for sequential reading
-Status HdfsEnv::NewSequentialFile(const std::string& fname1,
+Status HdfsEnv::NewSequentialFile(const std::string& fname,
                                   unique_ptr<SequentialFile>* result,
                                   const EnvOptions& options) {
   result->reset();
-  std::string fname = fname1;
-  CheckFilePath(fname1, fname);
-  Log(InfoLogLevel::DEBUG_LEVEL, info_log_, 
-                      "HDFS Env NewSequentialFile old file(%s)new(%s) Env(%p)",
-                      fname1.c_str(), fname.c_str(),this);
-  if(use_posix_){
-    return posixEnv->NewSequentialFile(fname, result,options);
-  }
   HdfsReadableFile* f = new HdfsReadableFile(fileSys_, fname);
   if (f == nullptr || !f->isValid()) {
     delete f;
@@ -438,19 +390,10 @@ Status HdfsEnv::NewSequentialFile(const std::string& fname1,
 }
 
 // open a file for random reading
-Status HdfsEnv::NewRandomAccessFile(const std::string& fname1,
+Status HdfsEnv::NewRandomAccessFile(const std::string& fname,
                                     unique_ptr<RandomAccessFile>* result,
                                     const EnvOptions& options) {
   result->reset();
-  std::string fname = fname1;
-  CheckFilePath(fname1, fname);
-  
-  Log(InfoLogLevel::DEBUG_LEVEL, info_log_, 
-                      "HDFS Env NewRandomAccessFile old file(%s) new(%s) Env(%p)",
-                      fname1.c_str(), fname.c_str(),this);
-  if(use_posix_){
-    return posixEnv->NewRandomAccessFile(fname, result,options);
-  }
   HdfsReadableFile* f = new HdfsReadableFile(fileSys_, fname);
   if (f == nullptr || !f->isValid()) {
     delete f;
@@ -465,12 +408,6 @@ Status HdfsEnv::NewRandomAccessFile(const std::string& fname1,
 Status HdfsEnv::NewWritableFile(const std::string& fname,
                                 unique_ptr<WritableFile>* result,
                                 const EnvOptions& options) {
-  Log(InfoLogLevel::DEBUG_LEVEL, info_log_, 
-                      "HDFS Env NewWritableFile file(%s) Env(%p)",fname.c_str(), this);
-
-  if(use_posix_){
-    return posixEnv->NewWritableFile(fname, result,options);
-  }
   result->reset();
   Status s;
   HdfsWritableFile* f = new HdfsWritableFile(fileSys_, fname);
@@ -496,10 +433,6 @@ class HdfsDirectory : public Directory {
 
 Status HdfsEnv::NewDirectory(const std::string& name,
                              unique_ptr<Directory>* result) {
-  if(use_posix_){
-    return posixEnv->NewDirectory(name, result);
-  }
-  
   int value = hdfsExists(fileSys_, name.c_str());
   switch (value) {
     case HDFS_EXISTS:
@@ -515,12 +448,6 @@ Status HdfsEnv::NewDirectory(const std::string& name,
 }
 
 Status HdfsEnv::FileExists(const std::string& fname) {
-
-  
-  if(use_posix_){
-    return posixEnv->FileExists(fname);
-  }
-  
   int value = hdfsExists(fileSys_, fname.c_str());
   switch (value) {
     case HDFS_EXISTS:
@@ -537,11 +464,6 @@ Status HdfsEnv::FileExists(const std::string& fname) {
 
 Status HdfsEnv::GetChildren(const std::string& path,
                             std::vector<std::string>* result) {
-  if(use_posix_){
-    return posixEnv->GetChildren(path, result);
-  }
-  
-  result->clear();
   int value = hdfsExists(fileSys_, path.c_str());
   switch (value) {
     case HDFS_EXISTS: {  // directory exists
@@ -551,7 +473,7 @@ Status HdfsEnv::GetChildren(const std::string& path,
     if (numEntries >= 0) {
       for(int i = 0; i < numEntries; i++) {
         char* pathname = pHdfsFileInfo[i].mName;
-        char* filename = rindex(pathname, '/');
+        char* filename = std::rindex(pathname, '/');
         if (filename != nullptr) {
           result->push_back(filename+1);
         }
@@ -580,46 +502,6 @@ Status HdfsEnv::GetChildren(const std::string& path,
 }
 
 Status HdfsEnv::DeleteFile(const std::string& fname) {
- 
-  if(shared_checker_ && (strstr(fname.c_str(), ".sst") != nullptr)){
-    SharedResourceRemoveDescription resource;
-    std::vector<SharedResourceRemoveDescription> list;
-    std::string id;
-    list.clear();
-    id.assign(fname, fname.rfind("/")+1, fname.size()-fname.rfind("/")-1);
-    resource.id = id;
-    resource.remove_result = 0;
-    resource.shared_flag = false;
-    list.push_back(resource);
-    Log(InfoLogLevel::DEBUG_LEVEL, info_log_, 
-                        "HDFS Env DeleteFile file(%s) to RemoveSharedResource id(%s),checker(%p)",
-                        fname.c_str(), id.c_str(), shared_checker_.get());
-    for(int i = 0; i < 5; i++){      
-      shared_checker_->RemoveSharedResource(list);
-      if(list[0].remove_result == 0){
-        if(list[0].shared_flag == true){
-          return Status::OK();
-        }else{
-          break;
-        }
-      }
-    }
-    if(list[0].remove_result != 0){
-      Log(InfoLogLevel::ERROR_LEVEL, info_log_, 
-                          "HDFS Env DeleteFile file(%s) RemoveSharedResource failed(%d) id(%s)",
-                          fname.c_str(), list[0].remove_result, id.c_str());
-     
-      return Status::IOError("DeleteFile RemoveSharedResource error id(" + id +
-                             ")  file `" + fname + "' ");
-    }
-  }
-  Log(InfoLogLevel::DEBUG_LEVEL, info_log_, 
-                      "HDFS Env DeleteFile file(%s) Env(%p)",fname.c_str(), this);
-  if(use_posix_){
-    
-    return posixEnv->DeleteFile(fname);
-  }
-  
   if (hdfsDelete(fileSys_, fname.c_str(), 1) == 0) {
     return Status::OK();
   }
@@ -627,62 +509,13 @@ Status HdfsEnv::DeleteFile(const std::string& fname) {
 };
 
 Status HdfsEnv::CreateDir(const std::string& name) {
-  
-  if(use_posix_){
-    return posixEnv->CreateDir(name);
-  }
-  
   if (hdfsCreateDirectory(fileSys_, name.c_str()) == 0) {
     return Status::OK();
   }
-  Log(InfoLogLevel::ERROR_LEVEL, info_log_, 
-      "HDFS Env CreateDir DIR(%s) errno(%d) Env(%p)",name.c_str(), errno, this);
   return IOError(name, errno);
 };
 
 Status HdfsEnv::CreateDirIfMissing(const std::string& name) {
-  if(use_posix_){
-    std::string filepath = name;
-    size_t pos = 1;
-
-    while(true) {
-        if (pos == std::string::npos) {
-            filepath = name;
-            pos = name.size();
-        } else {
-            filepath.assign(name, 0, name.find("/", pos));
-        }
-
-        auto s = FileExists(filepath);
-        if (s == rocksdb::Status::NotFound()) {
-            s = CreateDir(filepath);
-            if (!s.ok()) {
-                s = FileExists(filepath);
-                if (!s.ok()) {
-                    Log(InfoLogLevel::ERROR_LEVEL, info_log_, 
-                        "HDFS Env CreateDirIfMissing DIR(%s) pathDir(%s), RET(%s) Env(%p)",name.c_str(),
-                        filepath.c_str(), s.ToString().c_str(), this);
-                    return s;
-                }
-            }
-        } else if (!s.ok()) {
-            Log(InfoLogLevel::ERROR_LEVEL, info_log_, 
-                "HDFS Env CreateDirIfMissing DIR(%s) pathDir(%s) RET(%s) Env(%p)", name.c_str(),
-                filepath.c_str(), s.ToString().c_str(), this);
-            return s;
-        } 
-
-        pos += 1;
-        if (pos >= name.length()) {
-            break;
-        }
-
-        pos = name.find("/", pos);
-    } 
-
-    return rocksdb::Status::OK();
-  }
-  
   const int value = hdfsExists(fileSys_, name.c_str());
   //  Not atomic. state might change b/w hdfsExists and CreateDir.
   switch (value) {
@@ -699,52 +532,10 @@ Status HdfsEnv::CreateDirIfMissing(const std::string& name) {
 };
 
 Status HdfsEnv::DeleteDir(const std::string& name) {
-  
-  Log(InfoLogLevel::DEBUG_LEVEL, info_log_, 
-                      "HDFS Env DeleteDir DIR(%s) Env(%p)",name.c_str(), this);
-  if(use_posix_){
-    
-    Status result;
-    char cmd[512] = {0};
-    sprintf(cmd,"rm -rf %s", name.c_str());
-    
-    int ret = system(cmd);
-    if(-1 == ret){
-      Log(InfoLogLevel::ERROR_LEVEL, info_log_, 
-          "HDFS Env DeleteDir DIR(%s) RET(%d) Env(%p)",name.c_str(), ret, this);
-      return result = Status::IOError("system mkdir `"+name+"' system error");
-    }else{
-      if (WIFEXITED(ret) && (0 == WEXITSTATUS(ret))){
-        return Status::OK();
-      }
-      Log(InfoLogLevel::ERROR_LEVEL, info_log_, 
-      "HDFS Env DeleteDir WIFEXITED(%d) WEXITSTATUS(%d) DIR(%s) RET(%d) Env(%p)",
-      WIFEXITED(ret), WEXITSTATUS(ret), name.c_str(), ret, this);
-      return result = Status::IOError("system shell fail");
-    }
-  }
-
-  Status ret = DeleteFile(name);;
-  if (!ret.ok()) {
-    Log(InfoLogLevel::ERROR_LEVEL, info_log_, 
-        "HDFS Env DeleteDir DIR(%s) errno(%d) Env(%p)",name.c_str(), errno, this);
-    return Status::IOError("delete file fail");
-  }
-  
-  return Status::OK();
+  return DeleteFile(name);
 };
 
-Status HdfsEnv::GetFileSize(const std::string& fname1, uint64_t* size) {
-  std::string fname = fname1;
-  CheckFilePath(fname1, fname);
-  Log(InfoLogLevel::DEBUG_LEVEL, info_log_, 
-                      "Stream Env GetFileSize old file(%s) new file(%s) Env(%p)",
-                      fname1.c_str(), fname.c_str(), this);
-  if(use_posix_){
-    
-    return posixEnv->GetFileSize(fname, size);
-  }
-  
+Status HdfsEnv::GetFileSize(const std::string& fname, uint64_t* size) {
   *size = 0L;
   hdfsFileInfo* pFileInfo = hdfsGetPathInfo(fileSys_, fname.c_str());
   if (pFileInfo != nullptr) {
@@ -757,9 +548,6 @@ Status HdfsEnv::GetFileSize(const std::string& fname1, uint64_t* size) {
 
 Status HdfsEnv::GetFileModificationTime(const std::string& fname,
                                         uint64_t* time) {
-  if(use_posix_){
-    return posixEnv->GetFileModificationTime(fname, time);
-  }
   hdfsFileInfo* pFileInfo = hdfsGetPathInfo(fileSys_, fname.c_str());
   if (pFileInfo != nullptr) {
     *time = static_cast<uint64_t>(pFileInfo->mLastMod);
@@ -774,10 +562,6 @@ Status HdfsEnv::GetFileModificationTime(const std::string& fname,
 // target already exists. So, we delete the target before attempting the
 // rename.
 Status HdfsEnv::RenameFile(const std::string& src, const std::string& target) {
-  if(use_posix_){
-    return posixEnv->RenameFile(src, target);
-  }
-  
   hdfsDelete(fileSys_, target.c_str(), 1);
   if (hdfsRename(fileSys_, src.c_str(), target.c_str()) == 0) {
     return Status::OK();
@@ -786,9 +570,6 @@ Status HdfsEnv::RenameFile(const std::string& src, const std::string& target) {
 }
 
 Status HdfsEnv::LockFile(const std::string& fname, FileLock** lock) {
-  if(use_posix_){
-    return posixEnv->LockFile(fname, lock);
-  }
   // there isn's a very good way to atomically check and create
   // a file via libhdfs
   *lock = nullptr;
@@ -796,17 +577,11 @@ Status HdfsEnv::LockFile(const std::string& fname, FileLock** lock) {
 }
 
 Status HdfsEnv::UnlockFile(FileLock* lock) {
-  if(use_posix_){
-    return posixEnv->UnlockFile(lock);
-  }
   return Status::OK();
 }
 
 Status HdfsEnv::NewLogger(const std::string& fname,
                           shared_ptr<Logger>* result) {
-  if(use_posix_){
-    return posixEnv->NewLogger(fname, result);
-  }
   HdfsWritableFile* f = new HdfsWritableFile(fileSys_, fname);
   if (f == nullptr || !f->isValid()) {
     delete f;
@@ -822,8 +597,8 @@ Status HdfsEnv::NewLogger(const std::string& fname,
 }
 
 // The factory method for creating an HDFS Env
-Status NewHdfsEnv(Env** hdfs_env, const std::string& fsname, bool use_posix) {
-  *hdfs_env = new HdfsEnv(fsname, use_posix);
+Status NewHdfsEnv(Env** hdfs_env, const std::string& fsname) {
+  *hdfs_env = new HdfsEnv(fsname);
   return Status::OK();
 }
 }  // namespace rocksdb
@@ -840,7 +615,7 @@ namespace rocksdb {
    return Status::NotSupported("Not compiled with hdfs support");
  }
 
- Status NewHdfsEnv(Env** hdfs_env, const std::string& fsname, bool use_posix) {
+ Status NewHdfsEnv(Env** hdfs_env, const std::string& fsname) {
    return Status::NotSupported("Not compiled with hdfs support");
  }
 }

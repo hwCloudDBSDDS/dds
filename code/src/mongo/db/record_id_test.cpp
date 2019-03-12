@@ -34,11 +34,9 @@
 
 namespace mongo {
 
-class TestRecordIdVariant
-{
+class TestRecordIdVariant {
 public:
-    static void Main()
-    {
+    static void Main() {
         ASSERT_TRUE(sizeof(RecordIdVariant) == 16);
         ASSERT_TRUE(sizeof(RecordIdVariant::Header) == 8);
 
@@ -48,7 +46,7 @@ public:
 
         RecordIdVariant rec3(3);
         RecordIdVariant rec4(4);
-        
+
         ASSERT_TRUE(recMin < recMax);
         ASSERT_TRUE(rec3 <= recMax);
         ASSERT_TRUE(rec3 < rec4);
@@ -58,11 +56,11 @@ public:
         RecordIdVariant recMan("man");
         RecordIdVariant recProgrammer("programmer");
 
-        char c1234[4] = { 1, 2, 3, 4 };
+        char c1234[4] = {1, 2, 3, 4};
         RecordIdVariant rec1234(c1234, sizeof(c1234));
 
         ASSERT_TRUE(recManager > recMan);
-        ASSERT_TRUE(recManager < recProgrammer);    //  Revange
+        ASSERT_TRUE(recManager < recProgrammer);  //  Revange
 
         RecordIdVariant recBigKey("someBigBigBigKey");
         ASSERT_TRUE(recBigKey.ToString() == "someBigBigBigKey");
@@ -79,7 +77,7 @@ public:
             RecordIdVariant recBigKeyAgainAgain(recBigKey);
 
             RecordIdVariant recNewBigKey(RecordIdVariant("BIIIIIIIIIIIIIIIIIIIIIGGGKEEEEY"));
-            ASSERT_TRUE(recNewBigKey.header->refCount == 1);            
+            ASSERT_TRUE(recNewBigKey.header->refCount == 1);
 
             auto moreKey = std::move(recNewBigKey);
             ASSERT_TRUE(recNewBigKey.IsNull());
@@ -133,8 +131,7 @@ TEST(RecordId, HashNotEqual) {
     ASSERT_NOT_EQUALS(hasher(original), hasher(reversed));
 }
 
-TEST(RecordId, TestRecordIdVariantMainTest)
-{
+TEST(RecordId, TestRecordIdVariantMainTest) {
     TestRecordIdVariant::Main();
 }
 

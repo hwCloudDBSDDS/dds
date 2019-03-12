@@ -400,8 +400,7 @@ Status StorageInterfaceImpl::createCollection(OperationContext* txn,
                                               const CollectionOptions& options) {
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         ScopedTransaction transaction(txn, MODE_IX);
-        AutoGetOrCreateDb databaseWriteGuard(txn, nss.db(), MODE_IX);
-        Lock::CollectionLock collLock(txn->lockState(), nss.ns(), MODE_X);
+        AutoGetOrCreateDb databaseWriteGuard(txn, nss.db(), MODE_X);
         auto db = databaseWriteGuard.getDb();
         invariant(db);
         if (db->getCollection(nss)) {
@@ -424,8 +423,7 @@ Status StorageInterfaceImpl::createCollection(OperationContext* txn,
 Status StorageInterfaceImpl::dropCollection(OperationContext* txn, const NamespaceString& nss) {
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         ScopedTransaction transaction(txn, MODE_IX);
-        AutoGetDb autoDB(txn, nss.db(), MODE_IX);
-        Lock::CollectionLock collLock(txn->lockState(), nss.ns(), MODE_X);
+        AutoGetDb autoDB(txn, nss.db(), MODE_X);
         if (!autoDB.getDb()) {
             // Database does not exist - nothing to do.
             return Status::OK();

@@ -405,22 +405,22 @@ class VersionBuilder::Rep {
                                                                   f->largest.user_key())){
           // file is not belong to db
           Log(InfoLogLevel::INFO_LEVEL, info_log_,
-               "file[%lu] not belong to db, key range(%s, %s)size(%u)",
-               pair.first, f->smallest.user_key().data(),f->largest.user_key().data(),size);
+               "file[%lu] not belong to db,size(%u)",
+               pair.first, size);
           delete_files.push_back(f);
         }
         else{
           Log(InfoLogLevel::INFO_LEVEL, info_log_,
-               "file[%lu] key range(%s, %s)size(%u) will recover into db",
-               pair.first, f->smallest.user_key().data(),f->largest.user_key().data(),size);
+               "file[%lu] size(%u) will recover into db",
+               pair.first, size);
         }
       }
 
       size = delete_files.size();
       for (const auto& added : delete_files) {
         Log(InfoLogLevel::INFO_LEVEL, info_log_,
-          "file[%lu] not belong to db, key range(%s, %s)size(%u)",
-          added->fd.GetNumber(), added->smallest.user_key().data(),added->largest.user_key().data(),size);
+          "file[%lu] not belong to db,size(%u)",
+          added->fd.GetNumber(), size);
         fnumber = added->fd.GetNumber();
         UnrefFile(added);
         levels_[level].added_files.erase(fnumber);
@@ -458,7 +458,7 @@ void VersionBuilder::MaybeAddFile(VersionStorageInfo* vstorage, int level,
   rep_->MaybeAddFile(vstorage, level, f);
 }
 
-// jerousrb modify for split-feature
+// split-feature: support split DB
 void VersionBuilder::CheckRange(const ImmutableCFOptions* ioptions) {
   rep_->CheckRange(ioptions);
 }

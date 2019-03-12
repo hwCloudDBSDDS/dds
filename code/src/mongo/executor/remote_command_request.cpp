@@ -82,13 +82,13 @@ RemoteCommandRequest::RemoteCommandRequest(const HostAndPort& theTarget,
 
 std::string RemoteCommandRequest::toString() const {
     str::stream out;
-    out << "RemoteCommand " << id << " -- target:" << target.toString() << " db:" << dbname;
+    out << "RemoteCommand " << id << " -- target: " << target.toString() << ", db: " << dbname;
 
-    if (expirationDate != kNoExpirationDate) {
-        out << " expDate:" << expirationDate.toString();
+    if (timeout != kNoTimeout) {
+        out << ", timeout: " << timeout;
     }
 
-    out << " cmd:" << cmdObj.toString();
+    out << ", cmd:" << cmdObj.toString();
     return out;
 }
 

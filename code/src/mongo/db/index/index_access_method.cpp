@@ -485,6 +485,7 @@ Status IndexAccessMethod::commitBulk(OperationContext* txn,
     }
     MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "setting index multikey flag", "");
 
+    int keySize = 0;
     while (i->more()) {
         if (mayInterrupt) {
             txn->checkForInterrupt();
@@ -523,6 +524,18 @@ Status IndexAccessMethod::commitBulk(OperationContext* txn,
         // fine.
         pm.hit();
         wunit.commit();
+
+        keySize += d.first.objsize();
+        if (keySize >= 8 * 1024 * 1024) {
+            keySize = 0;
+            txn->recoveryUnit()->_releaseSnapshot();
+            txn->recoveryUnit()->snapshot();
+        }
+    }
+
+    {
+        txn->recoveryUnit()->_releaseSnapshot();
+        txn->recoveryUnit()->snapshot();
     }
 
     pm.finished();

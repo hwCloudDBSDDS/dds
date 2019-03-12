@@ -87,7 +87,7 @@ SortedDataInterface* EphemeralForTestEngine::getSortedDataInterface(OperationCon
         Ordering::make(desc->keyPattern()), desc->unique(), &_dataMap[ident]);
 }
 
-Status EphemeralForTestEngine::dropIdent(OperationContext* opCtx, StringData ident) {
+Status EphemeralForTestEngine::dropIdent(OperationContext* opCtx, StringData ident, StringData ns) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     _dataMap.erase(ident);
     return Status::OK();

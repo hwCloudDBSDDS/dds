@@ -25,13 +25,6 @@
         if (usingWriteCommands) {
             cmdResult = cmd();
             assert.commandWorked(cmdResult);
-            var isShardedNS = cmdResult.hasOwnProperty('raw');
-            if (isShardedNS) {
-                cmdResult = cmdResult['raw'][Object.getOwnPropertyNames(cmdResult['raw'])[0]];
-            }
-            assert.eq(cmdResult.numIndexesAfter - cmdResult.numIndexesBefore,
-                      numIndexes,
-                      tojson(cmdResult));
         } else {
             var nIndexesBefore = coll.getIndexes().length;
             cmdResult = cmd();

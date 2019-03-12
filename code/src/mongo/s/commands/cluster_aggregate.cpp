@@ -59,6 +59,7 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
 
 Status ClusterAggregate::runAggregate(OperationContext* txn,
                                       const Namespaces& namespaces,
@@ -73,25 +74,19 @@ Status ClusterAggregate::runAggregate(OperationContext* txn,
     }
 
     std::shared_ptr<DBConfig> conf = status.getValue();
-
-    if (!conf->isShardingEnabled()) {
-        return aggPassthrough(txn, namespaces, conf, cmdObj, result, options);
-    }
-
     auto request = AggregationRequest::parseFromBSON(namespaces.executionNss, cmdObj);
     if (!request.isOK()) {
         return request.getStatus();
     }
-
     boost::intrusive_ptr<ExpressionContext> mergeCtx =
-        new ExpressionContext(txn, request.getValue());
+                        new ExpressionContext(txn, request.getValue());
     mergeCtx->inRouter = true;
     // explicitly *not* setting mergeCtx->tempDir
 
     LiteParsedPipeline liteParsedPipeline(request.getValue());
-
     for (auto&& ns : liteParsedPipeline.getInvolvedNamespaces()) {
-        uassert(28769, str::stream() << ns.ns() << " cannot be sharded", CollectionType::TableType::kNonShard == conf->getCollTabType(ns.ns()));
+        uassert(28769, str::stream() << ns.ns() << " cannot be sharded",
+                 CollectionType::TableType::kNonShard == conf->getCollTabType(ns.ns()));
         // We won't try to execute anything on a mongos, but we still have to populate this map
         // so that any $lookups etc will be able to have a resolved view definition. It's okay
         // that this is incorrect, we will repopulate the real resolved namespace map on the
@@ -99,7 +94,85 @@ Status ClusterAggregate::runAggregate(OperationContext* txn,
         mergeCtx->resolvedNamespaces[ns.coll()] = {ns, std::vector<BSONObj>{}};
     }
 
-    if (CollectionType::TableType::kNonShard == conf->getCollTabType(namespaces.executionNss.ns())) {
+    /***********start to create out collection if cmdObj has $out operator**********/
+    auto pipelineElem = cmdObj[AggregationRequest::kPipelineName];
+    StringData outNss;
+    for (auto elem : pipelineElem.Obj()) {
+        if (elem.type() != BSONType::Object) {
+            return {ErrorCodes::TypeMismatch,
+                    "Each element of the 'pipeline' array must be an object"};
+        }
+        if (elem["$out"]) {
+            outNss = StringData(elem["$out"].valuestrsafe());
+            index_LOG(3) << "aggregate outNss: " << outNss
+                         << ", oriNs: " << namespaces.requestedNss;
+            break;
+        }
+    }
+    if(outNss == namespaces.requestedNss.coll()){
+	//this is different with orginal system. 
+	//source ns can not be equal out ns.
+	return Status(ErrorCodes::BadValue, "Source collection is not same as out collection!");
+    }
+    if (!outNss.empty()) {
+        NamespaceString out_nss(dbname + "." + outNss.toString());
+        uassert(
+            17385, "Can't $out to special collection: " + out_nss.toString(), !out_nss.isSpecial());
+        bool isExist =
+            uassertStatusOK(conf->isCollectionExist(txn, dbname + "." + outNss.toString()));
+        if (isExist) {
+            BSONArrayBuilder delsArrayBuilder;
+            delsArrayBuilder.append(BSON("q" << BSONObj() << "limit" << 0));
+
+            BSONObjBuilder cmdBuilder;
+            cmdBuilder.append("delete", outNss.toString());
+            cmdBuilder.appendArray("deletes", delsArrayBuilder.arr());
+            cmdBuilder.append("ordered", true);
+            auto deleteCommandObj = cmdBuilder.done();
+
+            Command* excCmd = Command::findCommand("delete");
+            std::string errmsg;
+            BSONObjBuilder res;
+            int queryOptions = 0;
+            try {
+                excCmd->run(txn, dbname, deleteCommandObj, queryOptions, errmsg, res);
+            } catch (const DBException& e) {
+                return e.toStatus();
+            }
+        } else {
+            // create out collection
+            index_log() << "createCollection: " << outNss;
+            Seconds waitFor(DistLockManager::kDefaultLockTimeout);
+            auto scopedDistLock = Grid::get(txn)->catalogClient(txn)->getDistLockManager()->lock(
+                txn, dbname + "." + outNss.toString(), "create", waitFor);
+            if (!scopedDistLock.isOK()) {
+                index_err() << "createCollection getDistLock error, ns: " << outNss;
+                return scopedDistLock.getStatus();
+            }
+            BSONObjBuilder cmdBuilder;
+            cmdBuilder.append("create", outNss.toString());
+            auto createCmdObj = cmdBuilder.obj();
+            auto configshard = Grid::get(txn)->shardRegistry()->getConfigShard();
+            auto c_status = configshard->runCommandWithFixedRetryAttempts(txn,
+                                                    kPrimaryOnlyReadPreference,
+                                                    dbname,
+                                                    createCmdObj,
+                                                    Shard::RetryPolicy::kIdempotent);
+            if (!c_status.isOK()) {
+                index_err() << "create aggregate out collection failed.";
+                return c_status.getStatus();
+            }
+            conf->getChunkManager(txn, dbname + "." + outNss.toString(), true /* force */);
+        }
+    }
+    /**********end   to create out collection if cmdObj has $out operator**********/
+
+
+    if (!conf->isShardingEnabled()) {
+        return aggPassthrough(txn, namespaces, conf, cmdObj, result, options);
+    }
+    if (CollectionType::TableType::kNonShard ==
+        conf->getCollTabType(namespaces.executionNss.ns())) {
         return aggPassthrough(txn, namespaces, conf, cmdObj, result, options);
     }
 
@@ -168,8 +241,6 @@ Status ClusterAggregate::runAggregate(OperationContext* txn,
     BSONObj shardedCommand = commandBuilder.freeze().toBson();
     BSONObj shardQuery = shardPipeline->getInitialQuery();
 
-    log()<<"@@ runAggregate --shardedCommand:"<<shardedCommand<<", shardQuery:"<<shardQuery
-            <<", ns:"<<namespaces.executionNss.ns();
     // Run the command on the shards
     // TODO need to make sure cursors are killed if a retry is needed
     std::vector<Strategy::CommandResult> shardResults;
@@ -255,14 +326,23 @@ Status ClusterAggregate::runAggregate(OperationContext* txn,
     // Run merging command on random shard, unless a stage needs the primary shard. Need to use
     // ShardConnection so that the merging mongod is sent the config servers on connection init.
     auto& prng = txn->getClient()->getPrng();
+    auto random = prng.nextInt32(shardResults.size());
     const auto& mergingShardId = needPrimaryShardMerger
         ? conf->getPrimaryId()
-        : shardResults[prng.nextInt32(shardResults.size())].shardTargetId;
+        : shardResults[random].shardTargetId;
     const auto mergingShard = uassertStatusOK(grid.shardRegistry()->getShard(txn, mergingShardId));
 
     ShardConnection conn(mergingShard->getConnString(), outputNsOrEmpty);
-    BSONObj mergedResults =
-        aggRunCommand(conn.get(), namespaces, mergeCmd.freeze().toBson(), options);
+    std::string ss_ns(shardResults[random].result["cursor"]["ns"].valuestrsafe());
+    size_t dollar_pos = ss_ns.find('$');
+    if(dollar_pos != std::string::npos){
+        StringData chunk_id = ss_ns.substr(dollar_pos + 1, ss_ns.size() - dollar_pos);
+        mergeCmd.setField("chunkId", Value(chunk_id));
+    }
+    auto mgCmdObj = mergeCmd.freeze().toBson();
+    index_LOG(3) << "aggregate needPrimaryShardMerger: " << needPrimaryShardMerger
+                 <<", mergingShardId: "<<mergingShardId;
+    BSONObj mergedResults = aggRunCommand(conn.get(), namespaces, mgCmdObj, options);
     conn.done();
 
     if (auto wcErrorElem = mergedResults["writeConcernError"]) {
@@ -283,8 +363,8 @@ std::vector<DocumentSourceMergeCursors::CursorDescriptor> ClusterAggregate::pars
 
         for (size_t i = 0; i < shardResults.size(); i++) {
             BSONObj result = shardResults[i].result;
-            log()<<"@@-ClusterAggregate::parseCursors RetNum:"<<shardResults.size()
-                 <<", i:"<<i <<", result:"<<result;
+            index_log() << "ClusterAggregate::parseCursors RetNum:" << shardResults.size()
+                        << ", i:" << i << ", result:" << result;
             if (!result["ok"].trueValue()) {
                 // If the failure of the sharded command can be accounted to a single error,
                 // throw a UserException with that error code; otherwise, throw with a
@@ -402,7 +482,7 @@ BSONObj ClusterAggregate::aggRunCommand(DBClientBase* conn,
             cursor && cursor->more());
 
     BSONObj result = cursor->nextSafe().getOwned();
-
+    index_LOG(3) << "aggregate ClusterAggregate::aggRunCommand result: " << result;
     if (ErrorCodes::SendStaleConfig == getStatusFromCommandResult(result)) {
         throw RecvStaleConfigException("command failed because of stale config", result);
     }

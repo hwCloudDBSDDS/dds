@@ -66,7 +66,6 @@ bool dbEval(OperationContext* txn,
     RARELY {
         warning() << "the eval command is deprecated" << startupWarningsLog;
     }
-    LOG(1)<<"[dbEval] dbname:"<<dbName<<", cmdObj:"<<cmd;
 
     const BSONElement e = cmd.firstElement();
     uassert(
@@ -86,7 +85,7 @@ bool dbEval(OperationContext* txn,
     }
 
     verify(code);
-    LOG(1)<<"[dbEval] code:"<<code;
+    index_LOG(1) << "[dbEval] code:" << code;
 
     if (!getGlobalScriptEngine()) {
         errmsg = "db side execution is disabled";

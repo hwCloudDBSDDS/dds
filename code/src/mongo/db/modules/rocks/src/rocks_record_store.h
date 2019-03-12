@@ -30,11 +30,11 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
+#include <memory>
 #include <memory>
 #include <string>
-#include <memory>
 #include <vector>
-#include <functional>
 
 #include <rocksdb/options.h>
 
@@ -106,8 +106,7 @@ namespace mongo {
 
     class RocksRecordStore : public RecordStore {
     public:
-        RocksRecordStore(StringData ns, StringData id, ChunkRocksDBInstance* db,
-                        std::string prefix,
+        RocksRecordStore(StringData ns, StringData id, ChunkRocksDBInstance* db, std::string prefix,
                          bool isCapped = false, int64_t cappedMaxSize = -1,
                          int64_t cappedMaxDocs = -1, CappedCallback* cappedDeleteCallback = NULL);
 
@@ -120,32 +119,26 @@ namespace mongo {
 
         virtual long long dataSize(OperationContext* txn) const;
 
-        virtual long long numRecords( OperationContext* txn ) const;
+        virtual long long numRecords(OperationContext* txn) const;
 
         virtual bool isCapped() const { return _isCapped; }
 
-        virtual int64_t storageSize( OperationContext* txn,
-                                     BSONObjBuilder* extraInfo = NULL,
-                                     int infoLevel = 0 ) const;
+        virtual int64_t storageSize(OperationContext* txn, BSONObjBuilder* extraInfo = NULL,
+                                    int infoLevel = 0) const;
 
         // CRUD related
 
-        virtual RecordData dataFor( OperationContext* txn, const RecordId& loc ) const;
+        virtual RecordData dataFor(OperationContext* txn, const RecordId& loc) const;
 
-        virtual bool findRecord( OperationContext* txn,
-                                 const RecordId& loc,
-                                 RecordData* out ) const;
+        virtual bool findRecord(OperationContext* txn, const RecordId& loc, RecordData* out) const;
 
-        virtual void deleteRecord( OperationContext* txn, const RecordId& dl );
+        virtual void deleteRecord(OperationContext* txn, const RecordId& dl);
 
-        virtual StatusWith<RecordId> insertRecord( OperationContext* txn,
-                                                  const char* data,
-                                                  int len,
-                                                  bool enforceQuota );
+        virtual StatusWith<RecordId> insertRecord(OperationContext* txn, const char* data, int len,
+                                                  bool enforceQuota);
 
         virtual Status insertRecordsWithDocWriter(OperationContext* txn,
-                                                  const DocWriter* const* docs,
-                                                  size_t nDocs,
+                                                  const DocWriter* const* docs, size_t nDocs,
                                                   RecordId* idsOut);
 
         virtual Status updateRecord(OperationContext* txn, const RecordId& oldLocation,
@@ -154,36 +147,30 @@ namespace mongo {
 
         virtual bool updateWithDamagesSupported() const;
 
-        virtual StatusWith<RecordData> updateWithDamages(OperationContext* txn,
-                                                         const RecordId& loc,
+        virtual StatusWith<RecordData> updateWithDamages(OperationContext* txn, const RecordId& loc,
                                                          const RecordData& oldRec,
                                                          const char* damageSource,
                                                          const mutablebson::DamageVector& damages);
 
-        std::unique_ptr<SeekableRecordCursor> getCursor(OperationContext* txn, bool forward) const final;
+        std::unique_ptr<SeekableRecordCursor> getCursor(OperationContext* txn,
+                                                        bool forward) const final;
 
-        virtual Status truncate( OperationContext* txn );
+        virtual Status truncate(OperationContext* txn);
 
         virtual bool compactSupported() const { return true; }
         virtual bool compactsInPlace() const { return true; }
 
-        virtual Status compact( OperationContext* txn,
-                                RecordStoreCompactAdaptor* adaptor,
-                                const CompactOptions* options,
-                                CompactStats* stats );
+        virtual Status compact(OperationContext* txn, RecordStoreCompactAdaptor* adaptor,
+                               const CompactOptions* options, CompactStats* stats);
 
-        virtual Status validate( OperationContext* txn,
-                                 ValidateCmdLevel level,
-                                 ValidateAdaptor* adaptor,
-                                 ValidateResults* results, BSONObjBuilder* output );
+        virtual Status validate(OperationContext* txn, ValidateCmdLevel level,
+                                ValidateAdaptor* adaptor, ValidateResults* results,
+                                BSONObjBuilder* output);
 
-        virtual void appendCustomStats( OperationContext* txn,
-                                        BSONObjBuilder* result,
-                                        double scale ) const;
+        virtual void appendCustomStats(OperationContext* txn, BSONObjBuilder* result,
+                                       double scale) const;
 
-        virtual void temp_cappedTruncateAfter(OperationContext* txn,
-                                              RecordId end,
-                                              bool inclusive);
+        virtual void temp_cappedTruncateAfter(OperationContext* txn, RecordId end, bool inclusive);
 
         virtual boost::optional<RecordId> oplogStartHack(OperationContext* txn,
                                                          const RecordId& startingPosition) const;
@@ -195,22 +182,18 @@ namespace mongo {
         virtual void updateStatsAfterRepair(OperationContext* txn, long long numRecords,
                                             long long dataSize);
 
-        virtual Status split(OperationContext* txn, const SplitChunkReq& request,
-                             BSONObj& splitPoint) override {
-            return Status::OK();
-        }
-
-        virtual Status confirmSplit(OperationContext* txn,
-                                    const ConfirmSplitRequest& request) override {
-            return Status::OK();
-        }
-
         void setCappedCallback(CappedCallback* cb) {
-          stdx::lock_guard<stdx::mutex> lk(_cappedCallbackMutex);
-          _cappedCallback = cb;
+            stdx::lock_guard<stdx::mutex> lk(_cappedCallbackMutex);
+            _cappedCallback = cb;
         }
-        bool cappedMaxDocs() const { invariant(_isCapped); return _cappedMaxDocs; }
-        bool cappedMaxSize() const { invariant(_isCapped); return _cappedMaxSize; }
+        bool cappedMaxDocs() const {
+            invariant(_isCapped);
+            return _cappedMaxDocs;
+        }
+        bool cappedMaxSize() const {
+            invariant(_isCapped);
+            return _cappedMaxSize;
+        }
         bool isOplog() const { return _isOplog; }
 
         int64_t cappedDeleteAsNeeded(OperationContext* txn, const RecordId& justInserted);
@@ -224,35 +207,32 @@ namespace mongo {
         void Init();
         virtual void loadNextIdNum();
         RecordId _nextId();
-        
+
         virtual RecordId _makeRecordId(const rocksdb::Slice& key) const;
 
-        ChunkRocksDBInstance& GetChunkDBInstance()
-        {
-            return *dbInstancePtr;
-        }
+        ChunkRocksDBInstance& GetChunkDBInstance() { return *dbInstancePtr; }
 
-        const ChunkRocksDBInstance* GetChunkDBInstance() const {
-            return dbInstancePtr;
-        }
+        const ChunkRocksDBInstance* GetChunkDBInstance() const { return dbInstancePtr; }
 
         static std::string _makePrefixedKey(const std::string& prefix, const RecordId& loc);
 
         class CappedInsertChange;
 
         static const std::string StatisticsPrefix;
+
     protected:
         friend class CappedVisibilityManager;
         // we just need to expose _makePrefixedKey to RocksOplogKeyTracker
         friend class RocksOplogKeyTracker;
         // NOTE: Cursor might outlive the RecordStore. That's why we use all those
         // shared_ptrs
-        // TODO: BUG!!! We must be sure that iterator doesn't use RocksDB or RecordStore when they closed
+        // TODO: BUG!!! We must be sure that iterator doesn't use RocksDB or RecordStore when they
+        // closed
         class Cursor : public SeekableRecordCursor {
         public:
             Cursor(OperationContext* txn, const RocksRecordStore* recordStore,
-                   std::shared_ptr<CappedVisibilityManager> cappedVisibilityManager,
-                   bool forward, bool _isCapped);
+                   std::shared_ptr<CappedVisibilityManager> cappedVisibilityManager, bool forward,
+                   bool _isCapped);
 
             boost::optional<Record> next() final;
             boost::optional<Record> seekExact(const RecordId& id) final;
@@ -271,7 +251,7 @@ namespace mongo {
             boost::optional<Record> curr();
 
             OperationContext* _txn;
-            const RocksRecordStore* _recordStore; // not owned
+            const RocksRecordStore* _recordStore;  // not owned
             std::string _prefix;
             std::shared_ptr<CappedVisibilityManager> _cappedVisibilityManager;
             bool _forward;
@@ -291,10 +271,11 @@ namespace mongo {
         RecordData _getDataFor(OperationContext* txn, const RecordId& loc) const;
 
         virtual RecordId generateRecordId(const rocksdb::Slice& data);
-        
+
         bool cappedAndNeedDelete(long long dataSizeDelta, long long numRecordsDelta) const;
 
-        // The use of this function requires that the passed in "storage" and "loc" outlives the returned Slice
+        // The use of this function requires that the passed in "storage" and "loc" outlives the
+        // returned Slice
         static rocksdb::Slice _makeKey(const RecordId& loc, int64_t* storage);
 
         void _changeNumRecords(OperationContext* txn, int64_t amount);
@@ -304,7 +285,7 @@ namespace mongo {
         //
         //
         ChunkRocksDBInstance* dbInstancePtr;   // not owned
-        rocksdb::DB* _db;                      // not owned        
+        rocksdb::DB* _db;                      // not owned
         RocksCounterManager* _counterManager;  // not owned
         std::string _prefix;
 
@@ -316,7 +297,7 @@ namespace mongo {
         stdx::mutex _cappedCallbackMutex;  // guards _cappedCallback.
 
         mutable boost::timed_mutex _cappedDeleterMutex;  // see comment in ::cappedDeleteAsNeeded
-        int _cappedDeleteCheckCount;      // see comment in ::cappedDeleteAsNeeded
+        int _cappedDeleteCheckCount;                     // see comment in ::cappedDeleteAsNeeded
 
         const bool _isOplog;
         // nullptr iff _isOplog == false
@@ -349,13 +330,13 @@ namespace mongo {
         static constexpr const char* const _dataSizeMetadataRecordName = "datasize";
         static constexpr const char* const _numRecordsMetadataRecordName = "numrecords";
 
-        bool _shuttingDown;
-        bool _hasBackgroundThread;
+        bool _shuttingDown = false;
+        bool _hasBackgroundThread = false;
 
         friend class RecoveryUnitDB;
         friend class StandardMongoRocksStorage;
 
         //  Set correct db for RecoveryUnit
-        virtual RocksRecoveryUnit* getRocksRecoveryUnit(OperationContext* txn) const;
+        RocksRecoveryUnit* getRocksRecoveryUnit(OperationContext* txn) const;
     };
 }

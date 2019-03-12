@@ -78,11 +78,7 @@ public:
         kFailedUnitOfWork,  // in a unit of work that has failed and must be aborted
         kContinueUnitOfWork
     };
-    enum cmdFlagOptions{
-        NONE,   //uneffctive
-        DROP_COLLECTION=1,   //1:dropCollection cmd
-        OFFLOAD   //unassign cmd
-    };
+
     virtual ~OperationContext() = default;
 
     /**
@@ -252,18 +248,10 @@ public:
         return _writeConcern;
     }
 
-    const NamespaceString& getNs() const {
-        return _ns;
-    }
-
     void setWriteConcern(const WriteConcernOptions& writeConcern) {
         _writeConcern = writeConcern;
     }
 
-    void setNs(const NamespaceString & ns) {
-        _ns = ns;
-    }
-    
     /**
      * Set whether or not operations should generate oplog entries.
      * TODO SERVER-26965: Make this private.
@@ -380,36 +368,66 @@ public:
         return _shardKeyLockFlag;
     }
 
-    void setShardkeyLockFlag(bool flag)
-    {
+    void setShardkeyLockFlag(bool flag) {
         _shardKeyLockFlag = flag;
     }
 
-    void setShardkey(const BSONObj& shardKeyStr)
-    {
+    void setShardkey(const BSONObj& shardKeyStr) {
         _shardKey = shardKeyStr;
     }
 
-    BSONObj& getShardKey()
-    {
+    BSONObj& getShardKey() {
         return _shardKey;
     }
 
     bool getPrewarm() {
         return _prewarm;
     }
-    
-    void setPrewarm(bool prewarm)
-    {
+
+    void setPrewarm(bool prewarm) {
         _prewarm = prewarm;
     }
-    cmdFlagOptions getCmdFlag(){
-        return _cmdFlag;
+
+    bool getDroppedIndexFlag() {
+        return _droppedIndex;
     }
-    void setCmdFlag(cmdFlagOptions flag){
-        _cmdFlag = flag;
-    } 
-  
+
+    void setDroppedIndexFlag(bool dropped) {
+        _droppedIndex = dropped;
+    }
+
+
+    inline void setOldLen(int64_t oldLen) {
+        _oldLen = oldLen;
+    }
+
+    inline int64_t getOldLen() {
+        return _oldLen;
+    }
+
+    bool isInBuildinMode() const {
+        return _buildInMode;
+    }
+
+    void setBuildinMode() {
+        _buildInMode = true;
+    }
+
+    void cleanBuildinMode() {
+        _buildInMode = false;
+    }
+
+    bool isCustomerTxn() const {
+        return _isCustomerTxn;
+    }
+    void setCustomerTxn() {
+        _isCustomerTxn = true;
+    }
+
+    void unsetCustomerTxn() {
+        _isCustomerTxn = false;
+    }
+
 protected:
     OperationContext(Client* client, unsigned int opId);
 
@@ -429,12 +447,12 @@ private:
     friend class WriteUnitOfWork;
     Client* const _client;
     const unsigned int _opId;
-    cmdFlagOptions _cmdFlag;   //0:uneffctive 1:dropCollections 2:unassign 
+
     std::unique_ptr<Locker> _locker;
 
     std::unique_ptr<RecoveryUnit> _recoveryUnit;
     RecoveryUnitState _ruState = kNotInUnitOfWork;
-    
+
     // Follows the values of ErrorCodes::Error. The default value is 0 (OK), which means the
     // operation is not killed. If killed, it will contain a specific code. This value changes only
     // once from OK to some kill code.
@@ -476,7 +494,18 @@ private:
     BSONObj _shardKey;
 
     bool _prewarm = false;
-    NamespaceString _ns;
+
+    bool _droppedIndex = false;
+    // add a parameter of record length which will use when update and delete to avoid more one get
+    // io
+    int64_t _oldLen = 0;
+
+    bool _buildInMode;
+
+    // note: if this value is true, means this ctx is customer context,
+    //       but when this value is false, it is not means a build in context,
+    //       context aslo may be a customer context.
+    bool _isCustomerTxn;
 };
 
 class WriteUnitOfWork {

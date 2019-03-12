@@ -56,9 +56,8 @@ void initTargeterFullRange(const NamespaceString& nss,
                            const ShardEndpoint& endpoint,
                            MockNSTargeter* targeter) {
     vector<MockRange*> mockRanges;
-    ShardEndpoint endpointnew(generateChunkId(nss.ns(), BSON("x" << MINKEY)),
-                                endpoint.shardName, 
-                                endpoint.shardVersion);
+    ShardEndpoint endpointnew(
+        generateChunkId(nss.ns(), BSON("x" << MINKEY)), endpoint.shardName, endpoint.shardVersion);
     mockRanges.push_back(new MockRange(endpointnew, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
     targeter->init(mockRanges);
 }
@@ -69,11 +68,10 @@ void initTargeterSplitRange(const NamespaceString& nss,
                             MockNSTargeter* targeter) {
     vector<MockRange*> mockRanges;
     ShardEndpoint endpointnewA(generateChunkId(nss.ns(), BSON("x" << MINKEY)),
-                                endpointA.shardName, 
-                                endpointA.shardVersion);
-    ShardEndpoint endpointnewB(generateChunkId(nss.ns(), BSON("x" << 0)),
-                                endpointB.shardName, 
-                                endpointB.shardVersion);
+                               endpointA.shardName,
+                               endpointA.shardVersion);
+    ShardEndpoint endpointnewB(
+        generateChunkId(nss.ns(), BSON("x" << 0)), endpointB.shardName, endpointB.shardVersion);
     mockRanges.push_back(new MockRange(endpointnewA, nss, BSON("x" << MINKEY), BSON("x" << 0)));
     mockRanges.push_back(new MockRange(endpointnewB, nss, BSON("x" << 0), BSON("x" << MAXKEY)));
     targeter->init(mockRanges);
@@ -83,9 +81,8 @@ void initTargeterHalfRange(const NamespaceString& nss,
                            const ShardEndpoint& endpoint,
                            MockNSTargeter* targeter) {
     vector<MockRange*> mockRanges;
-    ShardEndpoint endpointnew(generateChunkId(nss.ns(), BSON("x" << MINKEY)),
-                                endpoint.shardName, 
-                                endpoint.shardVersion);
+    ShardEndpoint endpointnew(
+        generateChunkId(nss.ns(), BSON("x" << MINKEY)), endpoint.shardName, endpoint.shardVersion);
     mockRanges.push_back(new MockRange(endpointnew, nss, BSON("x" << MINKEY), BSON("x" << 0)));
 
     // x >= 0 values untargetable
@@ -1482,8 +1479,8 @@ TEST(WriteOpTests, MultiOpFailedBatchUnordered) {
     ASSERT_EQUALS(clientResponse.sizeErrDetails(), 1u);
     ASSERT_EQUALS(clientResponse.getErrDetailsAt(0)->getIndex(), 0);
     ASSERT_EQUALS(clientResponse.getErrDetailsAt(0)->getErrCode(), response.getErrCode());
-    //ASSERT_EQUALS(clientResponse.getErrDetailsAt(1)->getIndex(), 2);
-    //ASSERT_EQUALS(clientResponse.getErrDetailsAt(1)->getErrCode(), response.getErrCode());
+    // ASSERT_EQUALS(clientResponse.getErrDetailsAt(1)->getIndex(), 2);
+    // ASSERT_EQUALS(clientResponse.getErrDetailsAt(1)->getErrCode(), response.getErrCode());
 }
 
 TEST(WriteOpTests, MultiOpAbortOrdered) {

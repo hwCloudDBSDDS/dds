@@ -307,8 +307,8 @@ public:
                      string& errmsg,
                      BSONObjBuilder& result) {
         const NamespaceString nss = parseNsCollectionRequired(dbname, cmdObj);
-        if(serverGlobalParams.clusterRole == ClusterRole::ConfigServer){
-            return  appendCommandStatus(result,emptyCappedOnCfgSrv(txn,nss));
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+            return appendCommandStatus(result, emptyCappedOnCfgSrv(txn, nss));
         }
         return appendCommandStatus(result, emptyCapped(txn, nss));
     }

@@ -88,31 +88,40 @@ public:
             }
         }
 
-        BSONObj find = cmdObj.getObjectField("find");
-        if (find.isEmpty()) {
-            errmsg = "need to specify a find query.";
-            return false;
-        }
-
         auto chunkManagerStatus = ScopedChunkManager::getExisting(txn, nss);
         if (!chunkManagerStatus.isOK()) {
             return appendCommandStatus(result, chunkManagerStatus.getStatus());
         }
         ChunkManager* const info = chunkManagerStatus.getValue().cm();
+        shared_ptr<Chunk> chunk;
 
-        StatusWith<BSONObj> status =
-            info->getShardKeyPattern().extractShardKeyFromQuery(txn, find);
-        if (!status.isOK())
-            return appendCommandStatus(result, status.getStatus());
+        BSONObj find = cmdObj.getObjectField("find");
+        if (!find.isEmpty()) {
+            StatusWith<BSONObj> status =
+                info->getShardKeyPattern().extractShardKeyFromQuery(txn, find);
+            if (!status.isOK())
+                return appendCommandStatus(result, status.getStatus());
 
-        BSONObj shardKey = status.getValue();
-        if (shardKey.isEmpty()) {
-            errmsg = str::stream() << "no shard key found in chunk query " << find;
-            return false;
+            BSONObj shardKey = status.getValue();
+            if (shardKey.isEmpty()) {
+                errmsg = str::stream() << "no shard key found in chunk query " << find;
+                return false;
+            }
+
+            chunk = info->findIntersectingChunkWithSimpleCollation(txn, shardKey);
+        } else {
+            const std::string idString = cmdObj["chunkid"].valuestrsafe();
+            if (!idString.size()) {
+                errmsg = "you have to specify shardkey or chunkid";
+                return false;
+            }
+
+            chunk = info->findChunkByChunkId(idString);
+            if (!chunk) {
+                errmsg = "chunkid not found";
+                return false;
+            }
         }
-
-        shared_ptr<Chunk> chunk;        
-        chunk = info->findIntersectingChunkWithSimpleCollation(txn, shardKey);
 
         ChunkType chunkType;
         chunkType.setNS(nss.ns());
@@ -130,4 +139,3 @@ public:
 
 }  // namespace
 }  // namespace mongo
-

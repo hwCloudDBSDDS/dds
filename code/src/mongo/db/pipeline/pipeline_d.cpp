@@ -36,6 +36,7 @@
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -104,8 +105,9 @@ public:
         boost::optional<DisableDocumentValidation> maybeDisableValidation;
         if (_ctx->bypassDocumentValidation)
             maybeDisableValidation.emplace(_ctx->opCtx);
-
-        _client.insert(ns.ns(), objs);
+        auto nsWithChunkId = ns2chunkHolder().getNsWithChunkId(ns);
+        index_LOG(3) << " nsWithChunkId: " << nsWithChunkId << ", outNs: " << ns;
+        _client.insert(nsWithChunkId.ns(), objs);
         return _client.getLastErrorDetailed();
     }
 
@@ -136,9 +138,12 @@ public:
     }
 
     BSONObj getCollectionOptions(const NamespaceString& nss) final {
+        auto nsWithChunkId = ns2chunkHolder().getNsWithChunkId(nss);
         const auto infos =
-            _client.getCollectionInfos(nss.db().toString(), BSON("name" << nss.coll()));
-        return infos.empty() ? BSONObj() : infos.front().getObjectField("options").getOwned();
+            _client.getCollectionInfos(nss.db().toString(), BSON("name" << nsWithChunkId.coll()));
+        auto info = infos.empty() ? BSONObj() : infos.front().getObjectField("options").getOwned();
+        index_log() << "nss :" << nss << ", nsWithChunkId:" << nsWithChunkId << ", info:" << info;
+        return info;
     }
 
     Status renameIfOptionsAndIndexesHaveNotChanged(
@@ -191,7 +196,8 @@ public:
         pipeline.getValue()->injectExpressionContext(expCtx);
         pipeline.getValue()->optimizePipeline();
 
-        AutoGetCollectionForRead autoColl(expCtx->opCtx, expCtx->ns);
+        AutoGetCollectionForRead autoColl(expCtx->opCtx,
+                                          ns2chunkHolder().getNsWithChunkId(expCtx->ns));
         PipelineD::prepareCursorSource(autoColl.getCollection(), pipeline.getValue());
 
         return pipeline;

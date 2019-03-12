@@ -37,6 +37,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/s/balancer/balancer.h"
+#include "mongo/s/grid.h"
 #include "mongo/s/request_types/balance_chunk_request_type.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -89,46 +90,53 @@ public:
         Status status = Status(ErrorCodes::InternalError, "Internal error running command");
         switch (request.getBalanceType()) {
             case BalanceChunkRequest::BalanceType::offload:
-                status = Balancer::get(txn)->offloadChunk(txn,
-                                                          request.getChunk(),
-                                                          true);
+                status = Balancer::get(txn)->offloadChunk(txn, request.getChunk(), true);
                 break;
             case BalanceChunkRequest::BalanceType::assign:
-                getGlobalServiceContext()->registerProcessStageTime(
-                    "assignChunk:"+request.getChunk().getName());
-                getGlobalServiceContext()->getProcessStageTime(
-                    "assignChunk:"+request.getChunk().getName())->noteStageStart(
-                    "assignCommandFromUser");
-                status = Balancer::get(txn)->assignChunk(txn,
-                                                request.getChunk(),
-                                                false,
-                                                true,
-                                                request.getToShardId());
+                getGlobalServiceContext()->registerProcessStageTime("assignChunk:" +
+                                                                    request.getChunk().getName());
+                getGlobalServiceContext()
+                    ->getProcessStageTime("assignChunk:" + request.getChunk().getName())
+                    ->noteStageStart("assignCommandFromUser");
+                status = Balancer::get(txn)->assignChunk(
+                    txn, request.getChunk(), false, true, request.getToShardId());
                 break;
             case BalanceChunkRequest::BalanceType::move:
                 status = Balancer::get(txn)->moveSingleChunk(txn,
-                                                    request.getChunk(),
-                                                    request.getToShardId(),
-                                                    request.getMaxChunkSizeBytes(),
-                                                    request.getSecondaryThrottle(),
-                                                    request.getWaitForDelete(),
-                                                    true);
+                                                             request.getChunk(),
+                                                             request.getToShardId(),
+                                                             request.getMaxChunkSizeBytes(),
+                                                             request.getSecondaryThrottle(),
+                                                             request.getWaitForDelete(),
+                                                             true);
                 break;
             case BalanceChunkRequest::BalanceType::rebalance:
                 status = Balancer::get(txn)->rebalanceSingleChunk(txn, request.getChunk());
                 break;
             case BalanceChunkRequest::BalanceType::split:
-                status = Balancer::get(txn)->splitChunk(txn,
-                                               request.getChunk(),
-                                               request.getSplitPoint(),
-                                               true);
+                status = Balancer::get(txn)->splitChunk(
+                    txn, request.getChunk(), request.getSplitPoint(), true);
                 break;
+            case BalanceChunkRequest::BalanceType::rename: {
+                /*auto scopedDistLock =
+                   Grid::get(txn)->catalogClient(txn)->getDistLockManager()->lock(
+                    txn, request.getTargetNS(), "renameCollection",
+                   DistLockManager::kDefaultLockTimeout);
+        */
+                status = Balancer::get(txn)->renameCollection(txn,
+                                                              request.getChunk(),
+                                                              request.getTargetNS(),
+                                                              request.getDropTarget(),
+                                                              request.getStayTemp(),
+                                                              true);
+            } break;
             default:
-                return appendCommandStatus(result,
-                                    {ErrorCodes::IllegalOperation,
-                                     str::stream() << "request para is invalid for balance"});
+                return appendCommandStatus(
+                    result,
+                    {ErrorCodes::IllegalOperation,
+                     str::stream() << "request para is invalid for balance"});
         }
-        
+
         if (!status.isOK()) {
             return appendCommandStatus(result, status);
         }

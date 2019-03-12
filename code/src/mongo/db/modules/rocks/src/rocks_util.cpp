@@ -26,12 +26,10 @@
  *    it in the license file.
  */
 
-
 #include "rocks_util.h"
 
-#include <string>
 #include <rocksdb/status.h>
-
+#include <string>
 
 namespace mongo {
 
@@ -44,19 +42,22 @@ namespace mongo {
             return Status(ErrorCodes::BadValue, status.ToString());
         }
 
+        // if (status.IsChunkFC()) {
+        //    return Status(ErrorCodes::ChunkFC, status.ToString());
+        //}
+
         return Status(ErrorCodes::InternalError, status.ToString());
     }
 
     // rocksdb status  handle
-    void rocksdb_err_handle(rocksdb::Status status)
-    {
-        if (status.IsTimedOut()){ 
-            invariantRocksOKWithNoCore(status); 
-        } else if (!status.ok()){ 
-            uassertStatusOK(rocksToMongoStatus(status)); 
-        } 
-        
-        return ;
+    void rocksdb_err_handle(rocksdb::Status status) {
+        if (status.IsTimedOut()) {
+            invariantRocksOKWithNoCore(status);
+        } else if (!status.ok()) {
+            uassertStatusOK(rocksToMongoStatus(status));
+        }
+
+        return;
     }
-    
+
 }  // namespace mongo

@@ -39,8 +39,6 @@
 #include "mongo/bson/ordering.h"
 #include "mongo/db/storage/key_string.h"
 
-
-
 namespace rocksdb {
     class DB;
 }
@@ -53,11 +51,10 @@ namespace mongo {
 
     std::string dupKeyError(const BSONObj& key);
 
-   // constexpr int kTempKeyMaxSize = 2516;  // Index Layer support key's size larger than 1024
-     
-    constexpr int kTempKeyMaxSize = 1024;  
-    Status checkKeySize(const BSONObj& key);
+    // constexpr int kTempKeyMaxSize = 2516;  // Index Layer support key's size larger than 1024
 
+    constexpr int kTempKeyMaxSize = 1024;
+    Status checkKeySize(const BSONObj& key);
 
     class RocksRecoveryUnit;
 
@@ -67,23 +64,22 @@ namespace mongo {
     public:
         RocksIndexBase(mongo::ChunkRocksDBInstance* db);
 
-        virtual void fullValidate(OperationContext* txn, long long* numKeysOut, ValidateResults* fullResults) const;
+        virtual void fullValidate(OperationContext* txn, long long* numKeysOut,
+                                  ValidateResults* fullResults) const;
 
-        virtual bool appendCustomStats(OperationContext* txn, BSONObjBuilder* output, double scale) const
-        {
+        virtual bool appendCustomStats(OperationContext* txn, BSONObjBuilder* output,
+                                       double scale) const {
             return false;
         }
 
-        virtual Status initAsEmpty(OperationContext* txn)
-        {
-            return Status::OK();
-        }
+        virtual Status initAsEmpty(OperationContext* txn) { return Status::OK(); }
 
         virtual long long getSpaceUsedBytes(OperationContext* txn) const;
 
-        const mongo::ChunkRocksDBInstance* getDBInstance() const {return _db;}
+        const mongo::ChunkRocksDBInstance* getDBInstance() const { return _db; }
+
     protected:
-        mongo::ChunkRocksDBInstance* _db;    // not owned
+        mongo::ChunkRocksDBInstance* _db;  // not owned
         rocksdb::DB* getDB();
         const rocksdb::DB* getDB() const;
 
@@ -92,13 +88,13 @@ namespace mongo {
 
         void SetCorrectDBForRecoveryUnit(OperationContext* txn) const;
     };
-    
+
     class MongoRocksIndexBase : public RocksIndexBase {
         MONGO_DISALLOW_COPYING(MongoRocksIndexBase);
 
     public:
-        MongoRocksIndexBase(mongo::ChunkRocksDBInstance* db, std::string prefix, std::string ident, Ordering order,
-                       const BSONObj& config);
+        MongoRocksIndexBase(mongo::ChunkRocksDBInstance* db, std::string prefix, std::string ident,
+                            Ordering order, const BSONObj& config);
 
         virtual bool isEmpty(OperationContext* txn);
 
@@ -122,8 +118,8 @@ namespace mongo {
 
     class RocksUniqueIndex : public MongoRocksIndexBase {
     public:
-        RocksUniqueIndex(mongo::ChunkRocksDBInstance* db, std::string prefix, std::string ident, Ordering order,
-                         const BSONObj& config);
+        RocksUniqueIndex(mongo::ChunkRocksDBInstance* db, std::string prefix, std::string ident,
+                         Ordering order, const BSONObj& config);
 
         virtual Status insert(OperationContext* txn, const BSONObj& key, const RecordId& loc,
                               bool dupsAllowed);
@@ -140,8 +136,8 @@ namespace mongo {
 
     class RocksStandardIndex : public MongoRocksIndexBase {
     public:
-        RocksStandardIndex(mongo::ChunkRocksDBInstance* db, std::string prefix, std::string ident, Ordering order,
-                           const BSONObj& config);
+        RocksStandardIndex(mongo::ChunkRocksDBInstance* db, std::string prefix, std::string ident,
+                           Ordering order, const BSONObj& config);
 
         virtual Status insert(OperationContext* txn, const BSONObj& key, const RecordId& loc,
                               bool dupsAllowed);
@@ -163,4 +159,4 @@ namespace mongo {
         bool useSingleDelete;
     };
 
-} // namespace mongo
+}  // namespace mongo

@@ -14,12 +14,11 @@ const char kChunkInfo[] = "chunk";
 
 }  // namespace
 
-OffloadChunkRequest::OffloadChunkRequest(ChunkType &chunk)
-        :_chunk(chunk){}
+OffloadChunkRequest::OffloadChunkRequest(ChunkType& chunk) : _chunk(chunk) {}
 
 StatusWith<OffloadChunkRequest> OffloadChunkRequest::createFromCommand(const BSONObj& cmdobj) {
 
-    ChunkType      chunk;
+    ChunkType chunk;
 
     {
         BSONElement source;
@@ -40,8 +39,7 @@ StatusWith<OffloadChunkRequest> OffloadChunkRequest::createFromCommand(const BSO
     return request;
 }
 
-void OffloadChunkRequest::appendAsCommand(BSONObjBuilder* builder,
-                                                    const ChunkType &chunk) {
+void OffloadChunkRequest::appendAsCommand(BSONObjBuilder* builder, const ChunkType& chunk) {
     invariant(builder->asTempObj().isEmpty());
 
     builder->append(kOffloadChunk, chunk.getNS());
@@ -50,10 +48,8 @@ void OffloadChunkRequest::appendAsCommand(BSONObjBuilder* builder,
 
 std::string OffloadChunkRequest::toString() const {
     std::stringstream ss;
-    ss << "offload: "<< _chunk.toBSON();
+    ss << "offload: " << _chunk.toBSON();
     return ss.str();
 }
 
 }  // namespace mongo
-
-

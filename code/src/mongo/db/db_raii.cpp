@@ -38,6 +38,7 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/stats/top.h"
+#include "mongo/db/server_options.h"
 
 namespace mongo {
 
@@ -101,17 +102,12 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* txn,
 
     // Note: this can yield.
     _ensureMajorityCommittedSnapshotIsValid(nss);
-
-    // We have both the DB and collection locked, which is the prerequisite to do a stable shard
-    // version check, but we'd like to do the check after we have a satisfactory snapshot.
-    auto css = CollectionShardingState::get(txn, nss);
-    css->checkChunkVersionOrThrow(txn);
 }
 
 AutoGetCollectionForRead::~AutoGetCollectionForRead() {
-    if (_txn->recoveryUnit())
-    {
-        _txn->recoveryUnit()->clearReadFromMajorityCommittedSnapshot();
+    if (_txn->recoveryUnit()
+       && serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+       _txn->recoveryUnit()->clearSnapshotInfo();
     }
     // Report time spent in read lock
     auto currentOp = CurOp::get(_txn);

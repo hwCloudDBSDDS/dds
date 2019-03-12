@@ -51,6 +51,8 @@
 #include "util/perf_context_imp.h"
 #include "util/stop_watch.h"
 #include "util/sync_point.h"
+#include "common/common.h"
+
 
 namespace rocksdb {
 
@@ -163,12 +165,11 @@ class FilePicker {
         if (range_checker_ != nullptr) {
           f = RangeFilterCheck();
         }
-#endif
-        if(nullptr == f)
-        {
+        if(nullptr == f){
           // Search next level.
           break;
         }
+#endif
         hit_file_level_ = curr_level_;
         is_hit_file_last_in_level_ =
             curr_index_in_curr_level_ == curr_file_level_->num_files - 1;
@@ -407,8 +408,8 @@ void DoGenerateLevelFilesBrief(LevelFilesBrief* file_level,
     size_t smallest_size = smallest_key.size();
     size_t largest_size = largest_key.size();
     mem = arena->AllocateAligned(smallest_size + largest_size);
-    memcpy(mem, smallest_key.data(), smallest_size);
-    memcpy(mem + smallest_size, largest_key.data(), largest_size);
+    CommonMemCopy(mem, smallest_size + largest_size, smallest_key.data(), smallest_size);
+    CommonMemCopy(mem + smallest_size, largest_size, largest_key.data(), largest_size);
 
     FdWithKeyRange& f = file_level->files[i];
     f.fd = files[i]->fd;
@@ -959,7 +960,10 @@ Status VersionStorageInfo::LoopCurrentSmallestLevel(
       continue;
     }
     left_datasize += (*file_meta_data_it)->fd.GetFileSize();
-    left_numrecord += ((*file_meta_data_it)->num_entries - (*file_meta_data_it)->num_deletions);
+ 
+    if ((*file_meta_data_it)->num_entries > (*file_meta_data_it)->num_deletions) {
+      left_numrecord += ((*file_meta_data_it)->num_entries - (*file_meta_data_it)->num_deletions);
+    }
     if (left_datasize >= half_files_size) {
       split_point = (*file_meta_data_it)->largest.user_key().ToString();
       return Status::OK();
@@ -1008,12 +1012,14 @@ Status VersionStorageInfo::LoopTheLastLevel(
       continue;
     }
     left_datasize += (*file_meta_data_it)->fd.GetFileSize();
-    left_numrecord += ((*file_meta_data_it)->num_entries - (*file_meta_data_it)->num_deletions);
+    if ((*file_meta_data_it)->num_entries > (*file_meta_data_it)->num_deletions) {
+      left_numrecord += ((*file_meta_data_it)->num_entries - (*file_meta_data_it)->num_deletions);
+    }
     if (left_datasize >= total_files_size) {
       // It's unable to split if the total size of all the other files except the largest one is smaller than that of
       // the largest one, because in order to match "left_datasize >= half_files_size" all the files will belongs to the
       // left db and no file belongs to the right db.
-      return Status::NotFound();
+      return Status::NotSupported("can not find the half size in the data files");
     } else if (left_datasize >= half_files_size) {
       split_point = (*file_meta_data_it)->largest.user_key().ToString();
       return Status::OK();
@@ -1021,7 +1027,7 @@ Status VersionStorageInfo::LoopTheLastLevel(
   }
 
   // Forever can not go to here.
-  return Status::NotFound();
+  return Status::Corruption();
 }
 
 // Loop all files at all levels in the order of the largest key.
@@ -1037,7 +1043,7 @@ Status VersionStorageInfo::LoopLevelsFileInOrder(
 
   if (levels_loop_pos.size() <= 0) {
     // Unable to split if no file.
-    return Status::NotFound();
+    return Status::NotSupported("The data is no file in below level 1");
   }
 
   // Loop all files at all levels in the order of the largest key and accumulate the size.
@@ -1082,7 +1088,9 @@ Status VersionStorageInfo::GetSplitPointBySize(
 
   // Get the total size of the sst files at all the other levels except the level 0.
   GetTotalSstFilesSizeAndRecNumExceptLevel0(range_checker, total_files_size, total_record_num);
-
+  if((0 ==total_files_size) || (0 == total_record_num)){
+    return Status::NotSupported("The data is no file in below level");
+  }
   // Save the loop start position of each non empty level into the the temporary vector and
   // find the smallest level at the same time, then move the smallest level to the front of
   // the temporary vector.
@@ -1268,6 +1276,7 @@ Version::Version(ColumnFamilyData* column_family_data, VersionSet* vset,
       refs_(0),
       version_number_(version_number) {}
 
+
 void Version::Get(const ReadOptions& read_options, const LookupKey& k,
                   std::string* value, Status* status,
                   MergeContext* merge_context,
@@ -1341,6 +1350,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
     }
     f = fp.GetNextFile();
   }
+
 
   if (GetContext::kMerge == get_context.State()) {
     if (!merge_operator_) {
@@ -2202,15 +2212,15 @@ const char* VersionStorageInfo::LevelSummary(
   int len = 0;
   if (compaction_style_ == kCompactionStyleLevel && num_levels() > 1) {
     assert(base_level_ < static_cast<int>(level_max_bytes_.size()));
-    len = snprintf(scratch->buffer, sizeof(scratch->buffer),
+    len = CommonSnprintf(scratch->buffer, sizeof(scratch->buffer), sizeof(scratch->buffer) - 1,
                    "base level %d max bytes base %" PRIu64 " ", base_level_,
                    level_max_bytes_[base_level_]);
   }
   len +=
-      snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, "files[");
+      CommonSnprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, sizeof(scratch->buffer) - len - 1, "files[");
   for (int i = 0; i < num_levels(); i++) {
     int sz = sizeof(scratch->buffer) - len;
-    int ret = snprintf(scratch->buffer + len, sz, "%d ", int(files_[i].size()));
+    int ret = CommonSnprintf(scratch->buffer + len, sz, sz - 1, "%d ", int(files_[i].size()));
     if (ret < 0 || ret >= sz) break;
     len += ret;
   }
@@ -2218,11 +2228,11 @@ const char* VersionStorageInfo::LevelSummary(
     // overwrite the last space
     --len;
   }
-  len += snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
+  len += CommonSnprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, sizeof(scratch->buffer) - len - 1,
                   "] max score %.2f", compaction_score_[0]);
 
   if (!files_marked_for_compaction_.empty()) {
-    snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
+    CommonSnprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, sizeof(scratch->buffer) - len - 1,
              " (%" ROCKSDB_PRIszt " files need compaction)",
              files_marked_for_compaction_.size());
   }
@@ -2232,12 +2242,12 @@ const char* VersionStorageInfo::LevelSummary(
 
 const char* VersionStorageInfo::LevelFileSummary(FileSummaryStorage* scratch,
                                                  int level) const {
-  int len = snprintf(scratch->buffer, sizeof(scratch->buffer), "files_size[");
+  int len = CommonSnprintf(scratch->buffer, sizeof(scratch->buffer),  sizeof(scratch->buffer) - 1, "files_size[");
   for (const auto& f : files_[level]) {
     int sz = sizeof(scratch->buffer) - len;
     char sztxt[16];
     AppendHumanBytes(f->fd.GetFileSize(), sztxt, sizeof(sztxt));
-    int ret = snprintf(scratch->buffer + len, sz,
+    int ret = CommonSnprintf(scratch->buffer + len, sz, sz - 1,
                        "#%" PRIu64 "(seq=%" PRIu64 ",sz=%s,%d) ",
                        f->fd.GetNumber(), f->smallest_seqno, sztxt,
                        static_cast<int>(f->being_compacted));
@@ -2249,7 +2259,7 @@ const char* VersionStorageInfo::LevelFileSummary(FileSummaryStorage* scratch,
   if (files_[level].size() && len > 0) {
     --len;
   }
-  snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, "]");
+  CommonSnprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, sizeof(scratch->buffer) - len - 1, "]");
   return scratch->buffer;
 }
 
@@ -2476,7 +2486,9 @@ struct VersionSet::ManifestWriter {
   const autovector<VersionEdit*>& edit_list;
 
   explicit ManifestWriter(InstrumentedMutex* mu, ColumnFamilyData* _cfd,
+                          // split-feature: support split DB
                           const autovector<VersionEdit*>& e, bool split)
+      // split-feature: support split DB
       : done(false), split_flag(split), cv(mu), cfd(_cfd), edit_list(e) {}
 };
 
@@ -2500,8 +2512,11 @@ VersionSet::VersionSet(const std::string& dbname,
       manifest_file_size_(0),
       env_options_(storage_options),
       env_options_compactions_(env_options_),
+      new_compaction_options_(env_options_),
       // split-feature: support split DB
-      split_state_(false){}
+      split_state_(false){
+          new_compaction_options_.io_pri = IO_PRIORITY_LOW;
+}
 
 void CloseTables(void* ptr, size_t) {
   TableReader* table_reader = reinterpret_cast<TableReader*>(ptr);
@@ -2617,7 +2632,7 @@ Status VersionSet::LogAndApply(ColumnFamilyData* column_family_data,
   }
 
   // queue our request
- // jerousrb modify for split-feature
+  // split-feature: support split DB
   ManifestWriter w(mu, column_family_data, edit_list, false);
   manifest_writers_.push_back(&w);
 
@@ -2655,8 +2670,10 @@ Status VersionSet::LogAndApply(ColumnFamilyData* column_family_data,
     v = new Version(column_family_data, this, current_version_number_++);
     builder_guard.reset(new BaseReferencedVersionBuilder(column_family_data));
     auto* builder = builder_guard->version_builder();
+    int num_writers = 0;
     for (const auto& writer : manifest_writers_) {
-      if (// the writer which split_flag is true is not added to group
+      if (// split-feature: support split DB
+          // the writer which split_flag is true is not added to group
           writer->split_flag == true ||
           writer->edit_list.front()->IsColumnFamilyManipulation() ||
           writer->cfd->GetID() != column_family_data->GetID()){
@@ -2665,6 +2682,7 @@ Status VersionSet::LogAndApply(ColumnFamilyData* column_family_data,
         break;
       }
       last_writer = writer;
+      ++num_writers;
       for (const auto& edit : writer->edit_list) {
         LogAndApplyHelper(column_family_data, builder, v, edit, mu);
         batch_edits.push_back(edit);
@@ -2685,7 +2703,7 @@ Status VersionSet::LogAndApply(ColumnFamilyData* column_family_data,
       manifest_file_size_ > db_options_->max_manifest_file_size)) {
     pending_manifest_file_number_ = NewFileNumber();
     batch_edits.back()->SetNextFile(next_file_number_.load());
-    Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
+    Log(InfoLogLevel::WARN_LEVEL, db_options_->info_log,
           "switch manifest:new file num: %lu, old file num %lu size(%lu, %lu), isSplit(%u)\n",
           pending_manifest_file_number_, manifest_file_number_, manifest_file_size_,
           db_options_->max_manifest_file_size, (uint32_t)IsDbSplitting());
@@ -2772,7 +2790,7 @@ Status VersionSet::LogAndApply(ColumnFamilyData* column_family_data,
             break;
           }
           
-          Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
+          Log(InfoLogLevel::DEBUG_LEVEL, db_options_->info_log,
               "Add version edit (%s)to manifest success\n", record.c_str());
         }
       }
@@ -2783,10 +2801,10 @@ Status VersionSet::LogAndApply(ColumnFamilyData* column_family_data,
         s1 = SyncManifest(env_, db_options_, descriptor_log_child_->file());
       }
       if (!s.ok() || !s1.ok()) {
-        Log(InfoLogLevel::ERROR_LEVEL, db_options_->info_log,
+        Log(InfoLogLevel::WARN_LEVEL, db_options_->info_log,
             "MANIFEST write: parent %s   child %s\n", s.ToString().c_str(), s1.ToString().c_str());
       }
-      Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
+      Log(InfoLogLevel::DEBUG_LEVEL, db_options_->info_log,
           "sync parent and child manifest success\n");
     }
 
@@ -3042,10 +3060,17 @@ Status VersionSet::Recover(
         if (cf_options == cf_name_to_options.end()) {
           column_families_not_found.insert(
               {edit.column_family_, edit.column_family_name_});
+          Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
+          "recover:Column family [%s] not found in cf_options",
+             edit.column_family_name_.c_str());
+
         } else {
           cfd = CreateColumnFamily(cf_options->second, &edit);
           builders.insert(
               {edit.column_family_, new BaseReferencedVersionBuilder(cfd)});
+          Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
+            "recover:creat Column family [%s] ID[%u]",
+               edit.column_family_name_.c_str(), cfd);
         }
       } else if (edit.is_column_family_drop_) {
         if (cf_in_builders) {
@@ -3118,7 +3143,9 @@ Status VersionSet::Recover(
       }
 
       if (edit.has_next_file_number_) {
-        next_file = edit.next_file_number_;
+        if(edit.next_file_number_ > next_file){
+           next_file = edit.next_file_number_;
+        }
         have_next_file = true;
       }
 
@@ -3199,7 +3226,9 @@ Status VersionSet::Recover(
     }
 
     manifest_file_size_ = current_manifest_file_size;
-    next_file_number_.store(next_file + 1);
+    // TODO: next_file_number_ increases by 500 when the DB is recover,
+    // preventing duplication of serial numbers
+    next_file_number_.store(next_file + 500);
     last_sequence_ = last_sequence;
     prev_log_number_ = previous_log_number;
 
@@ -3352,7 +3381,7 @@ Status VersionSet::ReduceNumberOfLevels(const std::string& dbname,
         first_nonempty_level_filenum = file_num;
       } else {
         char msg[255];
-        snprintf(msg, sizeof(msg),
+        CommonSnprintf(msg, sizeof(msg), sizeof(msg) - 1,
                  "Found at least two levels containing files: "
                  "[%d:%d],[%d:%d].\n",
                  first_nonempty_level, first_nonempty_level_filenum, i,
@@ -3618,10 +3647,8 @@ Status VersionSet::WriteSnapshot(log::Writer* log,
           "WriteSnapshot: edit Column family [%s] ",cfd->GetName().c_str());
       }
       // split-feature: set SetNextFile and SetLastSequence
-      if(right_db_range_checker.size() > 0) {
-          edit.SetNextFile(next_file_number_.load());
-          edit.SetLastSequence(last_sequence_);
-      }
+      edit.SetNextFile(next_file_number_.load());
+      edit.SetLastSequence(last_sequence_);
 
       edit.SetComparatorName(
           cfd->internal_comparator().user_comparator()->Name());
@@ -3665,9 +3692,8 @@ Status VersionSet::WriteSnapshot(log::Writer* log,
                  == checker->DoesKeyRangeBelongToChunk(f->smallest.user_key(),
                                                        f->largest.user_key())){
              Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
-               "WriteSnapshot: cfd[%s]:file(%u)size(%lu)key(%s,%s) not write",cfd->GetName().c_str(),
-               f->fd.GetNumber(),f->fd.GetFileSize(), f->smallest.user_key().data(),
-               f->largest.user_key().data());
+               "WriteSnapshot: cfd[%s]:file(%u)size(%lu) not write",cfd->GetName().c_str(),
+               f->fd.GetNumber(),f->fd.GetFileSize());
              continue;
           }
 
@@ -3676,14 +3702,19 @@ Status VersionSet::WriteSnapshot(log::Writer* log,
                        f->smallest_seqno, f->largest_seqno,
                        f->marked_for_compaction);
           Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
-            "WriteSnapshot:cfd[%s]:file(%u)size(%lu)key(%s,%s) add to Edit",cfd->GetName().c_str(),
-            f->fd.GetNumber(),f->fd.GetFileSize(), f->smallest.user_key().data(),
-            f->largest.user_key().data());
+            "WriteSnapshot:cfd[%s]:file(%u)size(%lu)add to Edit",cfd->GetName().c_str(),
+            f->fd.GetNumber(),f->fd.GetFileSize());
         }
       }
       edit.SetLogNumber(cfd->GetLogNumber());
       std::string record;
       if (!edit.EncodeTo(&record)) {
+        // Sometimes the edit is too large, for example it contains smallest key
+        // and largest key, so the Corruption status string is so long that it
+        // can't write to log file, add this short log message here.
+        Log(InfoLogLevel::ERROR_LEVEL, db_options_->info_log,
+            "Unable to Encode VersionEdit");
+
         return Status::Corruption(
             "WriteSnapshot:Unable to Encode LogNumber VersionEdit:" + edit.DebugString(true));
       }
@@ -3868,7 +3899,7 @@ InternalIterator* VersionSet::MakeInputIterator(
         const LevelFilesBrief* flevel = c->input_levels(which);
         for (size_t i = 0; i < flevel->num_files; i++) {
           list[num++] = cfd->table_cache()->NewIterator(
-              read_options, env_options_compactions_,
+              read_options, new_compaction_options_,
               cfd->internal_comparator(), flevel->files[i].fd, range_del_agg,
               nullptr /* table_reader_ptr */,
               nullptr /* no per level latency histogram */,
@@ -3879,7 +3910,7 @@ InternalIterator* VersionSet::MakeInputIterator(
         // Create concatenating iterator for the files from this level
         list[num++] = NewTwoLevelIterator(
             new LevelFileIteratorState(
-                cfd->table_cache(), read_options, env_options_,
+                cfd->table_cache(), read_options, new_compaction_options_,
                 cfd->internal_comparator(),
                 nullptr /* no per level latency histogram */,
                 true /* for_compaction */, false /* prefix enabled */,
@@ -4075,6 +4106,7 @@ Status VersionSet::LogAndApply4Split(const std::string & child_dbname,
   autovector<VersionEdit*> edit_list;
   edit_list.push_back(&dummy_edit);
 
+  //mu->AssertHeld();
   InstrumentedMutexLock l(mu);
 
   // queue our request
@@ -4083,6 +4115,8 @@ Status VersionSet::LogAndApply4Split(const std::string & child_dbname,
   while (!w.done && &w != manifest_writers_.front()) {
     w.cv.Wait();
   }
+  //set flag  after the writer the version need double write to the both db
+  SetSplitFlag(true);
   if (w.done) {
     // it is impossible to enter this branch
     Log(InfoLogLevel::ERROR_LEVEL, db_options_->info_log,
@@ -4130,14 +4164,11 @@ Status VersionSet::LogAndApply4Split(const std::string & child_dbname,
        "set child manifest current %" PRIu64 " failed\n", manifest_file_number_);
   }
   
-  Log(InfoLogLevel::WARN_LEVEL, db_options_->info_log,
+  Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
       "Write Child DB(%s) manifest LogAndApply4Split success \n", child_dbname.c_str());
    
   mu->Lock();
   
-   //set flag  after the writer the version need double write to the both db
-   SetSplitFlag(true);
-
   // wake up all the waiting writers
   while (true) {
     ManifestWriter* ready = manifest_writers_.front();
@@ -4163,7 +4194,7 @@ Status VersionSet::StopWriteSplitDeta(ColumnFamilyData* column_family_data,
   autovector<VersionEdit*> edit_list;
   edit_list.push_back(&dummy_edit);
 
-  mu->AssertHeld();
+  InstrumentedMutexLock guard_lock(mu);
 
   // queue our request
   ManifestWriter w(mu, column_family_data, edit_list, true);
@@ -4208,6 +4239,72 @@ Status VersionSet::StopWriteSplitDeta(ColumnFamilyData* column_family_data,
   }
   
   return Status::OK();
+}
+
+void VersionSet::RemoveFilesNotBelongToChunk(InstrumentedMutex* mu) {
+  const IKeyRangeChecker* checker = nullptr;
+
+  InstrumentedMutexLock l(mu);
+  Status s;
+
+  for (auto cfd : *column_family_set_) {
+    if (cfd->IsDropped()) {
+      Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
+          "[SPLIT]WriteSnapshot: drop Column family [%s] ",cfd->GetName().c_str());
+      continue;
+    }
+
+    checker = cfd->ioptions()->range_checker;
+    if(!checker){
+      continue;
+    }
+
+    VersionEdit edit;
+    FileMetaData* f = nullptr;
+    std::vector<FileMetaData*> deleted_files;
+
+    for (int level = 0; level < cfd->NumberLevels(); level++) {
+      const std::vector<FileMetaData*>& level_files = cfd->current()->storage_info()->LevelFiles(level);
+      for (size_t i = 0; i < level_files.size(); i++) {
+         f = level_files[i];
+         if(KeyRangeCheckResult::RangeSeparated
+             == checker->DoesKeyRangeBelongToChunk(f->smallest.user_key(),
+                                                   f->largest.user_key())){
+           Log(InfoLogLevel::WARN_LEVEL, db_options_->info_log,
+             "[SPLIT]cfd[%s]:file(%u)size(%lu) remove from version compaction[%d]",cfd->GetName().c_str(),
+             f->fd.GetNumber(),f->fd.GetFileSize(), f->being_compacted);
+           if(f->being_compacted == false){
+               edit.SetColumnFamily(cfd->GetID());
+               edit.DeleteFile(level, f->fd.GetNumber());
+               deleted_files.push_back(f);
+               f->being_compacted = true;
+           }
+          }
+      }
+    }
+    if(edit.GetDeletedFiles().empty()){
+      Log(InfoLogLevel::WARN_LEVEL, db_options_->info_log,
+            "[SPLIT]cfd[%s]:parent chunk no file need to remove after split",cfd->GetName().c_str());
+      continue;
+    }
+    
+    s = LogAndApply(cfd, *cfd->GetLatestMutableCFOptions(), &edit, mu);
+
+    for (auto* deleted_file : deleted_files) {
+      deleted_file->being_compacted = false;
+    }
+    if (!s.ok()) {
+      Log(InfoLogLevel::ERROR_LEVEL, db_options_->info_log,
+          "[SPLIT]cfd[%s]: LogAndApply return %s", cfd->GetName().c_str(),s.ToString().c_str());
+      continue;
+    } else {
+      //Persistence version of split generated
+      delete cfd->InstallSuperVersion(new SuperVersion(), mu);
+    }
+  }
+  Log(InfoLogLevel::INFO_LEVEL, db_options_->info_log,
+      "[SPLIT] Remove file from parent DB after split");
+  return;
 }
 
 }  // namespace rocksdb

@@ -32,60 +32,56 @@
 
 #include "mongo/db/global_timestamp.h"
 #include "mongo/db/service_context.h"
-#include "mongo/platform/atomic_word.h"
 #include "mongo/util/clock_source.h"
+#include "mongo/util/concurrency/spin_lock.h"
 #include "mongo/util/log.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
 namespace {
 // This is the value of the next timestamp to handed out.
-AtomicUInt64 globalTimestamp(0);
+uint64_t globalTimestamp(Timestamp(0, 0).asULL());
+unsigned globalMemSecs(0);
+SpinLock globalTimestampLock;
 }  // namespace
 
 void setGlobalTimestamp(const Timestamp& newTime) {
-    globalTimestamp.store(newTime.asULL() + 1);
+    scoped_spinlock lk(globalTimestampLock);
+    globalTimestamp = newTime.asULL() + 1;
 }
 
 Timestamp getLastSetTimestamp() {
-    return Timestamp(globalTimestamp.load() - 1);
+    scoped_spinlock lk(globalTimestampLock);
+    return Timestamp(globalTimestamp - 1 );
 }
 
 Timestamp getNextGlobalTimestamp(unsigned count) {
+    invariant((count != 0) && (count <= uint32_t(std::numeric_limits<int32_t>::max())));
+    scoped_spinlock lk(globalTimestampLock);
+
     const unsigned now = durationCount<Seconds>(
         getGlobalServiceContext()->getFastClockSource()->now().toDurationSinceEpoch());
-    invariant(now != 0);  // This is a sentinel value for null Timestamps.
-    invariant(count != 0);
+    if(0 == globalMemSecs){ globalMemSecs = now;}
+    if(0 == globalTimestamp){ globalTimestamp = Timestamp(now, 1).asULL();}
 
     // Optimistic approach: just increment the timestamp, assuming the seconds still match.
-    auto first = globalTimestamp.fetchAndAdd(count);
+    uint64_t first = globalTimestamp;
     auto currentTimestamp = first + count;  // What we just set it to.
-    unsigned globalSecs = Timestamp(currentTimestamp).getSecs();
 
     // Fail if time is not moving forward for 2**31 calls to getNextGlobalTimestamp.
-    if (MONGO_unlikely(globalSecs > now) && Timestamp(currentTimestamp).getInc() >= 1U << 31) {
-        mongo::severe() << "clock skew detected, prev: " << globalSecs << " now: " << now;
+    if (Timestamp(currentTimestamp).getInc() >= 1U << 31) {
+        mongo::severe() << "not moving forward for 2**31 calls ";
         fassertFailed(17449);
     }
 
-    // If the seconds need to be updated, try to do it. This can happen at most once per second.
-    if (MONGO_unlikely(globalSecs < now)) {
-        // First fix the seconds portion.
-        while (globalSecs < now) {
-            const auto desired = Timestamp(now, 1).asULL();
-
-            auto actual = globalTimestamp.compareAndSwap(currentTimestamp, desired);
-            if (actual == currentTimestamp)
-                break;  // We successfully set the secs, so we're done here.
-
-            // We raced with someone else. Try again, unless they fixed the secs field for us.
-            currentTimestamp = actual;
-            globalSecs = Timestamp(currentTimestamp).getSecs();
-        }
-
-        // Now reserve our timestamps with the new value of secs.
-        first = globalTimestamp.fetchAndAdd(count);
+    auto difSecs = now - globalMemSecs;
+    if(difSecs){
+        globalMemSecs = now; //update global seconds.
+        unsigned g_secs = Timestamp(globalTimestamp).getSecs() + difSecs;
+        first = Timestamp(g_secs, 1).asULL();
     }
+
+    globalTimestamp = first + count;
 
     return Timestamp(first);
 }

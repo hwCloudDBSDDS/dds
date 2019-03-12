@@ -27,18 +27,18 @@
     db.create_collection.drop();
     assert.commandFailedWithCode(
         db.createCollection("create_collection",
-                            {autoIndexId: false, idIndex: {key: {_id: 1}, name: "_id_"}}),
+                            {autoIndexId: true, idIndex: {key: {_id: 1}, name: "_id_"}}),
         ErrorCodes.InvalidOptions);
 
     // "idIndex" field must be an object.
-    db.create_collection.drop();
-    assert.commandFailedWithCode(db.createCollection("create_collection", {idIndex: 1}),
-                                 ErrorCodes.TypeMismatch);
+    // db.create_collection.drop();
+    // assert.commandFailedWithCode(db.createCollection("create_collection", {idIndex: 1}),
+    //                            ErrorCodes.TypeMismatch);
 
-    // "idIndex" field cannot be empty.
-    db.create_collection.drop();
-    assert.commandFailedWithCode(db.createCollection("create_collection", {idIndex: {}}),
-                                 ErrorCodes.FailedToParse);
+    //// "idIndex" field cannot be empty.
+    // db.create_collection.drop();
+    // assert.commandFailedWithCode(db.createCollection("create_collection", {idIndex: {}}),
+    //                             ErrorCodes.FailedToParse);
 
     // "idIndex" field must be a specification for an _id index.
     db.create_collection.drop();

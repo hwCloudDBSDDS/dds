@@ -125,7 +125,8 @@ Status WriteOp::targetWrites(OperationContext* txn,
         WriteOpRef ref(_itemRef.getItemIndex(), _childOps.size() - 1);
 
         // For now, multiple endpoints imply no versioning - we can't retry half a multi-write
-        // TODO:  every endpoint will carry ver,  why the original imply no versioning when multiple endpoints
+        // TODO:  every endpoint will carry ver,  why the original imply no versioning when multiple
+        // endpoints
         targetedWrites->push_back(new TargetedWrite(*endpoint, ref));
 
         _childOps.back()->pendingWrite = targetedWrites->back();
@@ -141,7 +142,10 @@ size_t WriteOp::getNumTargeted() {
 }
 
 static bool isRetryErrCode(int errCode) {
-    return errCode == ErrorCodes::StaleShardVersion;
+    if (errCode == ErrorCodes::StaleShardVersion || errCode == ErrorCodes::ShardNotFound) {
+        return true;
+    }
+    return false;
 }
 
 // Aggregate a bunch of errors for a single op together

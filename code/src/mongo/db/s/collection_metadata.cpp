@@ -106,27 +106,28 @@ std::unique_ptr<CollectionMetadata> CollectionMetadata::cloneMinusPending(
 
 std::unique_ptr<CollectionMetadata> CollectionMetadata::cloneUpdateChunkInfo(
     const ChunkType& chunkType) const {
-        unique_ptr<CollectionMetadata> metadata(stdx::make_unique<CollectionMetadata>());
-        metadata->_keyPattern = _keyPattern.getOwned();
-        metadata->fillKeyPatternFields();
-        metadata->_pendingMap = _pendingMap;
+    unique_ptr<CollectionMetadata> metadata(stdx::make_unique<CollectionMetadata>());
+    metadata->_keyPattern = _keyPattern.getOwned();
+    metadata->fillKeyPatternFields();
+    metadata->_pendingMap = _pendingMap;
 
-        //metadata->_chunksMap = _chunksMap;
-        //metadata->_rangesMap = _rangesMap;
-        //metadata->_shardVersion = _shardVersion;
-        //metadata->_collVersion = _collVersion;
-        invariant(_chunksMap.size() == 1);
-        //invariant(_rangesMap.size() == 0);
+    // metadata->_chunksMap = _chunksMap;
+    // metadata->_rangesMap = _rangesMap;
+    // metadata->_shardVersion = _shardVersion;
+    // metadata->_collVersion = _collVersion;
+    invariant(_chunksMap.size() == 1);
+    // invariant(_rangesMap.size() == 0);
 
-        metadata->_chunksMap.insert(
-            make_pair(chunkType.getMin(),  CachedChunkInfo(chunkType.getMax(), chunkType.getVersion())));
+    metadata->_chunksMap.insert(
+        make_pair(chunkType.getMin(), CachedChunkInfo(chunkType.getMax(), chunkType.getVersion())));
 
-        metadata->_collVersion = chunkType.getVersion() > _collVersion ? chunkType.getVersion() : _collVersion;
-        metadata->_shardVersion = chunkType.getVersion();
+    metadata->_collVersion =
+        chunkType.getVersion() > _collVersion ? chunkType.getVersion() : _collVersion;
+    metadata->_shardVersion = chunkType.getVersion();
 
-        metadata->fillRanges();
-        invariant(metadata->isValid());
-        return metadata;
+    metadata->fillRanges();
+    invariant(metadata->isValid());
+    return metadata;
 }
 
 std::unique_ptr<CollectionMetadata> CollectionMetadata::clonePlusPending(

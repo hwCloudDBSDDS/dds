@@ -38,8 +38,11 @@
 #include "mongo/bson/util/builder.h"
 #include "mongo/client/connection_string.h"
 #include "mongo/client/remote_command_targeter.h"
+#include "mongo/db/commands.h"
+#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/client/multi_command_dispatch.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/config.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/write_ops/batch_write_op.h"
 #include "mongo/s/write_ops/write_error_detail.h"
@@ -50,6 +53,7 @@ namespace mongo {
 using std::make_pair;
 using std::stringstream;
 using std::vector;
+const Milliseconds kDefaultInterval(1000);
 
 BatchWriteExec::BatchWriteExec(NSTargeter* targeter, MultiCommandDispatch* dispatcher)
     : _targeter(targeter), _dispatcher(dispatcher) {}
@@ -82,15 +86,28 @@ static void noteStaleResponses(const vector<ShardError*>& staleErrors, NSTargete
 
 // The number of times we'll try to continue a batch op if no progress is being made
 // This only applies when no writes are occurring and metadata is not changing on reload
-static const int kMaxRoundsWithoutProgress(5);
+static const int kMaxRoundsWithoutProgress(30);
+
+bool chunkIsOK(std::set<ChunkId>& set, ChunkId chunk) {
+    auto it = set.find(chunk);
+    if (it != set.end()) {
+        return true;
+    }
+
+    return false;
+}
+
 
 void BatchWriteExec::executeBatch(OperationContext* txn,
                                   const BatchedCommandRequest& clientRequest,
                                   BatchedCommandResponse* clientResponse,
                                   BatchWriteExecStats* stats) {
+    size_t ftdsRecordNumToSend = 0;
+    // end
 
-    LOG(4) << "starting execution of write batch of size "
-           << static_cast<int>(clientRequest.sizeWriteOps()) << " for " << clientRequest.getNS();
+    index_LOG(4) << "[BATCH_WRITE] starting execution of write batch of size "
+                 << static_cast<int>(clientRequest.sizeWriteOps()) << " for "
+                 << clientRequest.getNS();
 
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&clientRequest);
@@ -101,8 +118,9 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
     int numCompletedOps = 0;
     int numRoundsWithoutProgress = 0;
 
+    std::set<std::pair<int, ChunkId>> suc_batches;
     while (!batchOp.isFinished()) {
-        //
+        index_LOG(1) << "[BATCH_WRITE] New Round: " << rounds << " , batchOp is unfinished.";
         // Get child batches to send using the targeter
         //
         // Targeting errors can be caused by remote metadata changing (the collection could have
@@ -142,12 +160,14 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
             dassert(childBatches.size() == 0u);
         }
 
-        auto prewarmFlag = (clientRequest.getBatchType() == BatchedCommandRequest::BatchType_Insert)
-            && (clientRequest.isPrewarmSet() == true) && (clientRequest.getPrewarm() == true);
+        auto prewarmFlag =
+            (clientRequest.getBatchType() == BatchedCommandRequest::BatchType_Insert) &&
+            (clientRequest.isPrewarmSet() == true) && (clientRequest.getPrewarm() == true);
         if (prewarmFlag == true) {
             if (childBatches.size() > 1) {
                 stringstream msg;
-                msg << ErrorCodes::NotInOneChunk << ". " << "Batch insert should be in a chunk for prewarm!";
+                msg << ErrorCodes::NotInOneChunk << ". "
+                    << "Batch insert should be in a chunk for prewarm!";
                 WriteErrorDetail error;
                 buildErrorFrom(Status(ErrorCodes::NotInOneChunk, msg.str()), &error);
                 batchOp.abortBatch(error);
@@ -158,10 +178,14 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
         //
         // Send all child batches
         //
-
+        // bool didReload = false;
         size_t numSent = 0;
         size_t numToSend = childBatches.size();
+        ftdsRecordNumToSend = numToSend;
+        // bool hasStaleError = false;
+        bool needWait = false;
         while (numSent != numToSend) {
+            index_LOG(1) << "[BATCH_WRITE] numsent: " << numSent << " numToSend: " << numToSend;
             // Collect batches out on the network, mapped by endpoint
             OwnedHostBatchMap ownedPendingBatches;
             OwnedHostBatchMap::MapType& pendingBatches = ownedPendingBatches.mutableMap();
@@ -182,6 +206,19 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                 // If the batch is NULL, we sent it previously, so skip
                 if (nextBatch == NULL)
                     continue;
+                std::vector<TargetedWrite*> targetWrites = nextBatch->getWrites();
+                if (targetWrites.size() > 0) {
+                    std::pair<int, ChunkId> sucBatch(targetWrites[0]->writeOpRef.first,
+                                                     targetWrites[0]->endpoint.chunkId);
+                    if (suc_batches.find(sucBatch) != suc_batches.end()) {
+                        BatchedCommandResponse rsp;
+                        rsp.setOk(true);
+                        batchOp.noteBatchResponse(*nextBatch, rsp, nullptr);
+                        *it = NULL;
+                        --numToSend;
+                        continue;
+                    }
+                }
 
                 // Figure out what host we need to dispatch our targeted batch
                 const ReadPreferenceSetting readPref(ReadPreference::PrimaryOnly, TagSet());
@@ -191,21 +228,32 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                 bool resolvedHost = false;
                 ConnectionString shardHost;
                 if (!shardStatus.isOK()) {
-                    batchOp.cancelWriteOps(*nextBatch);
-                    _targeter->noteCouldNotTarget();
                     Status status(std::move(shardStatus.getStatus()));
-                    log() << "unable to send write batch to " << nextBatch->getEndpoint().shardName
-                           << causedBy(status);
+                    WriteErrorDetail error;
+                    buildErrorFrom(status, &error);
+                    batchOp.noteBatchError(*nextBatch, error);
+                    _targeter->noteCouldNotTarget();
+                    index_log() << "[BATCH_WRITE] unable to send write batch to "
+                                << nextBatch->getEndpoint().shardName << causedBy(status);
+                    if (status == ErrorCodes::ShardNotFound) {
+                        // didReload = true;
+                        needWait = true;
+                        *it = NULL;
+                        --numToSend;
+                        continue;
+                    }
                 } else {
                     auto shard = shardStatus.getValue();
 
                     auto swHostAndPort = shard->getTargeter()->findHostNoWait(readPref);
                     if (!swHostAndPort.isOK()) {
-                        batchOp.cancelWriteOps(*nextBatch);
                         _targeter->noteCouldNotTarget();
-                        log() << "unable to send write batch to "
-                               << nextBatch->getEndpoint().shardName
-                               << causedBy(swHostAndPort.getStatus());
+                        WriteErrorDetail error;
+                        buildErrorFrom(swHostAndPort.getStatus(), &error);
+                        index_log() << "[BATCH_WRITE] unable to send write batch to "
+                                    << nextBatch->getEndpoint().shardName
+                                    << causedBy(swHostAndPort.getStatus());
+                        batchOp.noteBatchError(*nextBatch, error);
                     } else {
                         shardHost = ConnectionString(std::move(swHostAndPort.getValue()));
                         resolvedHost = true;
@@ -240,9 +288,6 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                 NamespaceString nss(request.getNS());
                 request.setNS(nss);
 
-                LOG(4) << "sending write batch to " << shardHost.toString() << ": "
-                       << redact(request.toString());
-
                 _dispatcher->addCommand(shardHost, nss.db(), request.toBSON());
 
                 // Indicate we're done by setting the batch to NULL
@@ -255,7 +300,12 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                 pendingBatches.insert(make_pair(shardHost, nextBatch));
             }
 
+            /*if (didReload) {
+                break;
+            }*/
+
             // Send them all out
+
             _dispatcher->sendAll();
             numSent += pendingBatches.size();
 
@@ -277,8 +327,14 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                     TrackedErrors trackedErrors;
                     trackedErrors.startTracking(ErrorCodes::StaleShardVersion);
 
-                    LOG(4) << "write results received from " << shardHost.toString() << ": "
-                           << redact(response.toString());
+                    std::vector<TargetedWrite*> targetWrites = batch->getWrites();
+                    if (!response.isErrDetailsSet() && targetWrites.size() > 0) {
+                        std::pair<int, ChunkId> sucBatch(targetWrites[0]->writeOpRef.first,
+                                                         targetWrites[0]->endpoint.chunkId);
+                        if (suc_batches.find(sucBatch) == suc_batches.end()) {
+                            suc_batches.insert(sucBatch);
+                        }
+                    }
 
                     // Dispatch was ok, note response
                     batchOp.noteBatchResponse(*batch, response, &trackedErrors);
@@ -290,6 +346,8 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                     if (staleErrors.size() > 0) {
                         noteStaleResponses(staleErrors, _targeter);
                         ++stats->numStaleBatches;
+                        // hasStaleError = true;
+                        needWait = true;
                     }
 
                     // Remember that we successfully wrote to this shard
@@ -300,11 +358,19 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                         response.isLastOpSet() ? response.getLastOp() : repl::OpTime(),
                         response.isElectionIdSet() ? response.getElectionId() : OID());
                 } else {
-                    batchOp.cancelWriteOps(*batch);
                     _targeter->noteCouldNotTarget();
+                    stringstream msg;
+                    msg << "write results unavailable from " << shardHost.toString()
+                        << causedBy(dispatchStatus.toString());
 
-                    log() << "unable to receive write results from " << shardHost.toString()
-                          << causedBy(redact(dispatchStatus.toString()));
+                    WriteErrorDetail error;
+                    buildErrorFrom(Status(ErrorCodes::RemoteResultsUnavailable, msg.str()), &error);
+
+                    batchOp.noteBatchError(*batch, error);
+
+                    index_log() << "[BATCH_WRITE] unable to receive write results from "
+                                << shardHost.toString()
+                                << causedBy(redact(dispatchStatus.toString()));
                 }
             }
         }
@@ -315,22 +381,73 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
         // If we're done, get out
         if (batchOp.isFinished())
             break;
-
+        index_log() << "[BATCH_WRITE] unfinished in round " << rounds;
         // MORE WORK TO DO
+        {
+            NamespaceString nss = _targeter->getNS();
+            // auto config =
+            //    uassertStatusOK(grid.catalogCache()->getDatabase(txn, nss.db().toString()));
+            auto collStatus = Grid::get(txn)->catalogClient(txn)->getCollection(txn, nss.ns());
+            /*try {
+                config->reload(txn);
+            } catch (const DBException& e) {
+                WriteErrorDetail error;
+                buildErrorFrom(e.toStatus(), &error);
+                batchOp.abortBatch(error);
+                break;
+            }
+
+            bool isExist = uassertStatusOK(config->isCollectionExist(txn,nss.ns()));
+            */
+            bool needCreate = false;
+            if (!collStatus.isOK()) {
+                needCreate = true;
+            } else {
+                CollectionType coll = collStatus.getValue().value;
+                if (coll.getDropped()) {
+                    needCreate = true;
+                }
+            }
+
+            if (needCreate) {
+                index_log() << "[BATCH_WRITE] ns: " << nss.ns() << " does not exist, create now.";
+                Command* createCmd = Command::findCommand("create");
+                int queryOptions = 0;
+                std::string errmsg;
+                BSONObjBuilder cmdBob;
+                cmdBob.append("create", nss.coll());
+                auto createCmdObj = cmdBob.obj();
+                BSONObjBuilder result;
+                int code = 0;
+                bool ok = false;
+                try {
+                    ok = createCmd->run(
+                        txn, nss.db().toString(), createCmdObj, queryOptions, errmsg, result);
+                } catch (const DBException& e) {
+                    code = e.getCode();
+                }
+                if (!ok || code != 0) {
+                    index_err() << "[BATCH_WRITE] create coll " << nss.ns() << " Failed!";
+                }
+            }
+        }
+
+        if (needWait) {
+            stdx::this_thread::sleep_for(kDefaultInterval.toSteadyDuration());
+        }
 
         //
         // Refresh the targeter if we need to (no-op if nothing stale)
         //
-
         bool targeterChanged = false;
         Status refreshStatus = _targeter->refreshIfNeeded(txn, &targeterChanged);
 
         if (!refreshStatus.isOK()) {
             // It's okay if we can't refresh, we'll just record errors for the ops if
             // needed.
-            warning() << "could not refresh targeter" << causedBy(refreshStatus.reason());
+            warning() << "[BATCH_WRITE] could not refresh targeter"
+                      << causedBy(refreshStatus.reason());
         }
-
         //
         // Ensure progress is being made toward completing the batch op
         //
@@ -342,13 +459,13 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
             numRoundsWithoutProgress = 0;
         }
         numCompletedOps = currCompletedOps;
-
         if (numRoundsWithoutProgress > kMaxRoundsWithoutProgress) {
             stringstream msg;
             msg << "no progress was made executing batch write op in " << clientRequest.getNS().ns()
                 << " after " << kMaxRoundsWithoutProgress << " rounds (" << numCompletedOps
                 << " ops completed in " << rounds << " rounds total)";
 
+            index_err() << msg.str();
             WriteErrorDetail error;
             buildErrorFrom(Status(ErrorCodes::NoProgressMade, msg.str()), &error);
             batchOp.abortBatch(error);
@@ -358,7 +475,7 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
 
     batchOp.buildClientResponse(clientResponse);
 
-    LOG(4) << "finished execution of write batch"
+    LOG(1) << "[BATCH_WRITE] finished execution of write batch"
            << (clientResponse->isErrDetailsSet() ? " with write errors" : "")
            << (clientResponse->isErrDetailsSet() && clientResponse->isWriteConcernErrorSet()
                    ? " and"

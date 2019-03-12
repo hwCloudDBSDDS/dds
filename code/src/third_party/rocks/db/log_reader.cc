@@ -48,7 +48,7 @@ bool Reader::SkipToInitialBlock() {
   uint64_t block_start_location = initial_offset_ - initial_offset_in_block;
 
   // Don't search a block if we'd be in the trailer
-  if (initial_offset_in_block > kBlockSize - 6) {
+  if (initial_offset_in_block > kBlockSize - kHeaderSize - 1) {
     block_start_location += kBlockSize;
   }
 
@@ -353,8 +353,10 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result, size_t* drop_size) {
     const char* header = buffer_.data();
     const uint32_t a = static_cast<uint32_t>(header[4]) & 0xff;
     const uint32_t b = static_cast<uint32_t>(header[5]) & 0xff;
-    const unsigned int type = header[6];
-    const uint32_t length = a | (b << 8);
+    const uint32_t c = static_cast<uint32_t>(header[6]) & 0xff;
+    const uint32_t d = static_cast<uint32_t>(header[7]) & 0xff;
+    const unsigned int type = header[8];
+    const uint32_t length = a | (b << 8) | (c << 16)| (d << 24);
     int header_size = kHeaderSize;
     if (type >= kRecyclableFullType && type <= kRecyclableLastType) {
       if (end_of_buffer_offset_ - buffer_.size() == 0) {
@@ -369,7 +371,7 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result, size_t* drop_size) {
         }
         continue;
       }
-      const uint32_t log_num = DecodeFixed32(header + 7);
+      const uint32_t log_num = DecodeFixed32(header + kHeaderSize);
       if (log_num != log_number_) {
         return kOldRecord;
       }
@@ -402,7 +404,7 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result, size_t* drop_size) {
     // Check crc
     if (checksum_) {
       uint32_t expected_crc = crc32c::Unmask(DecodeFixed32(header));
-      uint32_t actual_crc = crc32c::Value(header + 6, length + header_size - 6);
+      uint32_t actual_crc = crc32c::Value(header + kTypePos, length + header_size - kTypePos);
       if (actual_crc != expected_crc) {
         // Drop the rest of the buffer since "length" itself may have
         // been corrupted and if we trust it, we could find some

@@ -1,6 +1,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
 
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
@@ -9,14 +10,13 @@
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/stats/counters.h"
-#include "mongo/util/version.h"
-#include "mongo/db/catalog/collection.h"
+#include "mongo/db/stats/counters.h"
+#include "mongo/db/storage/storage_engine.h"
 #include "mongo/util/log.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/procparser.h"
-#include "mongo/db/stats/counters.h"
+#include "mongo/util/version.h"
 
 namespace mongo {
 
@@ -25,22 +25,23 @@ using std::string;
 using std::stringstream;
 using std::vector;
 
-// the name of the keys must match the names in the proc file, or will fail to parse from the proc file
+// the name of the keys must match the names in the proc file, or will fail to parse from the proc
+// file
 
-//cat /proc/stat
+// cat /proc/stat
 //      user   nice  system idle iowait  irq  softirq steal guest guest_nice
-//cpu  4705 356  584    3699   23    23     0       0     0          0
+// cpu  4705 356  584    3699   23    23     0       0     0          0
 
-//user: normal processes executing in user mode
-//nice: niced processes executing in user mode
-//system: processes executing in kernel mode
-//idle: twiddling thumbs
-//iowait: waiting for I/O to complete
-//irq: servicing interrupts
-//softirq: servicing softirqs
-//steal: involuntary wait
-//guest: running a normal guest
-//guest_nice: running a niced guest
+// user: normal processes executing in user mode
+// nice: niced processes executing in user mode
+// system: processes executing in kernel mode
+// idle: twiddling thumbs
+// iowait: waiting for I/O to complete
+// irq: servicing interrupts
+// softirq: servicing softirqs
+// steal: involuntary wait
+// guest: running a normal guest
+// guest_nice: running a niced guest
 static const std::vector<StringData> kCpuKeys{
     "cpu"_sd,
 };
@@ -54,9 +55,7 @@ static const std::vector<StringData> kMemKeys{
 // VmPeak: Peak virtual memory size.
 // VmSize: Virtual memory size.
 // VmRSS: Resident set size.  Note that the value here is the sum of RssAnon, RssFile, and RssShmem.
-static const std::vector<StringData> kMemSelfKeys{
-    "VmPeak"_sd, "VmSize"_sd, "VmRSS"_sd
-};
+static const std::vector<StringData> kMemSelfKeys{"VmPeak"_sd, "VmSize"_sd, "VmRSS"_sd};
 
 class CmdGetShardStatistics : public Command {
 public:
@@ -85,35 +84,41 @@ public:
     void collectCpuInfo(BSONObjBuilder& builder) {
         ProcessInfo p;
 
-        {   
+        {
             // cpu infomation for the whold system, by readding file /proc/stat
+            builder.append("cpu_usage", cpuUsage);
             BSONObjBuilder subObjBuilder(builder.subobjStart("cpu"_sd));
             subObjBuilder.append("num_cpus", p.getNumCores());
-
+            subObjBuilder.append("cpu_usage", cpuUsage);
             auto status = procparser::parseProcStatFile("/proc/stat"_sd, kCpuKeys, &subObjBuilder);
             if (!status.isOK()) {
-                warning() << "parse /proc/stat fail " << status.toString();
+                index_warning() << "parse /proc/stat fail " << status.toString();
             }
             subObjBuilder.doneFast();
 
             // Total CPU time since boot = user+nice+system+idle+iowait+irq+softirq+steal
-            // Guest and Guest_nice are already accounted in user and nice, hence they are not included in the total calculation
+            // Guest and Guest_nice are already accounted in user and nice, hence they are not
+            // included in the total calculation
             // Total CPU Idle time since boot = idle + iowait
-            // Total CPU usage time since boot = Total CPU time since boot - Total CPU Idle time since boot
-            // Total CPU percentage = Total CPU usage time since boot/Total CPU time since boot X 100
+            // Total CPU usage time since boot = Total CPU time since boot - Total CPU Idle time
+            // since boot
+            // Total CPU percentage = Total CPU usage time since boot/Total CPU time since boot X
+            // 100
         }
 
-        //cat /proc/self/stat
+        // cat /proc/self/stat
 
         // utime: Amount of time that this process has been scheduled in user mode
         // stime: Amount of time that this process has been scheduled in kernel mode
-        // cutime: Amount of time that this process's waited-for children have been scheduled in user mode
-        // cstime: Amount of time that this process's waited-for children have been scheduled in kernel mode
+        // cutime: Amount of time that this process's waited-for children have been scheduled in
+        // user mode
+        // cstime: Amount of time that this process's waited-for children have been scheduled in
+        // kernel mode
 
         {
             // cpu infomation for current process, by readding file /proc/self/stat
             BSONObjBuilder subObjBuilder(builder.subobjStart("cpuself"_sd));
-            p.getCpuInfo(subObjBuilder); 
+            p.getCpuInfo(subObjBuilder);
             subObjBuilder.doneFast();
         }
 
@@ -125,9 +130,10 @@ public:
         {
             // mem infomation for whole system, by readding file /proc/meminfo
             BSONObjBuilder subObjBuilder(builder.subobjStart("memory"_sd));
-            auto status = procparser::parseProcMemInfoFile("/proc/meminfo"_sd, kMemKeys, &subObjBuilder);
+            auto status =
+                procparser::parseProcMemInfoFile("/proc/meminfo"_sd, kMemKeys, &subObjBuilder);
             if (!status.isOK()) {
-                warning() << "parse /proc/meminfo fail " << status.toString();
+                index_warning() << "parse /proc/meminfo fail " << status.toString();
             }
             subObjBuilder.doneFast();
         }
@@ -135,13 +141,14 @@ public:
         {
             // mem infomation for current process, by readding file /proc/self/status
             BSONObjBuilder subObjBuilder(builder.subobjStart("memoryself"_sd));
-            auto status = procparser::parseProcSelfStatusFile("/proc/self/status"_sd, kMemSelfKeys, &subObjBuilder);
+            auto status = procparser::parseProcSelfStatusFile(
+                "/proc/self/status"_sd, kMemSelfKeys, &subObjBuilder);
             if (!status.isOK()) {
-                warning() << "parse /proc/self/status fail " << status.toString();
+                index_warning() << "parse /proc/self/status fail " << status.toString();
             }
             subObjBuilder.doneFast();
         }
- 
+
         return;
     }
 
@@ -198,7 +205,7 @@ public:
 
             Database* db = dbHolder().get(txn, dbname);
             if (!db) {
-                warning() << "can not find " << dbname;
+                index_warning() << "can not find " << dbname;
                 continue;
             }
 
@@ -207,12 +214,13 @@ public:
             db->listCollectionNSs(collectionNSs);
             for (auto collectionNS : collectionNSs) {
                 Lock::CollectionLock collLock(txn->lockState(), collectionNS.ns(), MODE_IS);
-                // It is possible that after we acquire the collection lock, the collection has been dropped
+                // It is possible that after we acquire the collection lock, the collection has been
+                // dropped
                 Collection* collection = db->getCollection(collectionNS);
                 if (!collection) {
-                    continue;                    
+                    continue;
                 }
-                
+
                 std::string chunkIdstr = std::move(collection->ns().extractChunkId());
 
                 // Ignore non-sharded collections
@@ -229,7 +237,8 @@ public:
                 long long numRecords = collection->numRecords(txn);
                 c.append("count", numRecords);
                 // TODO: we need to get more info from rocksdb to calculate tps for chunk
-                c.append("tps", 0);
+                long long tps = OpCounters::getTpsForCollecion(collectionNS.toString());
+                c.append("tps", tps);
                 c.append("rocksdb", collection->getSSTFileStatistics());
                 chunkInfos.push_back(c.obj());
             }

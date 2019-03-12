@@ -104,7 +104,7 @@ public:
      * The 'exec' must have an UPDATE stage as its root stage, and the plan must be EOF before
      * calling this method.
      */
-    static const UpdateStats* getUpdateStats(const PlanExecutor* exec);
+    static const UpdateStats* getUpdateStats(const PlanExecutor* exec, bool ignoreErr = false);
 
     /**
      * Populate 'opDebug' with stats from 'updateStats' describing the execution of this update.

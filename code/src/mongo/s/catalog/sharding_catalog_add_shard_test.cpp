@@ -378,7 +378,7 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
     discoveredDB2.setSharded(false);
 
     auto future = launchAsync([this, expectedShardName, &expectedShard] {
-    //auto future = launchAsync([this, expectedShardName] {
+        // auto future = launchAsync([this, expectedShardName] {
         Client::initThreadIfNotAlready();
 
         auto shardName = assertGet(
@@ -418,7 +418,7 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
 
     assertChangeWasLogged(expectedShard);
 }
- 
+
 
 TEST_F(AddShardTest, AddSCCCConnectionStringAsShard) {
     std::unique_ptr<RemoteCommandTargeterMock> targeter(
@@ -797,7 +797,7 @@ TEST_F(AddShardTest, SuccessfullyAddReplicaSet) {
     discoveredDB.setSharded(false);
 
     auto future = launchAsync([this, &expectedShardName, &expectedShard, &connString] {
-    //auto future = launchAsync([this, &expectedShardName, &connString] {
+        // auto future = launchAsync([this, &expectedShardName, &connString] {
         Client::initThreadIfNotAlready();
 
         auto shardName =
@@ -859,9 +859,9 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
     discoveredDB.setName("shardDB");
     discoveredDB.setPrimary(ShardId(expectedShardName));
     discoveredDB.setSharded(false);
-    
+
     auto future = launchAsync([this, &expectedShardName, &seedString, &expectedShard] {
-    //auto future = launchAsync([this, &expectedShardName, &seedString] {
+        // auto future = launchAsync([this, &expectedShardName, &seedString] {
         Client::initThreadIfNotAlready();
 
         auto shardName =
@@ -901,86 +901,6 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
     assertChangeWasLogged(expectedShard);
 }
 
-/* BEGIN: modified by Wangjinhong 00416562, 2017/5/6 */
-// Since we will update doc in addShard(), this test case is unsuited here.
-//TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
-//    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-//        stdx::make_unique<RemoteCommandTargeterMock>());
-//    HostAndPort shardTarget("StandaloneHost:12345");
-//    targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
-//    targeter->setFindHostReturnValue(shardTarget);
-//
-//    targeterFactory()->addTargeterToReturn(ConnectionString(shardTarget), std::move(targeter));
-//
-//
-//    std::string expectedShardName = "StandaloneShard";
-//
-//    // The shard doc inserted into the config.shards collection on the config server.
-//    ShardType expectedShard;
-//    expectedShard.setName(expectedShardName);
-//    expectedShard.setHost("StandaloneHost:12345");
-//    expectedShard.setMaxSizeMB(100);
-//    expectedShard.setState(ShardType::ShardState::kShardActive);
-//
-//    DatabaseType discoveredDB1;
-//    discoveredDB1.setName("TestDB1");
-//    discoveredDB1.setPrimary(ShardId("StandaloneShard"));
-//    discoveredDB1.setSharded(false);
-//
-//    DatabaseType discoveredDB2;
-//    discoveredDB2.setName("TestDB2");
-//    discoveredDB2.setPrimary(ShardId("StandaloneShard"));
-//    discoveredDB2.setSharded(false);
-//
-//    // Enable fail point to cause all updates to fail.  Since we add the databases detected from
-//    // the shard being added with upserts, but we add the shard document itself via insert, this
-//    // will allow the shard to be added but prevent the databases from brought into the cluster.
-//    auto failPoint = getGlobalFailPointRegistry()->getFailPoint("failAllUpdates");
-//    ASSERT(failPoint);
-//    failPoint->setMode(FailPoint::alwaysOn);
-//    ON_BLOCK_EXIT([&] { failPoint->setMode(FailPoint::off); });
-//
-//    auto future = launchAsync([this, &expectedShardName, &shardTarget] {
-//        Client::initThreadIfNotAlready();
-//        auto shardName = assertGet(catalogManager()->addShard(
-//            operationContext(), &expectedShardName, ConnectionString(shardTarget), 100));
-//        ASSERT_EQUALS(expectedShardName, shardName);
-//    });
-//
-//    BSONObj commandResponse = BSON("ok" << 1 << "ismaster" << true << "maxWireVersion"
-//                                        << WireVersion::COMMANDS_ACCEPT_WRITE_CONCERN);
-//    expectIsMaster(shardTarget, commandResponse);
-//
-//    // Get databases list from new shard
-//    expectListDatabases(
-//        shardTarget,
-//        std::vector<BSONObj>{BSON("name"
-//                                  << "local"
-//                                  << "sizeOnDisk"
-//                                  << 1000),
-//                             BSON("name" << discoveredDB1.getName() << "sizeOnDisk" << 2000),
-//                             BSON("name" << discoveredDB2.getName() << "sizeOnDisk" << 5000)});
-//
-//    // The shardIdentity doc inserted into the admin.system.version collection on the shard.
-//    expectShardIdentityUpsertReturnSuccess(shardTarget, expectedShardName);
-//
-//    // Wait for the addShard to complete before checking the config database
-//    future.timed_get(kFutureTimeout);
-//
-//    // Ensure that the shard document was properly added to config.shards.
-//    assertShardExists(expectedShard);
-//
-//    // Ensure that the databases detected from the shard were *not* added.
-//    ASSERT_EQUALS(
-//        ErrorCodes::NamespaceNotFound,
-//        catalogClient()->getDatabase(operationContext(), discoveredDB1.getName()).getStatus());
-//    ASSERT_EQUALS(
-//        ErrorCodes::NamespaceNotFound,
-//        catalogClient()->getDatabase(operationContext(), discoveredDB2.getName()).getStatus());
-//
-//    assertChangeWasLogged(expectedShard);
-//}
-/* END: modified by Wangjinhong 00416562, 2017/5/6 */ 
 
 TEST_F(AddShardTest, CompatibilityAddShardSuccess) {
     // This is a hack to set the ReplicationCoordinator's MemberState to primary, since this test
@@ -1161,7 +1081,7 @@ TEST_F(AddShardTest, CompatibilityAddShardCancelRequestCallbackBeforeTaskComplet
     addedShard.setName(shardName);
     addedShard.setHost(shardTarget.toString());
     addedShard.setMaxSizeMB(100);
-    
+
     // Add the shard to config.shards to trigger the OpObserver that performs shard aware
     // initialization.
     ASSERT_OK(catalogClient()->insertConfigDocument(operationContext(),
@@ -1204,7 +1124,7 @@ TEST_F(AddShardTest, CompatibilityAddShardCancelRequestCallbackAfterTaskComplete
     addedShard.setName(shardName);
     addedShard.setHost(shardTarget.toString());
     addedShard.setMaxSizeMB(100);
-    
+
     // Add the shard to config.shards to trigger the OpObserver that performs shard aware
     // initialization.
     ASSERT_OK(catalogClient()->insertConfigDocument(operationContext(),
@@ -1267,7 +1187,7 @@ TEST_F(AddShardTest, CompatibilityAddShardCancelRequestCallbackReAddShard) {
     addedShard.setName(shardName);
     addedShard.setHost(shardTarget.toString());
     addedShard.setMaxSizeMB(100);
-    
+
     // Add the shard to config.shards to trigger the OpObserver that performs shard aware
     // initialization.
     ASSERT_OK(catalogClient()->insertConfigDocument(operationContext(),
@@ -1320,7 +1240,7 @@ TEST_F(AddShardTest, CompatibilityAddShardCancelRescheduledCallback) {
     addedShard.setName(shardName);
     addedShard.setHost(shardTarget.toString());
     addedShard.setMaxSizeMB(100);
-    
+
     // Add the shard to config.shards to trigger the OpObserver that performs shard aware
     // initialization.
     ASSERT_OK(catalogClient()->insertConfigDocument(operationContext(),
@@ -1432,35 +1352,35 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
                                                     existingShard.toBSON(),
                                                     ShardingCatalogClient::kMajorityWriteConcern));
     assertShardExists(existingShard);
-    
-	// Adding the same shard with a different maxSize should fail.
-	auto future2 = launchAsync([&] {
-	    Client::initThreadIfNotAlready();
-	    ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-	    catalogManager()->addShard(operationContext(),
-	                     &existingShardName,
-                             ConnectionString(shardTarget),
-                             existingShard.getMaxSizeMB() + 100));
-       });
-	future2.timed_get(kFutureTimeout);
-                                                                                                                                                        	
-	// Ensure that the shard document was unchanged.
-	assertShardExists(existingShard);
 
-	// Adding the same shard with a different host should fail.
-	auto future3 = launchAsync([&] {
-	   Client::initThreadIfNotAlready();
-	      ASSERT_EQUALS(
-	          ErrorCodes::IllegalOperation,
-	                   catalogManager()->addShard(operationContext(),
-	                                     &existingShardName,
-	                                     ConnectionString::forReplicaSet("mySet", {shardTarget}),
-	                                     existingShard.getMaxSizeMB()));
-	 });
-	 future3.timed_get(kFutureTimeout);
-	
-        // Ensure that the shard document was unchanged.
-        assertShardExists(existingShard);
+    // Adding the same shard with a different maxSize should fail.
+    auto future2 = launchAsync([&] {
+        Client::initThreadIfNotAlready();
+        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
+                      catalogManager()->addShard(operationContext(),
+                                                 &existingShardName,
+                                                 ConnectionString(shardTarget),
+                                                 existingShard.getMaxSizeMB() + 100));
+    });
+    future2.timed_get(kFutureTimeout);
+
+    // Ensure that the shard document was unchanged.
+    assertShardExists(existingShard);
+
+    // Adding the same shard with a different host should fail.
+    auto future3 = launchAsync([&] {
+        Client::initThreadIfNotAlready();
+        ASSERT_EQUALS(
+            ErrorCodes::IllegalOperation,
+            catalogManager()->addShard(operationContext(),
+                                       &existingShardName,
+                                       ConnectionString::forReplicaSet("mySet", {shardTarget}),
+                                       existingShard.getMaxSizeMB()));
+    });
+    future3.timed_get(kFutureTimeout);
+
+    // Ensure that the shard document was unchanged.
+    assertShardExists(existingShard);
 
     // Adding the same standalone host with the same options should succeed.
     auto future4 = launchAsync([&] {

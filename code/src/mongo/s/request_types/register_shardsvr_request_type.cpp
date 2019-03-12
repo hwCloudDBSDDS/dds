@@ -33,8 +33,8 @@
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/server_options.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/log.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 
@@ -85,7 +85,8 @@ StatusWith<RegShardSvrRequest> RegShardSvrRequest::parseFromConfigCommand(const 
     }
 
     string processIdentity;
-    auto parseProcessIdentityStatus = bsonExtractStringField(cmdObj, kProcessIdentity, &processIdentity);
+    auto parseProcessIdentityStatus =
+        bsonExtractStringField(cmdObj, kProcessIdentity, &processIdentity);
     if (!parseProcessIdentityStatus.isOK()) {
         return parseProcessIdentityStatus;
     }
@@ -148,8 +149,7 @@ Status RegShardSvrRequest::_validate() {
 std::string RegShardSvrRequest::toString() const {
     stream ss;
     ss << "RegShardSvrRequest shard server: " << _connectionString.toString()
-       << " , extendIPs: " << _extendIPs
-       << " , processIdentity: " << _processIdentity; 
+       << " , extendIPs: " << _extendIPs << " , processIdentity: " << _processIdentity;
     return ss;
 }
 

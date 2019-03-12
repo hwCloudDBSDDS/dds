@@ -67,6 +67,7 @@ public:
     virtual void cancel(const CallbackHandle& cbHandle) override;
     virtual void wait(const CallbackHandle& cbHandle) override;
     virtual void appendConnectionStats(executor::ConnectionPoolStats* stats) const override;
+    virtual uint32_t getTaskCountInNetwork() const override;
 
 private:
     // Not owned by us.

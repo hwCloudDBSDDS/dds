@@ -6,14 +6,18 @@ function debug(x) {
 }
 
 coll.save({});
-
+var isMaster = db.runCommand("ismaster");
+assert.commandWorked(isMaster);
+var isReplSet = (isMaster.hasOwnProperty('setName'));
 function getOpId(drop) {
     var inProg = db.currentOp().inprog;
     debug(inProg);
     for (var id in inProg) {
         var op = inProg[id];
         if (drop) {
-            if (op.query && op.query.drop && op.query.drop == coll.getName()) {
+            if (isReplSet && op.query && op.query.drop && op.query.drop == coll.getName()) {
+                return op.opid;
+            }else if (op.query && op.query.offloadChunk && op.query.offloadChunk == coll) {
                 return op.opid;
             }
         } else {

@@ -241,6 +241,7 @@ def update_config_vars(values):
     _config.EXCLUDE_WITH_ALL_TAGS = config.pop("excludeWithAllTags")
     _config.EXCLUDE_WITH_ANY_TAGS = config.pop("excludeWithAnyTags")
     _config.FAIL_FAST = not config.pop("continueOnFailure")
+    _config.FAIL_FAST = True
     _config.INCLUDE_WITH_ALL_TAGS = config.pop("includeWithAllTags")
     _config.INCLUDE_WITH_ANY_TAGS = config.pop("includeWithAnyTags")
     _config.JOBS = config.pop("jobs")

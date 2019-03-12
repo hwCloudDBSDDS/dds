@@ -29,6 +29,7 @@
 #include "rocksdb/shared_resource.h"
 #include <pthread.h>
 #include <map>
+#include <mutex>
 
 #ifdef _WIN32
 // Windows API macro interference
@@ -40,11 +41,15 @@
 #define KB_16 ( 1 << 14)
 #define KB_32 ( 1 << 15)
 #define MB_1  (1 << 20)
+#define IO_PRIORITY_HIGH (0)
+#define IO_PRIORITY_NORMAL (1)
+#define IO_PRIORITY_LOW (2)
+
 
 extern bool CheckFileType(const std::string& name, const std::string& type);
 
 namespace rocksdb {
-
+typedef int32_t IO_PRIORITY;
 class FileLock;
 class Logger;
 class RandomAccessFile;
@@ -115,6 +120,11 @@ struct EnvOptions {
 
   // If not nullptr, write rate limiting is enabled for flush and compaction
   RateLimiter* rate_limiter = nullptr;
+
+  //io priority, default is HIGH PRIORITY
+  //io priority, default is HIGH PRIORITY
+  IO_PRIORITY io_pri = IO_PRIORITY_HIGH;
+
 };
 
 class Env {
@@ -137,9 +147,9 @@ class Env {
   //
   // The result of Default() belongs to rocksdb and must never be deleted.
   static Env* Default();
-  
+  /*start: merge stream*/
   static Env* Default_Posix();
- 
+  /*end: merge stream*/
   // Create a brand new sequentially-readable file with the specified name.
   // On success, stores a pointer to the new file in *result and returns OK.
   // On failure stores nullptr in *result and returns non-OK.  If the file does
@@ -257,6 +267,11 @@ class Env {
   // Hard Link file src to target.
   virtual Status LinkFile(const std::string& src, const std::string& target) {
     return Status::NotSupported("LinkFile is not supported for this Env");
+  }
+  
+  // MongoDB backup call this fun to update the length of wal.
+  virtual Status RecoverLease(const std::string& src) {
+    return Status::NotSupported("RecoverLease is not supported for this Env");
   }
 
   // Lock the specified file.  Used to prevent concurrent access to
@@ -1107,7 +1122,7 @@ Env* NewMemEnv(Env* base_env);
 
 // Returns a new environment that is used for HDFS environment.
 // This is a factory method for HdfsEnv declared in hdfs/env_hdfs.h
-Status NewHdfsEnv(Env** hdfs_env, const std::string& fsname, bool use_posix = false);
+Status NewHdfsEnv(Env** hdfs_env, const std::string& fsname);
 
 }  // namespace rocksdb
 

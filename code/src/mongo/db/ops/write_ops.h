@@ -48,7 +48,8 @@ struct ParsedWriteOp {
     bool continueOnError = false;
     bool atomicityInBulk = false;
     // The option prewarmInBulk is just used to preparing the data for performance test.
-    bool prewarmInBulk   = false;                                                          
+    bool prewarmInBulk = false;
+    bool usermanagerCmd = false;
 };
 
 /**

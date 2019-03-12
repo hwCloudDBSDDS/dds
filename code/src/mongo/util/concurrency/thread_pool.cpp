@@ -262,7 +262,8 @@ void ThreadPool::_consumeTasks() {
 
                 LOG(3) << "Not reaping because the earliest retirement date is "
                        << nextThreadRetirementDate;
-                _workAvailable.wait_until(lk, nextThreadRetirementDate.toSystemTimePoint());
+                _workAvailable.wait_for(
+                    lk, Milliseconds(nextThreadRetirementDate - now).toSteadyDuration());
             } else {
                 // Since the number of threads is not more than minThreads, this thread is not
                 // eligible for retirement. It is OK to sleep until _workAvailable is signaled,

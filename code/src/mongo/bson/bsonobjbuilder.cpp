@@ -265,8 +265,7 @@ BSONObjBuilder& BSONObjBuilder::appendElementForType(StringData fieldName, BSONE
             int len = 0;
             const char* data = e.binData(len);
             appendBinData(fieldName, len, e.binDataType(), data);
-        }
-            break;
+        } break;
         case RegEx:
             appendRegex(fieldName, e.regex());
             break;

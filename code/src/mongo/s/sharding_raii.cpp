@@ -93,8 +93,7 @@ StatusWith<ScopedChunkManager> ScopedChunkManager::getExisting(OperationContext*
     auto scopedDb = std::move(scopedDbStatus.getValue());
 
     try {
-        std::shared_ptr<ChunkManager> cm =
-            scopedDb.db()->getChunkManager(txn, nss.ns(), true, false);
+        std::shared_ptr<ChunkManager> cm = scopedDb.db()->getChunkManager(txn, nss.ns(), true);
 
         if (!cm) {
             return {ErrorCodes::NamespaceNotSharded,

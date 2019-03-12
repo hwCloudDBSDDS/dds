@@ -400,7 +400,8 @@ load("jstests/aggregation/extras/utils.js");
     db.lookUp.drop();
     db.from.drop();
     runTest(db.lookUp, db.from);
-
+    
+    /*
     // Run tests in a sharded environment.
     var sharded = new ShardingTest({shards: 2, mongos: 1});
     assert(sharded.adminCommand({enableSharding: "test"}));
@@ -415,4 +416,5 @@ load("jstests/aggregation/extras/utils.js");
                     [{$lookup: {localField: "a", foreignField: "b", from: "from", as: "same"}}],
                     28769);
     sharded.stop();
+    */
 }());

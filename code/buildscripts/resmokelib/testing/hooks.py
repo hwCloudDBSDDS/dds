@@ -17,6 +17,7 @@ from . import testcases
 from .. import errors
 from .. import logging
 from .. import utils
+from .. import config as _config
 
 
 def make_custom_behavior(class_name, *args, **kwargs):
@@ -125,7 +126,7 @@ class CleanEveryN(CustomBehavior):
 
             teardown_success = self.fixture.teardown()
             self.logger.info("Starting the fixture back up again...")
-            self.fixture.setup()
+            self.fixture.setup("%06d" % _config.log_counter.next())
             self.fixture.await_ready()
 
             # Raise this after calling setup in case --continueOnFailure was specified.
@@ -215,7 +216,7 @@ class BackgroundInitialSync(JsCustomBehavior):
                 teardown_success = sync_node.teardown()
 
                 self.fixture.logger.info("Starting the initial sync node back up again...")
-                sync_node.setup()
+                sync_node.setup("%06d" % _config.log_counter.next())
                 sync_node.await_ready()
                 if not teardown_success:
                     raise errors.TestFailure("%s did not exit cleanly" % (sync_node))
@@ -332,7 +333,7 @@ class IntermediateInitialSync(JsCustomBehavior):
             teardown_success = sync_node.teardown()
 
             self.fixture.logger.info("Starting the initial sync node back up again...")
-            sync_node.setup()
+            sync_node.setup("%06d" % _config.log_counter.next())
             sync_node.await_ready()
 
         # Do initial sync round.

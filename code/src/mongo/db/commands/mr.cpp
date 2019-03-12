@@ -280,11 +280,11 @@ void JSReducer::_reduce(const BSONList& tuples, BSONObj& key, int& endSizeEstima
 Config::Config(const string& _dbname, const BSONObj& cmdObj) {
     dbname = _dbname;
     ns = dbname + "." + cmdObj.firstElement().valuestrsafe();
-    
+
     NamespaceString nss = NamespaceString(StringData(ns));
 
     ns = (Ns2ChunkIdHolder().getNsWithChunkId(nss)).ns();
-    LOG(1)<<" Config::Config ns:"<<ns << ", cmdObj:"<<cmdObj;
+    index_LOG(1) << "Config::Config ns:" << ns;
 
     verbose = cmdObj["verbose"].trueValue();
     jsMode = cmdObj["jsMode"].trueValue();

@@ -29,11 +29,11 @@
 #pragma once
 
 #include <atomic>
-#include <set>
-#include <unordered_map>
-#include <memory>
-#include <string>
 #include <list>
+#include <memory>
+#include <set>
+#include <string>
+#include <unordered_map>
 
 #include <rocksdb/db.h>
 #include <rocksdb/slice.h>
@@ -45,30 +45,33 @@ namespace mongo {
 
     class RocksCounterManager {
     public:
-        RocksCounterManager(rocksdb::DB* db, bool crashSafe, rocksdb::ColumnFamilyHandle* columnFamily)
-            : _db(db), _columnFamily(columnFamily ? columnFamily : db->DefaultColumnFamily()),
-            _crashSafe(crashSafe), _syncing(false), _syncCounter(0) {}
+        RocksCounterManager(rocksdb::DB* db, bool crashSafe,
+                            rocksdb::ColumnFamilyHandle* columnFamily)
+            : _db(db),
+              _columnFamily(columnFamily ? columnFamily : db->DefaultColumnFamily()),
+              _crashSafe(crashSafe),
+              _syncing(false),
+              _syncCounter(0) {}
 
         virtual ~RocksCounterManager() = default;
 
         long long loadCounter(const std::string& counterKey);
 
         virtual void updateCounter(const std::string& counterKey, long long count,
-                           rocksdb::WriteBatch* writeBatch, bool persist=false);
+                                   rocksdb::WriteBatch* writeBatch, bool persist = false);
 
         void sync();
+        void des_sync();
 
         bool crashSafe() const { return _crashSafe; }
         void setFamilyHandler(rocksdb::ColumnFamilyHandle* familyHandler);
 
     protected:
-
         static rocksdb::Slice _encodeCounter(long long counter, int64_t* storage);
 
-        rocksdb::DB* _db; // not owned
-        rocksdb::ColumnFamilyHandle* _columnFamily; //  Column family to store counters
+        rocksdb::DB* _db;                            // not owned
+        rocksdb::ColumnFamilyHandle* _columnFamily;  //  Column family to store counters
         const bool _crashSafe;
-
         stdx::mutex _lock;
         // protected by _lock
         bool _syncing;
@@ -79,5 +82,4 @@ namespace mongo {
 
         static const int kSyncEvery = 1000;
     };
-
 }

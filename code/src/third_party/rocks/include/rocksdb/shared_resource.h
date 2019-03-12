@@ -1,6 +1,8 @@
 #pragma once
+#include "common/common.h"
 #include <vector>
 #include <string>
+
 
 const int RESOURCE_ID_LENGTH = 48;
 
@@ -9,12 +11,12 @@ class ResourceId
 public:
 
     ResourceId(){
-        memset(id, 0, RESOURCE_ID_LENGTH);
+        CommonMemZero(id, RESOURCE_ID_LENGTH);
     }
 
     ResourceId(const std::string& str) {
-         memset(id, 0, RESOURCE_ID_LENGTH);
-         memcpy(id, str.c_str(), str.size());
+         CommonMemZero(id, RESOURCE_ID_LENGTH);
+         CommonMemCopy(id, RESOURCE_ID_LENGTH, str.c_str(), str.size());
     }
 
     std::string toString() const {
@@ -34,8 +36,8 @@ public:
     }
 
     ResourceId& operator = (const std::string& other) {
-        memset(id, 0, RESOURCE_ID_LENGTH);
-        memcpy(id, other.c_str(), other.size());
+        CommonMemZero(id, RESOURCE_ID_LENGTH);
+        CommonMemCopy(id, RESOURCE_ID_LENGTH, other.c_str(), other.size());
         return *this;
     }
 

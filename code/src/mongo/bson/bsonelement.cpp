@@ -304,6 +304,266 @@ string BSONElement::jsonString(JsonStringFormat format, bool includeFieldNames, 
     return s.str();
 }
 
+// cuixin: does this difference with above ? if not, try to use one and others shold invoke that
+void BSONElement::jsonString(std::stringstream& s,
+                             JsonStringFormat format,
+                             bool includeFieldNames,
+                             int pretty) const {
+    if (includeFieldNames) {
+        s << '"';
+        escape(s, fieldName(), fieldNameSize() - 1);
+        s << "\" : ";
+    }
+    switch (type()) {
+        case mongo::String:
+        case Symbol:
+            s << '"';
+            escape(s, valuestr(), valuestrsize() - 1);
+            s << '"';
+            break;
+        case NumberLong:
+            if (format == TenGen) {
+                s << "NumberLong(" << _numberLong() << ")";
+            } else {
+                s << "{ \"$numberLong\" : \"" << _numberLong() << "\" }";
+            }
+            break;
+        case NumberInt:
+            if (format == JS) {
+                s << "NumberInt(" << _numberInt() << ")";
+                break;
+            }
+        case NumberDouble:
+            if (number() >= -std::numeric_limits<double>::max() &&
+                number() <= std::numeric_limits<double>::max()) {
+                s.precision(16);
+                s << number();
+            }
+            // This is not valid JSON, but according to RFC-4627, "Numeric values that cannot be
+            // represented as sequences of digits (such as Infinity and NaN) are not permitted." so
+            // we are accepting the fact that if we have such values we cannot output valid JSON.
+            else if (std::isnan(number())) {
+                s << "NaN";
+            } else if (std::isinf(number())) {
+                s << (number() > 0 ? "Infinity" : "-Infinity");
+            } else {
+                StringBuilder ss;
+                ss << "Number " << number() << " cannot be represented in JSON";
+                string message = ss.str();
+                massert(40418, message.c_str(), false);
+            }
+            break;
+        case NumberDecimal:
+            if (format == TenGen)
+                s << "NumberDecimal(\"";
+            else
+                s << "{ \"$numberDecimal\" : \"";
+            // Recognize again that this is not valid JSON according to RFC-4627.
+            // Also, treat -NaN and +NaN as the same thing for MongoDB.
+            if (numberDecimal().isNaN()) {
+                s << "NaN";
+            } else if (numberDecimal().isInfinite()) {
+                s << (numberDecimal().isNegative() ? "-Infinity" : "Infinity");
+            } else {
+                s << numberDecimal().toString();
+            }
+            if (format == TenGen)
+                s << "\")";
+            else
+                s << "\" }";
+            break;
+        case mongo::Bool:
+            s << (boolean() ? "true" : "false");
+            break;
+        case jstNULL:
+            s << "null";
+            break;
+        case Undefined:
+            if (format == Strict) {
+                s << "{ \"$undefined\" : true }";
+            } else {
+                s << "undefined";
+            }
+            break;
+        case Object:
+            embeddedObject().jsonString(s, format, pretty);
+            break;
+        case mongo::Array: {
+            if (embeddedObject().isEmpty()) {
+                s << "[]";
+                break;
+            }
+            s << "[ ";
+            BSONObjIterator i(embeddedObject());
+            BSONElement e = i.next();
+            if (!e.eoo()) {
+                int count = 0;
+                while (1) {
+                    if (pretty) {
+                        s << '\n';
+                        for (int x = 0; x < pretty; x++)
+                            s << "  ";
+                    }
+
+                    if (strtol(e.fieldName(), 0, 10) > count) {
+                        s << "undefined";
+                    } else {
+                        e.jsonString(s, format, false, pretty ? pretty + 1 : 0);
+                        e = i.next();
+                    }
+                    count++;
+                    if (e.eoo())
+                        break;
+                    s << ", ";
+                }
+            }
+            s << " ]";
+            break;
+        }
+        case DBRef: {
+            if (format == TenGen)
+                s << "Dbref( ";
+            else
+                s << "{ \"$ref\" : ";
+            s << '"' << valuestr() << "\", ";
+            if (format != TenGen)
+                s << "\"$id\" : ";
+            s << '"' << mongo::OID::from(valuestr() + valuestrsize()) << "\" ";
+            if (format == TenGen)
+                s << ')';
+            else
+                s << '}';
+            break;
+        }
+        case jstOID:
+            if (format == TenGen) {
+                s << "ObjectId( ";
+            } else {
+                s << "{ \"$oid\" : ";
+            }
+            s << '"' << __oid() << '"';
+            if (format == TenGen) {
+                s << " )";
+            } else {
+                s << " }";
+            }
+            break;
+        case BinData: {
+            ConstDataCursor reader(value());
+            const int len = reader.readAndAdvance<LittleEndian<int>>();
+            BinDataType type = static_cast<BinDataType>(reader.readAndAdvance<uint8_t>());
+
+            s << "{ \"$binary\" : \"";
+            base64::encode(s, reader.view(), len);
+            s << "\", \"$type\" : \"" << hex;
+            s.width(2);
+            s.fill('0');
+            s << type << dec;
+            s << "\" }";
+            break;
+        }
+        case mongo::Date:
+            if (format == Strict) {
+                Date_t d = date();
+                s << "{ \"$date\" : ";
+                // The two cases in which we cannot convert Date_t::millis to an ISO Date string are
+                // when the date is too large to format (SERVER-13760), and when the date is before
+                // the epoch (SERVER-11273).  Since Date_t internally stores millis as an unsigned
+                // long long, despite the fact that it is logically signed (SERVER-8573), this check
+                // handles both the case where Date_t::millis is too large, and the case where
+                // Date_t::millis is negative (before the epoch).
+                if (d.isFormattable()) {
+                    s << "\"" << dateToISOStringLocal(date()) << "\"";
+                } else {
+                    s << "{ \"$numberLong\" : \"" << d.toMillisSinceEpoch() << "\" }";
+                }
+                s << " }";
+            } else {
+                s << "Date( ";
+                if (pretty) {
+                    Date_t d = date();
+                    // The two cases in which we cannot convert Date_t::millis to an ISO Date string
+                    // are when the date is too large to format (SERVER-13760), and when the date is
+                    // before the epoch (SERVER-11273).  Since Date_t internally stores millis as an
+                    // unsigned long long, despite the fact that it is logically signed
+                    // (SERVER-8573), this check handles both the case where Date_t::millis is too
+                    // large, and the case where Date_t::millis is negative (before the epoch).
+                    if (d.isFormattable()) {
+                        s << "\"" << dateToISOStringLocal(date()) << "\"";
+                    } else {
+                        // FIXME: This is not parseable by the shell, since it may not fit in a
+                        // float
+                        s << d.toMillisSinceEpoch();
+                    }
+                } else {
+                    s << date().asInt64();
+                }
+                s << " )";
+            }
+            break;
+        case RegEx:
+            if (format == Strict) {
+                s << "{ \"$regex\" : \"" << escape(regex());
+                s << "\", \"$options\" : \"" << regexFlags() << "\" }";
+            } else {
+                s << "/" << escape(regex(), true) << "/";
+                // FIXME Worry about alpha order?
+                for (const char* f = regexFlags(); *f; ++f) {
+                    switch (*f) {
+                        case 'g':
+                        case 'i':
+                        case 'm':
+                            s << *f;
+                        default:
+                            break;
+                    }
+                }
+            }
+            break;
+
+        case CodeWScope: {
+            BSONObj scope = codeWScopeObject();
+            if (!scope.isEmpty()) {
+                s << "{ \"$code\" : \"" << escape(_asCode()) << "\" , "
+                  << "\"$scope\" : ";
+                scope.jsonString(s);
+                s << " }";
+                break;
+            }
+        }
+
+        case Code:
+            s << "\"" << escape(_asCode()) << "\"";
+            break;
+
+        case bsonTimestamp:
+            if (format == TenGen) {
+                s << "Timestamp( " << durationCount<Seconds>(timestampTime().toDurationSinceEpoch())
+                  << ", " << timestampInc() << " )";
+            } else {
+                s << "{ \"$timestamp\" : { \"t\" : "
+                  << durationCount<Seconds>(timestampTime().toDurationSinceEpoch())
+                  << ", \"i\" : " << timestampInc() << " } }";
+            }
+            break;
+
+        case MinKey:
+            s << "{ \"$minKey\" : 1 }";
+            break;
+
+        case MaxKey:
+            s << "{ \"$maxKey\" : 1 }";
+            break;
+
+        default:
+            StringBuilder ss;
+            ss << "Cannot create a properly formatted JSON string with "
+               << "element: " << toString() << " of type: " << type();
+            string message = ss.str();
+            massert(34411, message.c_str(), false);
+    }
+}
+
 namespace {
 
 // Map from query operator string name to operator MatchType. Used in BSONElement::getGtLtOp().

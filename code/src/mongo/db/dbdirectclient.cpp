@@ -40,6 +40,7 @@
 #include "mongo/db/wire_version.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/util/log.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -54,16 +55,24 @@ class DirectClientScope {
 public:
     explicit DirectClientScope(OperationContext* txn)
         : _txn(txn), _prev(_txn->getClient()->isInDirectClient()) {
+        if (!_prev) {
+            _prev_deadline = _txn->getDeadline();
+            _txn->setDeadlineByDate(Date_t::max());
+        }
         _txn->getClient()->setInDirectClient(true);
     }
 
     ~DirectClientScope() {
         _txn->getClient()->setInDirectClient(_prev);
+        if (!_prev) {
+            _txn->setDeadlineByDate(_prev_deadline);
+        }
     }
 
 private:
     OperationContext* const _txn;
     const bool _prev;
+    Date_t _prev_deadline = Date_t::max();
 };
 
 }  // namespace

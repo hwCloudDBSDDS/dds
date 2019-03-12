@@ -8,6 +8,7 @@ import copy
 import os.path
 import socket
 import time
+import shutil
 
 import pymongo
 
@@ -47,6 +48,7 @@ class ShardedClusterFixture(interface.Fixture):
         the mongod and mongos processes.
         """
 
+        shutil.rmtree("/test", ignore_errors=True)
         interface.Fixture.__init__(self, logger, job_num)
 
         if "dbpath" in mongod_options:
@@ -72,12 +74,19 @@ class ShardedClusterFixture(interface.Fixture):
         self.configsvr = None
         self.mongos = None
         self.shards = []
+        self.port = []
+        self.host = "localhost"
+        self.logflag = ""
 
-    def setup(self):
+    def setup(self, logflag=""):
+        shutil.rmtree(self._dbpath_prefix, ignore_errors=True)
+        self.logflag = logflag
+        #os.popen('/root/namenode/hadoop-2.7.3/bin/hdfs dfs -rm -r hdfs://163.40.13.205:9000' + self._dbpath_prefix + '/*')
+        #time.sleep(2)
         if self.separate_configsvr:
             if self.configsvr is None:
                 self.configsvr = self._new_configsvr()
-            self.configsvr.setup()
+            self.configsvr.setup(logflag)
 
         if not self.shards:
             for i in xrange(self.num_shards):
@@ -85,8 +94,10 @@ class ShardedClusterFixture(interface.Fixture):
                 self.shards.append(shard)
 
         # Start up each of the shards
+        i = 1
         for shard in self.shards:
-            shard.setup()
+            shard.setup(logflag + "_shard" + str(i))
+            i += 1
 
     def await_ready(self):
         # Wait for the config server
@@ -101,7 +112,7 @@ class ShardedClusterFixture(interface.Fixture):
             self.mongos = self._new_mongos()
 
         # Start up the mongos
-        self.mongos.setup()
+        self.mongos.setup(self.logflag)
 
         # Wait for the mongos
         self.mongos.await_ready()
@@ -183,7 +194,14 @@ class ShardedClusterFixture(interface.Fixture):
         mongod_options["configsvr"] = ""
         mongod_options["dbpath"] = os.path.join(self._dbpath_prefix, "config")
         mongod_options["replSet"] = ShardedClusterFixture._CONFIGSVR_REPLSET_NAME
-        mongod_options["storageEngine"] = "wiredTiger"
+        mongod_options["storageEngine"] = "rocksdb"
+        self.port.append(core.network.PortAllocator.next_fixture_port(self.job_num))
+        self.port.append(core.network.PortAllocator.next_fixture_port(self.job_num))
+        self.port.append(core.network.PortAllocator.next_fixture_port(self.job_num))
+        tmp = core.network.PortAllocator.prev_fixture_port(self.job_num)
+        tmp = core.network.PortAllocator.prev_fixture_port(self.job_num)
+        tmp = core.network.PortAllocator.prev_fixture_port(self.job_num)
+        mongod_options["configdb"] = "%s/%s:%s,%s:%s,%s:%s" % ("xxx", self.host, self.port[0], self.host, self.port[1], self.host, self.port[2])
 
         return replicaset.ReplicaSetFixture(mongod_logger,
                                             self.job_num,
@@ -206,6 +224,8 @@ class ShardedClusterFixture(interface.Fixture):
         mongod_options = copy.deepcopy(self.mongod_options)
         mongod_options["shardsvr"] = ""
         mongod_options["dbpath"] = os.path.join(self._dbpath_prefix, "shard%d" % (index))
+        mongod_options["bind_ip"] = self.host
+        mongod_options["configdb"] = "%s/%s:%s,%s:%s,%s:%s" % ("config_rs", self.host, self.port[0], self.host, self.port[1], self.host, self.port[2])
 
         return standalone.MongoDFixture(mongod_logger,
                                         self.job_num,
@@ -223,14 +243,18 @@ class ShardedClusterFixture(interface.Fixture):
         mongos_logger = logging.loggers.new_logger(logger_name, parent=self.logger)
 
         mongos_options = copy.deepcopy(self.mongos_options)
-        configdb_hostname = socket.gethostname()
+        configdb_hostname = "localhost"
 
         if self.separate_configsvr:
             configdb_replset = ShardedClusterFixture._CONFIGSVR_REPLSET_NAME
             configdb_port = self.configsvr.port
-            mongos_options["configdb"] = "%s/%s:%d" % (configdb_replset,
-                                                       configdb_hostname,
-                                                       configdb_port)
+            mongos_options["configdb"] = "%s/%s:%d,%s:%d,%s:%d" % (configdb_replset,
+                                                                   configdb_hostname,
+                                                                   self.port[0],
+                                                                   configdb_hostname,
+                                                                   self.port[1],
+                                                                   configdb_hostname,
+                                                                   self.port[2])
         else:
             mongos_options["configdb"] = "%s:%d" % (configdb_hostname, self.shards[0].port)
 
@@ -248,7 +272,7 @@ class ShardedClusterFixture(interface.Fixture):
         for more details.
         """
 
-        hostname = socket.gethostname()
+        hostname = "localhost"
         self.logger.info("Adding %s:%d as a shard..." % (hostname, shard.port))
         client.admin.command({"addShard": "%s:%d" % (hostname, shard.port)})
 
@@ -273,10 +297,14 @@ class _MongoSFixture(interface.Fixture):
 
         self.mongos = None
 
-    def setup(self):
+    def setup(self, logflag=""):
         if "port" not in self.mongos_options:
             self.mongos_options["port"] = core.network.PortAllocator.next_fixture_port(self.job_num)
         self.port = self.mongos_options["port"]
+        if logflag is not "":
+            if not os.path.exists("./resmoke_log/job%d" % (self.job_num)):
+                os.makedirs("./resmoke_log/job%d" % (self.job_num))
+            self.mongos_options["logpath"] = "./resmoke_log/job" + str(self.job_num) + "/" + logflag + "_mongos.log"
 
         mongos = core.programs.mongos_program(self.logger,
                                               executable=self.mongos_executable,

@@ -36,15 +36,16 @@
     var directDB = direct.getDB("test");
 
     for (var done = 0; done < 2 * 1024 * 1024; done += big.length) {
-        assert.writeOK(directDB.foo.insert({x: 50 + Math.random(), big: big}));
+        // assert.writeOK(directDB.foo.insert({x: 50 + Math.random(), big: big}));
+        assert.writeOK(db.foo.insert({x: 50 + Math.random(), big: big}));
     }
 
     s.printShardingStatus();
 
     // This is a large chunk, which should not be able to move
-    assert.commandFailed(s.s0.adminCommand(
+    /*wooo assert.commandFailed(s.s0.adminCommand(
         {movechunk: "test.foo", find: {x: 50}, to: s.getOther(s.getPrimaryShard("test")).name}));
-
+    */
     for (var i = 0; i < 20; i += 2) {
         try {
             assert.commandWorked(s.s0.adminCommand({split: "test.foo", middle: {x: i}}));

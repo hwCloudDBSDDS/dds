@@ -1,5 +1,4 @@
 /build
-#/src/mongo/db/modules
 /.jsdbshell
 /.dbshell
 /perf.data
@@ -36,6 +35,8 @@
 *.*sdf
 *.psess
 *.tmp
+*.sln
+*.vcproj
 *#
 .#*
 
@@ -60,7 +61,6 @@ TAGS
 failfile.smoke
 
 #temp dirs
-dump
 /log
 logs
 docs/html
@@ -149,7 +149,6 @@ src/third_party/v8/src/libraries.cc
 
 # Idea CLion project artifacts
 .idea
-CMakeLists.txt
 
 # XCode projects
 .xcworkspace

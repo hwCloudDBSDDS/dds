@@ -33,9 +33,10 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/platform/atomic_word.h"
+#include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/util/concurrency/mutex.h"
-#include "mongo/s/catalog/type_collection.h"
+#include "mongo/util/concurrency/notification.h"
 
 namespace mongo {
 
@@ -54,14 +55,13 @@ struct CollectionInfo {
     ~CollectionInfo();
 
     bool isSharded() const {
-        //return _tableType == CollectionType::TableType::kSharded ? true:false;
         return _cm.get();
     }
 
     std::shared_ptr<ChunkManager> getCM() const {
         return _cm;
     }
-    CollectionType::TableType getCollTabType()const{
+    CollectionType::TableType getCollTabType() const {
         return _tableType;
     }
 
@@ -93,6 +93,20 @@ struct CollectionInfo {
         return _configOpTime;
     }
 
+    void updateTrigrefreshCount() {
+        _trigrefreshCount++;
+        return;
+    }
+
+    void updateCmrefreshCount() {
+        _cmrefreshCount++;
+        return;
+    }
+
+    void getStatisticsofLoadingChunks(BSONObjBuilder& result);
+
+    std::shared_ptr<Notification<Status>> refreshCompletionNotification;
+
 private:
     BSONObj _key;
     bool _unique;
@@ -101,6 +115,9 @@ private:
     bool _dropped;
     repl::OpTime _configOpTime;
     CollectionType::TableType _tableType = CollectionType::TableType::kNonShard;
+    // for refresh statistics
+    uint64_t _trigrefreshCount;
+    uint64_t _cmrefreshCount;
 };
 
 /**
@@ -142,28 +159,28 @@ public:
      * @return whether or not the 'ns' collection is partitioned
      */
     bool isSharded(const std::string& ns);
+    int  getCollNums(){return _collections.size();}
 
-    bool isCollectionExist(const std::string& ns);
-    
+    StatusWith<bool> isCollectionExist(OperationContext* txn,
+                                       const std::string& ns,
+                                       bool full = false);
+
     CollectionType::TableType getCollTabType(const std::string& ns);
 
-    
 
     // Atomically returns *either* the chunk manager *or* the primary shard for the collection,
     // neither if the collection doesn't exist.
     Status getChunkManagerOrPrimary(OperationContext* txn,
-                                  const std::string& ns,
-                                  std::shared_ptr<ChunkManager>& manager,
-                                  std::shared_ptr<Shard>& primary);
+                                    const std::string& ns,
+                                    std::shared_ptr<ChunkManager>& manager,
+                                    std::shared_ptr<Shard>& primary);
 
     std::shared_ptr<ChunkManager> getChunkManager(OperationContext* txn,
                                                   const std::string& ns,
-                                                  bool reload = false,
-                                                  bool forceReload = false);
+                                                  bool reload = false);
     std::shared_ptr<ChunkManager> getChunkManagerIfExists(OperationContext* txn,
                                                           const std::string& ns,
-                                                          bool reload = false,
-                                                          bool forceReload = false);
+                                                          bool reload = false);
 
     void setPrimary(OperationContext* txn, const ShardId& newPrimaryId);
 
@@ -175,12 +192,16 @@ public:
     bool reload(OperationContext* txn);
 
     bool dropDatabase(OperationContext*, std::string& errmsg);
+
     void getAllShardIds(std::set<ShardId>* shardIds);
     void getAllShardedCollections(std::set<std::string>& namespaces);
+    // get all non sharded collections
     void getAllNonShardedCollections(std::set<std::string>& namespaces);
-    //get all non sharded collections
-    // we have to re-check after reload in case that other mongos already create a new sharded collection
+    // we have to re-check after reload in case that other mongos already create a new sharded
+    // collection
     bool isShardedAfterReload(OperationContext* txn, const std::string& ns);
+
+    void getStat(BSONObjBuilder& result);
 
 protected:
     typedef std::map<std::string, CollectionInfo> CollectionInfoMap;
@@ -199,6 +220,10 @@ protected:
      */
     bool _loadIfNeeded(OperationContext* txn, Counter reloadIteration);
 
+    void _chunkManagerRefresh(OperationContext* txn,
+                              const std::string& ns,
+                              const ChunkManager* oldManager);
+
     void _save(OperationContext* txn, bool db = true, bool coll = true);
 
     // All member variables are labeled with one of the following codes indicating the
@@ -211,6 +236,8 @@ protected:
     // Mutex lock order:
     // _hitConfigServerLock -> _lock
     //
+
+    static const uint64_t SkipBackSteps;
 
     // Name of the database which this entry caches
     const std::string _name;  // (I)
@@ -228,14 +255,15 @@ protected:
     // OpTime of config server when the database definition was loaded.
     repl::OpTime _configOpTime;  // (L)
 
-    // Ensures that only one thread at a time loads collection configuration data from
-    // the config server
-    stdx::mutex _hitConfigServerLock;
-
     // Increments every time this performs a full reload. Since a full reload can take a very
     // long time for very large clusters, this can be used to minimize duplicate work when multiple
     // threads tries to perform full rerload at roughly the same time.
     AtomicUInt64 _reloadCount;  // (S)
+
+    // for statistics
+    uint64_t _collloadCount;
+    uint64_t _collcachehitCount;
+    uint64_t _colleraseCount;
 };
 
 

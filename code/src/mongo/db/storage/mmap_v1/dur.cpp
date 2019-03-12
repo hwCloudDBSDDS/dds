@@ -704,7 +704,7 @@ static void durThread(ClockSource* cs, int64_t serverStartMs) {
 
             for (unsigned i = 0; i <= 2; i++) {
                 if (stdx::cv_status::no_timeout ==
-                    flushRequested.wait_for(lock, Milliseconds(oneThird).toSystemDuration())) {
+                    flushRequested.wait_for(lock, Milliseconds(oneThird).toSteadyDuration())) {
                     // Someone forced a flush
                     break;
                 }

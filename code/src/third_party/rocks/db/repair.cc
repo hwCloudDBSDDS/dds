@@ -84,6 +84,7 @@
 #include "util/cf_options.h"
 #include "util/file_reader_writer.h"
 #include "util/string_util.h"
+#include "util/cf_options.h"
 
 namespace rocksdb {
 
@@ -106,12 +107,13 @@ class Repairer {
             ImmutableCFOptions(immutable_db_options_, default_cf_opts)),
         unknown_cf_opts_(unknown_cf_opts),
         create_unknown_cfs_(create_unknown_cfs),
+        mutable_cf_options_(default_cf_opts),
         raw_table_cache_(
             // TableCache can be small since we expect each table to be opened
             // once.
             NewLRUCache(10, db_options_.table_cache_numshardbits)),
         table_cache_(new TableCache(default_cf_iopts_, env_options_,
-                                    raw_table_cache_.get())),
+                                    raw_table_cache_.get(), mutable_cf_options_)),
         wb_(db_options_.db_write_buffer_size),
         wc_(db_options_.delayed_write_rate),
         vset_(dbname_, &immutable_db_options_, env_options_,
@@ -229,6 +231,7 @@ class Repairer {
   const ImmutableCFOptions default_cf_iopts_;  // table_cache_ holds reference
   const ColumnFamilyOptions unknown_cf_opts_;
   const bool create_unknown_cfs_;
+  const MutableCFOptions mutable_cf_options_;
   std::shared_ptr<Cache> raw_table_cache_;
   TableCache* table_cache_;
   WriteBufferManager wb_;

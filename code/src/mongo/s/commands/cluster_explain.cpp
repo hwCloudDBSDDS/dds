@@ -83,8 +83,21 @@ bool appendToArrayIfRoom(BSONArrayBuilder* arrayBuilder, const BSONElement& toAp
 }
 
 bool appendElementsIfRoom(BSONObjBuilder* bob, const BSONObj& toAppend) {
+    const StringData ns = "namespace"_sd;
     if ((bob->len() + toAppend.objsize()) < BSONObjMaxUserSize) {
-        bob->appendElements(toAppend);
+
+        BSONObjBuilder build;
+        for (auto&& elem : toAppend) {
+            auto ElemFieldName = elem.fieldNameStringData();
+            if (ns == ElemFieldName) {
+                auto sd = elem.valueStringData();
+                auto sub = sd.substr(0, sd.find("$"));
+                build.append(ns, sub);
+            } else {
+                build.append(elem);
+            }
+        }
+        bob->appendElements(build.obj());
         return true;
     }
 
@@ -212,19 +225,28 @@ void ClusterExplain::buildPlannerInfo(OperationContext* txn,
 
     winningPlanBob.append("stage", mongosStageName);
     BSONArrayBuilder shardsBuilder(winningPlanBob.subarrayStart("shards"));
+    std::map<std::string, std::string> shardName;
     for (size_t i = 0; i < shardResults.size(); i++) {
         BSONObjBuilder singleShardBob(shardsBuilder.subobjStart());
 
         BSONObj queryPlanner = shardResults[i].result["queryPlanner"].Obj();
-        BSONObj serverInfo = shardResults[i].result["serverInfo"].Obj();
+        std::string shname = shardResults[i].shardTargetId.toString();
+        // BSONObj serverInfo = shardResults[i].result["serverInfo"].Obj();
+        auto it = shardName.find(shname);
+        if (it == shardName.end()) {
+            shardName[shname] = shname;
+        } else {
+            continue;
+        }
+        singleShardBob.append("shardName", shname);
 
-        singleShardBob.append("shardName", shardResults[i].shardTargetId.toString());
+
         {
             const auto shard =
                 uassertStatusOK(grid.shardRegistry()->getShard(txn, shardResults[i].shardTargetId));
-            singleShardBob.append("connectionString", shard->getConnString().toString());
+            singleShardBob.append("connectionString", shard->getId().toString());
         }
-        appendIfRoom(&singleShardBob, serverInfo, "serverInfo");
+        /*appendIfRoom(&singleShardBob, serverInfo, "serverInfo");*/
         appendElementsIfRoom(&singleShardBob, queryPlanner);
 
         singleShardBob.doneFast();

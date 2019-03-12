@@ -70,7 +70,7 @@ void BackgroundThreadClockSource::_startTimerThread() {
     _timer = stdx::thread([&]() {
         stdx::unique_lock<stdx::mutex> lock(_mutex);
         while (!_shutdownTimer) {
-            if (_condition.wait_for(lock, _granularity.toSystemDuration()) ==
+            if (_condition.wait_for(lock, _granularity.toSteadyDuration()) ==
                 stdx::cv_status::timeout) {
                 _updateCurrent();
             }

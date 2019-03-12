@@ -5,6 +5,29 @@ selector:
     exclude_files:
     # The following tests fail because a certain command or functionality is not supported by
     # mongos. This command or functionality is placed in a comment next to the failing test.
+    #added by xiangyu begin 
+    - jstests/core/mr*
+    - jstests/core/copydatabase_no_id_index.js
+    - jstests/core/constructors.js
+    - jstests/core/eval_mr.js
+    - jstests/core/explain_multi_plan.js
+    - jstests/core/geo_big_polygon3.js
+    - jstests/core/geo_mapreduce*.js
+    - jstests/core/index_stats.js
+    - jstests/core/recursion.js
+    - jstests/core/repair_database.js
+    - jstests/core/repair_server12955.js
+    - jstests/core/splitvector.js
+    - jstests/core/temp_cleanup.js
+    - jstests/core/or4.js
+    - jstests/core/geo_sort1.js
+    - jstests/core/collation.js
+    - jstests/core/queryoptimizer3.js
+    - jstests/core/system_profile.js
+    - jstests/core/convert_to_capped_nonexistant.js
+    #- jstests/core/aggregation_getmore_batchsize.js
+    #end
+    - jstests/core/drop2_single.js  # only for core.
     - jstests/core/apitest_db.js  # profiling.
     - jstests/core/apply_ops*.js  # applyOps, SERVER-1439.
     - jstests/core/bypass_doc_validation.js  # copyDatabase

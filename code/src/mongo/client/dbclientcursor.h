@@ -35,8 +35,8 @@
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
-#include "mongo/util/net/message.h"
 #include "mongo/s/chunk_id.h"
+#include "mongo/util/net/message.h"
 
 namespace mongo {
 

@@ -191,6 +191,9 @@ public:
      * Returns true if no more work can be done on the query / out of results.
      */
     virtual bool isEOF() = 0;
+    virtual bool isDEAD() {
+        return false;
+    };
 
     //
     // Yielding and isolation semantics:
@@ -317,6 +320,8 @@ public:
      */
     virtual const SpecificStats* getSpecificStats() const = 0;
 
+    virtual void releaseCursor();
+
 protected:
     /**
      * Performs one unit of work.  See comment at work() above.
@@ -351,6 +356,8 @@ protected:
      * OperationContext* (the one to which the stage is reattaching).
      */
     virtual void doReattachToOperationContext() {}
+
+    virtual void doReleaseCursor() {}
 
     /**
      * Does the stage-specific invalidation work.

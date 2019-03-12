@@ -63,11 +63,16 @@ ShardFilterStage::~ShardFilterStage() {}
 bool ShardFilterStage::isEOF() {
     return child()->isEOF();
 }
+bool ShardFilterStage::isDEAD() {
+    return child()->isDEAD();
+}
 
 PlanStage::StageState ShardFilterStage::doWork(WorkingSetID* out) {
     // If we've returned as many results as we're limited to, isEOF will be true.
     if (isEOF()) {
-        return PlanStage::IS_EOF;
+        if (!isDEAD()) {
+            return PlanStage::IS_EOF;
+        }
     }
 
     StageState status = child()->work(out);

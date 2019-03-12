@@ -94,11 +94,14 @@ private:
  */
 class ChunkType {
 public:
+    // the width of chunkID,
+    static const int kChunkIDDigitWidth;
+
     enum class ChunkStatus : int {
-        kOffloaded = 0, 
+        kOffloaded = 0,
         kAssigned,
-        kDisabled, // Chunk will not be processed by balancer
-        kFirstInvalidChunkStatus // make it easy to do the sanity check when adding new status
+        kDisabled,                // Chunk will not be processed by balancer
+        kFirstInvalidChunkStatus  // make it easy to do the sanity check when adding new status
     };
 
     // Name of the chunks collection in the config server.
@@ -155,13 +158,19 @@ public:
      */
     std::string toString() const;
 
-    //get id of the chunk without leading 0
+    // get id of the chunk without leading 0
     std::string getName() const;
     void setName(const std::string& id);
 
     const std::string& getNS() const {
         return _ns.get();
     }
+
+    std::string getFullNs() const {
+        std::string ns_with_chunkID = getNS() + '$' + getName();
+        return ns_with_chunkID;
+    }
+
     void setNS(const std::string& name);
 
     const BSONObj& getMin() const {
@@ -201,9 +210,11 @@ public:
         return _rootFolder.get();
     }
 
+    std::string getRelativeRootFolder() const;
+
     void setRootFolder(const std::string& rootFolder);
     void clearRootFolder();
-    
+
     // get the full id field
     const std::string& getID() const {
         return _id;
@@ -222,7 +233,14 @@ public:
     const std::string& getProcessIdentity() const {
         return _processIdentity;
     }
-    
+
+    std::string getCollectionIdent() const;
+
+    static std::string toSex(uint64_t id);
+    static std::string widthChunkID(const std::string& chunkId);
+
+    std::string getChunkDataPath(void) const;
+
 private:
     // Convention: (M)andatory, (O)ptional, (S)pecial rule.
 
@@ -242,7 +260,7 @@ private:
     ChunkStatus _status = ChunkStatus::kOffloaded;
     // (O) chunk's root folder which could be rootploglist or hdfs path
     boost::optional<std::string> _rootFolder;
-    // (M)  unique chunkID 
+    // (M)  unique chunkID
     std::string _id = "";
     std::string _processIdentity = "noidentity";
 };

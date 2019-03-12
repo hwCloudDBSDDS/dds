@@ -321,6 +321,7 @@ public:
 
     virtual Status checkIfIAmPrimary() override;
 
+
     // ================== Test support API ===================
 
     /**
@@ -383,6 +384,8 @@ public:
      * last vote and scheduling the real election.
      */
     void waitForElectionDryRunFinish_forTest();
+    // The count of config can not see the primary config.
+    static uint32_t _cluesterFaultCount;
 
 private:
     using CallbackFn = executor::TaskExecutor::CallbackFn;
@@ -1223,6 +1226,8 @@ private:
 
     // Current ReplicaSet state.
     MemberState _memberState;  // (MX)
+
+    bool _firstSecondaryState = true;  // (M)
 
     // Used to signal threads waiting for changes to _memberState.
     stdx::condition_variable _drainFinishedCond;  // (M)

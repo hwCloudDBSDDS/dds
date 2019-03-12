@@ -109,7 +109,7 @@ public:
     void unsetAtomicity();
     bool isAtomicitySet() const;
     bool getAtomicity() const;
-    
+
     void setPrewarm(bool prewarm);
     void unsetPrewarm();
     bool isPrewarmSet() const;
@@ -120,6 +120,14 @@ public:
     }
     bool shouldBypassValidation() const {
         return _shouldBypassValidation;
+    }
+
+    void setUsermanagerCmd(bool usermanager) {
+        _isCmdFromUserManager = usermanager;
+    }
+
+    bool isUserManagerCmd() const {
+        return _isCmdFromUserManager;
     }
 
 private:
@@ -152,6 +160,10 @@ private:
     bool _prewarm;
     bool _isPrewarmSet;
 
+    // (O)  (default false)
+    bool _isCmdFromUserManager{false};
+
+    static const std::string UPDATE_IS_CMD_FROM_USER_MANAGER_KEY;
 };
 
 }  // namespace mongo

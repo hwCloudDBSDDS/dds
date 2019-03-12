@@ -41,31 +41,44 @@ using namespace mongo;
 using std::string;
 
 TEST(ShardType, MissingName) {
+
     BSONObj obj = BSON(ShardType::host("localhost:27017"));
+
     StatusWith<ShardType> shardRes = ShardType::fromBSON(obj);
     ASSERT_FALSE(shardRes.isOK());
 }
 
 TEST(ShardType, MissingHost) {
+
     BSONObj obj = BSON(ShardType::name("shard00000000"));
+
     StatusWith<ShardType> shardRes = ShardType::fromBSON(obj);
     ASSERT_FALSE(shardRes.isOK());
 }
 
+
 TEST(ShardType, OnlyMandatory) {
-    BSONObj obj = BSON(ShardType::name("shard00000000") << ShardType::host("localhost:27017") 
-                           << ShardType::processIdentity("identity0000"));
+
+    BSONObj obj =
+        BSON(ShardType::name("shard00000000") << ShardType::host("localhost:27017")
+                                              << ShardType::processIdentity("identity0000")
+                                              << ShardType::extendIPs("127.0.0.1"));
+
     StatusWith<ShardType> shardRes = ShardType::fromBSON(obj);
     ASSERT(shardRes.isOK());
+
     ShardType shard = shardRes.getValue();
     ASSERT(shard.validate().isOK());
 }
 
 TEST(ShardType, AllOptionalsPresent) {
-    BSONObj obj = BSON(ShardType::name("shard00000000") << ShardType::host("localhost:27017")
-                                                    << ShardType::draining(true)
-                                                    << ShardType::maxSizeMB(100)
-                                                    << ShardType::processIdentity("identity0000"));
+    BSONObj obj =
+        BSON(ShardType::name("shard00000000") << ShardType::host("localhost:27017")
+                                              << ShardType::draining(true)
+                                              << ShardType::extendIPs("127.0.0.1")
+                                              << ShardType::maxSizeMB(100)
+                                              << ShardType::processIdentity("identity0000"));
+
     StatusWith<ShardType> shardRes = ShardType::fromBSON(obj);
     ASSERT(shardRes.isOK());
     ShardType shard = shardRes.getValue();
@@ -73,10 +86,13 @@ TEST(ShardType, AllOptionalsPresent) {
 }
 
 TEST(ShardType, MaxSizeAsFloat) {
-    BSONObj obj = BSON(ShardType::name("shard00000000") << ShardType::host("localhost:27017") 
-                                                    << ShardType::processIdentity("identity0000")
-                                                    << ShardType::maxSizeMB()
-                                                    << 100.0);
+    BSONObj obj =
+        BSON(ShardType::name("shard00000000") << ShardType::host("localhost:27017")
+                                              << ShardType::processIdentity("identity0000")
+                                              << ShardType::extendIPs("127.0.0.1")
+                                              << ShardType::maxSizeMB()
+                                              << 100.0);
+
     StatusWith<ShardType> shardRes = ShardType::fromBSON(obj);
     ASSERT(shardRes.isOK());
     ShardType shard = shardRes.getValue();

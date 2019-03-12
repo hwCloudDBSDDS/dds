@@ -82,7 +82,7 @@ load('jstests/aggregation/extras/utils.js');
     // Test version and version Array
     var version = latestStartUpLog.buildinfo.version.split('-')[0];
     var versionArray = latestStartUpLog.buildinfo.versionArray;
-    var versionArrayCleaned = versionArray.slice(0, 3);
+    var versionArrayCleaned = versionArray.slice(0, 4);
     if (versionArray[3] == -100) {
         versionArrayCleaned[2] -= 1;
     }

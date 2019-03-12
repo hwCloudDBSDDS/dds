@@ -46,48 +46,49 @@ TEST(ChunkType, MissingRequiredFields) {
     ChunkVersion chunkVersion(1, 2, OID::gen());
     string rootFolder = "plogcnt1,14467092549708438914-0";
 
-    BSONObj objModNS =
-        BSON(ChunkType::name("test.mycol-a_MinKey")
-            << ChunkType::min(BSON("a" << 10 << "b" << 10))
-            << ChunkType::max(BSON("a" << 20))
-            << "lastmod"
-            << Timestamp(chunkVersion.toLong())
-            << "lastmodEpoch"
-            << chunkVersion.epoch()
-            << ChunkType::shard("shard0001")
-            << "status"
-            << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(ChunkType::ChunkStatus::kAssigned)
-            << ChunkType::rootFolder(rootFolder));
+    BSONObj objModNS = BSON(ChunkType::name("test.mycol-a_MinKey")
+                            << ChunkType::min(BSON("a" << 10 << "b" << 10))
+                            << ChunkType::max(BSON("a" << 20))
+                            << "lastmod"
+                            << Timestamp(chunkVersion.toLong())
+                            << "lastmodEpoch"
+                            << chunkVersion.epoch()
+                            << ChunkType::shard("shard0001")
+                            << "status"
+                            << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+                                   ChunkType::ChunkStatus::kAssigned)
+                            << ChunkType::rootFolder(rootFolder));
 
     StatusWith<ChunkType> chunkRes = ChunkType::fromBSON(objModNS);
     ASSERT_FALSE(chunkRes.isOK());
 
-    BSONObj objModKeys =
-        BSON(ChunkType::name("test.mycol-a_MinKey")
-            << ChunkType::ns("test.mycol") << "lastmod"
-            << Timestamp(chunkVersion.toLong())
-            << "lastmodEpoch"
-            << chunkVersion.epoch()
-            << ChunkType::shard("shard0001")
-            << "status"
-            << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(ChunkType::ChunkStatus::kAssigned)
-            << ChunkType::rootFolder(rootFolder));
+    BSONObj objModKeys = BSON(ChunkType::name("test.mycol-a_MinKey")
+                              << ChunkType::ns("test.mycol")
+                              << "lastmod"
+                              << Timestamp(chunkVersion.toLong())
+                              << "lastmodEpoch"
+                              << chunkVersion.epoch()
+                              << ChunkType::shard("shard0001")
+                              << "status"
+                              << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+                                     ChunkType::ChunkStatus::kAssigned)
+                              << ChunkType::rootFolder(rootFolder));
 
     chunkRes = ChunkType::fromBSON(objModKeys);
     ASSERT_FALSE(chunkRes.isOK());
 
-    BSONObj objModShard =
-        BSON(ChunkType::name("test.mycol-a_MinKey")
-            << ChunkType::ns("test.mycol")
-            << ChunkType::min(BSON("a" << 10 << "b" << 10))
-            << ChunkType::max(BSON("a" << 20))
-            << "lastmod"
-            << Timestamp(chunkVersion.toLong())
-            << "lastmodEpoch"
-            << chunkVersion.epoch()
-            << "status"
-            << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(ChunkType::ChunkStatus::kAssigned)
-            << ChunkType::rootFolder(rootFolder));
+    BSONObj objModShard = BSON(ChunkType::name("test.mycol-a_MinKey")
+                               << ChunkType::ns("test.mycol")
+                               << ChunkType::min(BSON("a" << 10 << "b" << 10))
+                               << ChunkType::max(BSON("a" << 20))
+                               << "lastmod"
+                               << Timestamp(chunkVersion.toLong())
+                               << "lastmodEpoch"
+                               << chunkVersion.epoch()
+                               << "status"
+                               << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+                                      ChunkType::ChunkStatus::kAssigned)
+                               << ChunkType::rootFolder(rootFolder));
 
     chunkRes = ChunkType::fromBSON(objModShard);
     ASSERT_FALSE(chunkRes.isOK());
@@ -103,7 +104,8 @@ TEST(ChunkType, MissingRequiredFields) {
              << chunkVersion.epoch()
              << ChunkType::shard("shard0001")
              << "status"
-             << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(ChunkType::ChunkStatus::kAssigned));
+             << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+                    ChunkType::ChunkStatus::kAssigned));
 
     chunkRes = ChunkType::fromBSON(objModRootFolder);
     ASSERT_FALSE(chunkRes.isOK());
@@ -112,20 +114,20 @@ TEST(ChunkType, MissingRequiredFields) {
 TEST(ChunkType, MinAndMaxShardKeysDifferInNumberOfKeys) {
     ChunkVersion chunkVersion(1, 2, OID::gen());
     string rootFolder = "plogcnt1,14467092549708438914-0";
-    BSONObj obj =
-        BSON(ChunkType::name("test.mycol-a_MinKey")
-            << ChunkType::ns("test.mycol")
-            << ChunkType::min(BSON("a" << 10 << "b" << 10))
-            << ChunkType::max(BSON("a" << 20))
-            << "lastmod"
-            << Timestamp(chunkVersion.toLong())
-            << "lastmodEpoch"
-            << chunkVersion.epoch()
-            << ChunkType::shard("shard0001")
-            << ChunkType::processIdentity("identity0000")
-            << "status"
-            << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(ChunkType::ChunkStatus::kAssigned)
-            << ChunkType::rootFolder(rootFolder));
+    BSONObj obj = BSON(ChunkType::name("test.mycol-a_MinKey")
+                       << ChunkType::ns("test.mycol")
+                       << ChunkType::min(BSON("a" << 10 << "b" << 10))
+                       << ChunkType::max(BSON("a" << 20))
+                       << "lastmod"
+                       << Timestamp(chunkVersion.toLong())
+                       << "lastmodEpoch"
+                       << chunkVersion.epoch()
+                       << ChunkType::shard("shard0001")
+                       << ChunkType::processIdentity("identity0000")
+                       << "status"
+                       << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+                              ChunkType::ChunkStatus::kAssigned)
+                       << ChunkType::rootFolder(rootFolder));
 
     StatusWith<ChunkType> chunkRes = ChunkType::fromBSON(obj);
     ASSERT_OK(chunkRes.getStatus());
@@ -135,20 +137,20 @@ TEST(ChunkType, MinAndMaxShardKeysDifferInNumberOfKeys) {
 TEST(ChunkType, MinAndMaxShardKeysDifferInKeyNames) {
     ChunkVersion chunkVersion(1, 2, OID::gen());
     string rootFolder = "plogcnt1,14467092549708438914-0";
-    BSONObj obj =
-        BSON(ChunkType::name("test.mycol-a_MinKey")
-            << ChunkType::ns("test.mycol")
-            << ChunkType::min(BSON("a" << 10))
-            << ChunkType::max(BSON("b" << 20))
-            << "lastmod"
-            << Timestamp(chunkVersion.toLong())
-            << "lastmodEpoch"
-            << chunkVersion.epoch()
-            << ChunkType::shard("shard0001")
-            << ChunkType::processIdentity("identity0000")
-            << "status"
-            << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(ChunkType::ChunkStatus::kAssigned)
-            << ChunkType::rootFolder(rootFolder));
+    BSONObj obj = BSON(ChunkType::name("test.mycol-a_MinKey")
+                       << ChunkType::ns("test.mycol")
+                       << ChunkType::min(BSON("a" << 10))
+                       << ChunkType::max(BSON("b" << 20))
+                       << "lastmod"
+                       << Timestamp(chunkVersion.toLong())
+                       << "lastmodEpoch"
+                       << chunkVersion.epoch()
+                       << ChunkType::shard("shard0001")
+                       << ChunkType::processIdentity("identity0000")
+                       << "status"
+                       << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+                              ChunkType::ChunkStatus::kAssigned)
+                       << ChunkType::rootFolder(rootFolder));
 
     StatusWith<ChunkType> chunkRes = ChunkType::fromBSON(obj);
     ASSERT_OK(chunkRes.getStatus());
@@ -158,19 +160,19 @@ TEST(ChunkType, MinAndMaxShardKeysDifferInKeyNames) {
 TEST(ChunkType, NotAscending) {
     ChunkVersion chunkVersion(1, 2, OID::gen());
     string rootFolder = "plogcnt1,14467092549708438914-0";
-    BSONObj obj =
-        BSON(ChunkType::name("test.mycol-a_MinKey")
-            << ChunkType::ns("test.mycol")
-            << ChunkType::min(BSON("a" << 20))
-            << ChunkType::max(BSON("a" << 10))
-            << "lastmod"
-            << Timestamp(chunkVersion.toLong())
-            << "lastmodEpoch"
-            << chunkVersion.epoch()
-            << ChunkType::shard("shard0001")
-            << "status"
-            << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(ChunkType::ChunkStatus::kAssigned)
-            << ChunkType::rootFolder(rootFolder));
+    BSONObj obj = BSON(ChunkType::name("test.mycol-a_MinKey")
+                       << ChunkType::ns("test.mycol")
+                       << ChunkType::min(BSON("a" << 20))
+                       << ChunkType::max(BSON("a" << 10))
+                       << "lastmod"
+                       << Timestamp(chunkVersion.toLong())
+                       << "lastmodEpoch"
+                       << chunkVersion.epoch()
+                       << ChunkType::shard("shard0001")
+                       << "status"
+                       << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+                              ChunkType::ChunkStatus::kAssigned)
+                       << ChunkType::rootFolder(rootFolder));
 
     StatusWith<ChunkType> chunkRes = ChunkType::fromBSON(obj);
     ASSERT_EQ(ErrorCodes::FailedToParse, chunkRes.getStatus());
@@ -179,20 +181,20 @@ TEST(ChunkType, NotAscending) {
 TEST(ChunkType, CorrectContents) {
     ChunkVersion chunkVersion(1, 2, OID::gen());
     string rootFolder = "plogcnt1,14467092549708438914-0";
-    BSONObj obj =
-        BSON(ChunkType::name("test.mycol-a_MinKey")
-            << ChunkType::ns("test.mycol")
-            << ChunkType::min(BSON("a" << 10))
-            << ChunkType::max(BSON("a" << 20))
-            << "lastmod"
-            << Timestamp(chunkVersion.toLong())
-            << "lastmodEpoch"
-            << chunkVersion.epoch()
-            << ChunkType::shard("shard0001")
-            << ChunkType::processIdentity("identity0000")
-            << "status"
-            << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(ChunkType::ChunkStatus::kAssigned)
-            << ChunkType::rootFolder(rootFolder));
+    BSONObj obj = BSON(ChunkType::name("test.mycol-a_MinKey")
+                       << ChunkType::ns("test.mycol")
+                       << ChunkType::min(BSON("a" << 10))
+                       << ChunkType::max(BSON("a" << 20))
+                       << "lastmod"
+                       << Timestamp(chunkVersion.toLong())
+                       << "lastmodEpoch"
+                       << chunkVersion.epoch()
+                       << ChunkType::shard("shard0001")
+                       << ChunkType::processIdentity("identity0000")
+                       << "status"
+                       << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+                              ChunkType::ChunkStatus::kAssigned)
+                       << ChunkType::rootFolder(rootFolder));
 
     StatusWith<ChunkType> chunkRes = ChunkType::fromBSON(obj);
     ASSERT_OK(chunkRes.getStatus());
@@ -204,31 +206,34 @@ TEST(ChunkType, CorrectContents) {
     ASSERT_EQUALS(chunk.getVersion().toLong(), chunkVersion.toLong());
     ASSERT_EQUALS(chunk.getVersion().epoch(), chunkVersion.epoch());
     ASSERT_EQUALS(chunk.getShard(), "shard0001");
-    ASSERT_EQUALS(static_cast<int>(chunk.getStatus()), static_cast<int>(ChunkType::ChunkStatus::kAssigned));
+    ASSERT_EQUALS(static_cast<int>(chunk.getStatus()),
+                  static_cast<int>(ChunkType::ChunkStatus::kAssigned));
     ASSERT_EQUALS(chunk.getRootFolder(), rootFolder);
     ASSERT_OK(chunk.validate());
 }
 
 TEST(ChunkType, Pre22Format) {
     string rootFolder = "plogcnt1,14467092549708438914-0";
-    ChunkType chunk = assertGet(ChunkType::fromBSON(BSON("_id"
-        << "test.mycol-a_MinKey"
-        << "lastmod"
-        << Date_t::fromMillisSinceEpoch(1)
-        << "ns"
-        << "test.mycol"
-        << "min"
-        << BSON("a" << 10)
-        << "max"
-        << BSON("a" << 20)
-        << "shard"
-        << "shard0001"
-        << "processIdentity"
-        << "identity0000"
-        << "status"
-        << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(ChunkType::ChunkStatus::kAssigned)
-        << "rootFolder"
-        << rootFolder)));
+    ChunkType chunk = assertGet(
+        ChunkType::fromBSON(BSON("_id"
+                                 << "test.mycol-a_MinKey"
+                                 << "lastmod"
+                                 << Date_t::fromMillisSinceEpoch(1)
+                                 << "ns"
+                                 << "test.mycol"
+                                 << "min"
+                                 << BSON("a" << 10)
+                                 << "max"
+                                 << BSON("a" << 20)
+                                 << "shard"
+                                 << "shard0001"
+                                 << "processIdentity"
+                                 << "identity0000"
+                                 << "status"
+                                 << static_cast<std::underlying_type<ChunkType::ChunkStatus>::type>(
+                                        ChunkType::ChunkStatus::kAssigned)
+                                 << "rootFolder"
+                                 << rootFolder)));
 
     ASSERT_OK(chunk.validate());
     ASSERT_EQUALS(chunk.getNS(), "test.mycol");
@@ -238,7 +243,8 @@ TEST(ChunkType, Pre22Format) {
     ASSERT(!chunk.getVersion().epoch().isSet());
     ASSERT_EQUALS(chunk.getShard(), "shard0001");
     ASSERT_EQUALS(chunk.getProcessIdentity(), "identity0000");
-    ASSERT_EQUALS(static_cast<int>(chunk.getStatus()), static_cast<int>(ChunkType::ChunkStatus::kAssigned));
+    ASSERT_EQUALS(static_cast<int>(chunk.getStatus()),
+                  static_cast<int>(ChunkType::ChunkStatus::kAssigned));
     ASSERT_EQUALS(chunk.getRootFolder(), rootFolder);
 }
 

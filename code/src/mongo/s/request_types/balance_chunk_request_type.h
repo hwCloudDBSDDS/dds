@@ -54,13 +54,15 @@ public:
         // assign a chunk to the specified shard, start its service.
         assign,
 
-        //move the chunk from the original shard it belongs to a specified shard
+        // move the chunk from the original shard it belongs to a specified shard
         move,
 
-        //like the "move", but the shard is choosed by configserver itself according policy
+        // like the "move", but the shard is choosed by configserver itself according policy
         rebalance,
-        //split chunk at the split point
-        split
+        // split chunk at the split point
+        split,
+        // rename a non sharded collection
+        rename
     };
 
     /**
@@ -88,10 +90,16 @@ public:
 
     static BSONObj serializeToOffloadCommandForConfig(const ChunkType& chunk);
 
-    static BSONObj serializeToAssignCommandForConfig(const ChunkType& chunk, const ShardId& newShardId);
+    static BSONObj serializeToAssignCommandForConfig(const ChunkType& chunk,
+                                                     const ShardId& newShardId);
 
-    static BSONObj serializeToSplitCommandForConfig(const ChunkType & chunk, const BSONObj& splitPoint);
-    
+    static BSONObj serializeToSplitCommandForConfig(const ChunkType& chunk,
+                                                    const BSONObj& splitPoint);
+
+    static BSONObj serializeToRenameCommandForConfig(const ChunkType& chunk,
+                                                     const NamespaceString& toNS,
+                                                     bool dropTraget,
+                                                     bool stayTemp);
     const BalanceType& getBalanceType() const {
         return _balanceType;
     }
@@ -124,6 +132,18 @@ public:
         return _splitPoint;
     }
 
+    const std::string getTargetNS() const {
+        return _targetNS;
+    }
+
+    bool getDropTarget() const {
+        return _dropTarget;
+    }
+
+    bool getStayTemp() const {
+        return _stayTemp;
+    }
+
 private:
     BalanceChunkRequest(BalanceType balanceType,
                         ChunkType& chunk,
@@ -150,6 +170,12 @@ private:
     bool _waitForDelete;
 
     BSONObj _splitPoint;
+
+    std::string _targetNS;
+
+    bool _dropTarget;
+
+    bool _stayTemp;
 };
 
 }  // namespace mongo

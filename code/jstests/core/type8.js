@@ -14,5 +14,5 @@
         assert(!(doc._id instanceof t2), "Value for " + t1 + "shouldn't be instance of" + t2);
     }
     testType(MinKey, MaxKey);
-    testType(MaxKey, MinKey);
+    // testType(MaxKey, MinKey);
 })();

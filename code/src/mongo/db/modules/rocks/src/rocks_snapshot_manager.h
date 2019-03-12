@@ -39,45 +39,43 @@
 
 namespace mongo {
 
-class RocksRecoveryUnit;
+    class RocksRecoveryUnit;
 
-class RocksSnapshotManager final : public SnapshotManager {
-    MONGO_DISALLOW_COPYING(RocksSnapshotManager);
+    class RocksSnapshotManager final : public SnapshotManager {
+        MONGO_DISALLOW_COPYING(RocksSnapshotManager);
 
-public:
-    struct SnapshotHolder {
-        uint64_t name;
-        const rocksdb::Snapshot* snapshot;
-        rocksdb::DB* db;
-        SnapshotHolder(OperationContext* opCtx, uint64_t name_);
-        ~SnapshotHolder();
+    public:
+        struct SnapshotHolder {
+            uint64_t name;
+            const rocksdb::Snapshot* snapshot;
+            rocksdb::DB* db;
+            SnapshotHolder(OperationContext* opCtx, uint64_t name_);
+            ~SnapshotHolder();
+        };
+
+        RocksSnapshotManager() {}
+
+        ~RocksSnapshotManager() { dropAllSnapshots(); }
+
+        Status prepareForCreateSnapshot(OperationContext* txn) final;
+        Status createSnapshot(OperationContext* ru, const SnapshotName& name) final;
+        void setCommittedSnapshot(const SnapshotName& name) final;
+        void cleanupUnneededSnapshots() final;
+        void dropAllSnapshots() final;
+
+        //
+        // Rocks-specific members
+        //
+
+        bool haveCommittedSnapshot() const;
+
+        std::shared_ptr<RocksSnapshotManager::SnapshotHolder> getCommittedSnapshot() const;
+
+    private:
+        std::vector<uint64_t> _snapshots;  // sorted
+        std::unordered_map<uint64_t, std::shared_ptr<SnapshotHolder>> _snapshotMap;
+        boost::optional<uint64_t> _committedSnapshot;
+
+        mutable stdx::mutex _mutex;  // Guards all members
     };
-
-    RocksSnapshotManager() {}
-
-    ~RocksSnapshotManager() {
-        dropAllSnapshots();
-    }
-
-    Status prepareForCreateSnapshot(OperationContext* txn) final;
-    Status createSnapshot(OperationContext* ru, const SnapshotName& name) final;
-    void setCommittedSnapshot(const SnapshotName& name) final;
-    void cleanupUnneededSnapshots() final;
-    void dropAllSnapshots() final;
-
-    //
-    // Rocks-specific members
-    //
-
-    bool haveCommittedSnapshot() const;
-
-    std::shared_ptr<RocksSnapshotManager::SnapshotHolder> getCommittedSnapshot() const;
-
-private:
-    std::vector<uint64_t> _snapshots;  // sorted
-    std::unordered_map<uint64_t, std::shared_ptr<SnapshotHolder>> _snapshotMap;
-    boost::optional<uint64_t> _committedSnapshot;
-
-    mutable stdx::mutex _mutex;  // Guards all members
-};
-} // namespace mongo
+}  // namespace mongo

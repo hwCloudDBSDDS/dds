@@ -34,11 +34,13 @@ TEST(AssignChunkRequest, Roundtrip) {
     coll.setKeyPattern(BSON("a" << 1));
 
     BSONObjBuilder builder;
-    AssignChunkRequest::appendAsCommand(&builder, chunk, coll, true);
+    AssignChunkRequest::appendAsCommand(&builder, chunk, coll, true, "shard000", "123456");
 
     BSONObj cmdObj = builder.obj();
 
     auto request = assertGet(AssignChunkRequest::createFromCommand(cmdObj));
+    request.setNewChunkFlag(false);
+    request.toString();
 
     ASSERT_EQ("TestDB.TestColl", request.getNss().ns());
     ASSERT_BSONOBJ_EQ(BSON("Key" << -100), request.getMinKey());
@@ -47,5 +49,3 @@ TEST(AssignChunkRequest, Roundtrip) {
 
 }  // namespace
 }  // namespace mongo
-
-

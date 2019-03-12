@@ -249,13 +249,13 @@ StatusWith<ShardType> ConfigServerTestFixture::getShardDoc(OperationContext* txn
     return ShardType::fromBSON(doc.getValue());
 }
 
-StatusWith<ShardServerType> ConfigServerTestFixture::getShardServerDoc(OperationContext* txn, 
+StatusWith<ShardServerType> ConfigServerTestFixture::getShardServerDoc(OperationContext* txn,
                                                                        const std::string& host) {
     auto doc = findOneOnConfigCollection(
         txn, NamespaceString(ShardServerType::ConfigNS), BSON(ShardServerType::host(host)));
     if (!doc.isOK()) {
         if (doc.getStatus() == ErrorCodes::NoMatchingDocument) {
-            return {ErrorCodes::ShardServerNotFound, 
+            return {ErrorCodes::ShardServerNotFound,
                     str::stream() << "shardServer " << host << " does not exist"};
         }
         return doc.getStatus();
@@ -264,20 +264,24 @@ StatusWith<ShardServerType> ConfigServerTestFixture::getShardServerDoc(Operation
     return ShardServerType::fromBSON(doc.getValue());
 }
 
-StatusWith<std::vector<BSONObj>> ConfigServerTestFixture::getAllDoc(OperationContext* txn, 
-                                                                          const NamespaceString& ns) {
+StatusWith<std::vector<BSONObj>> ConfigServerTestFixture::getAllDoc(OperationContext* txn,
+                                                                    const NamespaceString& ns) {
     auto config = getConfigShard();
     invariant(config);
-    
-    auto findStatus = config->exhaustiveFindOnConfig(
-        txn, kReadPref, repl::ReadConcernLevel::kMajorityReadConcern, ns, BSONObj(), BSONObj(), boost::none);
+
+    auto findStatus = config->exhaustiveFindOnConfig(txn,
+                                                     kReadPref,
+                                                     repl::ReadConcernLevel::kMajorityReadConcern,
+                                                     ns,
+                                                     BSONObj(),
+                                                     BSONObj(),
+                                                     boost::none);
     if (!findStatus.isOK()) {
         return findStatus.getStatus();
-    } 
+    }
 
-    return vector<BSONObj>(std::move(findStatus.getValue().docs)); 
+    return vector<BSONObj>(std::move(findStatus.getValue().docs));
 }
-
 
 Status ConfigServerTestFixture::setupChunks(const std::vector<ChunkType>& chunks) {
     const NamespaceString chunkNS(ChunkType::ConfigNS);

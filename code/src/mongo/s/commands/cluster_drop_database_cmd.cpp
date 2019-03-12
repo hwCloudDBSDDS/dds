@@ -33,7 +33,13 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/operation_context.h"
+#include "mongo/s/catalog/dist_lock_manager.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog/catalog_cache.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/commands/cluster_commands_common.h"
 #include "mongo/s/config.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/log.h"
@@ -87,7 +93,14 @@ public:
             errmsg = "invalid params";
             return 0;
         }
+       
+        auto const catalogClient = Grid::get(txn)->catalogClient(txn);
 
+        auto scopedDistLock = Grid::get(txn)->catalogClient(txn)->getDistLockManager()->lock(
+            txn, dbname, "dropDatabase", DistLockManager::kDefaultLockTimeout);
+        if (!scopedDistLock.isOK()) {
+            return appendCommandStatus(result, scopedDistLock.getStatus());
+        }
         // Refresh the database metadata
         grid.catalogCache()->invalidate(dbname);
 
@@ -103,18 +116,139 @@ public:
 
         log() << "DROP DATABASE: " << dbname;
 
+        catalogClient->logChange(txn,
+                                 "dropDatabase.start",
+                                 dbname,
+                                 BSONObj(),
+                                 ShardingCatalogClient::kMajorityWriteConcern);
+
+        for (const auto& nss : getAllShardedCollectionsForDb(txn, dbname)) {
+            auto status = catalogClient->dropCollection(txn, nss);
+            if (!status.isOK()) {
+                index_err() << "[dropDatabase] drop collection " << nss << " failed, status: " << status;
+                return appendCommandStatus(result, status);
+            }
+        }
+        
+        //after drop sharded collecton, check whether there are chunks under the db
+        BSONObjBuilder collQuery;
+        std::string ns = "^"; 
+        ns += dbname;
+        ns += "\\.";
+
+        collQuery.appendRegex(ChunkType::ns(), ns); 
+        std::vector<ChunkType> chunks;
+        uassertStatusOK(
+            grid.catalogClient(txn)->getChunks(txn,
+                                               collQuery.obj(),
+                                               BSONObj(),
+                                               boost::none,
+                                               &chunks,
+                                               nullptr,
+                                               repl::ReadConcernLevel::kMajorityReadConcern));
+        if (chunks.size() == 0) {
+            index_LOG(1) << "[DropDatabase] no chunks found under database " << dbname; 
+        } else {
+            index_log() << "[DropDatabase] " << chunks.size() << " chunks are not dropped under " << dbname;
+            //continue dropCollection
+            std::set<std::string> collections;
+            for(auto && chunk : chunks) {
+				auto ret = collections.insert(chunk.getNS());
+				if (!ret.second) {
+					index_LOG(1) << "[DropDatabase] push " << chunk.getNS() << " failed";
+                }
+            }
+
+            for(auto collection : collections) {
+                NamespaceString nss(collection);
+                auto status = catalogClient->dropCollection(txn, nss);
+                if (!status.isOK()) {
+                    index_err() << "[dropDatabase] drop collection " << nss << " failed, status: " << status;
+                    return appendCommandStatus(result, status);
+                }
+            }
+        }
+
         shared_ptr<DBConfig> conf = status.getValue();
 
-        // TODO: Make dropping logic saner and more tolerant of partial drops.  This is
-        // particularly important since a database drop can be aborted by *any* collection
-        // with a distributed namespace lock taken (migrates/splits)
+        // Drop the database from the primary shard first
+        _dropDatabaseFromShard(txn, conf->getPrimaryId(), dbname);
 
-        if (!conf->dropDatabase(txn, errmsg)) {
-            return false;
+        // Drop the database from each of the remaining shards
+        {
+            std::vector<ShardId> allShardIds;
+            Grid::get(txn)->shardRegistry()->getAllShardIds(&allShardIds);
+
+            for (const ShardId& shardId : allShardIds) {
+                _dropDatabaseFromShard(txn, shardId, dbname);
+            }
         }
+
+        // Remove the database entry from the metadata
+        Status rmStatus =
+            catalogClient->removeConfigDocuments(txn,
+                                                 DatabaseType::ConfigNS,
+                                                 BSON(DatabaseType::name(dbname)),
+                                                 ShardingCatalogClient::kMajorityWriteConcern);
+        if (!rmStatus.isOK()) {
+            uassertStatusOK({rmStatus.code(),
+                             str::stream() << "Could not remove database '" << dbname
+                                           << "' from metadata due to "
+                                           << rmStatus.reason()});
+        }
+
+        //Invalidate the database so the next access will do a full reload
+        grid.catalogCache()->invalidate(dbname);
+
+        catalogClient->logChange(
+            txn, "dropDatabase", dbname, BSONObj(), ShardingCatalogClient::kMajorityWriteConcern);
 
         result.append("dropped", dbname);
         return true;
+    }
+private:
+    static void _dropDatabaseFromShard(OperationContext* opCtx,
+                                      const ShardId& shardId,
+                                      const std::string& dbName) {
+        const auto dropDatabaseCommandBSON = [opCtx, &dbName] {
+            BSONObjBuilder builder;
+            builder.append("dropDatabase", 1);
+        
+            if (!opCtx->getWriteConcern().usedDefault) {
+                builder.append(WriteConcernOptions::kWriteConcernField,
+                   opCtx->getWriteConcern().toBSON());
+            }
+            
+            return builder.obj();
+        }();
+        
+        const auto shard =
+            uassertStatusOK(Grid::get(opCtx)->shardRegistry()->getShard(opCtx, shardId));
+        auto cmdDropDatabaseResult = shard->runCommandWithFixedRetryAttempts(
+            opCtx,
+            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+            dbName,
+            dropDatabaseCommandBSON,
+            Shard::RetryPolicy::kIdempotent);
+        
+        if (!cmdDropDatabaseResult.isOK()) {
+            index_err() << "[dropDatabase] dropDatabase error on shard: " << shardId.toString() << " ,dbname: "
+                << dbName << " ,status: " << cmdDropDatabaseResult.getStatus();
+            return;
+        }  
+        
+        auto dropStatus = std::move(cmdDropDatabaseResult.getValue().commandStatus);
+        if (!dropStatus.isOK()) {
+            if (dropStatus.code() != ErrorCodes::NamespaceNotFound) {
+                index_err() << "[dropDatabase] dropDatabase return error on shard: " << shardId.toString() << " ,dbname: "
+                    << dbName << " ,status: " << dropStatus;
+            }
+        }
+        auto wcStatus = std::move(cmdDropDatabaseResult.getValue().writeConcernStatus);
+        if (!wcStatus.isOK()) {
+            index_err() << "[dropDatabase] dropDatabase return writeConcern error on shard: " << shardId.toString() << " ,dbname: "
+                << dbName << " ,status: " << wcStatus;
+        }
     }
 
 } clusterDropDatabaseCmd;

@@ -30,7 +30,8 @@
     st.ensurePrimaryShard('test', 'shard0000');
 
     assert.commandWorked(st.s0.adminCommand({shardCollection: 'test.foo', key: {_id: 1}}));
-    assert.commandWorked(st.s0.adminCommand({split: 'test.foo', find: {_id: 50}}));
+    // wooo assert.commandWorked(st.s0.adminCommand({split: 'test.foo', find: {_id: 50}}));
+    assert.commandWorked(st.s0.adminCommand({split: 'test.foo', middle: {_id: 49}}));
     assert.commandWorked(
         st.s0.adminCommand({moveChunk: 'test.foo', find: {_id: 75}, to: 'shard0001'}));
 
@@ -57,9 +58,10 @@
     var error = assert.throws(function() {
         st.s.getDB('test').foo.find().itcount();
     });
-
     assert(ErrorCodes.ReplicaSetNotFound == error.code ||
-           ErrorCodes.ExceededTimeLimit == error.code || ErrorCodes.HostUnreachable == error.code);
+           ErrorCodes.StaleShardVersion == error.code ||
+           ErrorCodes.ExceededTimeLimit == error.code || ErrorCodes.HostUnreachable == error.code ||
+           ErrorCodes.NotYetInitialized == error.code);
 
     jsTestLog("Restarting the config servers");
     for (var i = 0; i < st._configServers.length; i++) {

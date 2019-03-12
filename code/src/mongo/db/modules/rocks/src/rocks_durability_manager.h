@@ -26,12 +26,13 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
-
-#pragma once
+#include <rocksdb/db.h>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/platform/basic.h"
+#include "mongo/stdx/mutex.h"
 
+#pragma once
 namespace rocksdb {
     class DB;
 }
@@ -44,11 +45,14 @@ namespace mongo {
         MONGO_DISALLOW_COPYING(RocksDurabilityManager);
 
     public:
-        RocksDurabilityManager(rocksdb::DB* db, bool durable);
+        RocksDurabilityManager(rocksdb::DB* db, bool durable, 
+            const std::vector<rocksdb::ColumnFamilyHandle*>& cfHandles);
 
         void setJournalListener(JournalListener* jl);
 
         void waitUntilDurable(bool forceFlush);
+
+        //rocksdb::Status flushMemTable(void);
 
     private:
         rocksdb::DB* _db;  // not owned
@@ -57,6 +61,8 @@ namespace mongo {
         JournalListener* _journalListener;
         // Protects _journalListener.
         stdx::mutex _journalListenerMutex;
+
+        std::vector<rocksdb::ColumnFamilyHandle*> _columnFamilyHandles;
     };
 
-} // namespace mongo
+}  // namespace mongo

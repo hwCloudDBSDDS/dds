@@ -256,6 +256,8 @@ env.CppUnitTest(
     LIBDEPS=[
         'write_ops_parsers',
         '$BUILD_DIR/mongo/client/clientdriver',
+	'$BUILD_DIR/mongo/db/catalog/catalog',
+	'$BUILD_DIR/mongo/db/serveronly',
     ],
 )
 

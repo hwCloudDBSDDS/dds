@@ -296,18 +296,16 @@ DBClientConnection* DBClientReplicaSet::checkMaster() {
     HostAndPort h;
     if (getMasterStatus.isOK()) {
         h = getMasterStatus.getValue();
-    }
-    else {
-        log() << "Failed to get primary from replica set monitor (setName: "
-            << _setName << ", hosts: " << monitor->getServerAddress() << ")"
-            << causedBy(getMasterStatus.getStatus());
+    } else {
+        log() << "Failed to get primary from replica set monitor (setName: " << _setName
+              << ", hosts: " << monitor->getServerAddress() << ")"
+              << causedBy(getMasterStatus.getStatus());
 
         // Refresh replica set monitor and retry
         _rsm = ReplicaSetMonitor::get(_setName);
         monitor = _getMonitor();
-        log() << "Refresh replica set monitor (setName: "
-            << _setName << ", hosts: " << monitor->getServerAddress()
-            << ") and retry to get primary";
+        log() << "Refresh replica set monitor (setName: " << _setName
+              << ", hosts: " << monitor->getServerAddress() << ") and retry to get primary";
 
         h = uassertStatusOK(monitor->getHostOrRefresh(primaryHostOnly));
     }

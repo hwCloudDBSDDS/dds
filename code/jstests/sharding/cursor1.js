@@ -27,16 +27,16 @@
     // cursor1 still has more data in the first chunk, the one that didn't move
     // cursor2 buffered the last obj of the first chunk
     // cursor3 buffered data that was moved on the second chunk
+    s.adminCommand({split: "test.foo", middle: {_id: 5}});
+    s.adminCommand({movechunk: "test.foo", find: {_id: 5}, to: secondary.getMongo().name});
+    assert.eq(2, s.config.chunks.count());
+
     var cursor1 = db.foo.find().batchSize(3);
     assert.eq(3, cursor1.objsLeftInBatch());
     var cursor2 = db.foo.find().batchSize(5);
     assert.eq(5, cursor2.objsLeftInBatch());
     var cursor3 = db.foo.find().batchSize(7);
     assert.eq(7, cursor3.objsLeftInBatch());
-
-    s.adminCommand({split: "test.foo", middle: {_id: 5}});
-    s.adminCommand({movechunk: "test.foo", find: {_id: 5}, to: secondary.getMongo().name});
-    assert.eq(2, s.config.chunks.count());
 
     // the cursors should not have been affected
     assert.eq(numObjs, cursor1.itcount(), "c1");

@@ -31,17 +31,19 @@
 
 #include "mongo/base/init.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/kv/kv_storage_engine.h"
 #include "mongo/db/storage/storage_engine_metadata.h"
+#include "mongo/db/storage/storage_options.h"
 #include "mongo/util/mongoutils/str.h"
 
 #include "rocks_engine.h"
-#include "rocks_server_status.h"
 #include "rocks_parameters.h"
+#include "rocks_server_status.h"
 
-#include "GlobalConfig.h"
 #include "Chunk/PartitionedRocksEngine.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 
 namespace mongo {
     const std::string kRocksDBEngineName = "rocksdb";
@@ -50,7 +52,7 @@ namespace mongo {
 
         class RocksFactory : public StorageEngine::Factory {
         public:
-            virtual ~RocksFactory(){}
+            virtual ~RocksFactory() {}
             virtual StorageEngine* create(const StorageGlobalParams& params,
                                           const StorageEngineLockFile* lockFile) const {
                 KVStorageEngineOptions options;
@@ -64,21 +66,26 @@ namespace mongo {
                 }
 
                 //  Write all general trace logs to Mongo log.
-                //  For each chunk we also have MongoRocksLoggerForChunk logger to tag logs with chunk data.
-                ResultHandling::RocksDBLogging::SetLogger(new ResultHandling::MongoRocksLogger());                
+                //  For each chunk we also have MongoRocksLoggerForChunk logger to tag logs with
+                //  chunk data.
+                ResultHandling::RocksDBLogging::SetLogger(new ResultHandling::MongoRocksLogger());
 
                 //  use muli-instance record store only on Shard Server
+                auto replMode = repl::getGlobalReplicationCoordinator()->getReplicationMode();
+                auto single_mongod= ClusterRole::None == serverGlobalParams.clusterRole && 
+                                    replMode != repl::ReplicationCoordinator::Mode::modeReplSet;
+                
                 bool useMultiInstance =
-                    GLOBAL_CONFIG_GET(UseMultiRocksDBInstanceEngine) && 
-                    (serverGlobalParams.clusterRole == ClusterRole::ShardServer || 
-                    ClusterRole::None == serverGlobalParams.clusterRole);
+                    GLOBAL_CONFIG_GET(UseMultiRocksDBInstanceEngine) &&
+                    (serverGlobalParams.clusterRole == ClusterRole::ShardServer ||
+                     single_mongod);
 
-                RocksEngine* engine = useMultiInstance ?
-                    new PartitionedRocksEngine(params.dbpath, params.dur, formatVersion)
-                :
-                    new RocksEngine(params.dbpath, params.dur, formatVersion);                        
+                RocksEngine* engine =
+                    useMultiInstance
+                        ? new PartitionedRocksEngine(params.dbpath, params.dur, formatVersion)
+                        : new RocksEngine(params.dbpath, params.dur, formatVersion);
 
-                // Intentionally leaked.                
+                // Intentionally leaked.
                 auto leaked __attribute__((unused)) = new RocksServerStatusSection(engine);
                 auto leaked2 __attribute__((unused)) = new RocksRateLimiterServerParameter(engine);
                 auto leaked3 __attribute__((unused)) = new RocksBackupServerParameter(engine);
@@ -88,9 +95,7 @@ namespace mongo {
                 return new KVStorageEngine(engine, options);
             }
 
-            virtual StringData getCanonicalName() const {
-                return kRocksDBEngineName;
-            }
+            virtual StringData getCanonicalName() const { return kRocksDBEngineName; }
 
             virtual Status validateMetadata(const StorageEngineMetadata& metadata,
                                             const StorageGlobalParams& params) const {
@@ -107,7 +112,8 @@ namespace mongo {
                     return Status(
                         ErrorCodes::UnsupportedFormat,
                         str::stream()
-                            << "Database was created with old format version " << element.numberInt()
+                            << "Database was created with old format version "
+                            << element.numberInt()
                             << " and this version only supports format versions from "
                             << kMinSupportedRocksFormatVersion << " to " << kRocksFormatVersion
                             << ". Please reload the database using mongodump and mongorestore");
@@ -116,8 +122,8 @@ namespace mongo {
                     return Status(
                         ErrorCodes::UnsupportedFormat,
                         str::stream()
-                            << "Database was created with newer format version " <<
-                            element.numberInt()
+                            << "Database was created with newer format version "
+                            << element.numberInt()
                             << " and this version only supports format versions from "
                             << kMinSupportedRocksFormatVersion << " to " << kRocksFormatVersion
                             << ". Please reload the database using mongodump and mongorestore");
@@ -149,13 +155,11 @@ namespace mongo {
             const std::string kRocksFormatVersionString = "rocksFormatVersion";
             int mutable formatVersion = -1;
         };
-    } // namespace
+    }  // namespace
 
-    MONGO_INITIALIZER_WITH_PREREQUISITES(RocksEngineInit,
-                                         ("SetGlobalEnvironment"))
-                                         (InitializerContext* context) {
+    MONGO_INITIALIZER_WITH_PREREQUISITES(RocksEngineInit, ("SetGlobalEnvironment"))
+    (InitializerContext* context) {
         getGlobalServiceContext()->registerStorageEngine(kRocksDBEngineName, new RocksFactory());
         return Status::OK();
     }
-
 }

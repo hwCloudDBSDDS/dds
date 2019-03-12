@@ -88,6 +88,11 @@ public:
     ~LogDomain();
 
     /**
+     * Flush all attached appenders.
+     */
+    void flush();
+
+    /**
      * Receives an event for logging, calling append(event) on all attached appenders.
      *
      * If any appender fails, the behavior is determined by the abortOnFailure flag:

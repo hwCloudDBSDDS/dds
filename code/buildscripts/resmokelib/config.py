@@ -7,7 +7,9 @@ from __future__ import absolute_import
 import os
 import os.path
 import time
+import itertools
 
+log_counter=itertools.count()
 
 ##
 # Default values.

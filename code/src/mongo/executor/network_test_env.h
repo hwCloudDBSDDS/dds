@@ -102,7 +102,7 @@ public:
 
         template <class Period>
         T timed_get(const Duration<Period>& timeout_duration) {
-            return timed_get(timeout_duration.toSystemDuration());
+            return timed_get(timeout_duration.toSteadyDuration());
         }
 
     private:

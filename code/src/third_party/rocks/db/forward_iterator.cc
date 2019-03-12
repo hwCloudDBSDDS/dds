@@ -331,10 +331,12 @@ void ForwardIterator::SeekInternal(const Slice& internal_key,
     }
     const VersionStorageInfo* vstorage = sv_->current->storage_info();
     const std::vector<FileMetaData*>& l0 = vstorage->LevelFiles(0);
+    int valie_l0_cnt = 0;
     for (size_t i = 0; i < l0.size(); ++i) {
       if (!l0_iters_[i]) {
         continue;
       }
+      valie_l0_cnt++;
       if (seek_to_first) {
         l0_iters_[i]->SeekToFirst();
       } else {
@@ -650,6 +652,7 @@ void ForwardIterator::RenewIterators() {
   sv_ = svnew;
 
   UpdateChildrenPinnedItersMgr();
+
 }
 
 void ForwardIterator::BuildLevelIterators(const VersionStorageInfo* vstorage) {

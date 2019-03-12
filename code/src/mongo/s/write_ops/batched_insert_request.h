@@ -155,7 +155,6 @@ private:
     // (O)  whether batch insert is in prewarm model or not
     bool _prewarm;
     bool _isPrewarmSet;
-
 };
 
 }  // namespace mongo

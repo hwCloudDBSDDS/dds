@@ -161,7 +161,8 @@ struct MutableCFOptions {
         paranoid_file_checks(options.paranoid_file_checks),
         report_bg_io_stats(options.report_bg_io_stats),
         compression(options.compression),
-        min_partial_merge_operands(options.min_partial_merge_operands) {
+        min_partial_merge_operands(options.min_partial_merge_operands),
+        enable_row_cache(options.enable_row_cache){
     RefreshDerivedOptions(options.num_levels, options.compaction_style);
   }
 
@@ -189,7 +190,8 @@ struct MutableCFOptions {
         paranoid_file_checks(false),
         report_bg_io_stats(false),
         compression(Snappy_Supported() ? kSnappyCompression : kNoCompression),
-        min_partial_merge_operands(2) {}
+        min_partial_merge_operands(2),
+        enable_row_cache(true){}
 
   // Must be called after any change to MutableCFOptions
   void RefreshDerivedOptions(int num_levels, CompactionStyle compaction_style);
@@ -244,6 +246,8 @@ struct MutableCFOptions {
   // Derived options
   // Per-level target file size.
   std::vector<uint64_t> max_file_size;
+
+  bool enable_row_cache;
 };
 
 uint64_t MultiplyCheckOverflow(uint64_t op1, double op2);

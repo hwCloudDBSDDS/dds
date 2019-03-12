@@ -65,6 +65,10 @@ public:
         return _local;
     }
 
+    bool isCustomerConnection() const override {
+        return false;
+    }
+
 protected:
     explicit MockSession(TransportLayer* tl) : _tl(tl), _remote(), _local() {}
     explicit MockSession(HostAndPort remote, HostAndPort local, TransportLayer* tl)

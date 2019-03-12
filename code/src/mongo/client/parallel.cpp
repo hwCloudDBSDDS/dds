@@ -336,7 +336,7 @@ void ParallelSortClusteredCursor::_markStaleNS(const NamespaceString& staleNS,
                                                const StaleConfigException& e,
                                                bool& forceReload,
                                                bool& fullReload) {
-    fullReload = e.requiresFullReload();
+    fullReload = false;
 
     if (_staleNSMap.find(staleNS.ns()) == _staleNSMap.end())
         _staleNSMap[staleNS.ns()] = 1;
@@ -375,7 +375,7 @@ void ParallelSortClusteredCursor::_handleStaleNS(OperationContext* txn,
         warning() << "cannot reload database info for stale namespace " << staleNS.ns();
     } else {
         // Reload chunk manager, potentially forcing the namespace
-        config->getChunkManagerIfExists(txn, staleNS.ns(), true, forceReload);
+        config->getChunkManagerIfExists(txn, staleNS.ns(), forceReload);
     }
 }
 
@@ -488,8 +488,8 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
         if (status.getStatus().code() != ErrorCodes::NamespaceNotFound) {
             config = uassertStatusOK(status);
             uassertStatusOK(config->getChunkManagerOrPrimary(txn, nss.ns(), manager, primary));
-        }else{
-            LOG(pc)<<"[parallel.cpp startInit] ns not found..";
+        } else {
+            LOG(pc) << "[parallel.cpp startInit] ns not found..";
         }
     }
 
@@ -497,29 +497,28 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
         if (MONGO_unlikely(shouldLog(pc))) {
             vinfo = str::stream() << "[" << manager->getns() << " @ "
                                   << manager->getVersion().toString() << "]";
-            LOG(pc)<<"[vinfo] "<< vinfo;
+            LOG(pc) << "[vinfo] " << vinfo;
         }
 
         manager->getShardEndpointsForQuery(txn,
-                                     !_cInfo.isEmpty() ? _cInfo.cmdFilter : _qSpec.filter(),
-                                     !_cInfo.isEmpty() ? _cInfo.cmdCollation : BSONObj(),
-                                     &endpoints);
+                                           !_cInfo.isEmpty() ? _cInfo.cmdFilter : _qSpec.filter(),
+                                           !_cInfo.isEmpty() ? _cInfo.cmdCollation : BSONObj(),
+                                           &endpoints);
     } else if (primary) {
         if (MONGO_unlikely(shouldLog(pc))) {
             vinfo = str::stream() << "[unsharded @ " << primary->toString() << "]";
         }
 
-        endpoints.push_back(new ShardEndpoint(ChunkId(), primary->getId(), ChunkVersion::UNSHARDED()));
+        endpoints.push_back(
+            new ShardEndpoint(ChunkId(), primary->getId(), ChunkVersion::UNSHARDED()));
     }
 
     // Close all cursors on extra chunks first, as these will be invalid
     for (auto& chunkCursor : _cursorMap) {
         auto it = std::find_if(
-                                endpoints.begin(),
-                                endpoints.end(),
-                                [&chunkCursor](ShardEndpoint* endpointEntry) {
-                                    return endpointEntry->chunkId == chunkCursor.first;
-                                });
+            endpoints.begin(), endpoints.end(), [&chunkCursor](ShardEndpoint* endpointEntry) {
+                return endpointEntry->chunkId == chunkCursor.first;
+            });
         if (it == endpoints.end()) {
             LOG(pc) << "closing cursor on chunk " << chunkCursor.first
                     << " as the connection is no longer required by " << vinfo;
@@ -599,6 +598,8 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
                     // rebuild the query, append chunkid
                     BSONObjBuilder queryBuilder;
                     queryBuilder.appendElements(_qSpec.query());
+                    ChunkVersion version(endpoint->shardVersion);
+                    version.appendForCommands(&queryBuilder);
                     ChunkId chunkId(endpoint->chunkId);
                     chunkId.appendForCommands(&queryBuilder);
 
@@ -673,7 +674,8 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
         } catch (StaleConfigException& e) {
             // Our version isn't compatible with the current version anymore on at least one shard,
             // need to retry immediately
-            NamespaceString staleNS(e.getns());
+            NamespaceString eNS(e.getns());
+            NamespaceString staleNS(eNS.nsFilteredOutChunkId());
 
             // For legacy reasons, this may not be set in the exception :-(
             if (staleNS.size() == 0)
@@ -718,8 +720,8 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
                 mdata.errored = true;
                 mdata.cleanup(true);
                 continue;
-            } else if (e.getCode() == ErrorCodes::ShardNotFound 
-                        || e.getCode() == ErrorCodes::FailedToSatisfyReadPreference) {
+            } else if (e.getCode() == ErrorCodes::ShardNotFound ||
+                       e.getCode() == ErrorCodes::FailedToSatisfyReadPreference) {
                 _reloadChunkManager(txn, nss);
                 startInit(txn);
                 return;
@@ -748,11 +750,9 @@ void ParallelSortClusteredCursor::startInit(OperationContext* txn) {
 
         // Make sure all state is in shards
         auto it = std::find_if(
-                                endpoints.begin(),
-                                endpoints.end(),
-                                [&chunkCursor](ShardEndpoint* endpointEntry) {
-                                    return endpointEntry->chunkId == chunkCursor.first;
-                                });
+            endpoints.begin(), endpoints.end(), [&chunkCursor](ShardEndpoint* endpointEntry) {
+                return endpointEntry->chunkId == chunkCursor.first;
+            });
         invariant(it != endpoints.end());
         invariant(mdata.initialized == true);
 
@@ -792,8 +792,8 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
         const ChunkId& chunkId = chunkCursor.first;
         PCMData& mdata = chunkCursor.second.second;
 
-        LOG(pc) << "finishing on chunk " << chunkId << " shard "<< chunkCursor.second.first << ", current connection state is "
-                << mdata.toBSON();
+        LOG(pc) << "finishing on chunk " << chunkId << " shard " << chunkCursor.second.first
+                << ", current connection state is " << mdata.toBSON();
 
         // Ignore empty conns for now
         if (!mdata.pcState)
@@ -840,13 +840,14 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
                 // Finalize state
                 state->cursor->attach(state->conn.get());  // Closes connection for us
 
-                LOG(pc) << "finished on chunk " << chunkId << " shard "<< chunkCursor.second.first<< ", current connection state is "
-                        << mdata.toBSON();
+                LOG(pc) << "finished on chunk " << chunkId << " shard " << chunkCursor.second.first
+                        << ", current connection state is " << mdata.toBSON();
             }
         } catch (RecvStaleConfigException& e) {
             retry = true;
 
-            string staleNS = e.getns();
+            NamespaceString eNS(e.getns());
+            string staleNS = eNS.nsFilteredOutChunkId();
             // For legacy reasons, ns may not always be set in exception :-(
             if (staleNS.size() == 0)
                 staleNS = ns;  // ns is versioned namespace, be careful of this
@@ -868,8 +869,8 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
             retry = true;
             continue;
         } catch (DBException& e) {
-            if (e.getCode() == ErrorCodes::ShardNotFound 
-                || e.getCode() == ErrorCodes::FailedToSatisfyReadPreference) {
+            if (e.getCode() == ErrorCodes::ShardNotFound ||
+                e.getCode() == ErrorCodes::FailedToSatisfyReadPreference) {
                 mdata.cleanup(true);
                 retry = true;
                 continue;
@@ -979,13 +980,22 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
 
     // Put the cursors in the legacy format
     int index = 0;
+    Status errors = Status::OK();
     for (auto& chunkCursor : _cursorMap) {
         PCMData& mdata = chunkCursor.second.second;
 
         _cursors[index].reset(mdata.pcState->cursor.get(), &mdata);
 
         {
-            const auto shard = uassertStatusOK(grid.shardRegistry()->getShard(txn, chunkCursor.second.first));
+            auto shardStatus = grid.shardRegistry()->getShard(txn, chunkCursor.second.first);
+            if (!shardStatus.isOK()) {
+                index++;
+                errors = shardStatus.getStatus();
+                continue;
+            }
+            auto shard = shardStatus.getValue();
+            // const auto shard =
+            // uassertStatusOK(grid.shardRegistry()->getShard(txn, chunkCursor.second.first));
             _servers.insert(shard->getConnString().toString());
         }
 
@@ -994,6 +1004,9 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* txn) {
 
     // in the chunk level case, the _servers.size() <= index
     _numServers = index;
+    if (!errors.isOK()) {
+        uassertStatusOK(errors);
+    }
 }
 
 void ParallelSortClusteredCursor::getQueryShardIds(std::map<ChunkId, ShardId>& shardIdMap) {
@@ -1265,7 +1278,7 @@ void ParallelSortClusteredCursor::_oldInit() {
 }
 
 void ParallelSortClusteredCursor::_reloadChunkManager(OperationContext* txn,
-                                          const NamespaceString& nss) {
+                                                      const NamespaceString& nss) {
     auto status = grid.catalogCache()->getDatabase(txn, nss.db().toString());
     if (!status.isOK()) {
         warning() << "cannot reload database info for stale namespace " << nss.ns();
@@ -1273,7 +1286,7 @@ void ParallelSortClusteredCursor::_reloadChunkManager(OperationContext* txn,
     }
 
     shared_ptr<DBConfig> config = status.getValue();
-    config->getChunkManagerIfExists(txn, nss.ns(), true, true);
+    config->getChunkManagerIfExists(txn, nss.ns(), true);
 }
 
 ParallelSortClusteredCursor::~ParallelSortClusteredCursor() {

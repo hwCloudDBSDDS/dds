@@ -201,6 +201,13 @@ public:
         OperationContext* txn, const std::string& collNs) = 0;
 
     /**
+     * coll exist ,but have wrong style ,so getCollection will return not OK.
+     * this method not check coll if it invalid, just return true ,when found on configServer.
+     */
+    virtual StatusWith<bool> isCollectionExist(OperationContext* txn,
+                                               const std::string& collNs) = 0;
+
+    /**
      * Retrieves all collections undera specified database (or in the system).
      *
      * @param dbName an optional database name. Must be nullptr or non-empty. If nullptr is
@@ -236,7 +243,7 @@ public:
                                         std::vector<std::string>* dbs) = 0;
 
     // get unique chunkID for entry in config.chunks
-    virtual Status generateNewChunkID(OperationContext* txn, std::string  &chunkID) = 0;
+    virtual Status generateNewChunkID(OperationContext* txn, std::string& chunkID) = 0;
 
     /**
      * Gets the requested number of chunks (of type ChunkType) that satisfy a query.
@@ -298,6 +305,15 @@ public:
                                               const BSONObj& cmdObj,
                                               BSONObjBuilder* result) = 0;
 
+    /**
+     * This is function main function like above, only add a check txn function
+     * if txn is own by customer, then send the cmd to mongod with customer info
+     * if not, just like above function
+     */
+    virtual bool runUserManagementReadCommandWithCheckTxn(OperationContext* txn,
+                                                          const std::string& dbname,
+                                                          const BSONObj& cmdObj,
+                                                          BSONObjBuilder* result) = 0;
     /**
      * Applies oplog entries to the config servers.
      * Used by mergeChunk, splitChunk, and moveChunk commands.
@@ -423,11 +439,11 @@ public:
     // Updates multi config documents in the specified namespace on the config server. Must only be
     // used for updates to the 'config' database.
     virtual Status updateConfigDocuments(OperationContext* txn,
-                                                  const std::string& ns,
-                                                  const BSONObj& query,
-                                                  const BSONObj& update,
-                                                  bool upsert,
-                                                  const WriteConcernOptions& writeConcern) = 0;
+                                         const std::string& ns,
+                                         const BSONObj& query,
+                                         const BSONObj& update,
+                                         bool upsert,
+                                         const WriteConcernOptions& writeConcern) = 0;
 
     /**
      * Removes documents matching a particular query predicate from the specified namespace on the
@@ -459,7 +475,11 @@ public:
     /**
     * Config server send create index commands to all the shard servers
     */
-    virtual Status createIndexOnShards(OperationContext* txn, NamespaceString ns, BSONObj& cmdObj) = 0;
+    virtual Status createIndexOnShards(OperationContext* txn,
+                                       NamespaceString ns,
+                                       BSONObj& cmdObj) = 0;
+
+    virtual std::string createNewIdent(void) = 0;
 
 protected:
     ShardingCatalogClient() = default;

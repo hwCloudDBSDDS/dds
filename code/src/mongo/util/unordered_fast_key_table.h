@@ -150,7 +150,7 @@ private:
     private:
         bool _used = false;
         bool _everUsed = false;
-        uint32_t _curHash;
+        uint32_t _curHash = 0;
         typename std::aligned_storage<sizeof(value_type),
                                       std::alignment_of<value_type>::value>::type _data;
     };
@@ -333,8 +333,8 @@ public:
         }
 
         AreaPtr _area;
-        int _position;
-        int _max;  // inclusive
+        int _position = 0;
+        int _max = 0;  // inclusive
     };
 
     using iterator = iterator_impl<Area*>;

@@ -35,9 +35,11 @@
 #include "mongo/s/commands/request.h"
 
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/lasterror.h"
+#include "mongo/db/modules/rocks/src/gc_common.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/s/cluster_last_error_info.h"
 #include "mongo/s/commands/strategy.h"
@@ -45,6 +47,7 @@
 #include "mongo/transport/session.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
+
 
 namespace mongo {
 
@@ -74,6 +77,17 @@ void Request::init(OperationContext* txn) {
         uassert(ErrorCodes::InvalidNamespace,
                 str::stream() << "Invalid ns [" << nss.ns() << "]",
                 nss.isValid());
+
+        if (cc().isCustomerConnection() &&
+            AuthorizationSession::get((txn->getClient()))->isAuthWithCustomerOrNoAuthUser()) {
+            uassert(ErrorCodes::IllegalOperation,
+                    "can't use 'config' database through mongos",
+                    nss.db() != "config");
+
+            uassert(ErrorCodes::IllegalOperation,
+                    "can't use 'gc' database through mongos",
+                    nss.db() != GcDbName);
+        }
     }
 
     AuthorizationSession::get(_clientInfo)->startRequest(txn);
@@ -108,6 +122,7 @@ void Request::process(OperationContext* txn, int attempt) {
                     n == 1 || n == -1);
 
             Strategy::clientCommandOp(txn, *this);
+
         } else {
             Strategy::queryOp(txn, *this);
         }

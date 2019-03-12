@@ -3,8 +3,8 @@
 #include "mongo/platform/basic.h"
 
 #include <algorithm>
-#include <vector>
 #include <stdlib.h>
+#include <vector>
 
 #include "mongo/base/status.h"
 #include "mongo/db/repl/repl_extend/shard_server_heartbeat_coordinator.h"
@@ -14,13 +14,15 @@
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/exit.h"
-#include "mongo/util/quick_exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
-#include "mongo/util/time_support.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/quick_exit.h"
+#include "mongo/util/time_support.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
 #include "mongo/util/util_extend/default_parameters.h"
-#include "mongo/db/modules/rocks/src/GlobalConfig.h"
+#include "mongo/util/util_extend/status_renewal.h"
+
 
 namespace mongo {
 
@@ -61,7 +63,8 @@ const int kMaxHeartbeatRetries = 2;
 using executor::RemoteCommandRequest;
 
 ShardServerHeartbeatCoordinator::ShardServerHeartbeatCoordinator(
-    std::vector<HostAndPort> configServers) : _configServers(configServers){
+    std::vector<HostAndPort> configServers)
+    : _configServers(configServers) {
     executor::NetworkInterface* network =
         executor::makeNetworkInterface("NetworkInterfaceASIO-Heartbeat").release();
     int64_t prngSeed = static_cast<int64_t>(curTimeMillis64());
@@ -69,12 +72,15 @@ ShardServerHeartbeatCoordinator::ShardServerHeartbeatCoordinator(
 }
 
 ShardServerHeartbeatCoordinator::~ShardServerHeartbeatCoordinator() {
-    delete(_replExecutor);
+    delete (_replExecutor);
 }
 
 void ShardServerHeartbeatCoordinator::startup(const HostAndPort& primaryConfigServer) {
     _replExecutor->startup();
     _startHeartbeats(primaryConfigServer);
+
+    getGlobalStatusRenewal()->updateShardServerHeartbeatTime(Date_t::now());
+    getGlobalStatusRenewal()->enableShardHeartbeatCheck();
 }
 
 void ShardServerHeartbeatCoordinator::shutdown() {
@@ -83,9 +89,9 @@ void ShardServerHeartbeatCoordinator::shutdown() {
     _replExecutor->join();
 }
 
-void ShardServerHeartbeatCoordinator::_startHeartbeats(const HostAndPort& primaryConfigServer) {   
-    const Date_t now = _replExecutor->now();
-    _scheduleHeartbeatToTarget(primaryConfigServer, now);
+void ShardServerHeartbeatCoordinator::_startHeartbeats(const HostAndPort& primaryConfigServer) {
+    const Date_t when = _replExecutor->now() + kDefaultReserveForShardHeartbeatStartup;
+    _scheduleHeartbeatToTarget(primaryConfigServer, when);
 }
 
 void ShardServerHeartbeatCoordinator::_cancelHeartbeats() {
@@ -101,27 +107,28 @@ void ShardServerHeartbeatCoordinator::_restartHeartbeats(const HostAndPort& prim
 }
 
 void ShardServerHeartbeatCoordinator::_scheduleHeartbeatToTarget(const HostAndPort& target,
-                                                            Date_t when) {  
-    LOG(2) << HostAndPort(serverGlobalParams.bind_ip, serverGlobalParams.port).toString()
-        << " schedules heartbeat to " << target 
-        << " after " << (Milliseconds)(when - _replExecutor->now());
-
-    _trackHeartbeatHandle(_replExecutor->scheduleWorkAt(when,
-                            stdx::bind(&ShardServerHeartbeatCoordinator::_doHeartbeat,
-                                        this,
-                                        stdx::placeholders::_1,
-                                        target)));
+                                                                 Date_t when) {
+    index_LOG(2) << "HostAndPort: "
+                 << HostAndPort(serverGlobalParams.bind_ip, serverGlobalParams.port).toString()
+                 << " schedules heartbeat to " << target << " after "
+                 << (Milliseconds)(when - _replExecutor->now());
+    _doHeartbeatTimeExpect = when;
+    _trackHeartbeatHandle(_replExecutor->scheduleWorkAt(
+        when,
+        stdx::bind(
+            &ShardServerHeartbeatCoordinator::_doHeartbeat, this, stdx::placeholders::_1, target)));
 }
 
 void ShardServerHeartbeatCoordinator::_doHeartbeat(ReplicationExecutor::CallbackArgs cbData,
-                                                    const HostAndPort& target) {
+                                                   const HostAndPort& target) {
     _untrackHeartbeatHandle(cbData.myHandle);
     if (cbData.status.code() == ErrorCodes::CallbackCanceled) {
-        log() << "Heartbeat canceled" << causedBy(cbData.status);
+        index_log() << "Heartbeat canceled" << causedBy(cbData.status);
         return;
     }
 
     const Date_t now = _replExecutor->now();
+    _doHeartbeatTime = now;
     BSONObj heartbeatObj;
     Milliseconds timeout(0);
     const std::pair<ShardServerHeartbeatArgs, Milliseconds> hbRequest =
@@ -129,29 +136,27 @@ void ShardServerHeartbeatCoordinator::_doHeartbeat(ReplicationExecutor::Callback
     heartbeatObj = hbRequest.first.toBSON();
     timeout = hbRequest.second;
 
-    const RemoteCommandRequest request(
-        target, "admin", heartbeatObj, nullptr, timeout);
-    const ReplicationExecutor::RemoteCommandCallbackFn callback =
-        stdx::bind(&ShardServerHeartbeatCoordinator::_handleHeartbeatResponse,
-                   this,
-                   stdx::placeholders::_1);
+    const RemoteCommandRequest request(target, "admin", heartbeatObj, nullptr, timeout);
+    const ReplicationExecutor::RemoteCommandCallbackFn callback = stdx::bind(
+        &ShardServerHeartbeatCoordinator::_handleHeartbeatResponse, this, stdx::placeholders::_1);
 
     _trackHeartbeatHandle(_replExecutor->scheduleRemoteCommand(request, callback));
 }
 
 std::pair<ShardServerHeartbeatArgs, Milliseconds>
-ShardServerHeartbeatCoordinator::_prepareShardServerHeartbeatRequest(
-    Date_t now, const HostAndPort& target) {
+ShardServerHeartbeatCoordinator::_prepareShardServerHeartbeatRequest(Date_t now,
+                                                                     const HostAndPort& target) {
     if (_heartbeatRetryCount > kMaxHeartbeatRetries) {
         // This is the first heartbeat with _heartbeatRetryCount = std::numeric_limits<int>::max()
         _lastHeartbeatHitDate = now;
         _heartbeatRetryCount = 0;
     }
     ShardServerHeartbeatArgs hbArgs;
-    hbArgs.setSenderHost(HostAndPort(serverGlobalParams.bind_ip, serverGlobalParams.port));
+    hbArgs.setSenderHost(HostAndPort(serverGlobalParams.bindIp, serverGlobalParams.port));
 
     Milliseconds alreadyElapsed(now.asInt64() - _lastHeartbeatHitDate.asInt64());
-    const Milliseconds timeout(std::min(kDefaultShardHeartbeatTimeoutPeriod - alreadyElapsed, kDefaultShardHeartbeatInterval));
+    const Milliseconds timeout(std::min(kDefaultShardHeartbeatTimeoutPeriod - alreadyElapsed,
+                                        kDefaultShardHeartBeatOpTimeout));
 
     return std::make_pair(hbArgs, timeout);
 }
@@ -161,7 +166,7 @@ void ShardServerHeartbeatCoordinator::_handleHeartbeatResponse(
     // remove handle from queued heartbeats
     _untrackHeartbeatHandle(cbData.myHandle);
     if (cbData.response.status.code() == ErrorCodes::CallbackCanceled) {
-        log() << "Heartbeat canceled" << causedBy(cbData.response.status);
+        index_log() << "Heartbeat canceled" << causedBy(cbData.response.status);
         return;
     }
 
@@ -172,19 +177,22 @@ void ShardServerHeartbeatCoordinator::_handleHeartbeatResponse(
 
     if (!cmdStatus.isOK()) {
         heartbeatMiss = true;
-        log() << "Heartbeat misses for target: " << target.toString()
-            << causedBy(cmdStatus);
-    }
-    else {
+        index_log() << "Heartbeat misses for target: " << target.toString() << causedBy(cmdStatus)
+                    << "; lastHeartbeatHitDate : " << _lastHeartbeatHitDate << "; now : " << _replExecutor->now()
+                    << "; doHeartbeat time : " << _doHeartbeatTime
+                    << "; _doHeartbeatTimeExpect : " << _doHeartbeatTimeExpect;
+    } else {
         Status heartbeatResultStatus = getStatusFromCommandResult(cbData.response.data);
         if (!heartbeatResultStatus.isOK()) {
             heartbeatMiss = true;
-            log() << "Heartbeat misses for target: " << target.toString()
-                << causedBy(heartbeatResultStatus);
-        }
-        else {
+            index_log() << "Heartbeat misses for target: " << target.toString()
+                        << causedBy(heartbeatResultStatus)
+                        << "; lastHeartbeatHitDate : " << _lastHeartbeatHitDate << "; now : " << _replExecutor->now()
+                        << "; doHeartbeat time : " << _doHeartbeatTime
+                        << "; _doHeartbeatTimeExpect : " << _doHeartbeatTimeExpect;
+        } else {
             heartbeatMiss = false;
-            LOG(2) << "Heartbeat hits for target: " << target.toString();
+            index_LOG(2) << "Heartbeat hits for target: " << target.toString();
         }
     }
 
@@ -200,16 +208,23 @@ void ShardServerHeartbeatCoordinator::_handleHeartbeatResponse(
         } else if (_heartbeatRetryCount >= kMaxHeartbeatRetries) {
             // Try another target after kMaxHeartbeatRetries tries now
             int configServerIndex;
-            for (configServerIndex = 0; configServerIndex < (int)_configServers.size(); configServerIndex++) {
+            for (configServerIndex = 0; configServerIndex < (int)_configServers.size();
+                 configServerIndex++) {
                 if (_configServers[configServerIndex] == target) {
                     break;
                 }
             }
-            HostAndPort& nextConfigServer = _configServers[(configServerIndex + 1)%((int)_configServers.size())];
-            nextAction = ShardServerHeartbeatResponseAction::makeSwitchTargetAction(nextConfigServer.toString());
-            nextAction.setNextHeartbeatStartDate(now + kDefaultShardHeartbeatRetryInterval);
-
-            _heartbeatRetryCount = 0;
+            if (_configServers.size() > 0) {
+                HostAndPort& nextConfigServer =
+                    _configServers[(configServerIndex + 1) % (_configServers.size())];
+                nextAction = ShardServerHeartbeatResponseAction::makeSwitchTargetAction(
+                    nextConfigServer.toString());
+                nextAction.setNextHeartbeatStartDate(now + kDefaultShardHeartbeatRetryInterval);
+                _heartbeatRetryCount = 0;
+            } else {
+                index_log() << "Heartbeat canceled _configServers.size()==0";
+                return;
+            }
         } else {
             // Try again now
             nextAction = ShardServerHeartbeatResponseAction::makeNoAction(target.toString());
@@ -217,26 +232,27 @@ void ShardServerHeartbeatCoordinator::_handleHeartbeatResponse(
 
             _heartbeatRetryCount++;
         }
-    }
-    else {
-        // Still send heartbeat to the previous target primary config server after a heartbeat interval
+    } else {
+        // Still send heartbeat to the previous target primary config server after a heartbeat
+        // interval
         nextAction = ShardServerHeartbeatResponseAction::makeNoAction(target.toString());
         nextAction.setNextHeartbeatStartDate(now + kDefaultShardHeartbeatInterval);
 
         _lastHeartbeatHitDate = now;
         _heartbeatRetryCount = 0;
+        getGlobalStatusRenewal()->updateShardServerHeartbeatTime(now);
     }
 
-    // Check if need to kill self (in the case of network partition between shard server and config server)
+    // Check if need to kill self (in the case of network partition between shard server and config
+    // server)
     if (nextAction.getAction() == ShardServerHeartbeatResponseAction::KillSelf) {
-        log() << "Exit due to heartbeat timeout";
-       // exitCleanly(EXIT_CLEAN);
-       // quickExit(0);
+        index_log() << "Exit due to heartbeat timeout lastHeartbeatHitDate "
+                    << _lastHeartbeatHitDate << " now " << now;
         ::_Exit(EXIT_FAILURE);
     }
 
-    _scheduleHeartbeatToTarget(
-        HostAndPort(nextAction.getPrimaryConfigServer()), std::max(now, nextAction.getNextHeartbeatStartDate()));
+    _scheduleHeartbeatToTarget(HostAndPort(nextAction.getPrimaryConfigServer()),
+                               std::max(now, nextAction.getNextHeartbeatStartDate()));
 }
 
 void ShardServerHeartbeatCoordinator::_trackHeartbeatHandle(

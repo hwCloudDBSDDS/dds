@@ -142,6 +142,7 @@ void Top::_record(OperationContext* txn,
 void Top::collectionDropped(StringData ns, bool databaseDropped) {
     stdx::lock_guard<SimpleMutex> lk(_lock);
     _usage.erase(ns);
+    _old.erase(ns);
     if (!databaseDropped) {
         // If a collection drop occurred, there will be a subsequent call to record for this
         // collection namespace which must be ignored. This does not apply to a database drop.
@@ -190,6 +191,77 @@ void Top::_appendToUsageMap(BSONObjBuilder& b, const UsageMap& map) const {
     }
 }
 
+void Top::computeChunkTpsInterval(std::map<std::string, long long> * chunkTpsCount) {
+
+    long long newQueryCount = 0;
+    long long newInsertCount = 0;
+    long long newGetmoreCount = 0;
+    long long newUpdateCount = 0;
+    long long newRemoveCount = 0;
+
+    long long oldQueryCount = 0;
+    long long oldInsertCount = 0;
+    long long oldGetmoreCount = 0;
+    long long oldUpdateCount = 0;
+    long long oldRemoveCount = 0;
+    stdx::lock_guard<SimpleMutex> lk(_lock);
+    //do we need lock this stdx::lock_guard<SimpleMutex> lk(_lock); ??
+    for (UsageMap::const_iterator i = _usage.begin(); i != _usage.end(); ++i) {
+        const CollectionData &coll = i->second;
+        newQueryCount = coll.queries.count;
+        newInsertCount = coll.insert.count;
+        newGetmoreCount = coll.getmore.count;
+        newUpdateCount = coll.update.count;
+        newRemoveCount = coll.remove.count;
+
+        oldQueryCount = 0;
+        oldInsertCount = 0;
+        oldGetmoreCount = 0;
+        oldUpdateCount = 0;
+        oldRemoveCount =0 ;
+        auto hashedNs = UsageMap::HashedKey(i->first);
+        index_LOG(1) << "collectChunkTps deal col:" << i->first;
+        if (_old.find(i->first) != _old.end()) {
+            CollectionData &old_coll = _old[hashedNs];
+            oldQueryCount = old_coll.queries.count;
+            old_coll.queries.count = newQueryCount;
+            index_LOG(2) << "collectChunkTps last query is:" << oldQueryCount << ", current : " <<  newQueryCount<< "ns" << i->first ;
+
+            oldInsertCount = old_coll.insert.count;
+            old_coll.insert.count = newInsertCount;
+
+            index_LOG(2) << "collectChunkTps last query is:" << oldInsertCount << ", current : " <<  newInsertCount<< "ns" << i->first ;
+
+            oldGetmoreCount = old_coll.getmore.count;
+            old_coll.getmore.count = newGetmoreCount;
+            index_LOG(2) << "collectChunkTps last getMore is:" << oldGetmoreCount << ", current : " <<  newGetmoreCount<<  "ns" << i->first;
+
+            oldUpdateCount = old_coll.update.count;
+            old_coll.update.count = newUpdateCount;
+            index_LOG(2) << "collectChunkTps last update is:" << oldGetmoreCount << ", current : " << newUpdateCount<<  "ns" << i->first;
+
+
+            oldRemoveCount = old_coll.remove.count;
+            old_coll.remove.count = newRemoveCount;
+            index_LOG(2) << "collectChunkTps last remove is:" << oldGetmoreCount << ", current : " << newRemoveCount<< "ns" << i->first;
+
+        } else {
+
+            _old[hashedNs].queries.count =newQueryCount;
+            _old[hashedNs].insert.count =newInsertCount;
+            _old[hashedNs].getmore.count = newGetmoreCount;
+            _old[hashedNs].update.count = newUpdateCount;
+            _old[hashedNs].remove.count = newRemoveCount;
+        }
+        // not limited , over flow??
+        long long current = newQueryCount + newInsertCount + newUpdateCount + newGetmoreCount +  newRemoveCount;
+        long long last  = (oldQueryCount +  oldInsertCount  +  oldGetmoreCount +  oldUpdateCount + oldRemoveCount);
+
+        long long interval = current - last;
+        index_LOG(1) << "col:" <<i->first << "collectChunkTps last tps is:" << last << ", current is  : " <<  current<< ",interval:"  << interval  ;
+        (*chunkTpsCount)[i->first] = interval;
+    }
+}
 void Top::_appendStatsEntry(BSONObjBuilder& b, const char* statsName, const UsageData& map) const {
     BSONObjBuilder bb(b.subobjStart(statsName));
     bb.appendNumber("time", map.time);

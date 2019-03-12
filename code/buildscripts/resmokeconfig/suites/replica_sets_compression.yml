@@ -5,7 +5,9 @@ selector:
     exclude_files:
     # Disable config_server_checks.js since it starts mmap servers.
     - jstests/replsets/config_server_checks.js
-
+    - jstests/replsets/clean_shutdown_oplog_state.js # @DFV not support Restart as a standalone node.
+    - jstests/replsets/oplog_replay_on_startup.js # @DFV not support Restart as a standalone node.
+    - jstests/replsets/oplog_replay_on_startup_with_bad_op.js # @DFV not support Restart as a standalone node.
 executor:
   js_test:
     config:

@@ -1,6 +1,8 @@
 var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoProgramNoConnect,
     myPort;
 
+var __counter_mongod = 0;
+var __counter_mongos = 0;
 (function() {
     "use strict";
 
@@ -536,10 +538,18 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         _removeSetParameterIfBeforeVersion(opts, "numInitialSyncAttempts", "3.3.12");
         _removeSetParameterIfBeforeVersion(opts, "numInitialSyncConnectAttempts", "3.3.12");
 
-        if (!opts.logFile && opts.useLogFiles) {
-            opts.logFile = opts.dbpath + "/mongod.log";
-        } else if (opts.logFile) {
-            opts.logFile = MongoRunner.toRealFile(opts.logFile, opts.pathOpts);
+        if (MongoRunner.logFlag) {
+            if (!opts.logFile && MongoRunner.testName) {
+                __counter_mongod++;
+                opts.logFile = "./resmoke_log/" + MongoRunner.testName + ".mongod." +
+                    __counter_mongod + ".log";
+            }
+        } else {
+            if (!opts.logFile && opts.useLogFiles) {
+                opts.logFile = opts.dbpath + "/mongod.log";
+            } else if (opts.logFile) {
+                opts.logFile = MongoRunner.toRealFile(opts.logFile, opts.pathOpts);
+            }
         }
 
         if (opts.logFile !== undefined) {
@@ -615,6 +625,9 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         if (opts.arbiter)
             opts.oplogSize = 1;
 
+        if (MongoRunner.laterThan(opts.binVersion, "3.2.18.1") && !opts.adminWhiteListPath) {
+            opts.adminWhiteListPath = "/tmp/adminWhiteList";
+        }
         return opts;
     };
 
@@ -629,11 +642,19 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         opts.pathOpts =
             Object.merge(opts.pathOpts, {configdb: opts.configdb.replace(/:|\/|,/g, "-")});
 
-        if (!opts.logFile && opts.useLogFiles) {
-            opts.logFile =
-                MongoRunner.toRealFile("$dataDir/mongos-$configdb-$port.log", opts.pathOpts);
-        } else if (opts.logFile) {
-            opts.logFile = MongoRunner.toRealFile(opts.logFile, opts.pathOpts);
+        if (MongoRunner.logFlag) {
+            if (!opts.logFile && MongoRunner.testName) {
+                __counter_mongos++;
+                opts.logFile = "./resmoke_log/" + MongoRunner.testName + ".mongos." +
+                    __counter_mongos + ".log";
+            }
+        } else {
+            if (!opts.logFile && opts.useLogFiles) {
+                opts.logFile =
+                    MongoRunner.toRealFile("$dataDir/mongos-$configdb-$port.log", opts.pathOpts);
+            } else if (opts.logFile) {
+                opts.logFile = MongoRunner.toRealFile(opts.logFile, opts.pathOpts);
+            }
         }
 
         if (opts.logFile !== undefined) {
@@ -659,6 +680,10 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
 
         if (!opts.hasOwnProperty('binVersion') && testOptions.mongosBinVersion) {
             opts.binVersion = MongoRunner.getBinVersionFor(testOptions.mongosBinVersion);
+        }
+
+        if (MongoRunner.laterThan(opts.binVersion, "3.2.18.1") && !opts.adminWhiteListPath) {
+            opts.adminWhiteListPath = "/tmp/adminWhiteList";
         }
 
         // If the mongos is being restarted with a newer version, make sure we remove any options
@@ -844,6 +869,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         } else {
             // Return code of processes killed with SIGKILL on POSIX systems
             allowedExitCodes.push(-9);
+            allowedExitCodes.push(1);
         }
 
         if (opts.allowedExitCodes) {
@@ -948,6 +974,37 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             }
         }
         return false;
+    };
+
+    MongoRunner.laterThan = function(version1, version2) {
+        if (!version1) {
+            return true;
+        }
+        if (version1 === "latest" || version1 === "") {
+            return true;
+        }
+        var versionArray1 = version1.split('.');
+        var versionArray2 = version2.split('.');
+        var i = 0;
+
+        for (i = versionArray1.length; i < 4; i++) {
+            versionArray1.push(0);
+        }
+        for (i = versionArray2.length; i < 4; i++) {
+            versionArray2.push(0);
+        }
+
+        for (i = 0; i < 4; i++) {
+            if (versionArray1[i] > versionArray2[i]) {
+                return true;
+            }
+            if (versionArray1[i] < versionArray2[i]) {
+                return false;
+            }
+        }
+
+        return true;
+
     };
 
     // Given a test name figures out a directory for that test to use for dump files and makes sure

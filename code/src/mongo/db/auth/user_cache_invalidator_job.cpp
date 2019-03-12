@@ -146,7 +146,8 @@ void UserCacheInvalidator::run() {
             lastInvalidationTime + Seconds(userCacheInvalidationIntervalSecs.load());
         Date_t now = Date_t::now();
         while (now < sleepUntil) {
-            invalidationIntervalChangedCondition.wait_until(lock, sleepUntil.toSystemTimePoint());
+            invalidationIntervalChangedCondition.wait_for(
+                lock, Milliseconds(sleepUntil - now).toSteadyDuration());
             sleepUntil = lastInvalidationTime + Seconds(userCacheInvalidationIntervalSecs.load());
             now = Date_t::now();
         }

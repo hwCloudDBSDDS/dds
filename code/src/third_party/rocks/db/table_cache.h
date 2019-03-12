@@ -36,7 +36,7 @@ class InternalIterator;
 class TableCache {
  public:
   TableCache(const ImmutableCFOptions& ioptions,
-             const EnvOptions& storage_options, Cache* cache);
+             const EnvOptions& storage_options, Cache* cache, const MutableCFOptions& mutable_cf_options);
   ~TableCache();
 
   // Return an iterator for the specified file number (the corresponding
@@ -127,6 +127,7 @@ class TableCache {
                         bool prefetch_index_and_filter_in_cache = true);
 
   const ImmutableCFOptions& ioptions_;
+  const MutableCFOptions& mutable_cf_options_;
   const EnvOptions& env_options_;
   Cache* const cache_;
   std::string row_cache_id_;

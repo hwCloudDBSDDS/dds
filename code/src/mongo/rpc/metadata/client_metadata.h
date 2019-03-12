@@ -43,6 +43,10 @@ class Client;
 class OperationContext;
 
 constexpr auto kMetadataDocumentName = "client"_sd;
+constexpr auto kShutdownDocumentName = "shutdown"_sd;
+constexpr auto kSetupDocumentName = "setup"_sd;
+
+
 
 /**
  * The ClientMetadata class is responsible for parsing the client metadata document that is received

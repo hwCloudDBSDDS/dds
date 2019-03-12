@@ -59,6 +59,8 @@ Status dropDatabase(OperationContext* txn, const std::string& dbName) {
         CurOp::get(txn)->setNS_inlock(dbName);
     }
 
+    std::vector<NamespaceString> collections;
+
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         ScopedTransaction transaction(txn, MODE_X);
         Lock::GlobalWrite lk(txn->lockState());
@@ -78,6 +80,8 @@ Status dropDatabase(OperationContext* txn, const std::string& dbName) {
                           str::stream() << "Not primary while dropping database " << dbName);
         }
 
+        db->listCollectionNSs(collections);
+
         log() << "dropDatabase " << dbName << " starting";
         Database::dropDatabase(txn, db);
         log() << "dropDatabase " << dbName << " finished";
@@ -91,6 +95,15 @@ Status dropDatabase(OperationContext* txn, const std::string& dbName) {
         wunit.commit();
     }
     MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "dropDatabase", dbName);
+
+    index_log() << "[dropDatabase] dbname: " << dbName
+                << "; collection num: " << collections.size();
+    for (auto coll : collections) {
+        if (coll.isSystemCollection()) {
+            continue;
+        }
+        getGlobalServiceContext()->getGlobalStorageEngine()->destroyRocksDB(coll.toString());
+    }
 
     return Status::OK();
 }

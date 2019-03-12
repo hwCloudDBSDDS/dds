@@ -28,6 +28,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
 
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/util/signal_handlers.h"
@@ -49,6 +50,7 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/signal_handlers_synchronous.h"
 #include "mongo/util/signal_win32.h"
+#include "mongo/util/util_extend/config_reader.h"
 
 #if defined(_WIN32)
 namespace {
@@ -209,7 +211,7 @@ void startSignalProcessingThread() {
 #else
     // Mask signals in the current (only) thread. All new threads will inherit this mask.
     invariant(pthread_sigmask(SIG_SETMASK, &asyncSignals, 0) == 0);
-    // Spawn a thread to capture the signals we just masked off.
+
     stdx::thread(signalProcessingThread).detach();
 #endif
 }

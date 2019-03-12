@@ -28,8 +28,8 @@
 
 #pragma once
 
-#include <string>
 #include <rocksdb/status.h>
+#include <string>
 
 #include "mongo/util/assert_util.h"
 
@@ -60,23 +60,24 @@ namespace mongo {
         return rocksToMongoStatus_slow(status, prefix);
     }
 
-#define invariantRocksOK(expression) do { \
-        auto _invariantRocksOK_status = expression; \
-        if (MONGO_unlikely(!_invariantRocksOK_status.ok())) { \
-            invariantOKFailed(#expression, rocksToMongoStatus(_invariantRocksOK_status), \
-                              __FILE__, __LINE__); \
-        } \
+#define invariantRocksOK(expression)                                                               \
+    do {                                                                                           \
+        auto _invariantRocksOK_status = expression;                                                \
+        if (MONGO_unlikely(!_invariantRocksOK_status.ok())) {                                      \
+            invariantOKFailed(#expression, rocksToMongoStatus(_invariantRocksOK_status), __FILE__, \
+                              __LINE__);                                                           \
+        }                                                                                          \
     } while (false)
 
-#define invariantRocksOKWithNoCore(expression) do { \
-                auto _invariantRocksOK_status = expression; \
-                if (MONGO_unlikely(!_invariantRocksOK_status.ok())) { \
-                    invariantOKFailedWithNoCore(#expression, rocksToMongoStatus(_invariantRocksOK_status), \
-                                      __FILE__, __LINE__); \
-                } \
-            } while (false)
+#define invariantRocksOKWithNoCore(expression)                                                     \
+    do {                                                                                           \
+        auto _invariantRocksOK_status = expression;                                                \
+        if (MONGO_unlikely(!_invariantRocksOK_status.ok())) {                                      \
+            invariantOKFailedWithNoCore(#expression, rocksToMongoStatus(_invariantRocksOK_status), \
+                                        __FILE__, __LINE__);                                       \
+        }                                                                                          \
+    } while (false)
 
-    
     void rocksdb_err_handle(rocksdb::Status status);
 
 }  // namespace mongo

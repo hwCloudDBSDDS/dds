@@ -32,14 +32,14 @@
 
 #include "mongo/base/status_with.h"
 
+#include "mongo/client/connection_string.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/client/connection_string.h"
 
 namespace mongo {
 
 /**
- * Provides support for parsing and serialization of arguments to the config server regShardSvr 
+ * Provides support for parsing and serialization of arguments to the config server regShardSvr
  * command.
  */
 class RegShardSvrRequest {
@@ -73,12 +73,12 @@ public:
      */
     void appendAsConfigCommand(BSONObjBuilder* cmdBuilder);
 
-    const NamespaceString& getNamespace() const; 
+    const NamespaceString& getNamespace() const;
     const ConnectionString& getConnString() const;
     const std::string& getExtendIPs() const;
     const std::string& getProcessIdentity() const;
 
-	std::string toString() const;
+    std::string toString() const;
 
 private:
     /**

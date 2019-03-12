@@ -21,6 +21,8 @@
 #include "util/logging.h"
 #include "util/sync_point.h"
 
+#include "common/common.h"
+
 namespace rocksdb {
 
 uint64_t TotalFileSize(const std::vector<FileMetaData*>& files) {
@@ -271,7 +273,12 @@ bool Compaction::IsTrivialMove() const {
 }
 
 void Compaction::AddInputDeletions(VersionEdit* out_edit) {
+  int               filen = 0;//add
+
   for (size_t which = 0; which < num_input_levels(); which++) {
+    filen += inputs_[which].size();//add
+    //statis level's filen
+
     for (size_t i = 0; i < inputs_[which].size(); i++) {
       out_edit->DeleteFile(level(which), inputs_[which][i]->fd.GetNumber());
     }
@@ -331,15 +338,15 @@ const char* Compaction::InputLevelSummary(
     }
     if (!is_first) {
       len +=
-          snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, " + ");
+          	CommonSnprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, sizeof(scratch->buffer) - len - 1, " + ");
     } else {
       is_first = false;
     }
-    len += snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
+    len += CommonSnprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, sizeof(scratch->buffer) - len - 1,
                     "%" ROCKSDB_PRIszt "@%d", input_level.size(),
                     input_level.level);
   }
-  snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
+  CommonSnprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, sizeof(scratch->buffer) - len - 1,
            " files to L%d", output_level());
 
   return scratch->buffer;
@@ -375,7 +382,7 @@ int InputSummary(const std::vector<FileMetaData*>& files, char* output,
     int ret;
     char sztxt[16];
     AppendHumanBytes(files.at(i)->fd.GetFileSize(), sztxt, 16);
-    ret = snprintf(output + write, sz, "%" PRIu64 "(%s) ",
+    ret = CommonSnprintf(output + write, sz, sz-1, "%" PRIu64 "(%s) ",
                    files.at(i)->fd.GetNumber(), sztxt);
     if (ret < 0 || ret >= sz) break;
     write += ret;
@@ -387,7 +394,7 @@ int InputSummary(const std::vector<FileMetaData*>& files, char* output,
 
 void Compaction::Summary(char* output, int len) {
   int write =
-      snprintf(output, len, "Base version %" PRIu64 " Base level %d, inputs: [",
+      CommonSnprintf(output, len, len-1, "Base version %" PRIu64 " Base level %d, inputs: [",
                input_version_->GetVersionNumber(), start_level_);
   if (write < 0 || write >= len) {
     return;
@@ -395,7 +402,7 @@ void Compaction::Summary(char* output, int len) {
 
   for (size_t level_iter = 0; level_iter < num_input_levels(); ++level_iter) {
     if (level_iter > 0) {
-      write += snprintf(output + write, len - write, "], [");
+      write += CommonSnprintf(output + write, len - write, len - write-1, "], [");
       if (write < 0 || write >= len) {
         return;
       }
@@ -407,7 +414,7 @@ void Compaction::Summary(char* output, int len) {
     }
   }
 
-  snprintf(output + write, len - write, "]");
+  CommonSnprintf(output + write, len-write, len - write-1, "]");
 }
 
 uint64_t Compaction::OutputFilePreallocationSize() const {

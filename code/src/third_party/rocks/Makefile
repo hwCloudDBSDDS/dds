@@ -12,7 +12,16 @@ SHELL := $(shell which bash)
 CLEAN_FILES = # deliberately empty, so we can append below.
 CFLAGS += ${EXTRA_CFLAGS}
 CXXFLAGS += ${EXTRA_CXXFLAGS}
+ifdef USE_STREAM_UT
+CFLAGS += -DSTREAM_UT
+CXXFLAGS += -DSTREAM_UT
+endif
+ifdef USE_PILE_UT
+CFLAGS += -DPILE_UT
+CXXFLAGS += -DPILE_UT
+endif
 LDFLAGS += $(EXTRA_LDFLAGS)
+LDFLAGS += -O2
 MACHINE ?= $(shell uname -m)
 ARFLAGS = rs
 
@@ -155,8 +164,8 @@ $(foreach path, $(missing_make_config_paths), \
 	$(warning Warning: $(path) dont exist))
 
 ifneq ($(PLATFORM), IOS)
-CFLAGS += -g 
-CXXFLAGS += -g -std=c++11
+#CFLAGS += -g 
+CXXFLAGS += -std=c++11
 else
 # no debug info for IOS, that will make our library big
 OPT += -DNDEBUG
@@ -255,11 +264,10 @@ LDFLAGS += $(LUA_LIB)
 endif
 
 
-CFLAGS += $(WARNING_FLAGS) -I. -I./include $(PLATFORM_CCFLAGS) $(OPT)
+CFLAGS += $(WARNING_FLAGS) -I. -I./include  $(PLATFORM_CCFLAGS) $(OPT)
 CXXFLAGS += $(WARNING_FLAGS) -I. -I./include $(PLATFORM_CXXFLAGS) $(OPT) -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers
 
 LDFLAGS += $(PLATFORM_LDFLAGS)
-
 date := $(shell date +%F)
 ifdef FORCE_GIT_SHA
 	git_sha := $(FORCE_GIT_SHA)

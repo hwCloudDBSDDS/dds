@@ -27,7 +27,7 @@
 
 #pragma once
 
-#include <asio/system_timer.hpp>
+#include <asio.hpp>
 
 #include <memory>
 
@@ -35,6 +35,7 @@
 #include "mongo/executor/connection_pool.h"
 #include "mongo/executor/network_interface.h"
 #include "mongo/executor/network_interface_asio.h"
+#include "mongo/stdx/chrono.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {
@@ -46,7 +47,7 @@ namespace connection_pool_asio {
  */
 class ASIOTimer final : public ConnectionPool::TimerInterface {
 public:
-    using clock_type = asio::system_timer::clock_type;
+    using clock_type = stdx::chrono::steady_clock;
 
     ASIOTimer(asio::io_service::strand* strand);
     ~ASIOTimer();

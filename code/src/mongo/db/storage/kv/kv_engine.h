@@ -47,6 +47,7 @@ class RecordStore;
 class RecoveryUnit;
 class SortedDataInterface;
 class SnapshotManager;
+class ChunkRocksDBInstance;
 
 class KVEngine {
 public:
@@ -80,15 +81,15 @@ public:
                                      StringData ident,
                                      const CollectionOptions& options) = 0;
 
-    
 
-    virtual Status postInitRecordStore(StringData ns, StringData ident,
-                                           const CollectionOptions& options,
-                                           RecordStore* recordStore) {
-         return Status::OK();
+    virtual Status postInitRecordStore(StringData ns, StringData ident, RecordStore* recordStore) {
+        return Status::OK();
     }
-    
-    virtual Status updateChunkMetadata(OperationContext* opCtx,mongo::StringData ident,BSONArray& indexes,RecordStore* recordStore){
+
+    virtual Status updateChunkMetadata(OperationContext* opCtx,
+                                       mongo::StringData ident,
+                                       BSONArray& indexes,
+                                       RecordStore* recordStore) {
         return Status::OK();
     }
 
@@ -101,9 +102,11 @@ public:
 
     virtual Status repairIdent(OperationContext* opCtx, StringData ident) = 0;
 
-    virtual Status dropIdent(OperationContext* opCtx, StringData ident) = 0;
-    virtual Status dropUserCollections(OperationContext* opCtx, StringData ident){return Status::OK();};
-    virtual Status offloadUserCollections(OperationContext* opCtx, StringData ident){return Status::OK();};
+    virtual Status dropFromIdentCollectionMap(const mongo::StringData& ident) {
+        return Status::OK();
+    }
+
+    virtual Status dropIdent(OperationContext* opCtx, StringData ident, StringData ns=StringData()) = 0;
 
     // optional
     virtual int flushAllFiles(bool sync) {
@@ -189,15 +192,48 @@ public:
     virtual ~KVEngine() {}
 
 
-    virtual void resetEngineStats() {   
-        return ;
+    virtual void resetEngineStats() {
+        return;
     }
 
-    virtual void getEngineStats( std::vector<std::string> & vs) {   
-        return ;
-    } 
+    virtual void getEngineStats(std::vector<std::string>& vs) {
+        return;
+    }
+
 
     virtual void setStorageEngineLogLevel(int level) {}
 
+    virtual Status prepareSnapshot(BSONObj& cmdObj, BSONObjBuilder& result) {
+        return Status::OK();
+    }
+
+    virtual Status compact() {
+        return Status::OK();
+    }
+
+    virtual Status endSnapshot() {
+        return Status::OK();
+    }
+
+    virtual void stopGC() {}
+    virtual Status openChunkDbInstance(OperationContext* txn,
+                                       StringData ns,
+                                       const mongo::CollectionOptions& options) {
+        return Status::OK();
+    }
+
+    virtual void setGCInfo(const std::string& ns, const std::string& dataPath) {}
+
+    virtual Status rmCollectionDir(OperationContext* txn, const std::string& path) {
+        return Status::OK();
+    }
+
+    virtual Status destroyRocksDB(const std::string& nss) {
+        return Status::OK();
+    }
+
+    virtual Status reNameNss(const std::string& srcName, const std::string& destName) {
+        return Status::OK();
+    }
 };
 }

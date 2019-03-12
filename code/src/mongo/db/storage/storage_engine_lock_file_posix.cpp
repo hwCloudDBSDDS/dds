@@ -98,8 +98,7 @@ Status StorageEngineLockFile::open() {
     }
 
     // Use file permissions 644
-    int lockFile =
-        ::open(_filespec.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP);
+    int lockFile = ::open(_filespec.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP);
     if (lockFile < 0) {
         int errorcode = errno;
         if (errorcode == EACCES) {

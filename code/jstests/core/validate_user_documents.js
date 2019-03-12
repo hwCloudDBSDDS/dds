@@ -20,20 +20,31 @@ mydb.dropAllUsers();
 //
 
 // V0 user document document; insert should fail.
-assert.commandFailed(
-    mydb.runCommand({createUser: 1, user: "spencer", pwd: "password", readOnly: true}));
+assert.commandFailed(mydb.runCommand({
+    createUser: 1,
+    user: "spencer",
+    pwd: "WEak@4password",
+    readOnly: true,
+    passwordDigestor: "server"
+}));
 
 // V1 user document; insert should fail.
-assert.commandFailed(
-    mydb.runCommand({createUser: 1, user: "spencer", userSource: "test2", roles: ["dbAdmin"]}));
+assert.commandFailed(mydb.runCommand({
+    createUser: 1,
+    user: "spencer",
+    userSource: "test2",
+    roles: ["dbAdmin"],
+    passwordDigestor: "server"
+}));
 
 // Valid V2 user document; insert should succeed.
-assert.commandWorked(mydb.runCommand({createUser: "spencer", pwd: "password", roles: ["dbAdmin"]}));
+assert.commandWorked(
+    mydb.runCommand({createUser: "spencer", pwd: "WEak@4password", roles: ["dbAdmin"]}));
 
 // Valid V2 user document; insert should succeed.
 assert.commandWorked(mydb.runCommand({
     createUser: "andy",
-    pwd: "password",
+    pwd: "WEak@4password",
     roles: [{role: "dbAdmin", db: "validate_user_documents", hasRole: true, canDelegate: false}]
 }));
 

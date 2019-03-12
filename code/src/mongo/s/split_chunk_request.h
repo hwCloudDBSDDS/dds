@@ -4,8 +4,8 @@
 
 #include "mongo/client/connection_string.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/chunk_version.h"
 
 namespace mongo {
@@ -17,19 +17,18 @@ class StatusWith;
 
 class SplitChunkReq {
 public:
-
     static StatusWith<SplitChunkReq> createFromCommand(const BSONObj& cmdobj);
 
     static void appendAsCommand(BSONObjBuilder* builder,
-                                const ChunkType &chunk,
-                                const CollectionType &coll,
+                                const ChunkType& chunk,
+                                const CollectionType& coll,
                                 const std::string& rightDBPath,
                                 const std::string& rightChunkId,
                                 const BSONObj& splitPoint);
 
     static void appendAsCommand(BSONObjBuilder* builder,
-                                const ChunkType &chunk,
-                                const CollectionType &coll,
+                                const ChunkType& chunk,
+                                const CollectionType& coll,
                                 const std::string& rightDBPath,
                                 const std::string& rightChunkId);
 
@@ -37,15 +36,15 @@ public:
         return _coll.getNs();
     }
 
-    const ChunkType&  getChunk() const{
+    const ChunkType& getChunk() const {
         return _chunk;
     }
 
-    const CollectionType&  getCollection() const{
+    const CollectionType& getCollection() const {
         return _coll;
     }
 
-    void setNs(const NamespaceString & ns);
+    void setNs(const NamespaceString& ns);
 
     std::string getName() const {
         return _chunk.getName();
@@ -63,10 +62,10 @@ public:
         return _rightChunkId;
     }
 
-    std::string getRightChunkName() const{
-        //remove the leading 0
+    std::string getRightChunkName() const {
+        // remove the leading 0
         std::string name = _rightChunkId;
-        name = name.erase(0, std::min(name.find_first_not_of('0'), name.size()-1));
+        name = name.erase(0, std::min(name.find_first_not_of('0'), name.size() - 1));
         return name;
     }
 
@@ -79,7 +78,7 @@ public:
     }
 
     void setFullRightDBPath(const std::string& fullRightDBPath) {
-         _fullRightDBPath = fullRightDBPath;
+        _fullRightDBPath = fullRightDBPath;
     }
 
     const std::string& getRightDBPath() const {
@@ -91,14 +90,14 @@ public:
     std::string toString() const;
 
 private:
-    SplitChunkReq(const CollectionType &coll,
-                  const ChunkType &chunk,
+    SplitChunkReq(const CollectionType& coll,
+                  const ChunkType& chunk,
                   const std::string& rightDBPath,
                   const std::string& rightChunkId,
                   const BSONObj& splitPoint);
 
     CollectionType _coll;
-    ChunkType      _chunk;
+    ChunkType _chunk;
     std::string _rightDBPath;
     std::string _rightChunkId;
     BSONObj _splitPoint;
@@ -106,4 +105,3 @@ private:
 };
 
 }  // namespace mongo
-

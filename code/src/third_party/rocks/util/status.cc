@@ -12,12 +12,13 @@
 #include <cstring>
 #include "port/port.h"
 
+#include "common/common.h"
 namespace rocksdb {
 
 const char* Status::CopyState(const char* state) {
   char* const result =
       new char[std::strlen(state) + 1];  // +1 for the null terminator
-  std::strcpy(result, state);
+  CommonStrCopy(result, std::strlen(state) + 1, state);
   return result;
 }
 
@@ -29,11 +30,11 @@ Status::Status(Code _code, SubCode _subcode, const Slice& msg, const Slice& msg2
   const size_t len2 = msg2.size();
   const size_t size = len1 + (len2 ? (2 + len2) : 0);
   char* const result = new char[size + 1];  // +1 for null terminator
-  memcpy(result, msg.data(), len1);
+  CommonMemCopy(result, size + 1, msg.data(), len1);
   if (len2) {
     result[len1] = ':';
     result[len1 + 1] = ' ';
-    memcpy(result + len1 + 2, msg2.data(), len2);
+    CommonMemCopy(result + len1 + 2, len2, msg2.data(), len2);
   }
   result[size] = '\0';  // null terminator for C style string
   state_ = result;
@@ -46,46 +47,46 @@ std::string Status::ToString() const {
     case kOk:
       return "OK";
     case kNotFound:
-      type = "NotFound: ";
+      type = "Rocksdb NotFound: ";
       break;
     case kCorruption:
-      type = "Corruption: ";
+      type = "Rocksdb Corruption: ";
       break;
     case kNotSupported:
-      type = "Not implemented: ";
+      type = "Rocksdb Not implemented: ";
       break;
     case kInvalidArgument:
-      type = "Invalid argument: ";
+      type = "Rocksdb Invalid argument: ";
       break;
     case kIOError:
-      type = "IO error: ";
+      type = "Rocksdb IO error: ";
       break;
     case kMergeInProgress:
-      type = "Merge in progress: ";
+      type = "Rocksdb Merge in progress: ";
       break;
     case kIncomplete:
-      type = "Result incomplete: ";
+      type = "Rocksdb Result incomplete: ";
       break;
     case kShutdownInProgress:
-      type = "Shutdown in progress: ";
+      type = "Rocksdb Shutdown in progress: ";
       break;
     case kTimedOut:
-      type = "Operation timed out: ";
+      type = "Rocksdb Operation timed out: ";
       break;
     case kAborted:
-      type = "Operation aborted: ";
+      type = "Rocksdb Operation aborted: ";
       break;
     case kBusy:
-      type = "Resource busy: ";
+      type = "Rocksdb Resource busy: ";
       break;
     case kExpired:
-      type = "Operation expired: ";
+      type = "Rocksdb Operation expired: ";
       break;
     case kTryAgain:
-      type = "Operation failed. Try again.: ";
+      type = "Rocksdb Operation failed. Try again.: ";
       break;
     default:
-      snprintf(tmp, sizeof(tmp), "Unknown code(%d): ",
+      CommonSnprintf(tmp, sizeof(tmp), sizeof(tmp)-1, "Rocksdb Unknown code(%d): ",
                static_cast<int>(code()));
       type = tmp;
       break;

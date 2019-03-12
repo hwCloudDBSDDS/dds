@@ -208,6 +208,11 @@ void IDHackStage::doReattachToOperationContext() {
         _recordCursor->reattachToOperationContext(getOpCtx());
 }
 
+void IDHackStage::doReleaseCursor() {
+    if (_recordCursor)
+        _recordCursor->detachFromOperationContext();
+}
+
 void IDHackStage::doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
     // Since updates can't mutate the '_id' field, we can ignore mutation invalidations.
     if (INVALIDATION_MUTATION == type) {

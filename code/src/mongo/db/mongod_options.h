@@ -31,13 +31,13 @@
 #include <string>
 
 #include "mongo/base/status.h"
+#include "mongo/client/connection_string.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/storage/storage_options.h"
+#include "mongo/stdx/unordered_map.h"
 #include "mongo/util/options_parser/environment.h"
 #include "mongo/util/options_parser/option_section.h"
-#include "mongo/client/connection_string.h"
-#include "mongo/stdx/unordered_map.h"
 
 namespace mongo {
 
@@ -49,7 +49,7 @@ class Environment;
 namespace moe = mongo::optionenvironment;
 
 struct MongodGlobalParams {
-    bool scriptingEnabled;  // --noscripting
+    bool scriptingEnabled;       // --noscripting
     ConnectionString configdbs;  // The config server connection string
     stdx::unordered_map<std::string, std::string> configDBManager;
 

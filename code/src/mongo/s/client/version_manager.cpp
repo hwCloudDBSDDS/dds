@@ -430,29 +430,26 @@ bool VersionManager::isVersionableCB(DBClientBase* conn) {
 }
 
 bool VersionManager::forceRemoteCheckShardVersionCB(OperationContext* txn, const string& ns) {
+    // TODO: we will remove shardversion
+    return true;
+}
+
+void VersionManager::reloadChunkMapIfNeeded(OperationContext* txn, const string& ns) {
+    // If we don't have a collection, don't refresh the chunk manager
+    if (nsGetCollection(ns).size() == 0) {
+        return;
+    }
+
     const NamespaceString nss(ns);
-
-    // This will force the database catalog entry to be reloaded
     grid.catalogCache()->invalidate(nss.db().toString());
-
     auto status = grid.catalogCache()->getDatabase(txn, nss.db().toString());
     if (!status.isOK()) {
-        return false;
+        return;
     }
 
     shared_ptr<DBConfig> conf = status.getValue();
-
-    // If we don't have a collection, don't refresh the chunk manager
-    if (nsGetCollection(ns).size() == 0) {
-        return false;
-    }
-
-    auto manager = conf->getChunkManagerIfExists(txn, ns, true, true);
-    if (!manager) {
-        return false;
-    }
-
-    return true;
+    conf->getChunkManagerIfExists(txn, ns, true);
+    return;
 }
 
 bool VersionManager::checkShardVersionCB(OperationContext* txn,

@@ -39,7 +39,7 @@ namespace mongo {
 namespace executor {
 
 AsyncTimerASIO::AsyncTimerASIO(asio::io_service::strand* strand, Milliseconds expiration)
-    : _strand(strand), _timer(_strand->get_io_service(), expiration.toSystemDuration()) {}
+    : _strand(strand), _timer(_strand->get_io_service(), expiration.toSteadyDuration()) {}
 
 void AsyncTimerASIO::cancel() {
     std::error_code ec;
@@ -59,8 +59,7 @@ std::unique_ptr<AsyncTimerInterface> AsyncTimerFactoryASIO::make(asio::io_servic
 }
 
 Date_t AsyncTimerFactoryASIO::now() {
-    return Date_t::fromDurationSinceEpoch(asio::system_timer::clock_type::now() -
-                                          asio::system_timer::clock_type::from_time_t(0));
+    return Date_t::fromDurationSinceEpoch(stdx::chrono::steady_clock::now().time_since_epoch());
 }
 
 }  // namespace executor

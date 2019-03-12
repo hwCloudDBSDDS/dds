@@ -22,6 +22,8 @@
 #include "util/sync_point.h"
 #include "util/thread_status_util.h"
 
+
+
 namespace rocksdb {
 
 class InternalKeyComparator;
@@ -280,8 +282,10 @@ void MemTableList::PickMemtablesToFlush(autovector<MemTable*>* ret) {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_PICK_MEMTABLES_TO_FLUSH);
   const auto& memlist = current_->memlist_;
+  int immu = 0;
   for (auto it = memlist.rbegin(); it != memlist.rend(); ++it) {
     MemTable* m = *it;
+    immu++;
     if (!m->flush_in_progress_) {
       assert(!m->flush_completed_);
       num_flush_not_started_--;

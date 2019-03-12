@@ -1,0 +1,19 @@
+selector:
+  js_test:
+    roots:
+    - jstests/aggregation/bugs/server6118_cluster.js
+    - jstests/aggregation/bugs/server6179_cluster.js
+    - jstests/aggregation/bugs/server19095_cluster.js
+    - jstests/aggregation/sources/addFields/use_cases_cluster.js
+    - jstests/aggregation/sources/addFields/weather_cluster.js
+    - jstests/aggregation/sources/facet/use_cases_cluster.js
+    - jstests/aggregation/sources/replaceRoot/address_cluster.js
+    - jstests/aggregation/sources/graphLookup/sharded.js
+    exclude_files:
+
+executor:
+  js_test:
+    config:
+      shell_options:
+        nodb: ''
+        readMode: commands

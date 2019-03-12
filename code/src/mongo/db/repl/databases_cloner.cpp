@@ -37,6 +37,7 @@
 #include <set>
 
 #include "mongo/client/remote_command_retry_scheduler.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/client.h"
 #include "mongo/db/repl/storage_interface.h"
@@ -183,7 +184,8 @@ Status DatabasesCloner::startup() {
                        "admin",
                        BSON("listDatabases" << true),
                        rpc::ServerSelectionMetadata(true, boost::none).toBSON(),
-                       nullptr);
+                       nullptr,
+                       Milliseconds(kListDatabasesTimeoutMS));
     _listDBsScheduler = stdx::make_unique<RemoteCommandRetryScheduler>(
         _exec,
         listDBsReq,

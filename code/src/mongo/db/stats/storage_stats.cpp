@@ -25,7 +25,7 @@
  * delete this exception statement from all source files in the program,
  * then also delete it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/catalog/collection.h"
@@ -35,6 +35,7 @@
 #include "mongo/db/index/index_descriptor.h"
 
 #include "mongo/db/stats/storage_stats.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -55,13 +56,21 @@ Status appendCollectionStorageStats(OperationContext* txn,
     bool verbose = param["verbose"].trueValue();
 
     AutoGetCollectionForRead ctx(txn, nss);
-    if (!ctx.getDb()) {
+    if (!ctx.getDb() && nss.isChunk()) {
+            index_LOG(0) << "Database " << nss.db().toString() << " not found ";
+            return {ErrorCodes::SendStaleConfig,
+                    str::stream() << "Database [" << nss.db().toString() << "] not found."};
+    }else if (!ctx.getDb()) {
         return {ErrorCodes::BadValue,
                 str::stream() << "Database [" << nss.db().toString() << "] not found."};
     }
 
     Collection* collection = ctx.getCollection();
-    if (!collection) {
+    if (!collection && nss.isChunk()) {
+        index_LOG(0) << "Collection:" << nss << " not found ";
+        return {ErrorCodes::SendStaleConfig,
+                str::stream() << "Collection [" << nss.toString() << "] not found."};
+    }else if (!collection) {
         return {ErrorCodes::BadValue,
                 str::stream() << "Collection [" << nss.toString() << "] not found."};
     }

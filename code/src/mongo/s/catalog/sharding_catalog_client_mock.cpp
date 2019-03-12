@@ -156,6 +156,13 @@ bool ShardingCatalogClientMock::runUserManagementReadCommand(OperationContext* t
     return true;
 }
 
+bool ShardingCatalogClientMock::runUserManagementReadCommandWithCheckTxn(OperationContext* txn,
+                                                                         const string& dbname,
+                                                                         const BSONObj& cmdObj,
+                                                                         BSONObjBuilder* result) {
+    return true;
+}
+
 Status ShardingCatalogClientMock::applyChunkOpsDeprecated(OperationContext* txn,
                                                           const BSONArray& updateOps,
                                                           const BSONArray& preCondition,

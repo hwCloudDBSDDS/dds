@@ -118,15 +118,13 @@ void doMinidumpWithException(struct _EXCEPTION_POINTERS* exceptionInfo) {
 
 LONG WINAPI exceptionFilter(struct _EXCEPTION_POINTERS* excPointers) {
     char exceptionString[128];
-    sprintf_s(exceptionString,
-              sizeof(exceptionString),
+    sprintf(exceptionString,
               (excPointers->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION)
                   ? "(access violation)"
                   : "0x%08X",
               excPointers->ExceptionRecord->ExceptionCode);
     char addressString[32];
-    sprintf_s(addressString,
-              sizeof(addressString),
+    sprintf(addressString,
               "0x%p",
               excPointers->ExceptionRecord->ExceptionAddress);
     log() << "*** unhandled exception " << exceptionString << " at " << addressString
@@ -148,8 +146,7 @@ LONG WINAPI exceptionFilter(struct _EXCEPTION_POINTERS* excPointers) {
                 acTypeString = "unknown violation at";
                 break;
         }
-        sprintf_s(addressString,
-                  sizeof(addressString),
+        sprintf(addressString,
                   " 0x%p",
                   excPointers->ExceptionRecord->ExceptionInformation[1]);
         log() << "*** access violation was a " << acTypeString << addressString;

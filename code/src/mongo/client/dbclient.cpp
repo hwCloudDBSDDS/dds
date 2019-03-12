@@ -225,6 +225,8 @@ rpc::UniqueReply DBClientWithCommands::runCommandWithMetadata(StringData databas
 
     if (ErrorCodes::SendStaleConfig ==
         getStatusFromCommandResult(commandReply->getCommandReply())) {
+        index_warning() << "DBClientWithCommands::runCommandWithMetadata receive SendStaleConfig: "
+                        << commandReply->getCommandReply();
         throw RecvStaleConfigException("stale config in runCommand",
                                        commandReply->getCommandReply());
     }
@@ -1015,8 +1017,15 @@ unique_ptr<DBClientCursor> DBClientBase::query(const string& ns,
                                                const BSONObj* fieldsToReturn,
                                                int queryOptions,
                                                int batchSize) {
-    unique_ptr<DBClientCursor> c(new DBClientCursor(
-        this, ns, query.obj, ChunkId(), nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize));
+    unique_ptr<DBClientCursor> c(new DBClientCursor(this,
+                                                    ns,
+                                                    query.obj,
+                                                    ChunkId(),
+                                                    nToReturn,
+                                                    nToSkip,
+                                                    fieldsToReturn,
+                                                    queryOptions,
+                                                    batchSize));
     if (c->init())
         return c;
     return nullptr;

@@ -28,6 +28,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
 
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/s/server.h"
@@ -50,6 +51,7 @@
 #include "mongo/db/auth/authz_manager_external_state_s.h"
 #include "mongo/db/auth/user_cache_invalidator_job.h"
 #include "mongo/db/client.h"
+#include "mongo/db/commands.h"
 #include "mongo/db/dbwebserver.h"
 #include "mongo/db/initialize_server_global_state.h"
 #include "mongo/db/instance.h"
@@ -106,6 +108,7 @@
 #include "mongo/util/system_tick_source.h"
 #include "mongo/util/text.h"
 #include "mongo/util/version.h"
+#include "mongo/util/util_extend/config_reader.h"
 
 namespace mongo {
 
@@ -457,6 +460,9 @@ int mongoSMain(int argc, char* argv[], char** envp) {
 
     try {
         int exitCode = _main();
+        if(ConfigReader::getInstance()->getDecimalNumber<int>(
+            "PublicOptions", "open_ftds")) {
+        }
         return exitCode;
     } catch (const SocketException& e) {
         error() << "uncaught SocketException in mongos main: " << redact(e);

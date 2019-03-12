@@ -47,7 +47,7 @@ using std::unique_ptr;
 using std::ostringstream;
 using std::string;
 
-#if 0
+#ifdef MONGO_JSON_TO_LOG
 #define MONGO_JSON_DEBUG(message)                                                          \
     log() << "JSON DEBUG @ " << __FILE__ << ":" << __LINE__ << " " << __FUNCTION__ << ": " \
           << message << endl;

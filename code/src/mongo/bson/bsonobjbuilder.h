@@ -601,6 +601,10 @@ public:
     template <class T>
     BSONObjBuilder& append(StringData fieldName, const std::set<T>& vals);
 
+    /** Append a set of values. */
+    template <class T>
+    BSONObjBuilder& append(StringData fieldName, const std::unordered_set<T>& vals);
+
     /**
      * Append a map of values as a sub-object.
      * Note: the keys of the map should be StringData-compatible (i.e. strings).
@@ -940,6 +944,12 @@ template <class T>
 inline BSONObjBuilder& BSONObjBuilder::append(StringData fieldName, const std::set<T>& vals) {
     return _appendIt<std::set<T>>(*this, fieldName, vals);
 }
+
+template <class T>
+inline BSONObjBuilder& BSONObjBuilder::append(StringData fieldName, const std::unordered_set<T>& vals) {
+    return _appendIt<std::unordered_set<T>>(*this, fieldName, vals);
+}
+
 
 template <class K, class T>
 inline BSONObjBuilder& BSONObjBuilder::append(StringData fieldName, const std::map<K, T>& vals) {

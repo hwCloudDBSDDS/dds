@@ -125,6 +125,12 @@ void MultiIteratorStage::doDetachFromOperationContext() {
     }
 }
 
+void MultiIteratorStage::doReleaseCursor() {
+    for (auto&& iterator : _iterators) {
+        iterator->detachFromOperationContext();
+    }
+}
+
 void MultiIteratorStage::doReattachToOperationContext() {
     for (auto&& iterator : _iterators) {
         iterator->reattachToOperationContext(getOpCtx());

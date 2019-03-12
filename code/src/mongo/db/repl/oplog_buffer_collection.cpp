@@ -188,7 +188,7 @@ bool OplogBufferCollection::tryPop(OperationContext* txn, Value* value) {
 bool OplogBufferCollection::waitForData(Seconds waitDuration) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     if (!_cvNoLongerEmpty.wait_for(
-            lk, waitDuration.toSystemDuration(), [&]() { return _count != 0; })) {
+            lk, waitDuration.toSteadyDuration(), [&]() { return _count != 0; })) {
         return false;
     }
     return _count != 0;

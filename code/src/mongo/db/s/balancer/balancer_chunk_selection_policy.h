@@ -77,7 +77,7 @@ public:
     };
 
     struct IndexSplitInfo {
-        IndexSplitInfo(ChunkType inChunk, BSONObj inSplitPoint);
+        IndexSplitInfo(const ChunkType& inChunk, BSONObj inSplitPoint);
         ChunkType chunk;
         BSONObj splitPoint;
     };
@@ -107,6 +107,9 @@ public:
     virtual StatusWith<MigrateInfoVector> selectChunksToMove(OperationContext* txn,
                                                              bool aggressiveBalanceHint) = 0;
 
+
+
+    virtual StatusWith<MigrateInfoVector> selectMinTpsChunksToMove(OperationContext* txn) = 0;
     /**
      * Requests a single chunk to be relocated to a different shard, if possible. If some error
      * occurs while trying to determine the best location for the chunk, a failed status is

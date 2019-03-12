@@ -72,11 +72,10 @@ Status rebuildIndexesOnCollection(OperationContext* txn,
         cce->getAllIndexes(txn, &indexNames);
         indexSpecs.reserve(indexNames.size());
 
-        log() << " === RebuildIndexesOnCollection IndexName size: " << indexNames.size();
+        index_log() << " === RebuildIndexesOnCollection IndexName size: " << indexNames.size();
         for (size_t i = 0; i < indexNames.size(); i++) {
             const string& name = indexNames[i];
             BSONObj spec = cce->getIndexSpec(txn, name);
-            log() << " === RebuildIndexesOnCollection spec: " << spec.toString();
             IndexVersion newIndexVersion = IndexVersion::kV0;
             {
                 BSONObjBuilder bob;
@@ -208,7 +207,6 @@ Status rebuildIndexesOnCollection(OperationContext* txn,
         rs->updateStatsAfterRepair(txn, numRecords, dataSize);
         wunit.commit();
     }
-
     return Status::OK();
 }
 }  // namespace

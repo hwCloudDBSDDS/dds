@@ -38,9 +38,9 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/ordering.h"
 #include "mongo/bson/timestamp.h"
+#include "mongo/db/keypattern.h"
 #include "mongo/db/record_id.h"
 #include "mongo/platform/decimal128.h"
-#include "mongo/db/keypattern.h"
 
 namespace mongo {
 
@@ -81,7 +81,8 @@ public:
             reset();
         }
 
-        //  Save type bits into the buffer, if readFromEnd=true the first byte of the type bits will be
+        //  Save type bits into the buffer, if readFromEnd=true the first byte of the type bits will
+        //  be
         // written as the last byte to the buffer, which allows to read type bits from the end
         void Write(StackBufBuilder& buffer, bool readFromEnd = false) const;
 
@@ -309,8 +310,11 @@ public:
     }
 
     static BSONObj toBson(StringData data, Ordering ord, const TypeBits& types);
-    static BSONObj toBson(const char* buffer, size_t len, Ordering ord, const TypeBits& types,
-        const KeyPattern* keyPattern = nullptr);
+    static BSONObj toBson(const char* buffer,
+                          size_t len,
+                          Ordering ord,
+                          const TypeBits& types,
+                          const KeyPattern* keyPattern = nullptr);
 
     /**
      * Decodes a RecordId from the end of a buffer.
@@ -320,11 +324,11 @@ public:
     /**
      * Decodes a RecordId, consuming all bytes needed from reader.
      * Note: caller should expect what type recordId has.
-     * decodeRecordId works for int64_t, decodeDataRecordId works for 
+     * decodeRecordId works for int64_t, decodeDataRecordId works for
      * keys separated by delimiter.
      */
     static RecordId decodeRecordId(BufReader* reader);
-    
+
     void appendRecordId(const RecordId& loc);
     void appendTypeBits(const TypeBits& bits, bool readFromEnd = false);
 
@@ -372,11 +376,12 @@ public:
     const Version version;
 
 protected:
-    void _appendElements(
-        const BSONObj& obj,
-        Ordering ord,
-        Discriminator discriminator,
-        bool ignoreFieldNames = false);
+    void _appendElements(const BSONObj& obj,
+                         Ordering ord,
+                         Discriminator discriminator,
+                         bool ignoreFieldNames = false);
+
+    void _appendElementsOnly(const BSONObj& obj);
 
     void _appendAllElementsForIndexing(const BSONObj& obj,
                                        Ordering ord,

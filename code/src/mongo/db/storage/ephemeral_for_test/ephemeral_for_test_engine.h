@@ -69,7 +69,7 @@ public:
 
     virtual void endBackup(OperationContext* txn) {}
 
-    virtual Status dropIdent(OperationContext* opCtx, StringData ident);
+    virtual Status dropIdent(OperationContext* opCtx, StringData ident, StringData ns=StringData());
 
     virtual bool supportsDocLocking() const {
         return false;

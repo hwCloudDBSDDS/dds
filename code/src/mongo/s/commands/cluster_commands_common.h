@@ -75,6 +75,10 @@ public:
             return _res;
         }
 
+        std::string getShardId() const {
+            return _shardId;
+        }
+
         /**
            blocks until command is done
            returns ok()
@@ -83,6 +87,7 @@ public:
 
     private:
         CommandResult(const std::string& server,
+                      const std::string& shardId,
                       const std::string& db,
                       const BSONObj& cmd,
                       int options,
@@ -91,6 +96,7 @@ public:
         void init();
 
         std::string _server;
+        std::string _shardId;
         std::string _db;
         int _options;
         BSONObj _cmd;
@@ -116,6 +122,7 @@ public:
      * @param useShardConn use ShardConnection
      */
     static std::shared_ptr<CommandResult> spawnCommand(const std::string& server,
+                                                       const std::string& shardId,
                                                        const std::string& db,
                                                        const BSONObj& cmd,
                                                        int options,
@@ -135,5 +142,15 @@ int getUniqueCodeFromCommandResults(const std::vector<Strategy::CommandResult>& 
  * Utility function to return an empty result set from a command.
  */
 bool appendEmptyResultSet(BSONObjBuilder& result, Status status, const std::string& ns);
+
+/**
+ * Returns the set of collections for the specified database, which have been marked as sharded.
+ * Goes directly to the config server's metadata, without checking the local cache so it should not
+ * be used in frequently called code paths.
+ * 
+ * Throws exception on errors.
+*/
+std::vector<NamespaceString> getAllShardedCollectionsForDb(OperationContext* txn,
+                                                           StringData dbName);
 
 }  // namespace mongo

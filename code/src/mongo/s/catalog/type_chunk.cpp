@@ -25,6 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -38,6 +39,7 @@
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 
@@ -65,8 +67,7 @@ const BSONField<OID> ChunkType::DEPRECATED_epoch("lastmodEpoch");
 const BSONField<std::string> ChunkType::rootFolder("rootFolder");
 const BSONField<ChunkType::ChunkStatus> ChunkType::status("status");
 
-// the width of chunkID, 
-const int kChunkIDDigitWidth(16); //support billions of chunks
+const int ChunkType::kChunkIDDigitWidth(16);  // support billions of chunks
 
 namespace {
 
@@ -171,7 +172,7 @@ StatusWith<ChunkType> ChunkType::fromBSON(const BSONObj& source) {
         Status status = bsonExtractStringField(source, processIdentity.name(), &processIdentityStr);
         if (!status.isOK()) {
             return status;
-        } 
+        }
         chunk._processIdentity = processIdentityStr;
     }
 
@@ -253,14 +254,11 @@ std::string ChunkType::genID(StringData ns, const BSONObj& o) {
 std::string ChunkType::toID(const std::string& id) {
     invariant(!id.empty());
     std::string newId;
-    if (id.size() < kChunkIDDigitWidth)
-    {
+    if (id.size() < kChunkIDDigitWidth) {
         std::stringstream ss;
         ss << std::setfill('0') << std::setw(kChunkIDDigitWidth) << id;
         newId = ss.str();
-    }
-    else
-    {
+    } else {
         newId = id;
     }
 
@@ -316,9 +314,7 @@ Status ChunkType::validate() const {
 
     if (!isStatusValid(_status)) {
         return {ErrorCodes::BadValue,
-                str::stream() << "chunk status("
-                              << static_cast<int>(_status)
-                              << ") is invalid"};
+                str::stream() << "chunk status(" << static_cast<int>(_status) << ") is invalid"};
     }
 
     return Status::OK();
@@ -348,7 +344,8 @@ BSONObj ChunkType::toBSON() const {
         builder.append(rootFolder.name(), getRootFolder());
 
     if (isStatusValid(_status))
-        builder.append(status.name(), static_cast<std::underlying_type<ChunkStatus>::type>(getStatus()));
+        builder.append(status.name(),
+                       static_cast<std::underlying_type<ChunkStatus>::type>(getStatus()));
 
     return builder.obj();
 }
@@ -357,27 +354,18 @@ std::string ChunkType::toString() const {
     return toBSON().toString();
 }
 
-std::string ChunkType::getName() const{
-    //remove the leading 0
+std::string ChunkType::getName() const {
+    // remove the leading 0
     std::string id_to_print = _id;
-    id_to_print = id_to_print.erase(0, std::min(id_to_print.find_first_not_of('0'), id_to_print.size()-1));
+    id_to_print =
+        id_to_print.erase(0, std::min(id_to_print.find_first_not_of('0'), id_to_print.size() - 1));
 
     return id_to_print;
 }
 
 void ChunkType::setName(const std::string& id) {
     invariant(!id.empty());
-    _id = id;
-    
-    if (id.size() < kChunkIDDigitWidth){
-        std::stringstream ss;
-        ss << std::setfill('0') << std::setw(kChunkIDDigitWidth) << id;
-        _id = ss.str();
-    }
-    else{
-        _id = id;
-    }    
-    return;
+    _id = widthChunkID(id);
 }
 
 
@@ -427,5 +415,55 @@ void ChunkType::clearRootFolder() {
 void ChunkType::setStatus(const ChunkStatus chunkstatus) {
     _status = chunkstatus;
 }
+
+std::string ChunkType::getCollectionIdent() const {
+    std::string ident = _rootFolder.get();
+    ident.assign(ident, 0, ident.rfind("/"));
+    ident.assign(ident, ident.rfind("/") + 1, ident.size());
+    index_LOG(1) << "getCollectionIdent() rootFolder: " << _rootFolder.get() << " ident: " << ident;
+    return ident;
+}
+
+std::string ChunkType::getRelativeRootFolder() const {
+    std::string relativeFolder = _rootFolder.get();
+    relativeFolder.assign(relativeFolder,
+                          getDataPath().length() + 1,
+                          relativeFolder.length() - getDataPath().length() - 1);
+    return relativeFolder;
+}
+
+std::string ChunkType::toSex(uint64_t id) {
+    std::stringstream stringStream;
+    stringStream << std::hex << id;
+    return stringStream.str();
+}
+
+std::string ChunkType::widthChunkID(const std::string& chunkId) {
+    if (chunkId.size() < kChunkIDDigitWidth) {
+        std::stringstream ss;
+        ss << std::setfill('0') << std::setw(kChunkIDDigitWidth) << chunkId;
+        return ss.str();
+    }
+
+    return chunkId;
+}
+
+std::string ChunkType::getChunkDataPath(void) const {
+    if (!_rootFolder.is_initialized()) {
+        index_err() << "ChunkType::getChunkDataPath : _rootFolder not initialized ";
+        return "";
+    }
+
+    std::string datapath = _rootFolder.get();
+    for (auto i = 0; i < 2; i++) {
+        if (datapath.rfind("/") == std::string::npos) {
+            index_err() << "ChunkType::getChunkDataPath : _rootFolder invalied: " << datapath;
+            return "";
+        }
+        datapath.assign(datapath, 0, datapath.rfind("/"));
+    }
+    return datapath;
+}
+
 
 }  // namespace mongo

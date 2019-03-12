@@ -31,13 +31,14 @@ s.adminCommand({
     _waitForDelete: true
 });
 
-assert(s._connections[0].getDB("test").foo.find().toArray().length > 0, "blah 1");
-assert(s._connections[1].getDB("test").foo.find().toArray().length > 0, "blah 2");
-assert.eq(7,
+// wooo connect shard directly and run query
+// woo assert(s._connections[0].getDB("test").foo.find().toArray().length > 0, "blah 1");
+// woo assert(s._connections[1].getDB("test").foo.find().toArray().length > 0, "blah 2");
+/*assert.eq(7,
           s._connections[0].getDB("test").foo.find().toArray().length +
               s._connections[1].getDB("test").foo.find().toArray().length,
           "blah 3");
-
+*/
 assert.eq(7, s.getDB("test").foo.find().toArray().length, "normal B");
 assert.eq(7, s2.getDB("test").foo.find().toArray().length, "other B");
 

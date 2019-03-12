@@ -338,9 +338,6 @@ StatusWith<ReplicationExecutor::CallbackHandle> ReplicationExecutor::scheduleRem
         stdx::bind(remoteCommandFailedEarly, stdx::placeholders::_1, cb, scheduledRequest));
     if (handle.isOK()) {
         _getCallbackFromHandle(handle.getValue())->_iter->isNetworkOperation = true;
-
-        LOG(4) << "Scheduling remote request: " << request.toString();
-
         _networkInterface->startCommand(
             handle.getValue(),
             scheduledRequest,
@@ -545,6 +542,11 @@ StatusWith<ReplicationExecutor::CallbackHandle> ReplicationExecutor::enqueueWork
 void ReplicationExecutor::waitForDBWork_forTest() {
     _dblockTaskRunner.join();
 }
+
+uint32_t ReplicationExecutor::getTaskCountInNetwork() const {
+    return _networkInProgressQueue.size() + _dbWorkInProgressQueue.size();
+}
+
 
 ReplicationExecutor::WorkItem::WorkItem() : generation(0U), isNetworkOperation(false) {}
 

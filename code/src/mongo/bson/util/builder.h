@@ -49,7 +49,6 @@
 #include "mongo/util/allocator.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/shared_buffer.h"
-
 namespace mongo {
 
 /* Note the limit here is rather arbitrary and is simply a standard. generally the code works
@@ -471,7 +470,7 @@ private:
     template <typename T>
     StringBuilderImpl& SBNUM(T val, int maxSize, const char* macro) {
         int prev = _buf.l;
-        int z = snprintf(_buf.grow(maxSize), maxSize, macro, (val));
+        int z = snprintf(_buf.grow(maxSize), maxSize - 1, macro, (val));
         verify(z >= 0);
         verify(z < maxSize);
         _buf.l = prev + z;

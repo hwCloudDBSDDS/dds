@@ -28,7 +28,8 @@ load('./jstests/libs/chunk_manipulation_util.js');
     pauseMigrateAtStep(st.shard1, migrateStepNames.deletedPriorDataInRange);
 
     // For startParallelOps to write its state
-    var staticMongod = MongoRunner.runMongod({});
+    var staticMongod =
+        MongoRunner.runMongod({"configdb": st.configRS.getURL(), "bind_ip": getHostName()});
 
     var joinMoveChunk = moveChunkParallel(
         staticMongod, mongos.host, {Key: 0}, null, 'TestDB.TestColl', st.shard1.shardName);

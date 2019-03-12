@@ -51,12 +51,9 @@ const std::string BUILTIN_ROLE_USER_ADMIN = "userAdmin";
 const std::string BUILTIN_ROLE_DB_ADMIN = "dbAdmin";
 const std::string BUILTIN_ROLE_CLUSTER_ADMIN = "clusterAdmin";
 const std::string BUILTIN_ROLE_READ_ANY_DB = "readAnyDatabase";
-const std::string BUILTIN_ROLE_SECURITY_READ_ANY_DB = "securityreadAnyDatabase";
 const std::string BUILTIN_ROLE_READ_WRITE_ANY_DB = "readWriteAnyDatabase";
-const std::string BUILTIN_ROLE_SECURITY_READ_WRITE_ANY_DB = "securityreadWriteAnyDatabase";
 const std::string BUILTIN_ROLE_USER_ADMIN_ANY_DB = "userAdminAnyDatabase";
 const std::string BUILTIN_ROLE_DB_ADMIN_ANY_DB = "dbAdminAnyDatabase";
-const std::string BUILTIN_ROLE_SECURITY_DB_ADMIN_ANY_DB = "securitydbAdminAnyDatabase";
 const std::string BUILTIN_ROLE_ROOT = "root";
 const std::string BUILTIN_ROLE_INTERNAL = "__system";
 const std::string BUILTIN_ROLE_DB_OWNER = "dbOwner";
@@ -70,12 +67,11 @@ const std::string BUILTIN_ROLE_ENABLE_SHARDING = "enableSharding";
 /// Actions that the "read" role may perform on a normal resources of a specific database, and
 /// that the "readAnyDatabase" role may perform on normal resources of any database.
 ActionSet readRoleActions;
-ActionSet securityReadRoleActions;
 
 /// Actions that the "readWrite" role may perform on a normal resources of a specific database,
 /// and that the "readWriteAnyDatabase" role may perform on normal resources of any database.
 ActionSet readWriteRoleActions;
-ActionSet securityReadWriteRoleActions;
+
 /// Actions that the "userAdmin" role may perform on normal resources of a specific database,
 /// and that the "userAdminAnyDatabase" role may perform on normal resources of any database.
 ActionSet userAdminRoleActions;
@@ -83,7 +79,6 @@ ActionSet userAdminRoleActions;
 /// Actions that the "dbAdmin" role may perform on normal resources of a specific database,
 // and that the "dbAdminAnyDatabase" role may perform on normal resources of any database.
 ActionSet dbAdminRoleActions;
-ActionSet securityDbAdminRoleActions;
 
 /// Actions that the "clusterMonitor" role may perform on the cluster resource.
 ActionSet clusterMonitorRoleClusterActions;
@@ -119,12 +114,6 @@ void operator+=(ActionSet& target, const ActionSet& source) {
 // clang-format off
 MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
     // Read role
-    securityReadRoleActions
-        << ActionType::collStats
-        << ActionType::find
-        << ActionType::killCursors
-        << ActionType::listIndexes
-        << ActionType::planCacheRead;
     readRoleActions
         << ActionType::collStats
         << ActionType::dbHash
@@ -136,25 +125,17 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::planCacheRead;
 
     // Read-write role
-    securityReadWriteRoleActions += securityReadRoleActions;
-    securityReadWriteRoleActions
-        << ActionType::createCollection  
-        << ActionType::dropCollection
-        << ActionType::dropIndex
-        << ActionType::createIndex
-        << ActionType::insert
-        << ActionType::remove
-        << ActionType::update;
-
     readWriteRoleActions += readRoleActions;
     readWriteRoleActions
-        << ActionType::createCollection 
+        << ActionType::convertToCapped  // db admin gets this also
+        << ActionType::createCollection  // db admin gets this also
         << ActionType::dropCollection
         << ActionType::dropIndex
         << ActionType::emptycapped
         << ActionType::createIndex
         << ActionType::insert
         << ActionType::remove
+        << ActionType::renameCollectionSameDB  // db admin gets this also
         << ActionType::update;
 
     // User admin role
@@ -172,27 +153,6 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
 
 
     // DB admin role
-    securityDbAdminRoleActions
-        << ActionType::bypassDocumentValidation
-        << ActionType::collMod
-        << ActionType::collStats
-        << ActionType::convertToCapped
-        << ActionType::createCollection
-        << ActionType::dbStats
-        << ActionType::dropCollection
-        << ActionType::dropDatabase
-        << ActionType::dropIndex
-        << ActionType::createIndex
-        << ActionType::enableProfiler
-        << ActionType::listCollections
-        << ActionType::listIndexes
-        << ActionType::planCacheIndexFilter
-        << ActionType::planCacheRead
-        << ActionType::planCacheWrite
-        << ActionType::reIndex
-        << ActionType::storageDetails;
-     
-
     dbAdminRoleActions
         << ActionType::bypassDocumentValidation
         << ActionType::collMod
@@ -203,8 +163,7 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::dbStats  // clusterMonitor gets this also
         << ActionType::dropCollection
         << ActionType::dropDatabase  // clusterAdmin gets this also TODO(spencer): should
-        << ActionType::renameCollectionSameDB  // readWriteAnyDatabase?
-        << ActionType::repairDatabase 
+                                     // readWriteAnyDatabase?
         << ActionType::dropIndex
         << ActionType::createIndex
         << ActionType::enableProfiler
@@ -214,6 +173,8 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::planCacheRead
         << ActionType::planCacheWrite
         << ActionType::reIndex
+        << ActionType::renameCollectionSameDB  // read_write gets this also
+        << ActionType::repairDatabase
         << ActionType::storageDetails
         << ActionType::validate;
 
@@ -240,7 +201,7 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
     clusterMonitorRoleDatabaseActions 
         << ActionType::collStats  // dbAdmin gets this also
         << ActionType::dbStats  // dbAdmin gets this also
-        //<< ActionType::getShardVersion
+        << ActionType::getShardVersion
         << ActionType::indexStats;
 
     // hostManager role actions that target the cluster resource
@@ -280,20 +241,17 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::removeShard
         << ActionType::listShards  // clusterMonitor gets this also
         << ActionType::flushRouterConfig  // hostManager gets this also
-        << ActionType::cleanupOrphaned;
+        << ActionType::cleanupOrphaned
+        << ActionType::reload;
 
     clusterManagerRoleDatabaseActions
-        //<< ActionType::splitChunk
-        //<< ActionType::moveChunk
+        << ActionType::splitChunk
+        << ActionType::moveChunk
         << ActionType::offloadChunk
         << ActionType::assignChunk
-        << ActionType::enableSharding;
-        //<< ActionType::splitVector
-        if (Command::testCommandsEnabled) {
-            clusterManagerRoleDatabaseActions.addAction(ActionType::moveChunk);
-            clusterManagerRoleDatabaseActions.addAction(ActionType::splitChunk);
-        }
-
+        << ActionType::enableSharding
+        << ActionType::splitVector;
+        
     return Status::OK();
 }
 // clang-format on
@@ -365,22 +323,6 @@ void addEnableShardingPrivileges(PrivilegeVector* privileges) {
         privileges, Privilege(ResourcePattern::forAnyNormalResource(), enableShardingActions));
 }
 
-void addSecurityReadOnlyAnyDbPrivileges(PrivilegeVector* privileges) {
-     ActionSet actions = securityReadRoleActions;
-     actions.addAction(ActionType::dbStats);
-     actions.addAction(ActionType::listCollections);
-     Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forAnyNormalResource(), actions));
-     Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forClusterResource(), ActionType::listDatabases));
-     Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forCollectionName("system.indexes"), securityReadRoleActions));
-     Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forCollectionName("system.js"), securityReadRoleActions));
-     Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forCollectionName("system.namespaces"), securityReadRoleActions));
-}
-
 void addReadOnlyAnyDbPrivileges(PrivilegeVector* privileges) {
     Privilege::addPrivilegeToPrivilegeVector(
         privileges, Privilege(ResourcePattern::forAnyNormalResource(), readRoleActions));
@@ -403,15 +345,6 @@ void addReadWriteAnyDbPrivileges(PrivilegeVector* privileges) {
     Privilege::addPrivilegeToPrivilegeVector(
         privileges,
         Privilege(ResourcePattern::forCollectionName("system.js"), readWriteRoleActions));
-}
-
-void addSecurityReadWriteAnyDbPrivileges(PrivilegeVector* privileges){
-    addSecurityReadOnlyAnyDbPrivileges(privileges);
-    Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forAnyNormalResource(), securityReadWriteRoleActions));
-    Privilege::addPrivilegeToPrivilegeVector(
-        privileges,
-        Privilege(ResourcePattern::forCollectionName("system.js"), securityReadWriteRoleActions));
 }
 
 void addUserAdminAnyDbPrivileges(PrivilegeVector* privileges) {
@@ -458,25 +391,6 @@ void addUserAdminAnyDbPrivileges(PrivilegeVector* privileges) {
         Privilege(ResourcePattern::forExactNamespace(
                       AuthorizationManager::usersBackupCollectionNamespace),
                   readRoleActions));
-}
-
-void addSecurityDbAdminAnyDbPrivileges(PrivilegeVector* privileges) {
-    Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forClusterResource(), ActionType::listDatabases));
-    Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forAnyNormalResource(), securityDbAdminRoleActions));
-    Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forCollectionName("system.indexes"), securityReadRoleActions));
-    Privilege::addPrivilegeToPrivilegeVector(
-        privileges,
-        Privilege(ResourcePattern::forCollectionName("system.namespaces"), securityReadRoleActions));
-    ActionSet profileActions = securityReadRoleActions;
-    profileActions.addAction(ActionType::convertToCapped);
-    profileActions.addAction(ActionType::createCollection);
-    profileActions.addAction(ActionType::dropCollection);
-    Privilege::addPrivilegeToPrivilegeVector(
-        privileges,
-        Privilege(ResourcePattern::forCollectionName("system.profile"), profileActions));
 }
 
 void addDbAdminAnyDbPrivileges(PrivilegeVector* privileges) {
@@ -588,7 +502,10 @@ void addBackupPrivileges(PrivilegeVector* privileges) {
     clusterActions << ActionType::getParameter  // To check authSchemaVersion
                    << ActionType::listDatabases << ActionType::appendOplogNote  // For BRS
                    << ActionType::enableFailover << ActionType::disableFailover
-                   << ActionType::prepareSnapshot << ActionType::endSnapshot;
+                   << ActionType::prepareSnapshot << ActionType::endSnapshot
+                   << ActionType::getAutoShard<< ActionType::prepareClusterSnapshot
+                   << ActionType::endClusterSnapshot
+				   << ActionType::removeShardMap;
     Privilege::addPrivilegeToPrivilegeVector(
         privileges, Privilege(ResourcePattern::forClusterResource(), clusterActions));
 
@@ -760,18 +677,12 @@ bool RoleGraph::addPrivilegesForBuiltinRole(const RoleName& roleName, PrivilegeV
         addEnableShardingPrivileges(result);
     } else if (isAdminDB && roleName.getRole() == BUILTIN_ROLE_READ_ANY_DB) {
         addReadOnlyAnyDbPrivileges(result);
-    } else if (isAdminDB && roleName.getRole() == BUILTIN_ROLE_SECURITY_READ_ANY_DB) {
-        addSecurityReadOnlyAnyDbPrivileges(result);
     } else if (isAdminDB && roleName.getRole() == BUILTIN_ROLE_READ_WRITE_ANY_DB) {
         addReadWriteAnyDbPrivileges(result);
-    } else if (isAdminDB && roleName.getRole() == BUILTIN_ROLE_SECURITY_READ_WRITE_ANY_DB) {
-        addSecurityReadWriteAnyDbPrivileges(result);
     } else if (isAdminDB && roleName.getRole() == BUILTIN_ROLE_USER_ADMIN_ANY_DB) {
         addUserAdminAnyDbPrivileges(result);
     } else if (isAdminDB && roleName.getRole() == BUILTIN_ROLE_DB_ADMIN_ANY_DB) {
         addDbAdminAnyDbPrivileges(result);
-    } else if (isAdminDB && roleName.getRole() == BUILTIN_ROLE_SECURITY_DB_ADMIN_ANY_DB) {
-        addSecurityDbAdminAnyDbPrivileges(result);
     } else if (isAdminDB && roleName.getRole() == BUILTIN_ROLE_CLUSTER_MONITOR) {
         addClusterMonitorPrivileges(result);
     } else if (isAdminDB && roleName.getRole() == BUILTIN_ROLE_HOST_MANAGEMENT) {
@@ -823,17 +734,11 @@ bool RoleGraph::isBuiltinRole(const RoleName& role) {
         return true;
     } else if (isAdminDB && role.getRole() == BUILTIN_ROLE_READ_ANY_DB) {
         return true;
-    } else if (isAdminDB && role.getRole() == BUILTIN_ROLE_SECURITY_READ_ANY_DB){
-        return true;
     } else if (isAdminDB && role.getRole() == BUILTIN_ROLE_READ_WRITE_ANY_DB) {
-        return true;
-    } else if (isAdminDB && role.getRole() == BUILTIN_ROLE_SECURITY_READ_WRITE_ANY_DB) {
         return true;
     } else if (isAdminDB && role.getRole() == BUILTIN_ROLE_USER_ADMIN_ANY_DB) {
         return true;
     } else if (isAdminDB && role.getRole() == BUILTIN_ROLE_DB_ADMIN_ANY_DB) {
-        return true;
-    } else if (isAdminDB && role.getRole() == BUILTIN_ROLE_SECURITY_DB_ADMIN_ANY_DB) {
         return true;
     } else if (isAdminDB && role.getRole() == BUILTIN_ROLE_CLUSTER_MONITOR) {
         return true;
@@ -865,12 +770,9 @@ void RoleGraph::_createBuiltinRolesForDBIfNeeded(const std::string& dbname) {
 
     if (dbname == "admin") {
         _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_READ_ANY_DB, dbname));
-        _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_SECURITY_READ_ANY_DB, dbname));
         _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_READ_WRITE_ANY_DB, dbname));
-        _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_SECURITY_READ_WRITE_ANY_DB, dbname));
         _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_USER_ADMIN_ANY_DB, dbname));
         _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_DB_ADMIN_ANY_DB, dbname));
-        _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_SECURITY_DB_ADMIN_ANY_DB, dbname));
         _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_CLUSTER_MONITOR, dbname));
         _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_HOST_MANAGEMENT, dbname));
         _createBuiltinRoleIfNeeded(RoleName(BUILTIN_ROLE_CLUSTER_MANAGEMENT, dbname));

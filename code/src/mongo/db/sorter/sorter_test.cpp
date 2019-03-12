@@ -26,6 +26,8 @@
  *    then also delete it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kIndex
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/sorter/sorter.h"
@@ -43,6 +45,7 @@
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/log.h"
 
 // Need access to internal classes
 #include "mongo/db/sorter/sorter.cpp"

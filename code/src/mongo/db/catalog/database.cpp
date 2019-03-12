@@ -46,6 +46,7 @@
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/drop_collection.h"
 #include "mongo/db/catalog/index_create.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -53,6 +54,8 @@
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/instance.h"
 #include "mongo/db/introspect.h"
+#include "mongo/db/modules/rocks/src/Chunk/ChunkRocksRecordStore.h"
+#include "mongo/db/modules/rocks/src/Chunk/ChunkRocksDBInstance.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/repl/oplog.h"
@@ -68,10 +71,6 @@
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
-#include "mongo/db/modules/rocks/src/Chunk/ChunkRocksRecordStore.h"
-
-
-
 
 
 namespace mongo {
@@ -90,9 +89,7 @@ extern StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
     const ServerGlobalParams::FeatureCompatibility& featureCompatibility);
 
 extern StatusWith<std::vector<BSONObj>> resolveCollectionDefaultProperties(
-    OperationContext* txn,
-    const Collection* collection, 
-    std::vector<BSONObj> indexSpecs);
+    OperationContext* txn, const Collection* collection, std::vector<BSONObj> indexSpecs);
 
 void massertNamespaceNotIndex(StringData ns, StringData caller) {
     massert(17320,
@@ -100,13 +97,14 @@ void massertNamespaceNotIndex(StringData ns, StringData caller) {
             NamespaceString::normal(ns));
 }
 
+stdx::mutex _lockMockAssign;
+
 class Database::AddCollectionChange : public RecoveryUnit::Change {
 public:
     AddCollectionChange(OperationContext* txn, Database* db, StringData ns)
         : _txn(txn), _db(db), _ns(ns.toString()) {}
 
     virtual void commit() {
-        stdx::lock_guard<stdx::mutex> lock(_db->_collectionsMutex);
         CollectionMap::const_iterator it = _db->_collections.find(_ns);
         if (it == _db->_collections.end())
             return;
@@ -119,7 +117,6 @@ public:
     }
 
     virtual void rollback() {
-        stdx::lock_guard<stdx::mutex> lock(_db->_collectionsMutex);
         CollectionMap::const_iterator it = _db->_collections.find(_ns);
         if (it == _db->_collections.end())
             return;
@@ -143,7 +140,6 @@ public:
     }
 
     virtual void rollback() {
-        stdx::lock_guard<stdx::mutex> lock(_db->_collectionsMutex);
         Collection*& inMap = _db->_collections[_coll->ns().ns()];
         invariant(!inMap);
         inMap = _coll;
@@ -154,7 +150,6 @@ public:
 };
 
 Database::~Database() {
-    stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);
     for (CollectionMap::const_iterator i = _collections.begin(); i != _collections.end(); ++i)
         delete i->second;
 }
@@ -239,9 +234,7 @@ Database::Database(OperationContext* txn, StringData name, DatabaseCatalogEntry*
     _dbEntry->getCollectionNamespaces(&collections);
     for (list<string>::const_iterator it = collections.begin(); it != collections.end(); ++it) {
         const string ns = *it;
-        Collection* coll = _getOrCreateCollectionInstance(txn, ns);
-        stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);
-        _collections[ns] = coll;
+        _collections[ns] = _getOrCreateCollectionInstance(txn, ns);
     }
     // At construction time of the viewCatalog, the _collections map wasn't initialized yet, so no
     // system.views collection would be found. Now we're sufficiently initialized, signal a version
@@ -292,7 +285,8 @@ void Database::clearTmpCollections(OperationContext* txn) {
 
     for (list<string>::iterator i = collections.begin(); i != collections.end(); ++i) {
         string ns = *i;
-        //invariant(NamespaceString::normal(ns)); //chunk collection include '$' will be thougt as virtual collection.
+        // invariant(NamespaceString::normal(ns)); //chunk collection include '$' will be thougt as
+        // virtual collection.
 
         CollectionCatalogEntry* coll = _dbEntry->getCollectionCatalogEntry(ns);
 
@@ -353,14 +347,25 @@ void Database::getStats(OperationContext* opCtx, BSONObjBuilder* output, double 
     long long indexes = 0;
     long long indexSize = 0;
 
+    list<string> collectionsWithoutChunkId;
     for (list<string>::const_iterator it = collections.begin(); it != collections.end(); ++it) {
         const string ns = *it;
 
         Collection* collection = getCollection(ns);
         if (!collection)
             continue;
-
-        nCollections += 1;
+        std::size_t pos = ns.find('$');
+        string nsWihoutChunkId = ns;
+        if (pos != std::string::npos) {
+            nsWihoutChunkId = ns.substr(0, pos + 1);
+        }
+        if (collectionsWithoutChunkId.end() == std::find(collectionsWithoutChunkId.begin(),
+                                                         collectionsWithoutChunkId.end(),
+                                                         nsWihoutChunkId)) {
+            nCollections += 1;
+            indexes += collection->getIndexCatalog()->numIndexesTotal(opCtx);
+            collectionsWithoutChunkId.push_back(nsWihoutChunkId);
+        }
         objects += collection->numRecords(opCtx);
         size += collection->dataSize(opCtx);
 
@@ -368,7 +373,6 @@ void Database::getStats(OperationContext* opCtx, BSONObjBuilder* output, double 
         storageSize += collection->getRecordStore()->storageSize(opCtx, &temp);
         numExtents += temp.obj()["numExtents"].numberInt();  // XXX
 
-        indexes += collection->getIndexCatalog()->numIndexesTotal(opCtx);
         indexSize += collection->getIndexSize(opCtx);
     }
 
@@ -394,25 +398,23 @@ Status Database::dropView(OperationContext* txn, StringData fullns) {
 }
 
 Status Database::dropCollection(OperationContext* txn, StringData fullns) {
-    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_IX));
-    invariant(txn->lockState()->isCollectionLockedForMode(fullns, MODE_X));
+    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
 
     LOG(1) << "dropCollection: " << fullns;
-    //massertNamespaceNotIndex(fullns, "dropCollection");
+    // massertNamespaceNotIndex(fullns, "dropCollection");
 
-    Collection* collection = getCollection(fullns);
+    Collection* collection = getCollection(fullns, true);
     if (!collection) {
         // collection doesn't exist
         return Status::OK();
     }
 
-    if (collection){
-        //wait until assign is done
-        if (collection->isAssigning()){
-            LOG (1) << "wait chunk to be assigned completely:" << fullns ;
+    if (collection) {
+        // wait until assign is done
+        if (collection->getState() == Collection::ChunkState::ASSIGNING) {
+            index_LOG(1) << "wait chunk to be assigned completely:" << fullns;
             throw WriteConflictException();
-
-        }    
+        }
     }
 
     NamespaceString nss(fullns);
@@ -423,19 +425,17 @@ Status Database::dropCollection(OperationContext* txn, StringData fullns) {
             bool withChunkId = (pos != std::string::npos);
             NamespaceString nssWithoutChunkId(nss);
             if (withChunkId) {
-               nssWithoutChunkId = NamespaceString(StringData(nss.ns().substr(0, pos))); 
+                nssWithoutChunkId = NamespaceString(StringData(nss.ns().substr(0, pos)));
             }
             if (nssWithoutChunkId.isSystemDotProfile()) {
                 if (_profile != 0)
                     return Status(ErrorCodes::IllegalOperation,
                                   "turn off profiling before dropping system.profile collection");
-            }
-            else if (nssWithoutChunkId.isSystemDotUsers()) {
+            } else if (nssWithoutChunkId.isSystemDotUsers()) {
                 if (nss.isOnInternalDb()) {
                     return Status(ErrorCodes::IllegalOperation, "can't drop system ns");
                 }
-            }
-            else if (!nssWithoutChunkId.isSystemDotViews()) {
+            } else if (!nssWithoutChunkId.isSystemDotViews()) {
                 return Status(ErrorCodes::IllegalOperation, "can't drop system ns");
             }
         }
@@ -469,7 +469,6 @@ Status Database::dropCollection(OperationContext* txn, StringData fullns) {
     DEV {
         // check all index collection entries are gone
         string nstocheck = fullns.toString() + ".$";
-        stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);
         for (CollectionMap::const_iterator i = _collections.begin(); i != _collections.end(); ++i) {
             string temp = i->first;
             if (temp.find(nstocheck) != 0)
@@ -490,7 +489,6 @@ void Database::_clearCollectionCache(OperationContext* txn,
                                      StringData fullns,
                                      const std::string& reason) {
     verify(_name == nsToDatabaseSubstring(fullns));
-    stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);
     CollectionMap::const_iterator it = _collections.find(fullns.toString());
     if (it == _collections.end())
         return;
@@ -502,18 +500,18 @@ void Database::_clearCollectionCache(OperationContext* txn,
     _collections.erase(it);
 }
 
-Collection* Database::getCollection(StringData ns, bool including_assigning) {
+Collection* Database::getCollection(StringData ns, bool including_all) {
     invariant(_name == nsToDatabaseSubstring(ns));
-    stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);
     CollectionMap::const_iterator it = _collections.find(ns);
-    if (it != _collections.end() && it->second ) {
-      
-        //ingore the chunk that is in assigning
-        if (!including_assigning && it->second->isAssigning()){
-            log()<<"coll is assigning "<<ns<<" "<<reinterpret_cast<unsigned long long>(this);
+    if (it != _collections.end() && it->second) {
+        // ingore the chunk that is in assigning
+        if (!including_all && !it->second->isActive()) {
+            index_warning() << "coll is not active " << ns << " "
+                            << reinterpret_cast<unsigned long long>(this);
             return NULL;
         }
-        
+
+
         return it->second;
     }
 
@@ -521,30 +519,28 @@ Collection* Database::getCollection(StringData ns, bool including_assigning) {
 }
 
 void Database::listCollections(std::vector<Collection*>& out) const {
-    stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);    
-    for (const auto& entry : _collections){
-        if (!entry.second->isAssigning()){
+    for (const auto& entry : _collections) {
+        if (entry.second->isActive()) {
             out.push_back(entry.second);
-        }    
-    }    
+        }
+    }
 }
 
 void Database::listCollectionNSs(std::vector<NamespaceString>& out) const {
-    stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);    
-    for (const auto& entry : _collections){
-        if (!entry.second->isAssigning()){
+    for (const auto& entry : _collections) {
+        if (entry.second->isActive() &&
+            entry.second->getDbInstanceType() == Collection::dbInstanceType::kUserDb) {
             out.push_back(entry.second->ns());
-        }    
-    }    
+        }
+    }
 }
+
 Status Database::renameCollection(OperationContext* txn,
                                   StringData fromNS,
                                   StringData toNS,
                                   bool stayTemp) {
     audit::logRenameCollection(&cc(), fromNS, toNS);
-    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_IX));
-    invariant(txn->lockState()->isCollectionLockedForMode(fromNS, MODE_X));
-    invariant(txn->lockState()->isCollectionLockedForMode(toNS, MODE_X));
+    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
     BackgroundOperation::assertNoBgOpInProgForNs(fromNS);
     BackgroundOperation::assertNoBgOpInProgForNs(toNS);
 
@@ -569,9 +565,7 @@ Status Database::renameCollection(OperationContext* txn,
 
     txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, toNS));
     Status s = _dbEntry->renameCollection(txn, fromNS, toNS, stayTemp);
-    Collection* newColl = _getOrCreateCollectionInstance(txn, toNS);
-    stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);
-    _collections[toNS] = newColl;
+    _collections[toNS] = _getOrCreateCollectionInstance(txn, toNS);
     return s;
 }
 
@@ -586,19 +580,24 @@ Collection* Database::getOrCreateCollection(OperationContext* txn, StringData ns
 void Database::_checkCanCreateCollection(const NamespaceString& nss,
                                          const CollectionOptions& options) {
     massert(17399, "collection already exists", getCollection(nss.ns()) == nullptr);
-    //massertNamespaceNotIndex(nss.ns(), "createCollection");
+    // massertNamespaceNotIndex(nss.ns(), "createCollection");
 
     uassert(14037,
             "can't create user databases on a --configsvr instance",
             serverGlobalParams.clusterRole != ClusterRole::ConfigServer || nss.isOnInternalDb());
 
     // This check only applies for actual collections, not indexes or other types of ns.
+    size_t nsSize = nss.ns().find("$");
+    if (nsSize == std::string::npos) {
+        nsSize = nss.size();
+    }
     uassert(17381,
             str::stream() << "fully qualified namespace " << nss.ns() << " is too long "
                           << "(max is "
                           << NamespaceString::MaxNsCollectionLen
                           << " bytes)",
-            !nss.isNormal() || nss.size() <= NamespaceString::MaxNsCollectionLen);
+            !nss.isNormal() || nsSize <= NamespaceString::MaxNsCollectionLen);
+
     uassert(17316, "cannot create a blank collection", nss.coll() > 0);
     uassert(28838, "cannot create a non-capped oplog collection", options.capped || !nss.isOplog());
 }
@@ -606,8 +605,7 @@ void Database::_checkCanCreateCollection(const NamespaceString& nss,
 Status Database::createView(OperationContext* txn,
                             StringData ns,
                             const CollectionOptions& options) {
-    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_IX));
-    invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
+    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
     invariant(options.isView());
 
     NamespaceString nss(ns);
@@ -629,33 +627,30 @@ Collection* Database::createCollection(OperationContext* txn,
                                        bool createIdIndex,
                                        const BSONObj& idIndex) {
     NamespaceString nss(ns);
-    index_log() << "[createCollection] Database::createCollection ns: " << ns << "; createIdIndex: " <<
-        createIdIndex << "; idIndex: " << idIndex << "; options: " << options.toBSON();
+    index_log() << "[createCollection] Database::createCollection ns: " << ns;
 
-    if (GLOBAL_CONFIG_GET(IsCoreTest) && !nss.isSystemCollection()) {
+    auto replMode = repl::getGlobalReplicationCoordinator()->getReplicationMode();
+    auto single_mongod= ClusterRole::None == serverGlobalParams.clusterRole && 
+                        replMode != repl::ReplicationCoordinator::Mode::modeReplSet;
+    if (single_mongod && !nss.isSystemCollection()) {
         index_log() << "[createCollection] mockAssignChunk ns: " << ns;
         mockAssignChunk(txn, ns, options, createIdIndex, idIndex);
-        return  getCollection(ns, true);
-    } 
+        return getCollection(ns, true);
+    }
 
-    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_IX));
-    invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
+    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
     invariant(!options.isView());
 
     _checkCanCreateCollection(nss, options);
     audit::logCreateCollection(&cc(), ns);
-    LOG(1) << "Database::createCollection() ns:"<< ns << ", options: " << options.toBSON() 
-          << "; idIndex: " << idIndex<<",createIdIndex:"<<createIdIndex;
+
     Status status = _dbEntry->createCollection(txn, ns, options, true /*allocateDefaultSpace*/);
     massertNoTraceStatusOK(status);
 
     txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, ns));
     Collection* collection = _getOrCreateCollectionInstance(txn, ns);
     invariant(collection);
-    {
-        stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);
-        _collections[ns] = collection;
-    }
+    _collections[ns] = collection;
 
     BSONObj fullIdIndexSpec;
 
@@ -745,91 +740,92 @@ void Database::dropDatabase(OperationContext* txn, Database* db) {
     MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "dropDatabase", name);
 }
 
-Status Database::mockAssignChunk(OperationContext* txn, 
-                                StringData ns,
-                                CollectionOptions options, 
-                                bool createDefaultIndexes,
-                                const BSONObj& idIndex)
-{
-    index_log() "[assignChunk] Database::mockAssign ns: " << ns <<"; option: ( " << options.toBSON() << " ); createDefaultIndexes: "
-        << createDefaultIndexes << ";idIndex: ( " << idIndex;
+Status Database::mockAssignChunk(OperationContext* txn,
+                                 StringData ns,
+                                 CollectionOptions options,
+                                 bool createDefaultIndexes,
+                                 const BSONObj& idIndex) {
+    index_log() "[assignChunk] Database::mockAssign ns: " << ns;
 
     static long long prefix = 3000;
 
     OID epoch = OID::gen();
     CollectionType collType;
-    collType.setNs(NamespaceString(ns));
-    collType.setKeyPattern(BSON("_id" << 1));
-    collType.setUnique(true);
-    collType.setUpdatedAt(Date_t::fromMillisSinceEpoch(1));
-    collType.setEpoch(epoch);
-    collType.setDropped(false);
-    collType.setPrefix(prefix++);
-    //if (auto collation = options.toBSON()["collation"]) {
-    //    collType.setDefaultCollation(collation.Obj());
-    //}
-
-    if (!options.toBSON().isEmpty()) {
-        collType.setOptions(options.toBSON());
-    }
-
-    if (createDefaultIndexes && !idIndex.isEmpty()) {
-        index_err() << "[assignChunk] Database::mockAssign idindex not isempty";
-        BSONArrayBuilder indexArrayBuilder;
-        indexArrayBuilder.append (idIndex);
-        collType.setIndex(indexArrayBuilder.arr());
-    } else {
-        BSONObjBuilder b;
-        const auto featureCompatibilityVersion =
-            serverGlobalParams.featureCompatibility.version.load();
-        const auto indexVersion = IndexDescriptor::getDefaultIndexVersion(featureCompatibilityVersion);
-
-        b.append("v", static_cast<int>(indexVersion));
-        b.append("name", "_id_");
-        b.append("ns", ns.toString());
-        b.append("key", BSON("_id" << 1));
-        b.append("prefix", prefix++);
-        BSONArrayBuilder indexArrayBuilder;
-        indexArrayBuilder.append (b.obj());
-        collType.setIndex(indexArrayBuilder.arr());
-    }
-
     ChunkType chunkType;
-    //chunkType.setName();
-    chunkType.setNS(ns.toString());
-    chunkType.setShard(ShardId("shard0000"));
-    chunkType.setMin(BSON("_id" << MINKEY));
-    chunkType.setMax(BSON("_id" << MAXKEY));
-    chunkType.setVersion(ChunkVersion(1, 0, epoch));
-    chunkType.setStatus(ChunkType::ChunkStatus::kOffloaded);
-    chunkType.setProcessIdentity("22916_1509969868746_16963381");
 
-    std::string dbpath = storageGlobalParams.dbpath;
-    char prefix_str[sizeof(prefix) + 1] = {0};
-    sprintf(prefix_str, "%lld", prefix);
-    dbpath = dbpath + "/" + prefix_str;
+    {
+        stdx::lock_guard<stdx::mutex> lk(_lockMockAssign);
+        collType.setNs(NamespaceString(ns));
+        collType.setKeyPattern(BSON("_id" << 1));
+        collType.setUnique(true);
+        collType.setUpdatedAt(Date_t::fromMillisSinceEpoch(1));
+        collType.setEpoch(epoch);
+        collType.setDropped(false);
+        collType.setPrefix(prefix++);
+        // if (auto collation = options.toBSON()["collation"]) {
+        //    collType.setDefaultCollation(collation.Obj());
+        //}
 
-    chunkType.setRootFolder(dbpath);
-    chunkType.setJumbo(false);
-    chunkType.setID(prefix_str);
+        if (!options.toBSON().isEmpty()) {
+            collType.setOptions(options.toBSON());
+        }
 
-    index_log() << "Database::mockAssignChunk(): collectionType: ( " << collType << " ); chunkType: (" <<
-        chunkType;
+        if (createDefaultIndexes && !idIndex.isEmpty()) {
+            index_err() << "[assignChunk] Database::mockAssign idindex not isempty";
+            BSONArrayBuilder indexArrayBuilder;
+            indexArrayBuilder.append(idIndex);
+            collType.setIndex(indexArrayBuilder.arr());
+        } else {
+            BSONObjBuilder b;
+            const auto featureCompatibilityVersion =
+                serverGlobalParams.featureCompatibility.version.load();
+            const auto indexVersion =
+                IndexDescriptor::getDefaultIndexVersion(featureCompatibilityVersion);
+
+            b.append("v", static_cast<int>(indexVersion));
+            b.append("name", "_id_");
+            b.append("ns", ns.toString());
+            b.append("key", BSON("_id" << 1));
+            b.append("prefix", prefix++);
+            if (options.toBSON().hasField("collation") && indexVersion >= IndexDescriptor::IndexVersion::kV2) {
+                std::string collation = options.toBSON().getField("collation").toString(false);
+                index_log() << "collation : " << collation;
+                b.append(options.toBSON().getField("collation"));
+            }
+            BSONArrayBuilder indexArrayBuilder;
+            indexArrayBuilder.append(b.obj());
+            collType.setIndex(indexArrayBuilder.arr());
+        }
+
+        chunkType.setNS(ns.toString());
+        chunkType.setShard(ShardId("shard0000"));
+        chunkType.setMin(BSON("_id" << MINKEY));
+        chunkType.setMax(BSON("_id" << MAXKEY));
+        chunkType.setVersion(ChunkVersion(1, 0, epoch));
+        chunkType.setStatus(ChunkType::ChunkStatus::kOffloaded);
+        chunkType.setProcessIdentity("22916_1509969868746_16963381");
+
+        std::string dbpath = storageGlobalParams.dbpath;
+        char prefix_str[sizeof(prefix) + 1] = {0};
+        sprintf(prefix_str, "%lld", prefix++);
+        dbpath = dbpath + "/" + prefix_str;
+
+        chunkType.setRootFolder(dbpath);
+        chunkType.setJumbo(false);
+        chunkType.setID(prefix_str);
+    }
 
     BSONObjBuilder builder;
-    AssignChunkRequest::appendAsCommand(&builder, chunkType, collType,  
-                                       true, 
-                                       "shard0000",
-                                       "22916_1509969868746_16963381");
+    AssignChunkRequest::appendAsCommand(
+        &builder, chunkType, collType, true, "shard0000", "22916_1509969868746_16963381");
 
     BSONObj cmd = builder.obj();
-    index_log() << "Database::mockAssignChunk(): cmd: ( " << cmd;
     auto request = AssignChunkRequest::createFromCommand(cmd);
     BSONObj cmdobj;
 
     Command* command = Command::findCommand("assignChunk");
     std::string errmsg;
-    BSONObjBuilder result; 
+    BSONObjBuilder result;
     command->run(txn, "admin", cmd, 0, errmsg, result);
     return Status::OK();
 }
@@ -841,9 +837,6 @@ Status userCreateNS(OperationContext* txn,
                     bool createDefaultIndexes,
                     const BSONObj& idIndex) {
     invariant(db);
-
-    index_log() << "[createCollection] userCreateNS ns: " << ns << ' ' << options << "; idIndex: " 
-        << idIndex << "; createDefaultIndexes: " << createDefaultIndexes;
 
     if (!NamespaceString::validCollectionComponent(ns))
         return Status(ErrorCodes::InvalidNamespace, str::stream() << "invalid ns: " << ns);
@@ -912,64 +905,54 @@ Status userCreateNS(OperationContext* txn,
 }
 
 Status Database::assignChunk(OperationContext* txn,
-                    StringData ns,
-                    BSONObj cmdObj,
-                    const AssignChunkRequest& assignChunkRequest) {
+                             StringData ns,
+                             BSONObj cmdObj,
+                             const AssignChunkRequest& assignChunkRequest) {
 
     static constexpr StringData kCreateDB = "create_db"_sd;
-    
-    LOG(1) << "[assignChunk] DataBase::assignChunk() -0 ns: " << ns;
-    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_IX));
-    invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
-    LOG(1) << "[assignChunk] DataBase::assignChunk() -1 ns: " << ns;
 
-    Collection* collection = this->getCollection(ns,true);
-    if (collection){
-        //wait until assign is done
-        if (collection->isAssigning()){
-            
-            LOG(0) << "[assignChunk] DataBase::assignChunk() -2 ns: " << ns;
-            LOG (1) << "retry until chunk to be assigned completely:" << ns ;
+    invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
+
+    Collection* collection = this->getCollection(ns, true);
+    if (collection) {
+        // wait until assign is done
+        if (!collection->isActive()) {
+            index_LOG(1) << "retry until chunk to be assigned completely:" << ns;
             throw WriteConflictException();
-        } 
-
-        
-        LOG(0) << "[assignChunk] DataBase::assignChunk() -3 ns: " << ns;
+        }
         return Status(ErrorCodes::NamespaceExists,
-                          str::stream() << "a collection for chunk'" << ns.toString() << "' already exists");;
+                      str::stream() << "a collection for chunk'" << ns.toString()
+                                    << "' already exists");
+        ;
     }
-    
-    LOG(1) << "[assignChunk] DataBase::assignChunk() -4 ns: " << ns;
-    //keep the code for now
+    // keep the code for now
     if (this->getViewCatalog()->lookup(txn, ns))
         return Status(ErrorCodes::NamespaceExists,
                       str::stream() << "a view '" << ns.toString() << "' already exists");
 
-    // add ns to chunk map
-    size_t dollar_pos= ns.find('$');
+    size_t dollar_pos = ns.find('$');
     StringData raw_ns = ns.substr(0, dollar_pos);
-    StringData raw_chunk = ns.substr(dollar_pos+1, ns.size()-dollar_pos);
+    StringData raw_chunk = ns.substr(dollar_pos + 1, ns.size() - dollar_pos);
 
     ns2chunkHolder().set(raw_ns, raw_chunk.toString());
 
     CollectionOptions coll_Options;
     Status status = coll_Options.parse(cmdObj);
-    if (!status.isOK())
-    {
-        error()<<"coll_Options.parse(cmdObj) is not ok, cmdObj:"<< cmdObj;
+    if (!status.isOK()) {
+        index_err() << "coll_Options.parse(cmdObj) is not ok, cmdObj:" << cmdObj;
         return status;
     }
-    
+
     coll_Options.dbPath = assignChunkRequest.getChunk().getRootFolder();
     coll_Options.toCreate = assignChunkRequest.getNewChunkFlag();
-    //create rockdb instance when assign the chunk first time, prepare the chunkmetadata
+    // create rockdb instance when assign the chunk first time, prepare the chunkmetadata
     coll_Options.collection = assignChunkRequest.getCollection();
     coll_Options.chunk = assignChunkRequest.getChunk();
 
-    LOG(1) << "Database::assignChunk()-> coll_Options 2: " << coll_Options.toBSON();
+    // Validate the collation, if there is one.
     if (!coll_Options.collation.isEmpty()) {
         auto collator = CollatorFactoryInterface::get(txn->getServiceContext())
-            ->makeFromBSON(coll_Options.collation);
+                            ->makeFromBSON(coll_Options.collation);
         if (!collator.isOK()) {
             return collator.getStatus();
         }
@@ -985,91 +968,86 @@ Status Database::assignChunk(OperationContext* txn,
         coll_Options.collation =
             collator.getValue() ? collator.getValue()->getSpec().toBSON() : BSONObj();
     }
-    LOG(1) << "Database::assignChunk()-> coll_Options.collation: " << coll_Options.collation;
+
     status =
         validateStorageOptions(coll_Options.storageEngine,
-                              stdx::bind(&StorageEngine::Factory::validateCollectionStorageOptions,
-                                         stdx::placeholders::_1,
-                                         stdx::placeholders::_2));
+                               stdx::bind(&StorageEngine::Factory::validateCollectionStorageOptions,
+                                          stdx::placeholders::_1,
+                                          stdx::placeholders::_2));
     if (!status.isOK())
         return status;
 
     if (auto indexOptions = coll_Options.indexOptionDefaults["storageEngine"]) {
         status =
             validateStorageOptions(indexOptions.Obj(),
-                                  stdx::bind(&StorageEngine::Factory::validateIndexStorageOptions,
-                                             stdx::placeholders::_1,
-                                             stdx::placeholders::_2));
+                                   stdx::bind(&StorageEngine::Factory::validateIndexStorageOptions,
+                                              stdx::placeholders::_1,
+                                              stdx::placeholders::_2));
         if (!status.isOK()) {
             return status;
         }
     }
 
     if (coll_Options.isView()) {
-        LOG(1) << "Database::assignChunk()-> createView";
+        index_LOG(1) << "Database::assignChunk()-> createView";
         uassertStatusOK(createView(txn, ns, coll_Options));
         return Status::OK();
-    } 
-
-
+    }
 
 
     NamespaceString nss(ns);
     _checkCanCreateCollection(nss, coll_Options);
     audit::logCreateCollection(&cc(), ns);
 
-    //KVDatabaseCatalogEntry to create record in mdb_catalog
-    getGlobalServiceContext()->getProcessStageTime(
-        "assignChunk:"+assignChunkRequest.getChunk().getName())->noteStageStart("createCollection");
-    status =  _dbEntry->createCollection(txn, ns, coll_Options, true);
+    // KVDatabaseCatalogEntry to create record in mdb_catalog
+    getGlobalServiceContext()
+        ->getProcessStageTime("assignChunk:" + assignChunkRequest.getChunk().getName())
+        ->noteStageStart("createCollection");
+    status = _dbEntry->createCollection(txn, ns, coll_Options, true);
     massertNoTraceStatusOK(status);
 
-    LOG(1) << "[assignChunk] DataBase::assignChunk() -5 finish createCollection, ns: " << ns;   
     txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, ns));
     collection = _getOrCreateCollectionInstance(txn, ns);
-
-    LOG(1) << "[assignChunk] DataBase::assignChunk() -6 finish _getOrCreateCollectionInstance, ns: " << ns;   
 
     CollectionType coll_type = assignChunkRequest.getCollection();
     collection->setCollTabType(coll_type.getTabType());
     invariant(collection);
-    collection->setAssigning(true);
-
+    collection->setState(Collection::ChunkState::ASSIGNING);
+    collection->setDbInstanceType(Collection::dbInstanceType::kUserDb);
     // add  the collection_catalog_entry
-    {
-        stdx::lock_guard<stdx::mutex> lk(_collectionsMutex);
-        _collections[ns] = collection;
-    }
+    _collections[ns] = collection;
 
     // for the first assignment of chunk, config server will bring metadata
-    BSONObj fullIdIndexSpec; 
+    BSONObj fullIdIndexSpec;
     auto opObserver = getGlobalServiceContext()->getOpObserver();
     if (opObserver)
         opObserver->onCreateCollection(txn, nss, coll_Options, fullIdIndexSpec);
-
-    LOG(1) << "[assignChunk] DataBase::assignChunk() -7 end ns: " << ns;
-    
     return Status::OK();
 }
 
-void Database::assignChunkFinalize(OperationContext* txn,
-                    StringData ns, const AssignChunkRequest& assignChunkRequest){
+Status Database::assignChunkFinalize(OperationContext* txn,
+                                     StringData ns,
+                                     const AssignChunkRequest& assignChunkRequest) {
     Collection* collection = this->getCollection(ns, true);
     invariant(collection);
-    if (!GLOBAL_CONFIG_GET(IsCoreTest)) {
-        invariant(!txn->lockState()->isDbLockedForMode(name(), MODE_IX));
-        invariant(!txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
+    auto replMode = repl::getGlobalReplicationCoordinator()->getReplicationMode();
+    auto single_mongod= ClusterRole::None == serverGlobalParams.clusterRole && 
+                        replMode != repl::ReplicationCoordinator::Mode::modeReplSet;
+    if (!single_mongod) {
+        // invariant(!txn->lockState()->isDbLockedForMode(name(), MODE_X));
+        invariant(txn->lockState()->isDbLockedForMode(name(), MODE_X));
     }
-    
-    try{
+
+    try {
         CollectionOptions options;
         options.dbPath = assignChunkRequest.getChunk().getRootFolder();
         options.toCreate = assignChunkRequest.getNewChunkFlag();
-        
-        //create rockdb instance when assign the chunk first time, prepare the chunkmetadata
+
+        // create rockdb instance when assign the chunk first time, prepare the chunkmetadata
         options.collection = assignChunkRequest.getCollection();
         options.chunk = assignChunkRequest.getChunk();
-        _dbEntry->postInitRecordStore(txn,ns,options);
+
+        _dbEntry->postInitRecordStore(txn, ns);
         // get current index specs
         NamespaceString nss(ns);
         BSONArrayBuilder indexArrayBuilder;
@@ -1085,37 +1063,30 @@ void Database::assignChunkFinalize(OperationContext* txn,
             parseAndValidateIndexSpecs(nss, indexes, serverGlobalParams.featureCompatibility);
 
         if (!specsWithStatus.isOK()) {
-            error()<<"Database::assignChunkFinalize specsWithStatus is not ok";
-            return;
+            index_err() << "Database::assignChunkFinalize specsWithStatus is not ok";
+            uassertStatusOK(specsWithStatus.getStatus());
         }
 
-        auto specs = std::move(specsWithStatus.getValue());
-        auto indexSpecsWithDefaults =
-            resolveCollectionDefaultProperties(txn, collection, std::move(specs));
-        if (!indexSpecsWithDefaults.isOK()) {
-            error()<<"Database::assignChunkFinalize indexSpecsWithDefaults is not ok";
-            return;
+        std::vector<BSONObj> specs = std::move(specsWithStatus.getValue());
+
+        if (ClusterRole::None != serverGlobalParams.clusterRole) {
+            auto indexSpecsWithDefaults =
+                resolveCollectionDefaultProperties(txn, collection, std::move(specs));
+            if (!indexSpecsWithDefaults.isOK()) {
+                index_err() << "Database::assignChunkFinalize indexSpecsWithDefaults is not ok";
+                uassertStatusOK(indexSpecsWithDefaults.getStatus());
+            }
+
+            specs = std::move(indexSpecsWithDefaults.getValue());           
         }
-
-        specs = std::move(indexSpecsWithDefaults.getValue());
-
-        bool createIdIndex = collection->requiresIdIndex() && 
-            (options.autoIndexId == CollectionOptions::YES ||
-            options.autoIndexId == CollectionOptions::DEFAULT); 
-
-        //bool createIdIndex = true;
-        //if (options.collection.getOptions().hasField("autoIndexId")) {
-        //    if (options.collection.getOptions().getBoolField("autoIndexId")) {
-        //        index_log() << "[assignChunk] Database::assignChunkFinalize() autoIndexId: true";
-        //        createIdIndex = true;
-        //    } else {
-        //        index_log() << "[assignChunk] Database::assignChunkFinalize() autoIndexId: false";
-        //        createIdIndex = false;
-        //    }
-        //}
+ 
+        // filter _id index
+        bool createIdIndex =
+            collection->requiresIdIndex() && (options.autoIndexId == CollectionOptions::YES ||
+                                              options.autoIndexId == CollectionOptions::DEFAULT);
 
         if (!createIdIndex) {
-            for(auto it=specs.begin(); it!=specs.end(); ++it) {
+            for (auto it = specs.begin(); it != specs.end(); ++it) {
                 BSONObj key = it->getField("key").Obj();
                 if (key.hasField("_id")) {
                     specs.erase(it);
@@ -1124,31 +1095,30 @@ void Database::assignChunkFinalize(OperationContext* txn,
             }
         } else {
             bool existIdIndex = false;
-            for(auto it=specs.begin(); it!=specs.end(); ++it) {
+            for (auto it = specs.begin(); it != specs.end(); ++it) {
                 BSONObj key = it->getField("key").Obj();
-                if (key.hasField("_id")){
+                if (key.hasField("_id")) {
                     existIdIndex = true;
                     break;
-                } 
+                }
             }
-            
+
             if (nss.isSystem()) {
                 authindex::createSystemIndexes(txn, collection);
             }
         }
 
         if (specs.empty()) {
-            warning()<<"Database::assignChunkFinalize specs is empty";
-            collection->setAssigning(false);
-            return;
+            index_warning() << "Database::assignChunkFinalize specs is empty";
+            throw DBException("indexes specs is empty", ErrorCodes::InvalidOptions);
         }
-       
-        ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_IX);
-        Lock::CollectionLock collLock(txn->lockState(), nss.ns(), MODE_X);
+
+        // ScopedTransaction transaction(txn, MODE_IX);
+        // Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_X);
+
         MultiIndexBlock indexer(txn, collection);
         std::vector<BSONObj> indexInfoObjs;
-        //indexer will add index metadata into mdb_catalog
+        // indexer will add index metadata into mdb_catalog
         indexInfoObjs = uassertStatusOK(indexer.init(specs));
 
         WriteUnitOfWork wunit(txn);
@@ -1161,24 +1131,31 @@ void Database::assignChunkFinalize(OperationContext* txn,
             }
         }
         wunit.commit();
-          
-    }
-    catch(const std::exception &exc){
+
+        collection->setState(Collection::ChunkState::STABLE);
+    } catch (const std::exception& exc) {
         // catch anything thrown within try block that derives from std::exception
-        log() << exc.what();
-        log() << "assignChunkFinalize failed";
-        
-        // TODO: not to assert if assign failed
-        invariant (false); 
+        index_log() << "assignChunkFinalize failed for" << assignChunkRequest.getChunk().getName();
+
+        collection->setState(Collection::ChunkState::CORRUPTED);
+        return Status(ErrorCodes::RebalanceEventFailed, "failed to assign");
     }
 
-    collection->setAssigning(false);
-    //log()<<"assignChunkFinalize "<<reinterpret_cast<unsigned long long>(this)<<" "<<ns;
-    return;
+    return Status::OK();
 }
 
-Status Database::toUpdateChunkMetadata(OperationContext* txn,StringData ns,BSONArray &indexes){
-    return _dbEntry->updateChunkMetadataViaRecordStore(txn,ns,indexes);
+Status Database::toUpdateChunkMetadata(OperationContext* txn, StringData ns, BSONArray& indexes) {
+    auto replMode = repl::getGlobalReplicationCoordinator()->getReplicationMode();
+    bool useMultiInstance = GLOBAL_CONFIG_GET(UseMultiRocksDBInstanceEngine) &&
+                            (serverGlobalParams.clusterRole == ClusterRole::ShardServer ||
+                            (ClusterRole::None == serverGlobalParams.clusterRole 
+                            && replMode != repl::ReplicationCoordinator::Mode::modeReplSet));
+
+    NamespaceString nss(ns);
+    if(!nss.isSystemCollection() && useMultiInstance){
+        return _dbEntry->updateChunkMetadataViaRecordStore(txn, ns, indexes);
+    }
+    return Status::OK();
 }
 
 }  // namespace mongo

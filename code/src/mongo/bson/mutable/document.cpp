@@ -471,7 +471,6 @@ struct ElementRep {
 MONGO_STATIC_ASSERT(sizeof(ElementRep) == 32);
 
 // We want ElementRep to be a POD so Document::Impl can grow the std::vector with
-// memmove.
 //
 MONGO_STATIC_ASSERT(std::is_pod<ElementRep>::value);
 

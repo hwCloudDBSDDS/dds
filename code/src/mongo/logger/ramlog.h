@@ -42,6 +42,7 @@
 #include "mongo/logger/tee.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/mutex.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -126,7 +127,7 @@ private:
     std::string _name;
     long long _totalLinesWritten;
 
-    time_t _lastWrite;
+    Date_t _lastWrite;
 };
 
 /**
@@ -160,7 +161,7 @@ public:
     /**
      * Returns the time of the last write to the ramlog.
      */
-    time_t lastWrite();
+    Date_t lastWrite();
 
     /**
      * Returns the total number of lines ever written to the ramlog.

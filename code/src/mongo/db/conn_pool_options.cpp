@@ -38,8 +38,8 @@
 
 namespace mongo {
 
-int ConnPoolOptions::maxConnsPerHost(200);
-int ConnPoolOptions::maxShardedConnsPerHost(200);
+int ConnPoolOptions::maxConnsPerHost(300);
+int ConnPoolOptions::maxShardedConnsPerHost(300);
 
 namespace {
 

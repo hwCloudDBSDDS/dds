@@ -150,6 +150,7 @@ void CollectionInfoCache::notifyOfQuery(OperationContext* txn,
 
         _indexUsageTracker.recordIndexAccess(*it);
     }
+
 }
 
 void CollectionInfoCache::clearQueryCache() {

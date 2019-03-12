@@ -38,10 +38,11 @@ class OperationContext;
  * was removed.
  */
 Status dropCollectionOnCfgSrv(OperationContext* txn,
-                      const NamespaceString& collectionName,
-                      BSONObjBuilder& result);
+                              const NamespaceString& collectionName,
+                              BSONObjBuilder& result);
 
 Status dropCollection(OperationContext* txn,
                       const NamespaceString& collectionName,
-                      BSONObjBuilder& result);
+                      BSONObjBuilder& result,
+                      bool moveChunk = false);
 }  // namespace mongo

@@ -35,8 +35,6 @@
 #include <string>
 #include <vector>
 
-#include <boost/algorithm/string/classification.hpp>
-#include <boost/algorithm/string/split.hpp>
 #include "mongo/base/status.h"
 #include "mongo/bson/json.h"
 #include "mongo/bson/util/builder.h"
@@ -52,8 +50,10 @@
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/options_parser/startup_options.h"
-#include "mongo/util/version.h"
 #include "mongo/util/stringutils.h"
+#include "mongo/util/version.h"
+#include <boost/algorithm/string/classification.hpp>
+#include <boost/algorithm/string/split.hpp>
 
 namespace mongo {
 
@@ -65,14 +65,14 @@ MongodGlobalParams mongodGlobalParams;
 
 extern DiagLog _diaglog;
 //     host1:port1/manageIP1,host2:port2/manageIP2a-manageIP2b
-// Note: number of manageIP is unlimited, range from 1 to many. 
+// Note: number of manageIP is unlimited, range from 1 to many.
 const string kConfigDBManagerSep = ",";
 const char kRelationSep = '/';
 
 void setConfigDBManager(const string& manageStr) {
     std::vector<string> managerVec;
     boost::split(managerVec, manageStr, boost::is_any_of(kConfigDBManagerSep));
-    
+
     for (string item : managerVec) {
         const char* itemChar = item.c_str();
         const char* slash = strchr(itemChar, kRelationSep);
@@ -177,6 +177,13 @@ Status addMongodOptions(moe::OptionSection* options) {
         .addOptionChaining("operationProfiling.mode", "", moe::String, "(off/slowOp/all)")
         .setSources(moe::SourceYAMLConfig)
         .format("(:?off)|(:?slowOp)|(:?all)", "(off/slowOp/all)");
+
+    general_options
+        .addOptionChaining("operationProfiling.profileSizeMB",
+                           "profilesize",
+                           moe::Int,
+                           "value of profile collection size")
+        .setDefault(moe::Value(1));
 
     general_options
         .addOptionChaining(
@@ -493,24 +500,12 @@ Status addMongodOptions(moe::OptionSection* options) {
         .setSources(moe::SourceYAMLConfig)
         .format("(:?configsvr)|(:?shardsvr)", "(configsvr/shardsvr)");
 
-    sharding_options
-        .addOptionChaining(
-            "sharding.configDB",
-            "configdb",
-            moe::String,
-            "Connection string for communicating with config servers:\n"
-            "<config replset name>/<host1:port>,<host2:port>,[...]");
-#if 0
-    sharding_options
-        .addOptionChaining(
-            "sharding.configDBManager",
-            "configDBManager",
-            moe::String,
-            "Ip relationships between service ip and manage ips:\n"
-            "<host1:port/manageIP1>,<host2:port/manageIP2a-manageIP2b>,[...]")
-        .setSources(moe::SourceYAMLConfig)
-        .hidden();
-#endif
+    sharding_options.addOptionChaining("sharding.configDB",
+                                       "configdb",
+                                       moe::String,
+                                       "Connection string for communicating with config servers:\n"
+                                       "<config replset name>/<host1:port>,<host2:port>,[...]");
+
     sharding_options
         .addOptionChaining(
             "sharding._overrideShardIdentity",
@@ -1084,6 +1079,10 @@ Status storeMongodOptions(const moe::Environment& params) {
         serverGlobalParams.slowMS = params["operationProfiling.slowOpThresholdMs"].as<int>();
     }
 
+    if (params.count("operationProfiling.profileSizeMB")) {
+        serverGlobalParams.profileSizeMB = params["operationProfiling.profileSizeMB"].as<int>();
+    }
+
     if (params.count("storage.syncPeriodSecs")) {
         storageGlobalParams.syncdelay = params["storage.syncPeriodSecs"].as<double>();
     }
@@ -1301,58 +1300,55 @@ Status storeMongodOptions(const moe::Environment& params) {
         } else if (clusterRoleParam == "shardsvr") {
             serverGlobalParams.clusterRole = ClusterRole::ShardServer;
         }
-    }
 
-    if (!params.count("sharding.configDB")) {
-        return Status(ErrorCodes::BadValue, "error: no configdb specified in config file");
-    }
+        if (!params.count("sharding.configDB")) {
+            // return Status(ErrorCodes::BadValue, "error: no configdb specified in config file");
+            index_warning() << "no configdb specified in config file, entry single mode...";
+        } else {
+            std::string configdbString = params["sharding.configDB"].as<std::string>();
 
-    std::string configdbString = params["sharding.configDB"].as<std::string>();
+            auto configdbConnectionString = ConnectionString::parse(configdbString);
+            if (!configdbConnectionString.isOK()) {
+                return configdbConnectionString.getStatus();
+            }
 
-    auto configdbConnectionString = ConnectionString::parse(configdbString);
-    if (!configdbConnectionString.isOK()) {
-        return configdbConnectionString.getStatus();
-    }
+            if (configdbConnectionString.getValue().type() != ConnectionString::SET) {
+                return Status(ErrorCodes::BadValue,
+                              str::stream()
+                                  << "configdb supports only replica set connection string");
+            }
 
-    if (configdbConnectionString.getValue().type() != ConnectionString::SET) {
-        return Status(ErrorCodes::BadValue,
-                      str::stream() << "configdb supports only replica set connection string");
-    }
+            std::vector<HostAndPort> seedServers;
+            bool resolvedSomeSeedSever = false;
+            for (const auto& host : configdbConnectionString.getValue().getServers()) {
+                seedServers.push_back(host);
+                if (!seedServers.back().hasPort()) {
+                    seedServers.back() =
+                        HostAndPort{host.host(), ServerGlobalParams::ConfigServerPort};
+                }
+                if (!hostbyname(seedServers.back().host().c_str()).empty()) {
+                    resolvedSomeSeedSever = true;
+                }
+            }
+            if (!resolvedSomeSeedSever) {
+                if (!hostbyname(configdbConnectionString.getValue().getSetName().c_str()).empty()) {
+                    index_warning() << "The replica set name \""
+                                    << escape(configdbConnectionString.getValue().getSetName())
+                                    << "\" resolves as a host name, but none of the servers in the "
+                                       "seed list do. "
+                                       "Did you reverse the replica set name and the seed list in "
+                                    << escape(configdbConnectionString.getValue().toString())
+                                    << "?";
+                }
+            }
 
-    std::vector<HostAndPort> seedServers;
-    bool resolvedSomeSeedSever = false;
-    for (const auto& host : configdbConnectionString.getValue().getServers()) {
-        seedServers.push_back(host);
-        if (!seedServers.back().hasPort()) {
-            seedServers.back() = HostAndPort{host.host(), ServerGlobalParams::ConfigServerPort};
-        }
-        if (!hostbyname(seedServers.back().host().c_str()).empty()) {
-            resolvedSomeSeedSever = true;
-        }
-    }
-    if (!resolvedSomeSeedSever) {
-        if (!hostbyname(configdbConnectionString.getValue().getSetName().c_str()).empty()) {
-            warning() << "The replica set name \""
-                      << escape(configdbConnectionString.getValue().getSetName())
-                      << "\" resolves as a host name, but none of the servers in the seed list do. "
-                         "Did you reverse the replica set name and the seed list in "
-                      << escape(configdbConnectionString.getValue().toString()) << "?";
-        }
-    }
-
-    mongodGlobalParams.configdbs =
-        ConnectionString{configdbConnectionString.getValue().type(),
-                         seedServers,
-                         configdbConnectionString.getValue().getSetName()};
-#if 0
-    // extract service ip and manage ip of config server
-    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {    
-        if (params.count("sharding.configDBManager")) {
-            string configDBManagerStr = params["sharding.configDBManager"].as<std::string>();
-            setConfigDBManager(configDBManagerStr);
+            mongodGlobalParams.configdbs =
+                ConnectionString{configdbConnectionString.getValue().type(),
+                                 seedServers,
+                                 configdbConnectionString.getValue().getSetName()};
         }
     }
-#endif
+
     if (params.count("sharding.archiveMovedChunks")) {
         serverGlobalParams.moveParanoia = params["sharding.archiveMovedChunks"].as<bool>();
     }

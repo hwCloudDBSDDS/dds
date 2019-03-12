@@ -67,6 +67,22 @@ Status parseCreateOrUpdateUserCommands(const BSONObj& cmdObj,
                                        CreateOrUpdateUserArgs* parsedArgs);
 
 /**
+ * *Check if the password is a weak password.
+ * */
+bool isInWeakPasswordDict(std::string password);
+
+/**
+ * *Check whether the complexity of the password to meet the requirements.
+ * */
+bool checkPasswordStrength(std::string password);
+
+/**
+ * *Check whether the password is same with username or username's reverse.
+ * */
+bool checkPasswordSameOrReverseWithUsername(std::string password, std::string username);
+
+
+/**
  * Takes a command object describing an invocation of one of "grantRolesToUser",
  * "revokeRolesFromUser", "grantDelegateRolesToUser", "revokeDelegateRolesFromUser",
  * "grantRolesToRole", and "revokeRolesFromRoles" (which command it is is specified in the

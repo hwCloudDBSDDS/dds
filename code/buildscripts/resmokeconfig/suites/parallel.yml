@@ -2,7 +2,10 @@ selector:
   js_test:
     roots:
     - jstests/parallel/*.js
-
+    exclude_files:
+    - jstests/parallel/basicPlus.js
+    - jstests/parallel/basic.js
+    #- jstests/parallel/del.js
 executor:
   js_test:
     config:

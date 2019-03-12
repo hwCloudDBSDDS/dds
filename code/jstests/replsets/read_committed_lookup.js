@@ -16,7 +16,6 @@ load("jstests/libs/read_committed_lib.js");  // For testReadCommittedLookup
         name: replSetName,
         nodeOptions: {
             enableMajorityReadConcern: "",
-            shardsvr: "",
         }
     });
 

@@ -35,12 +35,16 @@
 
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/authz_manager_external_state_d.h"
+#include "mongo/db/auth/role_name.h"
+#include "mongo/db/auth/user_name.h"
 #include "mongo/db/catalog/cursor_manager.h"
+#include "mongo/db/client.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/fsync.h"
@@ -54,6 +58,7 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/ftdc/ftdc_mongod.h"
 #include "mongo/db/global_timestamp.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/instance.h"
 #include "mongo/db/introspect.h"
 #include "mongo/db/json.h"
@@ -95,7 +100,6 @@
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/time_support.h"
-#include "mongo/db/index/index_descriptor.h"
 
 namespace mongo {
 using logger::LogComponent;
@@ -343,6 +347,10 @@ void receivedPseudoCommand(OperationContext* txn,
     receivedCommand(txn, interposedNss, client, dbResponse, interposed);
 }
 
+namespace {
+const std::string CUSTOM_USER = "rwuser@admin";
+}  // namespace
+
 void receivedQuery(OperationContext* txn,
                    const NamespaceString& nss,
                    Client& c,
@@ -363,6 +371,61 @@ void receivedQuery(OperationContext* txn,
         Status status = AuthorizationSession::get(client)->checkAuthForFind(nss, false);
         audit::logQueryAuthzCheck(client, nss, q.query, status.code());
         uassertStatusOK(status);
+
+        if (!AuthorizationSession::get(txn->getClient())->shouldAllowLocalhost() &&
+            (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+             txn->isCustomerTxn()) &&
+            (!txn->isInBuildinMode())) {
+            bool flag = false;
+            BSONObj filter;
+            if (nss == std::string("admin.system.users")) {
+                std::set<std::string> buildinUsers;
+                UserName::getBuildinUsers(buildinUsers);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+            if (nss == std::string("admin.system.roles")) {
+                std::set<std::string> buildinRoles;
+                RoleName::getBuildinRoles(buildinRoles);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+
+            if (flag) {
+                std::string queryName = "query";
+                BSONElement queryField = q.query[queryName];
+                if (!queryField.isABSONObj()) {
+                    queryName = "$query";
+                    queryField = q.query[queryName];
+                }
+
+                if (queryField.isABSONObj()) {
+                    BSONObj subQuery = queryField.embeddedObject();
+                    BSONObj newSubQuery = BSON("$and" << BSON_ARRAY(subQuery << filter));
+
+                    // rebuild new query object
+                    BSONObjBuilder nb(64);
+                    nb.append(queryName, newSubQuery);
+                    BSONForEach(e, q.query) {
+                        if (!str::equals(queryName.c_str(), e.fieldName())) {
+                            nb.append(e);
+                        }
+                    }
+                    q.query = nb.obj();
+                } else {
+                    BSONObj query = BSON("$and" << BSON_ARRAY(q.query << filter));
+                    q.query = query;
+                }
+            }
+        }
 
         dbResponse.exhaustNS = runQuery(txn, q, nss, dbResponse.response);
     } catch (const AssertionException& e) {
@@ -415,6 +478,39 @@ void receivedInsert(OperationContext* txn, const NamespaceString& nsString, Mess
         audit::logInsertAuthzCheck(txn->getClient(), nsString, obj, status.code());
         uassertStatusOK(status);
     }
+
+    if (!AuthorizationSession::get(txn->getClient())->shouldAllowLocalhost() &&
+        (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+         txn->isCustomerTxn())) {
+        if (nsString == std::string("admin.system.users")) {
+            for (const auto& obj : insertOp.documents) {
+                std::string userName;
+                std::string dbName;
+                Status status1 = bsonExtractStringField(obj, "user", &userName);
+                Status status2 = bsonExtractStringField(obj, "db", &dbName);
+                if (status1.isOK() && status2.isOK() &&
+                    UserName::isBuildinUser(userName + "@" + dbName)) {
+                    Status status(ErrorCodes::Unauthorized, "Unauthorized");
+                    uassertStatusOK(status);
+                }
+            }
+        }
+
+        if (nsString == std::string("admin.system.roles")) {
+            for (const auto& obj : insertOp.documents) {
+                std::string roleName;
+                std::string dbName;
+                Status status1 = bsonExtractStringField(obj, "role", &roleName);
+                Status status2 = bsonExtractStringField(obj, "db", &dbName);
+                if (status1.isOK() && status2.isOK() &&
+                    RoleName::isBuildinRoles(roleName + "@" + dbName)) {
+                    Status status(ErrorCodes::Unauthorized, "Unauthorized");
+                    uassertStatusOK(status);
+                }
+            }
+        }
+    }
+
     performInserts(txn, insertOp);
 }
 
@@ -436,6 +532,31 @@ void receivedUpdate(OperationContext* txn, const NamespaceString& nsString, Mess
                                status.code());
     uassertStatusOK(status);
 
+    if (!AuthorizationSession::get(txn->getClient())->shouldAllowLocalhost() &&
+        (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+         txn->isCustomerTxn())) {
+        if (nsString == std::string("admin.system.users")) {
+            std::set<std::string> buildinUsers;
+            UserName::getBuildinUsers(buildinUsers);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            BSONObj q = BSON("$and" << BSON_ARRAY(singleUpdate.query << filter));
+            singleUpdate.query = q;
+        }
+        if (nsString == std::string("admin.system.roles")) {
+            std::set<std::string> buildinRoles;
+            RoleName::getBuildinRoles(buildinRoles);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            BSONObj q = BSON("$and" << BSON_ARRAY(singleUpdate.query << filter));
+            singleUpdate.query = q;
+        }
+    }
+
     performUpdates(txn, updateOp);
 }
 
@@ -448,6 +569,31 @@ void receivedDelete(OperationContext* txn, const NamespaceString& nsString, Mess
                         ->checkAuthForDelete(txn, nsString, singleDelete.query);
     audit::logDeleteAuthzCheck(txn->getClient(), nsString, singleDelete.query, status.code());
     uassertStatusOK(status);
+
+    if (!AuthorizationSession::get(txn->getClient())->shouldAllowLocalhost() &&
+        (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+         txn->isCustomerTxn())) {
+        if (nsString == std::string("admin.system.users")) {
+            std::set<std::string> buildinUsersAndRwuser;
+            UserName::getBuildinUsersAndRwuser(buildinUsersAndRwuser);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsersAndRwuser);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            BSONObj q = BSON("$and" << BSON_ARRAY(singleDelete.query << filter));
+            singleDelete.query = q;
+        }
+        if (nsString == std::string("admin.system.roles")) {
+            std::set<std::string> buildinRoles;
+            RoleName::getBuildinRoles(buildinRoles);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            BSONObj q = BSON("$and" << BSON_ARRAY(singleDelete.query << filter));
+            singleDelete.query = q;
+        }
+    }
 
     performDeletes(txn, deleteOp);
 }
@@ -465,7 +611,7 @@ bool receivedGetMore(OperationContext* txn, DbResponse& dbresponse, Message& m, 
     curop.debug().ntoreturn = ntoreturn;
     curop.debug().cursorid = cursorid;
 
-    //read chunkId from message if exist, but maybe get null
+    // read chunkId from message if exist, but maybe get null
     std::string nsWithChunkId;
     const char* chunkId = d.pullCString();
     if (NULL != chunkId) {
@@ -497,7 +643,8 @@ bool receivedGetMore(OperationContext* txn, DbResponse& dbresponse, Message& m, 
             sleepmillis(0);
         }
 
-        dbresponse.response = getMore(txn, nsWithChunkId.c_str(), ntoreturn, cursorid, &exhaust, &isCursorAuthorized);
+        dbresponse.response =
+            getMore(txn, nsWithChunkId.c_str(), ntoreturn, cursorid, &exhaust, &isCursorAuthorized);
     } catch (AssertionException& e) {
         if (isCursorAuthorized) {
             // If a cursor with id 'cursorid' was authorized, it may have been advanced
@@ -536,6 +683,10 @@ bool receivedGetMore(OperationContext* txn, DbResponse& dbresponse, Message& m, 
 
 }  // namespace
 
+namespace {
+const std::string CUSTOM_USER = "rwuser@admin";
+}  // namespace
+
 // Mongod on win32 defines a value for this function. In all other executables it is NULL.
 void (*reportEventToSystem)(const char* msg) = 0;
 
@@ -570,7 +721,6 @@ void assembleResponse(OperationContext* txn,
 
     const char* ns = dbmsg.messageShouldHaveNs() ? dbmsg.getns() : NULL;
     const NamespaceString nsString = ns ? NamespaceString(ns) : NamespaceString();
-    LOG(1)<<"assembleResponse op: "<<(int)op <<", ns:"<<nsString;
     if (op == dbQuery) {
         if (nsString.isCommand()) {
             isCommand = true;
@@ -705,25 +855,23 @@ void assembleResponse(OperationContext* txn,
     if (shouldLogOpDebug || debug.executionTimeMicros > logThresholdMs * 1000LL) {
         Locker::LockerInfo lockerInfo;
         txn->lockState()->getLockerInfo(&lockerInfo);
-        log() << debug.report(&c, currentOp, lockerInfo.stats);
+        LOG(2) << debug.report(&c, currentOp, lockerInfo.stats);
+        if (debug.executionTimeMicros > logThresholdMs) {
+            audit::logSlowOp(&c, currentOp, lockerInfo.stats);
+        }
     }
 
     if (currentOp.shouldDBProfile()) {
-        log() << "currentOp.shouldDBProfile()";
         // Performance profiling is on
         if (txn->lockState()->isReadLocked()) {
-            log() << "currentOp.shouldDBProfile() 1";
             LOG(1) << "note: not profiling because recursive read lock";
         } else if (lockedForWriting()) {
-             log() << "currentOp.shouldDBProfile() 2";
             // TODO SERVER-26825: Fix race condition where fsyncLock is acquired post
             // lockedForWriting() call but prior to profile collection lock acquisition.
             LOG(1) << "note: not profiling because doing fsync+lock";
         } else if (storageGlobalParams.readOnly) {
-            log() << "currentOp.shouldDBProfile() 3";
             LOG(1) << "note: not profiling because server is read-only";
         } else {
-            log() << "currentOp.shouldDBProfile() 4";
             profile(txn, op);
         }
     }

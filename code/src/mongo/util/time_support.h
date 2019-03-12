@@ -56,6 +56,11 @@ std::string time_t_to_String_short(time_t t);
  */
 class Date_t {
 public:
+    enum class ClockType : int {
+        kSteadyClock = 0,
+        kSystemClock = 1,
+    };
+
     /**
      * The largest representable Date_t.
      *
@@ -66,7 +71,7 @@ public:
     /**
      * Reads the system clock and returns a Date_t representing the present time.
      */
-    static Date_t now();
+    static Date_t now(ClockType clockType = ClockType::kSteadyClock);
 
     /**
      * Returns a Date_t from an integer number of milliseconds since the epoch.
@@ -87,11 +92,6 @@ public:
      * Constructs a Date_t representing the epoch.
      */
     Date_t() = default;
-
-    /**
-     * Constructs a Date_t from a system clock time point.
-     */
-    explicit Date_t(stdx::chrono::system_clock::time_point tp);
 
     /**
      * Returns a string representation of the date.
@@ -332,8 +332,8 @@ long long getJSTimeVirtualThreadSkew();
 /** Date_t is milliseconds since epoch */
 Date_t jsTime();
 
-unsigned long long curTimeMicros64();
-unsigned long long curTimeMillis64();
+unsigned long long curTimeMicros64(Date_t::ClockType clockType = Date_t::ClockType::kSteadyClock);
+unsigned long long curTimeMillis64(Date_t::ClockType clockType = Date_t::ClockType::kSteadyClock);
 
 // these are so that if you use one of them compilation will fail
 char* asctime(const struct tm* tm);

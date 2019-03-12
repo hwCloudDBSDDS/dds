@@ -206,7 +206,7 @@ ChunkType MigrationManagerTest::setUpChunk(const std::string& collName,
                                            const BSONObj& chunkMax,
                                            const ShardId& shardId,
                                            const ChunkVersion& version) {
-    static std::atomic<uint64_t> chunkCount{1};                                       
+    static std::atomic<uint64_t> chunkCount{1};
     ChunkType chunk;
     chunk.setNS(collName);
     chunk.setMin(chunkMin);
@@ -214,7 +214,7 @@ ChunkType MigrationManagerTest::setUpChunk(const std::string& collName,
     chunk.setShard(shardId);
     chunk.setVersion(version);
     uint64_t = chunkCount.fetch_add(1);
-    chunk.setName(std::to_string (chunkCount));
+    chunk.setName(std::to_string(chunkCount));
     ASSERT_OK(catalogClient()->insertConfigDocument(
         operationContext(), ChunkType::ConfigNS, chunk.toBSON(), kMajorityWriteConcern));
     return chunk;

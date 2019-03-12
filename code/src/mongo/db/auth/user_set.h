@@ -109,6 +109,10 @@ public:
         return _usersEnd;
     }
 
+    bool isEmpyt() const {
+        return (begin() == end());
+    }
+
 private:
     typedef std::vector<User*>::iterator mutable_iterator;
 

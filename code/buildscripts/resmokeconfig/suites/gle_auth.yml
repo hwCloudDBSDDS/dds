@@ -10,7 +10,12 @@ selector:
     exclude_files:
     # Skip any tests that run with auth explicitly.
     - jstests/gle/*[aA]uth*.js
-
+    - jstests/gle/create_index_gle.js
+    - jstests/gle/gle_sharded_write.js
+    - jstests/gle/updated_existing.js
+    - jstests/gle/gle_sharded_write_cluster.js
+    - jstests/gle/updated_existing_cluster.js
+    - jstests/gle/gle_sharded_wc.js
 executor:
   js_test:
     config:

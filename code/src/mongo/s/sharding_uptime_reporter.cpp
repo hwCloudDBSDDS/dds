@@ -43,6 +43,8 @@
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/sock.h"
 #include "mongo/util/version.h"
+#include "mongo/s/catalog/catalog_cache.h"
+
 
 namespace mongo {
 namespace {
@@ -109,10 +111,10 @@ void ShardingUptimeReporter::startPeriodicThread() {
                 auto status =
                     Grid::get(txn.get())->getBalancerConfiguration()->refreshAndCheck(txn.get());
                 if (!status.isOK()) {
-                    warning() << "failed to refresh mongos settings" << causedBy(status);
+                    index_warning() << "failed to refresh mongos settings" << causedBy(status);
                 }
+                Grid::get(txn.get())->catalogCache()->periodFlushDbIfNeeded(txn.get());
             }
-
             sleepFor(kUptimeReportInterval);
         }
     });

@@ -170,6 +170,11 @@ void CountScan::doReattachToOperationContext() {
         _cursor->reattachToOperationContext(getOpCtx());
 }
 
+void CountScan::doReleaseCursor() {
+    if (_cursor)
+        _cursor->detachFromOperationContext();
+}
+
 void CountScan::doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
     // The only state we're responsible for holding is what RecordIds to drop.  If a document
     // mutates the underlying index cursor will deal with it.

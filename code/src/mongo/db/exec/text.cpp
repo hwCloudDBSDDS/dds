@@ -30,8 +30,10 @@
 
 #include <vector>
 
+#include "mongo/db/exec/fetch.h"
 #include "mongo/db/exec/filter.h"
 #include "mongo/db/exec/index_scan.h"
+#include "mongo/db/exec/or.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/text_match.h"
 #include "mongo/db/exec/text_or.h"
@@ -60,7 +62,7 @@ TextStage::TextStage(OperationContext* txn,
                      WorkingSet* ws,
                      const MatchExpression* filter)
     : PlanStage(kStageType, txn), _params(params) {
-    _children.emplace_back(buildTextTree(txn, ws, filter));
+    _children.emplace_back(buildTextTree(txn, ws, filter, params.wantTextScore));
     _specificStats.indexPrefix = _params.indexPrefix;
     _specificStats.indexName = _params.index->indexName();
     _specificStats.parsedTextQuery = _params.query.toBSON();
@@ -94,9 +96,9 @@ const SpecificStats* TextStage::getSpecificStats() const {
 
 unique_ptr<PlanStage> TextStage::buildTextTree(OperationContext* txn,
                                                WorkingSet* ws,
-                                               const MatchExpression* filter) const {
-    auto textScorer = make_unique<TextOrStage>(txn, _params.spec, ws, filter, _params.index);
-
+                                               const MatchExpression* filter,
+                                               bool wantTextScore) const {
+    std::vector<std::unique_ptr<PlanStage>> indexScanList;
     // Get all the index scans for each term in our query.
     for (const auto& term : _params.query.getTermsForBounds()) {
         IndexScanParams ixparams;
@@ -110,14 +112,39 @@ unique_ptr<PlanStage> TextStage::buildTextTree(OperationContext* txn,
         ixparams.descriptor = _params.index;
         ixparams.direction = -1;
 
-        textScorer->addChild(make_unique<IndexScan>(txn, ixparams, ws, nullptr));
+        indexScanList.push_back(stdx::make_unique<IndexScan>(txn, ixparams, ws, nullptr));
+    }
+    // Build the union of the index scans as a TEXT_OR or an OR stage, depending on whether the
+    // projection requires the "textScore" $meta field.
+    std::unique_ptr<PlanStage> textMatchStage;
+    if (wantTextScore) {
+        // We use a TEXT_OR stage to get the union of the results from the index scans and then
+        // compute their text scores. This is a blocking operation.
+        auto textScorer = make_unique<TextOrStage>(txn, _params.spec, ws, filter, _params.index);
+
+        textScorer->addChildren(std::move(indexScanList));
+
+        textMatchStage = make_unique<TextMatchStage>(
+            txn, std::move(textScorer), _params.query, _params.spec, ws);
+    } else {
+        // Because we don't need the text score, we can use a non-blocking OR stage to get the union
+        // of the index scans.
+        auto textSearcher = make_unique<OrStage>(txn, ws, true, filter);
+
+        textSearcher->addChildren(std::move(indexScanList));
+
+        // Unlike the TEXT_OR stage, the OR stage does not fetch the documents that it outputs. We
+        // add our own FETCH stage to satisfy the requirement of the TEXT_MATCH stage that its
+        // WorkingSetMember inputs have fetched data.
+        const MatchExpression* emptyFilter = nullptr;
+        auto fetchStage = make_unique<FetchStage>(
+            txn, ws, textSearcher.release(), emptyFilter, _params.index->getCollection());
+
+         textMatchStage = make_unique<TextMatchStage>(
+            txn, std::move(fetchStage), _params.query, _params.spec, ws);
     }
 
-    auto matcher =
-        make_unique<TextMatchStage>(txn, std::move(textScorer), _params.query, _params.spec, ws);
-
-    unique_ptr<PlanStage> treeRoot = std::move(matcher);
-    return treeRoot;
+    return textMatchStage;
 }
 
 }  // namespace mongo

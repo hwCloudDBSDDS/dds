@@ -983,6 +983,21 @@ class DB {
   // Needed for StackableDB
   virtual DB* GetRootDB() { return this; }
 
+  // feature: support backup for mongodb
+  virtual Status RecoverSyncOldWal(){
+      return Status::NotSupported("Not supported.");
+  }
+  virtual Status SwitchAndSyncWal(uint64_t& backup_log_number){
+    return Status::NotSupported("Not supported.");
+  }
+  
+  virtual Status ContinueBackgroundCompation(){
+    return Status::NotSupported("Not supported.");
+  }
+  virtual Status PauseBackgroundCompation(){
+    return Status::NotSupported("Not supported.");
+  }
+  
   // split-feature: support split DB
   // complete the preparations for split DB
   virtual Status PrepareSplitDb(Env* right_env, const std::vector<const IKeyRangeChecker*>& right_db_range_checker, const DbInstanceOption& option){

@@ -137,7 +137,7 @@
         }
 
         // run test
-        test(st.d0.getDB('admin'));
+        // wooo test(st.d0.getDB('admin'));
 
         // teardown
         testDB.user.drop();

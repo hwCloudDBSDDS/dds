@@ -36,7 +36,8 @@
 
 #include "mongo/util/mongoutils/str.h"
 
-#include "mongo/db/modules/rocks/src/GlobalConfig.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/db/server_options.h"
 
 namespace mongo {
 
@@ -155,16 +156,17 @@ std::ostream& operator<<(std::ostream& stream, const NamespaceString& nss) {
     return stream << nss.toString();
 }
 
-bool NamespaceString::isSystemCollection() const
-{
+bool NamespaceString::isSystemCollection() const {
     if (isSystem()) {
-        if (GLOBAL_CONFIG_GET(IsCoreTest)) {
+        if (ClusterRole::None == serverGlobalParams.clusterRole) {
             return true;
         }
 
-        if( coll().startsWith("system.views") || coll().startsWith("system.js") || coll().startsWith("system.users")){
+        if (coll().startsWith("system.views") || coll().startsWith("system.js")) {
             return false;
         }
+        return true;
+    } else if (isOnInternalDb()) {
         return true;
     } else if (isLocal()) {
         return true;
@@ -178,11 +180,13 @@ bool NamespaceString::isSystemCollection() const
         return true;
     } else if (isSystemDotViews()) {
         return false;
-    } else if(coll().startsWith("tmp.agg_out")) {
+    } else if (coll().startsWith("tmp.agg_out")) {
         return true;
-    }/*else if (isCommand()) {
+    } else if (coll().startsWith("tmp.convertToCapped.system.profile")) {
         return true;
-    }*/
+    } /*else if (isCommand()) {
+         return true;
+     }*/
 
     // add more system db or temp db
     return false;

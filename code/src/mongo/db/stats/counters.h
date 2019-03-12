@@ -52,7 +52,8 @@ public:
     void gotDelete();
     void gotGetMore();
     void gotCommand();
-
+    static void setTps(std::map<std::string, long long>& chunkTpsCount, int roundIntervalSeconds);
+    static long long getTpsForCollecion(const std::string & col);
     void gotOp(int op, bool isCommand);
 
     BSONObj getObj() const;
@@ -88,6 +89,9 @@ private:
     AtomicUInt32 _delete;
     AtomicUInt32 _getmore;
     AtomicUInt32 _command;
+
+    static stdx::mutex _tpsMutex;
+    static std::map<std::string, long long> tpsInterval;
 };
 
 extern OpCounters globalOpCounters;
@@ -103,6 +107,8 @@ public:
     void append(BSONObjBuilder& b);
 
     BSONObj getObj() const;
+
+
 private:
     AtomicInt64 _physicalBytesIn{0};
     AtomicInt64 _physicalBytesOut{0};
@@ -113,4 +119,10 @@ private:
 };
 
 extern NetworkCounter networkCounter;
+//TOD: need to packaging this
+
+
+extern int cpuUsage;
+extern int oldCpuUsage;
+
 }

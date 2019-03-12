@@ -56,6 +56,7 @@
 #include "mongo/platform/compiler.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/net/sockaddr.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -112,7 +113,7 @@ class Socket {
     MONGO_DISALLOW_COPYING(Socket);
 
 public:
-    static const int errorPollIntervalSecs;
+    static const Seconds errorPollIntervalSecs;
 
     Socket(int sock, const SockAddr& farEnd);
 
@@ -256,7 +257,7 @@ private:
 
     long long _bytesIn;
     long long _bytesOut;
-    time_t _lastValidityCheckAtSecs;
+    Date_t _lastValidityCheckAtSecs;
 
 #ifdef MONGO_CONFIG_SSL
     std::unique_ptr<SSLConnection> _sslConnection;

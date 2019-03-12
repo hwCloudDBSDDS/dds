@@ -95,7 +95,8 @@ std::string GetMoreRequest::parseNs(const std::string& dbname, const BSONObj& cm
     const std::string coll = (collElt.type() == BSONType::String) ? collElt.String() : "";
 
     BSONElement chunkIdElement = cmdObj["chunkId"];
-    const std::string chunkId = (chunkIdElement.type() == BSONType::String) ? chunkIdElement.String() : "";
+    const std::string chunkId =
+        (chunkIdElement.type() == BSONType::String) ? chunkIdElement.String() : "";
 
     if (0 == chunkId.size()) {
         return str::stream() << dbname << "." << coll;

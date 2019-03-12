@@ -157,9 +157,7 @@ StatusWith<Shard::QueryResponse> ShardLocal::_exhaustiveFindOnConfig(
     boost::optional<long long> limit) {
     auto replCoord = repl::ReplicationCoordinator::get(txn);
 
-    auto guard = MakeGuard([&] {
-        txn->recoveryUnit()->clearReadFromMajorityCommittedSnapshot();
-    });
+    auto guard = MakeGuard([&] { txn->recoveryUnit()->clearSnapshotInfo(); });
 
     if (readConcernLevel == repl::ReadConcernLevel::kMajorityReadConcern) {
         // Set up operation context with majority read snapshot so correct optime can be retrieved.

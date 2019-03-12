@@ -47,7 +47,7 @@ class TaskExecutor;
 /**
  * Implements the catalog client for reading from replica set config servers.
  */
-class ShardingCatalogClientImpl final : public ShardingCatalogClient {
+class ShardingCatalogClientImpl : public ShardingCatalogClient {
 public:
     explicit ShardingCatalogClientImpl(std::unique_ptr<DistLockManager> distLockManager);
     virtual ~ShardingCatalogClientImpl();
@@ -101,6 +101,8 @@ public:
     StatusWith<repl::OpTimeWith<CollectionType>> getCollection(OperationContext* txn,
                                                                const std::string& collNs) override;
 
+    StatusWith<bool> isCollectionExist(OperationContext* txn, const std::string& collNs) override;
+
     Status getCollections(OperationContext* txn,
                           const std::string* dbName,
                           std::vector<CollectionType>* collections,
@@ -112,8 +114,7 @@ public:
                                 const ShardId& shardName,
                                 std::vector<std::string>* dbs) override;
 
-    Status generateNewChunkID(OperationContext* txn, 
-                              std::string &chunkID) override;
+    Status generateNewChunkID(OperationContext* txn, std::string& chunkID) override;
 
     Status getChunks(OperationContext* txn,
                      const BSONObj& query,
@@ -141,6 +142,11 @@ public:
                                       const BSONObj& cmdObj,
                                       BSONObjBuilder* result) override;
 
+    bool runUserManagementReadCommandWithCheckTxn(OperationContext* txn,
+                                                  const std::string& dbname,
+                                                  const BSONObj& cmdObj,
+                                                  BSONObjBuilder* result) override;
+
     Status applyChunkOpsDeprecated(OperationContext* txn,
                                    const BSONArray& updateOps,
                                    const BSONArray& preCondition,
@@ -158,29 +164,31 @@ public:
                                  const BatchedCommandRequest& request,
                                  BatchedCommandResponse* response) override;
 
-    Status insertConfigDocument(OperationContext* txn,
-                                const std::string& ns,
-                                const BSONObj& doc,
-                                const WriteConcernOptions& writeConcern) override;
+    virtual Status insertConfigDocument(OperationContext* txn,
+                                        const std::string& ns,
+                                        const BSONObj& doc,
+                                        const WriteConcernOptions& writeConcern);
 
-    StatusWith<bool> updateConfigDocument(OperationContext* txn,
-                                          const std::string& ns,
-                                          const BSONObj& query,
-                                          const BSONObj& update,
-                                          bool upsert,
-                                          const WriteConcernOptions& writeConcern) override;
+    virtual StatusWith<bool> updateConfigDocument(OperationContext* txn,
+                                                  const std::string& ns,
+                                                  const BSONObj& query,
+                                                  const BSONObj& update,
+                                                  bool upsert,
+                                                  const WriteConcernOptions& writeConcern);
 
-    Status updateConfigDocuments(OperationContext* txn,
-                                          const std::string& ns,
-                                          const BSONObj& query,
-                                          const BSONObj& update,
-                                          bool upsert,
-                                          const WriteConcernOptions& writeConcern) override;
+    virtual Status updateConfigDocuments(OperationContext* txn,
+                                         const std::string& ns,
+                                         const BSONObj& query,
+                                         const BSONObj& update,
+                                         bool upsert,
+                                         const WriteConcernOptions& writeConcern);
 
-    Status removeConfigDocuments(OperationContext* txn,
-                                 const std::string& ns,
-                                 const BSONObj& query,
-                                 const WriteConcernOptions& writeConcern) override;
+    virtual Status removeConfigDocuments(OperationContext* txn,
+                                         const std::string& ns,
+                                         const BSONObj& query,
+                                         const WriteConcernOptions& writeConcern);
+
+    Status removeShardFromMap(OperationContext* txn,std::string& shardName);
 
     DistLockManager* getDistLockManager() override;
 
@@ -197,6 +205,7 @@ public:
 
     Status createIndexOnShards(OperationContext* txn, NamespaceString ns, BSONObj& cmdObj);
 
+    std::string createNewIdent(void) override;
 
 private:
     /**
@@ -274,6 +283,8 @@ private:
                 const BSONObj& detail,
                 const WriteConcernOptions& writeConcern);
 
+    std::string _newRand();
+
     //
     // All member variables are labeled with one of the following codes indicating the
     // synchronization rules for accessing them.
@@ -299,6 +310,9 @@ private:
 
     // Whether the logChange call should attempt to create the changelog collection
     AtomicInt32 _changeLogCollectionCreated{0};  // (S)
+
+    std::string _rand;
+    AtomicUInt64 _next{1};
 };
 
 }  // namespace mongo

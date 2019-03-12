@@ -739,5 +739,4 @@ void AuthorizationManager::logOp(
         _invalidateRelevantCacheData(op, ns, o, o2);
     }
 }
-
 }  // namespace mongo

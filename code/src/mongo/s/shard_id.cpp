@@ -34,11 +34,11 @@
 #include <string.h>
 
 #include "mongo/base/status_with.h"
-#include "mongo/s/shard_id.h"
-#include "mongo/util/log.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/s/shard_id.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -84,13 +84,11 @@ BSONObj ShardIdent::toBSON() const {
 }
 
 bool ShardIdent::operator==(const ShardIdent& other) const {
-    return (this->_shardId == other._shardId &&
-            this->_processIdentity == other._processIdentity);
+    return (this->_shardId == other._shardId && this->_processIdentity == other._processIdentity);
 }
 
 bool ShardIdent::operator!=(const ShardIdent& other) const {
-    return (this->_shardId != other._shardId ||
-            this->_processIdentity != other._processIdentity);
+    return (this->_shardId != other._shardId || this->_processIdentity != other._processIdentity);
 }
 
 void ShardIdent::setShardId(ShardId& shardId) {

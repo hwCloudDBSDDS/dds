@@ -153,6 +153,10 @@ public:
                                const NamespaceString& nss,
                                const ChunkVersion& expectedVersion);
 
+    void doRefreshMetadata(OperationContext* txn,
+                           const NamespaceString& nss,
+                           ScopedCollectionMetadata& currentMetadata);
+
     /**
      * Refreshes collection metadata by asking the config server for the latest information.
      * Starts a new config server request.
@@ -179,7 +183,9 @@ public:
                               const NamespaceString& nss,
                               ChunkVersion* latestShardVersion);
 
-    void updateMetadata(OperationContext* txn, const NamespaceString& nss, const ChunkType& chunkType);
+    void updateMetadata(OperationContext* txn,
+                        const NamespaceString& nss,
+                        const ChunkType& chunkType);
 
     void appendInfo(OperationContext* txn, BSONObjBuilder& b);
 
@@ -279,11 +285,6 @@ public:
     static bool commandInitializesShardingAwareness(const std::string& commandName) {
         return _commandsThatInitializeShardingAwareness.find(commandName) !=
             _commandsThatInitializeShardingAwareness.end();
-    }
-
-    // resize the tickets holder
-    Status resizeConfigServerTickets(int newSize) {
-        return _configServerTickets.resize(newSize);
     }
 
 private:
@@ -386,9 +387,6 @@ private:
 
     // Sets the shard name for this host (comes through setShardVersion)
     std::string _shardName;
-
-    // Protects from hitting the config server from too many threads at once
-    TicketHolder _configServerTickets;
 
     // Cache of collection metadata on this shard. It is not safe to look-up values from this map
     // without holding some form of collection lock. It is only safe to add/remove values when

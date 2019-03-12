@@ -34,8 +34,8 @@
 #include <vector>
 
 #include "mongo/base/disallow_copying.h"
-#include "mongo/s/client/shard.h"
 #include "mongo/s/chunk_id.h"
+#include "mongo/s/client/shard.h"
 
 namespace mongo {
 
@@ -116,9 +116,19 @@ public:
      */
     struct ShardStatistics {
     public:
-
         // TODO: whether this shard has some chunks to move away
         bool isAboveThreshold() const;
+
+        /**
+         * Returns true if a shard is not allowed to receive any new chunks because it has reached
+         * the per-shard data size limit.
+         */
+        bool isSizeMaxed() const;
+        /**
+         * Returns true if a shard must be relieved (if possible) of some of the chunks it hosts
+         * because it has exceeded its per-shard data size limit.
+         */
+        bool isSizeExceeded() const;
 
         /**
          * Returns BSON representation of this shard's statistics, for reporting purposes.
@@ -130,15 +140,21 @@ public:
         // The id of the shard for which this statistic applies
         ShardId shardId;
 
+        // The maximum size allowed for the shard
+        uint64_t maxSizeMB{0};
+
+        // The current size of the shard
+        uint64_t currSizeMB{0};
+
         // TODO: maybe we donnt need tag and version
         // Set of tags for the shard
         std::set<std::string> shardTags;
-       
+
         bool isDraining{false};
 
         // Version of mongod, which runs on this shard's primary
         std::string mongoVersion;
-        
+
         CpuStatistics cpuInfo;
 
         MemStatistics memInfo;
@@ -157,7 +173,9 @@ public:
      * Retrieves a snapshot of the current shard utilization state. The implementation of this
      * method may block if necessary in order to refresh its state or may return a cached value.
      */
-    virtual StatusWith<std::vector<ShardStatistics>> getStats(OperationContext* txn,bool isMoveCommand = false) = 0;
+    virtual StatusWith<std::vector<ShardStatistics>> getStats(OperationContext* txn,
+                                                              bool isMoveCommand = false) = 0;
+    virtual void setBalanceThread(std::string& threadId) = 0;
 
 protected:
     ClusterStatistics();

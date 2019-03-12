@@ -2,7 +2,14 @@ selector:
   js_test:
     roots:
     - jstests/views/*.js
-
+    exclude_files:
+    - jstests/views/initial_sync_views.js
+    - jstests/views/views_stats.js
+    - jstests/views/views_all_commands_cluster.js
+    - jstests/views/views_collation_cluster.js
+    - jstests/views/views_creation_cluster.js
+    - jstests/views/views_find_cluster.js
+    - jstests/views/views_sharded.js
 executor:
   js_test:
     config:

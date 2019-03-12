@@ -14,6 +14,7 @@
 #include "port/likely.h"
 #include <algorithm>
 #include <cstdio>
+#include "common/common.h"
 
 namespace rocksdb {
 
@@ -220,7 +221,7 @@ std::string StatisticsImpl::ToString() const {
   for (const auto& t : TickersNameMap) {
     if (t.first < TICKER_ENUM_MAX || enable_internal_stats_) {
       char buffer[kTmpStrBufferSize];
-      snprintf(buffer, kTmpStrBufferSize, "%s COUNT : %" PRIu64 "\n",
+      CommonSnprintf(buffer, kTmpStrBufferSize, kTmpStrBufferSize-1, "%s COUNT : %" PRIu64 "\n",
                t.second.c_str(), getTickerCountLocked(t.first));
       res.append(buffer);
     }
@@ -230,8 +231,8 @@ std::string StatisticsImpl::ToString() const {
       char buffer[kTmpStrBufferSize];
       HistogramData hData;
       histogramDataLocked(h.first, &hData);
-      snprintf(
-          buffer, kTmpStrBufferSize,
+      CommonSnprintf(
+          buffer, kTmpStrBufferSize, kTmpStrBufferSize-1,
           "%s statistics Percentiles :=> 50 : %f 95 : %f 99 : %f 100 : %f\n",
           h.second.c_str(), hData.median, hData.percentile95,
           hData.percentile99, hData.max);
@@ -250,7 +251,7 @@ std::vector<std::string> StatisticsImpl::ToFormatString() const
     for (const auto& t : TickersNameMap) {
         if (t.first < TICKER_ENUM_MAX || enable_internal_stats_) {
             char buffer[kTmpStrBufferSize];
-            snprintf(buffer, kTmpStrBufferSize, "%s COUNT : %" PRIu64,
+            CommonSnprintf(buffer, kTmpStrBufferSize, kTmpStrBufferSize-1, "%s COUNT : %" PRIu64,
                 t.second.c_str(), getTickerCountLocked(t.first));
             vs.push_back((std::string)buffer);
         }
@@ -260,8 +261,8 @@ std::vector<std::string> StatisticsImpl::ToFormatString() const
             char buffer[kTmpStrBufferSize];
             HistogramData hData;
             histogramDataLocked(h.first, &hData);
-            snprintf(
-                buffer, kTmpStrBufferSize,
+            CommonSnprintf(
+                buffer, kTmpStrBufferSize, kTmpStrBufferSize-1,
                 "%s statistics Percentiles :=> 50 : %f 95 : %f 99 : %f 100 : %f",
                 h.second.c_str(), hData.median, hData.percentile95,
                 hData.percentile99, hData.max);

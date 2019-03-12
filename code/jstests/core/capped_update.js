@@ -8,8 +8,8 @@
     var t = db.cannot_change_capped_size;
     t.drop();
     assert.commandWorked(
-        db.createCollection(t.getName(), {capped: true, size: 1024, autoIndexId: false}));
-    assert.eq(0, t.getIndexes().length, "the capped collection has indexes");
+        db.createCollection(t.getName(), {capped: true, size: 1024, autoIndexId: true}));
+    assert.eq(1, t.getIndexes().length, "the capped collection has indexes");
 
     for (var j = 1; j <= 10; j++) {
         assert.writeOK(t.insert({_id: j, s: "Hello, World!"}));

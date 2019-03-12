@@ -50,11 +50,11 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
+#include "Chunk/ChunkRocksDBInstance.h"
 #include "rocks_engine.h"
 #include "rocks_record_store.h"
 #include "rocks_recovery_unit.h"
 #include "rocks_util.h"
-#include "Chunk/ChunkRocksDBInstance.h"
 
 namespace mongo {
 
@@ -65,12 +65,12 @@ namespace mongo {
     /**
     * Strips the field names from a BSON object
     */
-    BSONObj stripFieldNames( const BSONObj& obj ) {
+    BSONObj stripFieldNames(const BSONObj& obj) {
         BSONObjBuilder b;
-        BSONObjIterator i( obj );
-        while ( i.more() ) {
+        BSONObjIterator i(obj);
+        while (i.more()) {
             BSONElement e = i.next();
-            b.appendAs( e, "" );
+            b.appendAs(e, "");
         }
         return b.obj();
     }
@@ -85,8 +85,8 @@ namespace mongo {
     Status checkKeySize(const BSONObj& key) {
         if (key.objsize() >= kTempKeyMaxSize) {
             string msg = mongoutils::str::stream()
-                            << "RocksIndex::insert: key too large to index, failing " << ' '
-                            << key.objsize() << ' ' << key;
+                         << "RocksIndex::insert: key too large to index, failing " << ' '
+                         << key.objsize() << ' ' << key;
             return Status(ErrorCodes::KeyTooLong, msg);
         }
         return Status::OK();
@@ -103,8 +103,9 @@ namespace mongo {
          */
         class RocksCursorBase : public SortedDataInterface::Cursor {
         public:
-            RocksCursorBase(OperationContext* txn, mongo::ChunkRocksDBInstance* db, std::string prefix,
-                            bool forward, Ordering order, KeyString::Version keyStringVersion)
+            RocksCursorBase(OperationContext* txn, mongo::ChunkRocksDBInstance* db,
+                            std::string prefix, bool forward, Ordering order,
+                            KeyString::Version keyStringVersion)
                 : _db(db),
                   _prefix(prefix),
                   _forward(forward),
@@ -114,7 +115,8 @@ namespace mongo {
                   _typeBits(keyStringVersion),
                   _query(keyStringVersion),
                   _txn(txn) {
-                _currentSequenceNumber = RocksRecoveryUnit::getRocksRecoveryUnit(txn)->snapshot()->GetSequenceNumber();
+                _currentSequenceNumber =
+                    RocksRecoveryUnit::getRocksRecoveryUnit(txn)->snapshot()->GetSequenceNumber();
             }
 
             boost::optional<IndexKeyEntry> next(RequestedInfo parts) override {
@@ -166,8 +168,8 @@ namespace mongo {
                 BSONObj key = IndexEntryComparison::makeQueryObject(seekPoint, _forward);
 
                 // makeQueryObject handles the discriminator in the real exclusive cases.
-                const auto discriminator = _forward ? KeyString::kExclusiveBefore
-                                                    : KeyString::kExclusiveAfter;
+                const auto discriminator =
+                    _forward ? KeyString::kExclusiveBefore : KeyString::kExclusiveAfter;
                 _query.resetToKey(key, _order, discriminator);
                 seekCursor(_query);
                 updatePosition();
@@ -180,9 +182,7 @@ namespace mongo {
                 }
             }
 
-            void saveUnpositioned() override {
-                _savedEOF = true;
-            }
+            void saveUnpositioned() override { _savedEOF = true; }
 
             void restore() override {
                 _db->GetRocksRecoveryUnit(_txn);
@@ -220,7 +220,7 @@ namespace mongo {
 
                 BSONObj bson;
                 if (parts & kWantKey) {
-                    bson =  KeyString::toBson(_key.getBuffer(), _key.getSize(), _order, _typeBits);
+                    bson = KeyString::toBson(_key.getBuffer(), _key.getSize(), _order, _typeBits);
                 }
 
                 return {{std::move(bson), _loc}};
@@ -231,8 +231,8 @@ namespace mongo {
                     return;
                 }
                 if (_iterator.get() == nullptr) {
-                    _iterator.reset(RocksRecoveryUnit::getRocksRecoveryUnit(_txn)
-                            ->NewIterator(_prefix));
+                    _iterator.reset(
+                        RocksRecoveryUnit::getRocksRecoveryUnit(_txn)->NewIterator(_prefix));
                     _iterator->SeekPrefix(rocksdb::Slice(_key.getBuffer(), _key.getSize()));
                     // advanceCursor() should only ever be called in states where the above seek
                     // will succeed in finding the exact key
@@ -248,7 +248,7 @@ namespace mongo {
 
             // Seeks to query. Returns true on exact match.
             bool seekCursor(const KeyString& query) {
-                auto * iter = iterator();
+                auto* iter = iterator();
                 const rocksdb::Slice keySlice(query.getBuffer(), query.getSize());
                 iter->Seek(keySlice);
                 if (!_updateOnIteratorValidity()) {
@@ -304,10 +304,10 @@ namespace mongo {
             }
 
             // ensure that _iterator is initialized and return a pointer to it
-            RocksIterator * iterator() {
+            RocksIterator* iterator() {
                 if (_iterator.get() == nullptr) {
-                    _iterator.reset(RocksRecoveryUnit::getRocksRecoveryUnit(_txn)
-                            ->NewIterator(_prefix));
+                    _iterator.reset(
+                        RocksRecoveryUnit::getRocksRecoveryUnit(_txn)->NewIterator(_prefix));
                 }
                 return _iterator.get();
             }
@@ -331,7 +331,7 @@ namespace mongo {
                 return rocksdb::Slice(_iterator->value());
             }
 
-            mongo::ChunkRocksDBInstance* _db;                                       // not owned
+            mongo::ChunkRocksDBInstance* _db;  // not owned
             std::string _prefix;
             std::unique_ptr<RocksIterator> _iterator;
             const bool _forward;
@@ -361,8 +361,9 @@ namespace mongo {
 
         class RocksStandardCursor final : public RocksCursorBase {
         public:
-            RocksStandardCursor(OperationContext* txn, mongo::ChunkRocksDBInstance* db, std::string prefix,
-                                bool forward, Ordering order, KeyString::Version keyStringVersion)
+            RocksStandardCursor(OperationContext* txn, mongo::ChunkRocksDBInstance* db,
+                                std::string prefix, bool forward, Ordering order,
+                                KeyString::Version keyStringVersion)
                 : RocksCursorBase(txn, db, prefix, forward, order, keyStringVersion) {
                 iterator();
             }
@@ -376,8 +377,9 @@ namespace mongo {
 
         class RocksUniqueCursor final : public RocksCursorBase {
         public:
-            RocksUniqueCursor(OperationContext* txn, mongo::ChunkRocksDBInstance* db, std::string prefix,
-                              bool forward, Ordering order, KeyString::Version keyStringVersion)
+            RocksUniqueCursor(OperationContext* txn, mongo::ChunkRocksDBInstance* db,
+                              std::string prefix, bool forward, Ordering order,
+                              KeyString::Version keyStringVersion)
                 : RocksCursorBase(txn, db, prefix, forward, order, keyStringVersion) {}
 
             boost::optional<IndexKeyEntry> seekExact(const BSONObj& key,
@@ -388,8 +390,8 @@ namespace mongo {
                 std::string prefixedKey(_prefix);
                 _query.resetToKey(stripFieldNames(key), _order);
                 prefixedKey.append(_query.getBuffer(), _query.getSize());
-                rocksdb::Status status = RocksRecoveryUnit::getRocksRecoveryUnit(_txn)
-                    ->Get(prefixedKey, &_value);
+                rocksdb::Status status =
+                    RocksRecoveryUnit::getRocksRecoveryUnit(_txn)->Get(prefixedKey, &_value);
 
                 if (status.IsNotFound()) {
                     _eof = true;
@@ -417,15 +419,15 @@ namespace mongo {
             }
         };
 
-    } // namespace
+    }  // namespace
 
     /**
      * Bulk builds a non-unique index.
      */
     class MongoRocksIndexBase::StandardBulkBuilder : public SortedDataBuilderInterface {
     public:
-        StandardBulkBuilder(RocksStandardIndex* index, OperationContext* txn) : _index(index),
-                                                                                _txn(txn) {}
+        StandardBulkBuilder(RocksStandardIndex* index, OperationContext* txn)
+            : _index(index), _txn(txn) {}
 
         Status addKey(const BSONObj& key, const RecordId& loc) {
             return _index->insert(_txn, key, loc, true);
@@ -469,14 +471,14 @@ namespace mongo {
 
             const int cmp = newKey.woCompare(_key, _ordering);
             if (cmp != 0) {
-                if (!_key.isEmpty()) { // _key.isEmpty() is only true on the first call to addKey().
-                    invariant(cmp > 0); // newKey must be > the last key
+                if (!_key.isEmpty()) {   // _key.isEmpty() is only true on the first call to
+                                         // addKey().
+                    invariant(cmp > 0);  // newKey must be > the last key
                     // We are done with dups of the last key so we can insert it now.
                     doInsert();
                 }
                 invariant(_records.empty());
-            }
-            else {
+            } else {
                 // Dup found!
                 if (!_dupsAllowed) {
                     return Status(ErrorCodes::DuplicateKey, dupKeyError(newKey));
@@ -536,17 +538,17 @@ namespace mongo {
     };
 
     /// RocksIndexBase
-    RocksIndexBase::RocksIndexBase(mongo::ChunkRocksDBInstance* db) : _db(db) { }
+    RocksIndexBase::RocksIndexBase(mongo::ChunkRocksDBInstance* db) : _db(db) {}
 
     void RocksIndexBase::fullValidate(OperationContext* txn, long long* numKeysOut,
                                       ValidateResults* fullResults) const {
-        if (!numKeysOut)
-            return;
+        if (!numKeysOut) return;
 
         std::unique_ptr<SortedDataInterface::Cursor> cursor(newCursor(txn, 1));
         *numKeysOut = 0;
         const auto requestedInfo = Cursor::kJustExistance;
-        for (auto entry = cursor->seek(BSONObj(), true, requestedInfo); entry; entry = cursor->next(requestedInfo))
+        for (auto entry = cursor->seek(BSONObj(), true, requestedInfo); entry;
+             entry = cursor->next(requestedInfo))
             (*numKeysOut)++;
     }
 
@@ -557,37 +559,27 @@ namespace mongo {
             std::max(_indexStorageSize.load(std::memory_order_relaxed), static_cast<long long>(1)));
     }
 
-    void RocksIndexBase::SetCorrectDBForRecoveryUnit(OperationContext* txn) const
-    {
+    void RocksIndexBase::SetCorrectDBForRecoveryUnit(OperationContext* txn) const {
         _db->GetRocksRecoveryUnit(txn);
     }
 
-    rocksdb::DB* RocksIndexBase::getDB()
-    {
-        return _db->GetDB();
-    }
+    rocksdb::DB* RocksIndexBase::getDB() { return _db->GetDB(); }
 
-    const rocksdb::DB* RocksIndexBase::getDB() const
-    {
-        return _db->GetDB();
-    }
-    
-    MongoRocksIndexBase::MongoRocksIndexBase(mongo::ChunkRocksDBInstance* db, std::string prefix, std::string ident,
-                                   Ordering order, const BSONObj& config)
-        : RocksIndexBase(db),
-          _prefix(prefix),
-          _ident(std::move(ident)),
-          _order(order)
-    {
+    const rocksdb::DB* RocksIndexBase::getDB() const { return _db->GetDB(); }
+
+    MongoRocksIndexBase::MongoRocksIndexBase(mongo::ChunkRocksDBInstance* db, std::string prefix,
+                                             std::string ident, Ordering order,
+                                             const BSONObj& config)
+        : RocksIndexBase(db), _prefix(prefix), _ident(std::move(ident)), _order(order) {
         uint64_t storageSize;
         std::string nextPrefix = rocksGetNextPrefix(_prefix);
         rocksdb::Range wholeRange(_prefix, nextPrefix);
         getDB()->GetApproximateSizes(&wholeRange, 1, &storageSize);
         _indexStorageSize.store(static_cast<long long>(storageSize), std::memory_order_relaxed);
 
-        int indexFormatVersion = 0; // default
+        int indexFormatVersion = 0;  // default
         if (config.hasField("index_format_version")) {
-          indexFormatVersion = config.getField("index_format_version").numberInt();
+            indexFormatVersion = config.getField("index_format_version").numberInt();
         }
 
         if (indexFormatVersion < kMinimumIndexVersion ||
@@ -604,23 +596,23 @@ namespace mongo {
 
     void MongoRocksIndexBase::generateConfig(BSONObjBuilder* configBuilder, int formatVersion) {
         if (formatVersion >= 3) {
-          configBuilder->append("index_format_version", static_cast<int32_t>(kMaximumIndexVersion));
+            configBuilder->append("index_format_version",
+                                  static_cast<int32_t>(kMaximumIndexVersion));
         } else {
-          // keep it backwards compatible
-          configBuilder->append("index_format_version", static_cast<int32_t>(kMinimumIndexVersion));
+            // keep it backwards compatible
+            configBuilder->append("index_format_version",
+                                  static_cast<int32_t>(kMinimumIndexVersion));
         }
     }
 
-
     std::string MongoRocksIndexBase::_makePrefixedKey(const std::string& prefix,
-                                                 const KeyString& encodedKey) {
+                                                      const KeyString& encodedKey) {
         std::string key(prefix);
         key.append(encodedKey.getBuffer(), encodedKey.getSize());
         return key;
     }
 
-    bool MongoRocksIndexBase::isEmpty(OperationContext* txn)
-    {
+    bool MongoRocksIndexBase::isEmpty(OperationContext* txn) {
         auto ru = _db->GetRocksRecoveryUnit(txn);
         std::unique_ptr<rocksdb::Iterator> it(ru->NewIterator(_prefix));
 
@@ -630,10 +622,11 @@ namespace mongo {
 
     // RocksUniqueIndex
     // { prefix + key } -> { (RecordId + typeBits)* }
-    // Note: the situation with serveral pair of (RecordId + typeBits) is possible only during update
+    // Note: the situation with serveral pair of (RecordId + typeBits) is possible only during
+    // update
     // It should be fixed before user start reading the data through the cursor
-    RocksUniqueIndex::RocksUniqueIndex(mongo::ChunkRocksDBInstance* db, std::string prefix, std::string ident,
-                                       Ordering order, const BSONObj& config)
+    RocksUniqueIndex::RocksUniqueIndex(mongo::ChunkRocksDBInstance* db, std::string prefix,
+                                       std::string ident, Ordering order, const BSONObj& config)
         : MongoRocksIndexBase(db, prefix, ident, order, config) {}
 
     Status RocksUniqueIndex::insert(OperationContext* txn, const BSONObj& key, const RecordId& loc,
@@ -654,7 +647,6 @@ namespace mongo {
         _indexStorageSize.fetch_add(static_cast<long long>(prefixedKey.size()),
                                     std::memory_order_relaxed);
 
-
         // For prewarm is true, instert the documents as the k-v is not found.
         bool prewarm = txn->getPrewarm();
         if (prewarm == true) {
@@ -665,11 +657,6 @@ namespace mongo {
             }
             rocksdb::Slice valueSlice(value.getBuffer(), value.getSize());
             ru->writeBatch()->Put(prefixedKey, valueSlice);
-            //// Get Put() status for PN:DTS2017071004653
-            //auto put_status = ru->writeBatch()->GetStatus();
-            ///* BEGIN: Added for PN:UpdateTpoint by Xiexiaoqin, 2017/5/31 */
-            //FTDS_IndexEndAutoTs(E_TPOINT_SHARD_ROCKSIDX_UNI_INSERT, IO_STATUS_OK);
-            ///* END:   Added for PN:UpdateTpoint by Xiexiaoqin, 2017/5/31 */
             return Status::OK();
         }
 
@@ -854,14 +841,13 @@ namespace mongo {
                                                                  bool dupsAllowed) {
         SetCorrectDBForRecoveryUnit(txn);
         return new MongoRocksIndexBase::UniqueBulkBuilder(_prefix, _order, _keyStringVersion, txn,
-                                                     dupsAllowed);
+                                                          dupsAllowed);
     }
 
     /// RocksStandardIndex
-    RocksStandardIndex::RocksStandardIndex(mongo::ChunkRocksDBInstance* db, std::string prefix, std::string ident,
-                                           Ordering order, const BSONObj& config)
-        : MongoRocksIndexBase(db, prefix, ident, order, config),
-          useSingleDelete(false) {}
+    RocksStandardIndex::RocksStandardIndex(mongo::ChunkRocksDBInstance* db, std::string prefix,
+                                           std::string ident, Ordering order, const BSONObj& config)
+        : MongoRocksIndexBase(db, prefix, ident, order, config), useSingleDelete(false) {}
 
     Status RocksStandardIndex::insert(OperationContext* txn, const BSONObj& key,
                                       const RecordId& loc, bool dupsAllowed) {
@@ -873,7 +859,6 @@ namespace mongo {
 
         KeyString encodedKey(_keyStringVersion, key, _order, loc);
         std::string prefixedKey(_makePrefixedKey(_prefix, encodedKey));
-        std::string shardKey;
         auto ru = _db->GetRocksRecoveryUnit(txn);
         if (!ru->transaction()->registerWrite(prefixedKey)) {
             throw WriteConflictException();
@@ -928,8 +913,7 @@ namespace mongo {
     }
 
     std::unique_ptr<SortedDataInterface::Cursor> RocksStandardIndex::newCursor(
-            OperationContext* txn,
-            bool forward) const {
+        OperationContext* txn, bool forward) const {
         SetCorrectDBForRecoveryUnit(txn);
         return stdx::make_unique<RocksStandardCursor>(txn, _db, _prefix, forward, _order,
                                                       _keyStringVersion);

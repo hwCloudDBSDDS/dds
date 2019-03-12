@@ -46,6 +46,8 @@ const BSONField<BSONObj> BatchedUpdateRequest::writeConcern("writeConcern");
 const BSONField<bool> BatchedUpdateRequest::ordered("ordered", true);
 const BSONField<bool> BatchedUpdateRequest::atomicity("atomicity", false);
 const BSONField<bool> BatchedUpdateRequest::prewarm("prewarm", false);
+const std::string BatchedUpdateRequest::UPDATE_IS_CMD_FROM_USER_MANAGER_KEY =
+    "updateCmdFromUserManager";
 
 BatchedUpdateRequest::BatchedUpdateRequest() {
     clear();
@@ -100,12 +102,15 @@ BSONObj BatchedUpdateRequest::toBSON() const {
 
     if (_isAtomicitySet)
         builder.append(atomicity(), _atomicity);
-    
+
     if (_isPrewarmSet)
         builder.append(prewarm(), _prewarm);
 
     if (_shouldBypassValidation)
         builder.append(bypassDocumentValidationCommandOption(), true);
+
+    if (_isCmdFromUserManager)
+        builder.append(UPDATE_IS_CMD_FROM_USER_MANAGER_KEY, true);
 
     return builder.obj();
 }
@@ -155,10 +160,12 @@ bool BatchedUpdateRequest::parseBSON(StringData dbName, const BSONObj& source, s
             _isAtomicitySet = fieldState == FieldParser::FIELD_SET;
         } else if (fieldName == prewarm.name()) {
             fieldState = FieldParser::extract(elem, prewarm, &_prewarm, errMsg);
-                if (fieldState == FieldParser::FIELD_INVALID)
-                    return false;
+            if (fieldState == FieldParser::FIELD_INVALID)
+                return false;
             _isPrewarmSet = fieldState == FieldParser::FIELD_SET;
-        }else if (fieldName[0] != '$') {
+        } else if (fieldName == UPDATE_IS_CMD_FROM_USER_MANAGER_KEY) {
+            _isCmdFromUserManager = elem.trueValue();
+        } else if (fieldName[0] != '$') {
             std::initializer_list<StringData> ignoredFields = {"maxTimeMS", "shardVersion"};
             if (std::find(ignoredFields.begin(), ignoredFields.end(), fieldName) ==
                 ignoredFields.end()) {
@@ -189,6 +196,8 @@ void BatchedUpdateRequest::clear() {
     _isPrewarmSet = false;
 
     _shouldBypassValidation = false;
+
+    _isCmdFromUserManager = false;
 }
 
 void BatchedUpdateRequest::cloneTo(BatchedUpdateRequest* other) const {
@@ -216,6 +225,8 @@ void BatchedUpdateRequest::cloneTo(BatchedUpdateRequest* other) const {
     other->_isAtomicitySet = _isAtomicitySet;
 
     other->_shouldBypassValidation = _shouldBypassValidation;
+
+    other->_isCmdFromUserManager = _isCmdFromUserManager;
 }
 
 std::string BatchedUpdateRequest::toString() const {

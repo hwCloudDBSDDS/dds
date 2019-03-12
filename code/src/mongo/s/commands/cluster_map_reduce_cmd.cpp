@@ -256,9 +256,8 @@ public:
                                      << " which lives on config servers"));
         }
 
-        const bool shardedInput =
-            confIn && confIn->isShardingEnabled()
-                    && CollectionType::TableType::kSharded == confIn->getCollTabType(nss.ns());
+        const bool shardedInput = confIn && confIn->isShardingEnabled() &&
+            CollectionType::TableType::kSharded == confIn->getCollTabType(nss.ns());
 
         if (!shardedOutput) {
             uassert(15920,
@@ -589,7 +588,8 @@ public:
             }
 
             // Do the splitting round
-            shared_ptr<ChunkManager> cm = confOut->getChunkManagerIfExists(txn, outputCollNss.ns());
+            shared_ptr<ChunkManager> cm =
+                confOut->getChunkManagerIfExists(txn, outputCollNss.ns(), true);
             uassert(34359,
                     str::stream() << "Failed to write mapreduce output to " << outputCollNss.ns()
                                   << "; expected that collection to be sharded, but it was not",

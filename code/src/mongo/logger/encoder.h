@@ -43,6 +43,7 @@ class Encoder {
 public:
     virtual ~Encoder() {}
     virtual std::ostream& encode(const Event& event, std::ostream& os) = 0;
+    virtual void encode(const Event& event, std::stringstream& s) = 0;
 };
 
 }  // namespace logger

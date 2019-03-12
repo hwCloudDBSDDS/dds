@@ -34,6 +34,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/bson/timestamp.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/db/repl/member_heartbeat_data.h"
 #include "mongo/db/repl/replica_set_config.h"
 #include "mongo/db/repl/replication_executor.h"
@@ -95,11 +96,7 @@ std::vector<RemoteCommandRequest> FreshnessChecker::Algorithm::getRequests() con
          ++it) {
         invariant(*it != selfConfig.getHostAndPort());
         requests.push_back(RemoteCommandRequest(
-            *it,
-            "admin",
-            replSetFreshCmd,
-            nullptr,
-            Milliseconds(30 * 1000)));  // trying to match current Socket timeout
+            *it, "admin", replSetFreshCmd, nullptr, Milliseconds(kReplSetFreshTimeoutMS)));
     }
 
     return requests;

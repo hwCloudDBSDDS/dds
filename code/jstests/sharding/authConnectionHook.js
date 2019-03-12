@@ -10,9 +10,14 @@
     var adminDB = mongos.getDB('admin');
     var db = mongos.getDB('test');
 
-    adminDB.createUser({user: 'admin', pwd: 'password', roles: jsTest.adminUserRoles});
+    adminDB.createUser({
+        user: 'admin',
+        pwd: 'TEST@1password',
+        roles: jsTest.adminUserRoles,
+        passwordDigestor: "server"
+    });
 
-    adminDB.auth('admin', 'password');
+    adminDB.auth('admin', 'TEST@1password');
 
     adminDB.runCommand({enableSharding: "test"});
     st.ensurePrimaryShard('test', 'shard0001');
@@ -29,10 +34,19 @@
         {moveChunk: "test.foo", find: {x: 25}, to: otherShard, _waitForDelete: true});
 
     st.printShardingStatus();
-
+    var ss0 = st.shard0;
     MongoRunner.stopMongod(st.shard0);
     st.shard0 = MongoRunner.runMongod({restart: st.shard0});
-
+    sleep(10*1000);
+    var a=st.configRS.getURL();
+    var str=String(a);
+    var c=str.split(/[\,\:]/);
+    var port=Math.floor(c[1]);
+    var ssp1=port+4;  
+    var addss1=c[2]+":"+ssp1; 
+    jsTest.log("ssp1 : " + addss1);
+    assert.commandWorked(adminDB.runCommand({addShard:addss1}));
+    st.printShardingStatus();
     // May fail the first couple times due to socket exceptions
     assert.soon(function() {
         var res = adminDB.runCommand({moveChunk: "test.foo", find: {x: 75}, to: otherShard});

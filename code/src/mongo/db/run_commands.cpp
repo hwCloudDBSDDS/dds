@@ -26,8 +26,8 @@
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
-
 #include "mongo/platform/basic.h"
+#include <sstream>
 
 #include "mongo/db/run_commands.h"
 
@@ -38,13 +38,50 @@
 #include "mongo/rpc/request_interface.h"
 #include "mongo/util/log.h"
 
+#include "mongo/s/grid.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/util/util_extend/default_parameters.h"
+
 
 namespace mongo {
 
 void runCommands(OperationContext* txn,
                  const rpc::RequestInterface& request,
                  rpc::ReplyBuilderInterface* replyBuilder) {
+
+    if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
+        // Execute command (except those listed below) only when shard server becomes active
+        stdx::lock_guard<stdx::mutex> initLock(serverGlobalParams.shardStateMutex);
+        if ((serverGlobalParams.shardState != ShardType::ShardState::kShardActive) &&
+            !((request.getCommandName() == "isMaster") ||
+              (request.getCommandName() == "ismaster") ||
+              (request.getCommandName() == "setShardVersion"))) {
+            index_log() << "Command (" << request.getCommandName()
+                        << ") is not allowed before shard becomes aware";
+            uasserted(ErrorCodes::NotYetInitialized, "shard has not become aware");
+        }
+
+        if (!grid.initialized() && (request.getCommandName() == "assignChunk")) {
+            index_err() << "Grid is not initialized yet";
+            uasserted(ErrorCodes::NotYetInitialized, "shard has not become aware");
+        }
+    } else if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        if (((getGlobalServiceContext()->getGlobalStorageEngine() == nullptr) ||
+             (txn->recoveryUnit() == nullptr))) {
+            if (request.getCommandName() == "find" ||
+                request.getCommandName() == "replSetInitiate") {
+                uasserted(ErrorCodes::NotYetInitialized,
+                          "GlobalStorageEngine has not yet been initialized.");
+            }
+        }
+    }
+
+    std::string role = "[ShardSvr]";
+    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        role = "[ConfigSvr]";
+    }
+
     try {
         dassert(replyBuilder->getState() == rpc::ReplyBuilderInterface::State::kCommandReply);
 
@@ -53,7 +90,9 @@ void runCommands(OperationContext* txn,
         // to avoid displaying potentially sensitive information in the logs,
         // we restrict the log message to the name of the unrecognized command.
         // However, the complete command object will still be echoed to the client.
-        LOG(1) << "runCommands: " << request.getCommandName() << "; cmd: (" << request.getCommandArgs();
+
+        index_LOG(1) << " start run command: " << request.getCommandName();
+
         if (!(c = Command::findCommand(request.getCommandName()))) {
             Command::unknownCommands.increment();
             std::string msg = str::stream() << "no such command: '" << request.getCommandName()
@@ -64,28 +103,28 @@ void runCommands(OperationContext* txn,
                                     << "'");
         }
 
-        LOG(1) << "run command " <<c->getName()<<" "<< request.getDatabase() << ".$cmd" << ' '
-               << c->getRedactedCopyForLogging(request.getCommandArgs());
+        index_LOG(1) << "run command " << c->getName() << " " << request.getDatabase();
 
         {
             // Try to set this as early as possible, as soon as we have figured out the command.
             stdx::lock_guard<Client> lk(*txn->getClient());
             CurOp::get(txn)->setLogicalOp_inlock(c->getLogicalOp());
         }
-        
+
         const auto start = Date_t::now();
         Command::execCommand(txn, c, request, replyBuilder);
         const Milliseconds totalTime = Date_t::now() - start;
         if (totalTime >= Milliseconds(500)) {
-            LOG(1) << "time-consuming command " << request.getDatabase() << ".$cmd" << ' '
-                   << c->getRedactedCopyForLogging(request.getCommandArgs()) 
-                   << ", total time: " << totalTime;
-        }        
+            index_LOG(1) << "time-consuming command " << request.getDatabase()
+                         << ", total time: " << totalTime;
+        }
     }
 
     catch (const DBException& ex) {
         Command::generateErrorResponse(txn, replyBuilder, ex, request);
     }
+
+    index_LOG(1) << "role: " << role << " end run command: " << request.getCommandName();
 }
 
 }  // namespace mongo

@@ -3192,7 +3192,7 @@ class Benchmark {
         case RANDOM:
           return rand_->Next() % num_;
         case UNIQUE_RANDOM:
-          assert(next_ + 1 < num_);
+          assert(next_  < num_);
           return values_[next_++];
       }
       assert(false);

@@ -5,6 +5,9 @@
     load("jstests/libs/stats.js");
 
     var name = "toptest";
+    var isMaster = db.runCommand("ismaster");
+    assert.commandWorked(isMaster);
+    var isReplSet = (isMaster.hasOwnProperty('setName'));
 
     var testDB = db.getSiblingDB(name);
     var testColl = testDB[name + "coll"];
@@ -22,8 +25,15 @@
     for (var i = 0; i < numRecords; i++) {
         assert.writeOK(testColl.insert({_id: i}));
     }
-    assertTopDiffEq(testColl, lastTop, "insert", numRecords);
-    lastTop = assertTopDiffEq(testColl, lastTop, "writeLock", numRecords);
+
+    //replset op stat keep unchange.
+    if(isReplSet){
+        assertTopDiffEq(testColl, lastTop, "insert", numRecords);
+        lastTop = assertTopDiffEq(testColl, lastTop, "writeLock", numRecords);
+    }else{
+        assertTopDiffEq(testColl, lastTop, "insert", numRecords + 2);
+        lastTop = assertTopDiffEq(testColl, lastTop, "writeLock", numRecords + 1);
+    }
 
     // Update
     for (i = 0; i < numRecords; i++) {

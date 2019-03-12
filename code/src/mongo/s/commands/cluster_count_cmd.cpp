@@ -25,13 +25,16 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 #include "mongo/platform/basic.h"
 
 #include <vector>
 
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/query/count_request.h"
 #include "mongo/db/query/view_response_formatter.h"
 #include "mongo/db/views/resolved_view.h"
@@ -40,6 +43,7 @@
 #include "mongo/s/commands/cluster_explain.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/util/timer.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -125,6 +129,53 @@ public:
 
         BSONObjBuilder countCmdBuilder;
         countCmdBuilder.append("count", nss.coll());
+
+        if (AuthorizationSession::get(txn->getClient())->isAuthWithCustomerOrNoAuthUser()) {
+            bool flag = false;
+            BSONObj buildinfilter;
+            if (nss.ns() == "admin.system.users") {
+                std::set<std::string> buildinUsers;
+                UserName::getBuildinUsers(buildinUsers);
+
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+            if (nss.ns() == "admin.system.roles") {
+                std::set<std::string> buildinRoles;
+                RoleName::getBuildinRoles(buildinRoles);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+
+            if (flag) {
+                std::string filterName = "filter";
+                BSONElement filterField = cmdObj[filterName];
+                BSONObj newFilter;
+                if (filterField.isABSONObj()) {
+                    BSONObj filter = filterField.embeddedObject();
+                    newFilter = BSON("$and" << BSON_ARRAY(filter << buildinfilter));
+                } else {
+                    newFilter = buildinfilter;
+                }
+
+                BSONObjBuilder nb(64);
+                nb.append(filterName, newFilter);
+                BSONForEach(e, cmdObj) {
+                    if (!str::equals(filterName.c_str(), e.fieldName())) {
+                        nb.append(e);
+                    }
+                }
+                cmdObj = nb.obj();
+            }
+        }
 
         BSONObj filter;
         if (cmdObj["query"].isABSONObj()) {
@@ -219,7 +270,7 @@ public:
             shardIds.insert(cr.shardTargetId);
         }
 
-        //transform chunklevel result to shard level result
+        // transform chunklevel result to shard level result
         for (const auto& shard : shardIds) {
             long long shardCount = 0;
 
@@ -232,7 +283,8 @@ public:
                         errmsg = "failed on : " + shard.toString();
                         result.append("cause", cr.result);
 
-                        // Add "code" to the top-level response, if the failure of the sharded command
+                        // Add "code" to the top-level response, if the failure of the sharded
+                        // command
                         // can be accounted to a single error
                         int code = getUniqueCodeFromCommandResults(countResult);
                         if (code != 0) {
@@ -250,6 +302,10 @@ public:
 
         shardSubTotal.doneFast();
         total = applySkipLimit(total, cmdObj);
+        if (total < 0) {
+           index_log() << "[CountCmd] count nss: " << nss << " return: " << total;
+           total = 0;
+        }
         result.appendNumber("n", total);
 
         return true;

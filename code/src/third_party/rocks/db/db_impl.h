@@ -300,6 +300,14 @@ class DBImpl : public DB {
       Arena* arena, RangeDelAggregator* range_del_agg,
       ColumnFamilyHandle* column_family = nullptr);
 
+  // feature: support backup for mongodb
+  Status RecoverSyncOldWal();
+  Status SwitchAndSyncWal(uint64_t& backup_log_number);
+  
+  Status ContinueBackgroundCompation();
+
+  Status PauseBackgroundCompation();
+  
   // split-feature: support split DB
   // complete the preparations for split DB
   Status PrepareSplitDb(Env* right_env, const std::vector<const IKeyRangeChecker*>& right_db_range_checker,
@@ -307,7 +315,7 @@ class DBImpl : public DB {
 
   // split DB
   Status SplitDb(Env* right_env) override;
-
+  
   // operations after splitting successfully
   Status ConfirmSplitSuccess(Env* right_env) override;
 
@@ -348,6 +356,8 @@ class DBImpl : public DB {
   bool TEST_IsLogGettingFlushed() {
     return alive_log_files_.begin()->getting_flushed;
   }
+
+  Status TEST_SwitchMemtable(ColumnFamilyData* cfd = nullptr);
 
   // Force current memtable contents to be flushed.
   Status TEST_FlushMemTable(bool wait = true,
@@ -631,8 +641,21 @@ class DBImpl : public DB {
 #endif
   struct CompactionState;
 
-  struct WriteContext;
-
+//  struct WriteContext;
+  struct WriteContext {
+    autovector<SuperVersion*> superversions_to_free_;
+    autovector<MemTable*> memtables_to_free_;
+  
+    ~WriteContext() {
+      for (auto& sv : superversions_to_free_) {
+        delete sv;
+      }
+      for (auto& m : memtables_to_free_) {
+        delete m;
+      }
+    }
+  };
+  
   struct PurgeFileInfo;
 
   // Recover the descriptor from persistent storage.  May do a significant
@@ -699,14 +722,23 @@ class DBImpl : public DB {
 
   Status ScheduleFlushes(WriteContext* context);
 
+  // feature: support backup for mongodb
+  Status SwitchWal(uint64_t& log_number);
+  
+  Status FSyncWAL(bool update_meta);
+
   Status SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context);
 
   // Force current memtable contents to be flushed.
   Status FlushMemTable(ColumnFamilyData* cfd, const FlushOptions& options,
                        bool writes_stopped = false);
 
-  // Wait for memtable flushed
-  Status WaitForFlushMemTable(ColumnFamilyData* cfd);
+  // Wait for memtable flushed.
+  // If flush_memtable_id is non-null, wait until the memtable with the ID
+  // gets flush. Otherwise, wait until the column family don't have any
+  // memtable pending flush.
+  Status WaitForFlushMemTable(ColumnFamilyData* cfd,
+                              const uint64_t* flush_memtable_id = nullptr);
 
 #ifndef ROCKSDB_LITE
 
@@ -783,10 +815,6 @@ class DBImpl : public DB {
   Status FlushAllMemtable(void);
 
   Status FlushPartMemtable(void);
-
-  Status ContinueBackgroundCompation();
-
-  Status PauseBackgroundCompation();
 
   DbManager* db_manager_;
 

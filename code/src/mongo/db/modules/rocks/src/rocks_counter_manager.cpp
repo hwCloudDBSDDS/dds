@@ -41,8 +41,8 @@
 #include <string>
 
 // for invariant()
-#include "mongo/util/assert_util.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/util/assert_util.h"
 
 #include <rocksdb/db.h>
 
@@ -61,9 +61,9 @@ namespace mongo {
         std::string value;
         auto s = _db->Get(rocksdb::ReadOptions(), _columnFamily, counterKey, &value);
 
-
         if (s.IsNotFound()) {
-            error() << "Didn't find " << counterKey << " in db :" << _db->GetName() << ". Please check this. Set the value to 0.";
+            index_LOG(1) << "Didn't find " << counterKey << " in db :" << _db->GetName()
+                         << ". Please check this. Set the value to 0.";
             return 0;
         }
         invariantRocksOK(s);
@@ -76,8 +76,7 @@ namespace mongo {
     }
 
     void RocksCounterManager::updateCounter(const std::string& counterKey, long long count,
-                                            rocksdb::WriteBatch* writeBatch,bool persist) {
-
+                                            rocksdb::WriteBatch* writeBatch, bool persist) {
         if (_crashSafe) {
             int64_t storage;
             writeBatch->Put(_columnFamily, counterKey, _encodeCounter(count, &storage));
@@ -89,7 +88,8 @@ namespace mongo {
                 // let's sync this now. piggyback on writeBatch
                 int64_t storage;
                 for (const auto& counter : _counters) {
-                    writeBatch->Put(_columnFamily, counter.first, _encodeCounter(counter.second, &storage));
+                    writeBatch->Put(_columnFamily, counter.first,
+                                    _encodeCounter(counter.second, &storage));
                 }
                 _counters.clear();
                 _syncCounter = 0;
@@ -112,7 +112,40 @@ namespace mongo {
             _syncCounter = 0;
             _syncing = true;
         }
-        auto s = _db->Write(rocksdb::WriteOptions(), &wb);
+        auto w_option = rocksdb::WriteOptions();
+        w_option.sync = true;
+
+        auto s = _db->Write(w_option, &wb);
+        invariantRocksOKWithNoCore(s);
+        {
+            stdx::lock_guard<stdx::mutex> lk(_lock);
+            _syncing = false;
+        }
+    }
+
+    void RocksCounterManager::des_sync() {
+        rocksdb::WriteBatch wb;
+        {
+            stdx::lock_guard<stdx::mutex> lk(_lock);
+            if (_syncing || _counters.size() == 0) {
+                return;
+            }
+            int64_t storage;
+            for (const auto& counter : _counters) {
+                index_LOG(1) << "RocksCounterManager::sync counter.first: " << counter.first
+                             << ", counter.second: " << counter.second
+                             << ", _columnFamily name: " << _columnFamily->GetName();
+                wb.Put(_columnFamily, counter.first, _encodeCounter(counter.second, &storage));
+            }
+            _counters.clear();
+            _syncCounter = 0;
+            _syncing = true;
+        }
+        auto w_option = rocksdb::WriteOptions();
+        w_option.sync = true;
+        auto s = _db->Write(w_option, &wb);
+        index_LOG(1) << "RocksCounterManager::sync w_option.sync: " << w_option.sync
+                     << ",status: " << (int)s.code();
         invariantRocksOKWithNoCore(s);
         {
             stdx::lock_guard<stdx::mutex> lk(_lock);

@@ -125,6 +125,14 @@ public:
         return false;
     }
 
+    void setUsermanagerCmd(bool usermanager) {
+        _isCmdFromUserManager = usermanager;
+    }
+
+    bool isUserManagerCmd() const {
+        return _isCmdFromUserManager;
+    }
+
 private:
     // Convention: (M)andatory, (O)ptional
 
@@ -147,10 +155,15 @@ private:
     // (O)  whether batch is issued in parallel or not
     bool _atomicity;
     bool _isAtomicitySet;
-   
+
     // (O)  whether batch insert is in prewarm model or not for compatible
     bool _prewarm;
     bool _isPrewarmSet;
+
+    // (O)  (default false)
+    bool _isCmdFromUserManager;
+
+    static const std::string DELETE_IS_CMD_FROM_USER_MANAGER_KEY;
 };
 
 }  // namespace mongo

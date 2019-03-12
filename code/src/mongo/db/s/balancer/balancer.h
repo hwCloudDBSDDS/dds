@@ -29,9 +29,9 @@
 #pragma once
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/db/s/balancer/balance_event_engine.h"
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy.h"
 #include "mongo/db/s/balancer/migration_manager.h"
-#include "mongo/db/s/balancer/state_machine.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
@@ -140,46 +140,68 @@ public:
                            uint64_t maxChunkSizeBytes,
                            const MigrationSecondaryThrottleOptions& secondaryThrottle,
                            bool waitForDelete,
-                           bool userCommand);
+                           bool userCommand,
+                           bool needWriteEvent = true,
+                           bool bgCommand = false);
 
     Status assignChunk(OperationContext* txn,
-                           const ChunkType& chunk,
-                           bool newChunk,
-                           bool userCommand,
-                           ShardId newShardId = ShardId(),
-                           bool flag = false);
+                       const ChunkType& chunk,
+                       bool newChunk,
+                       bool userCommand,
+                       ShardId newShardId = ShardId(),
+                       bool flag = false,
+                       bool isNonShardTakeOver = false,
+                       bool needWriteEvent = false);
 
     Status offloadChunk(OperationContext* txn,
-                           const ChunkType& chunk,
-                           bool userCommand);
-
+                        const ChunkType& chunk,
+                        bool userCommand,
+                        bool needWriteEvent = false);
 
     Status splitChunk(OperationContext* txn,
                       const ChunkType& chunk,
                       const BSONObj& splitPoint,
-                      bool userCommand);
+                      bool userCommand,
+                      bool needWriteEvent = true,
+                      bool bgCommand = false);
+
+    Status renameCollection(OperationContext* txn,
+                            const ChunkType& chunk,
+                            const std::string& toNS,
+                            bool dropTarget,
+                            bool stayTemp,
+                            bool userCommand);
     /**
      * Appends the runtime state of the balancer instance to the specified builder.
      */
     void report(OperationContext* txn, BSONObjBuilder* builder);
 
 
-    Status checkGCCollection(OperationContext* txn, bool &existed);
+    static Status checkGCCollection(OperationContext* txn, bool& existed, std::string collNS);
 
-    void findAndRunCommand(OperationContext *txn, std::string command, std::string dbname, BSONObj &cmdObj);
+    void findAndRunCommand(OperationContext* txn,
+                           std::string command,
+                           std::string dbname,
+                           BSONObj& cmdObj);
 
-    void createGCCollection(OperationContext* txn);
-    //Traverse vector that Specified by ns,return error if it has something wrong with assignChunk's response
-    Status getResults(OperationContext* txn,const std::string& ns);
+    void createGCReferencesCollection(OperationContext* txn, bool& existed);
+
+    void createGCRemoveInfoCollection(OperationContext* txn, bool& existed);
+    // Traverse vector that Specified by ns,return error if it has something wrong with
+    // assignChunk's response
+    Status getResults(OperationContext* txn, const std::string& ns);
+    Status getResultsForTakeOver(OperationContext* txn,
+                                 const std::string& ns,
+                                 std::list<ChunkType>& chunkList);
+
 private:
-    /** in order to make the assignChunk not to wait for the event to complete synchronously
+    /*
+    * in order to make the assignChunk not to wait for the event to complete synchronously
     */
     stdx::mutex _nsToVectorMutex;
-    
+
     typedef stdx::unordered_map<std::string, std::vector<IRebalanceEvent*>> NsEventVectorMap;
     NsEventVectorMap events;
-    //1.delete all StateMachine's event  2. erase ns from events
-    void deleteAndClearEvent(OperationContext* txn,std::vector<IRebalanceEvent*> &evs,const std::string& ns);
     /**
      * Possible runtime states of the balancer. The comments indicate the allowed next state.
      */
@@ -237,10 +259,10 @@ private:
      * Performs a split on the chunk with min value "minKey". If the split fails, it is marked as
      * jumbo.
      */
-    void _splitOrMarkJumbo(OperationContext* txn,
+    /*void _splitOrMarkJumbo(OperationContext* txn,
                            const NamespaceString& nss,
                            const BSONObj& minKey);
-
+    */
     // Protects the state below
     stdx::mutex _mutex;
 

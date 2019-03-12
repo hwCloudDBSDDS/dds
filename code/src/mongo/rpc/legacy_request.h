@@ -91,7 +91,7 @@ public:
     Protocol getProtocol() const final;
 
     // for core test
-    void setCommandArgs(const BSONObj& commandArgs){
+    void setCommandArgs(const BSONObj& commandArgs) {
         _upconvertedCommandArgs = commandArgs;
     }
 

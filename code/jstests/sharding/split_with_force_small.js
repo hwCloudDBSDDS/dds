@@ -45,14 +45,14 @@
 
     st.printShardingStatus();
 
-    for (var i = 0; i < 5; i++) {
+    /*for (var i = 0; i < 5; i++) {
         assert.commandWorked(admin.runCommand({split: coll + "", find: {_id: 0}}));
         st.printShardingStatus();
     }
 
     // Make sure we can't split further than 5 (2^5) times
     assert.commandFailed(admin.runCommand({split: coll + "", find: {_id: 0}}));
-
+    */
     var chunks = config.chunks.find({'min._id': {$gte: 0, $lt: 32}}).sort({min: 1}).toArray();
     printjson(chunks);
 

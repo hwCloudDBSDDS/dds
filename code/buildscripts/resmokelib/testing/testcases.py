@@ -341,6 +341,8 @@ class JSTestCase(TestCase):
 
         global_vars["MongoRunner.dataDir"] = data_dir
         global_vars["MongoRunner.dataPath"] = data_path
+        global_vars["MongoRunner.logFlag"] = True
+        global_vars["MongoRunner.testName"] = self.basename()
 
         test_data = global_vars.get("TestData", {}).copy()
         test_data["minPort"] = core.network.PortAllocator.min_test_port(fixture.job_num)

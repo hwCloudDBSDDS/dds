@@ -21,6 +21,8 @@ class HistogramImpl;
 std::unique_ptr<RandomAccessFile> NewReadaheadRandomAccessFile(
   std::unique_ptr<RandomAccessFile>&& file, size_t readahead_size);
 
+std::unique_ptr<WritableFile> NewPolyWriteableFile(std::unique_ptr<WritableFile>&& file_, size_t poly_size);
+
 class SequentialFileReader {
  private:
   std::unique_ptr<SequentialFile> file_;

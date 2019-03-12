@@ -35,6 +35,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"
+#include "mongo/db/catalog/collection_options.h"
 #include "mongo/util/mongoutils/str.h"
 
 
@@ -48,6 +49,8 @@ class SnapshotManager;
 struct StorageGlobalParams;
 class StorageEngineLockFile;
 class StorageEngineMetadata;
+class ChunkRocksDBInstance;
+
 
 /**
  * The StorageEngine class is the top level interface for creating a new storage
@@ -281,15 +284,49 @@ public:
      */
     virtual void setJournalListener(JournalListener* jl) = 0;
 
-    virtual void resetEngineStats() {   
-        return ;
+    virtual void resetEngineStats() {
+        return;
     }
 
-    virtual void getEngineStats( std::vector<std::string> & vs) {   
-        return ;
-    } 
+    virtual void getEngineStats(std::vector<std::string>& vs) {
+        return;
+    }
 
-    virtual void setStorageEngineLogLevel(int level){}
+
+    virtual void setStorageEngineLogLevel(int level) {}
+
+    virtual Status prepareSnapshot(BSONObj& cmdObj, BSONObjBuilder& result) {
+        return Status::OK();
+    }
+
+    virtual Status compact() {
+        return Status::OK();
+    }
+
+    virtual Status endSnapshot() {
+        return Status::OK();
+    }
+
+    virtual Status rmCollectionDir(OperationContext* txn, const std::string& path) {
+        return Status::OK();
+    }
+
+    virtual void stopGC() {}
+
+    virtual void setGCInfo(const std::string& ns, const std::string& dataPath) {}
+    virtual Status openChunkDbInstance(OperationContext* txn,
+                                       StringData ns,
+                                       const mongo::CollectionOptions& options) {
+        return Status::OK();
+    }
+
+    virtual Status destroyRocksDB(const std::string& nss) {
+        return Status::OK();
+    }
+
+    virtual Status reNameNss(const std::string& srcName, const std::string& destName) {
+        return Status::OK();
+    }
 
 protected:
     /**

@@ -284,8 +284,7 @@ public:
             std::vector<std::string> hosts;
             hosts.push_back(myHostAndPort.toString());
             result.append("hosts", hosts);
-        }
-        else {
+        } else {
             appendReplicationInfo(txn, result, 0);
         }
 

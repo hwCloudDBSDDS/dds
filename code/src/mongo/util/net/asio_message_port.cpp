@@ -76,12 +76,13 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(ASIOSSLContextSetup, ("SSLManager"))(Initia
 
 }  // namespace
 
-ASIOMessagingPort::ASIOMessagingPort(int fd, SockAddr farEnd)
+ASIOMessagingPort::ASIOMessagingPort(int fd, SockAddr farEnd, SockAddr farStart)
     : _service(1),
       _timer(_service),
       _creationTime(curTimeMicros64()),
       _timeout(),
       _remote(),
+      _local(),
       _isEncrypted(false),
       _awaitingHandshake(true),
       _x509PeerInfo(),
@@ -110,6 +111,7 @@ ASIOMessagingPort::ASIOMessagingPort(int fd, SockAddr farEnd)
 #endif  // MONGO_CONFIG_SSL
     _getSocket().non_blocking(true);
     _remote = HostAndPort(farEnd.getAddr(), farEnd.getPort());
+    _local = HostAndPort(farStart.getAddr(), farStart.getPort());
     _timer.expires_at(decltype(_timer)::time_point::max());
     _setTimerCallback();
 }
@@ -479,6 +481,10 @@ unsigned ASIOMessagingPort::remotePort() const {
 
 HostAndPort ASIOMessagingPort::remote() const {
     return _remote;
+}
+
+HostAndPort ASIOMessagingPort::local() const {
+    return _local;
 }
 
 SockAddr ASIOMessagingPort::remoteAddr() const {

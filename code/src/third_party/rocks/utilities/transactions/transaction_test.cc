@@ -250,7 +250,7 @@ TEST_P(TransactionTest, WaitingTxn) {
 
   s = txn2->GetForUpdate(read_options, "foo", &value);
   ASSERT_TRUE(s.IsTimedOut());
-  ASSERT_EQ(s.ToString(), "Operation timed out: Timeout waiting to lock key");
+  ASSERT_EQ(s.ToString(), "Rocksdb Operation timed out: Timeout waiting to lock key");
 
   rocksdb::SyncPoint::GetInstance()->DisableProcessing();
   rocksdb::SyncPoint::GetInstance()->ClearAllCallBacks();
@@ -315,12 +315,12 @@ TEST_P(TransactionTest, SharedLocks) {
 
   s = txn3->GetForUpdate(read_options, "foo", nullptr);
   ASSERT_TRUE(s.IsTimedOut());
-  ASSERT_EQ(s.ToString(), "Operation timed out: Timeout waiting to lock key");
+  ASSERT_EQ(s.ToString(), "Rocksdb Operation timed out: Timeout waiting to lock key");
 
   txn1->UndoGetForUpdate("foo");
   s = txn3->GetForUpdate(read_options, "foo", nullptr);
   ASSERT_TRUE(s.IsTimedOut());
-  ASSERT_EQ(s.ToString(), "Operation timed out: Timeout waiting to lock key");
+  ASSERT_EQ(s.ToString(), "Rocksdb Operation timed out: Timeout waiting to lock key");
 
   txn2->UndoGetForUpdate("foo");
   s = txn3->GetForUpdate(read_options, "foo", nullptr);
@@ -337,7 +337,7 @@ TEST_P(TransactionTest, SharedLocks) {
 
   s = txn2->GetForUpdate(read_options, "foo", nullptr, false /* exclusive */);
   ASSERT_TRUE(s.IsTimedOut());
-  ASSERT_EQ(s.ToString(), "Operation timed out: Timeout waiting to lock key");
+  ASSERT_EQ(s.ToString(), "Rocksdb Operation timed out: Timeout waiting to lock key");
 
   txn1->UndoGetForUpdate("foo");
   s = txn2->GetForUpdate(read_options, "foo", nullptr, false /* exclusive */);
@@ -3802,7 +3802,7 @@ TEST_P(TransactionTest, TimeoutTest) {
   // txn2 has a smaller lock timeout than txn1's expiration, so it will time out
   s = txn2->Delete("asdf");
   ASSERT_TRUE(s.IsTimedOut());
-  ASSERT_EQ(s.ToString(), "Operation timed out: Timeout waiting to lock key");
+  ASSERT_EQ(s.ToString(), "Rocksdb Operation timed out: Timeout waiting to lock key");
 
   s = txn1->Commit();
   ASSERT_OK(s);

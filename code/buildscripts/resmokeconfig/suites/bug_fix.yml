@@ -1,0 +1,12 @@
+selector:
+  js_test:
+    roots:
+    - jstests/bug_fix/*.js
+    exclude_files:
+
+executor:
+  js_test:
+    config:
+      shell_options:
+        nodb: ''
+        readMode: commands

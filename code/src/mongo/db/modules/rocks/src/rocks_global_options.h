@@ -54,7 +54,7 @@ namespace mongo {
         std::string configString;
 
         bool crashSafeCounters;
-        bool counters;
+        bool counters = false;
         bool singleDeleteIndex;
     };
 

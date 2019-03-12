@@ -74,6 +74,7 @@ public:
     virtual HostAndPort remote() const override;
     virtual SockAddr remoteAddr() const override;
     virtual SockAddr localAddr() const override;
+    virtual HostAndPort local() const override;
 
     void send(const char* data, int len, const char* context) override {
         _psock->send(data, len, context);
@@ -139,6 +140,7 @@ public:
 private:
     // this is the parsed version of remote
     HostAndPort _remoteParsed;
+    HostAndPort _localParsed;
     SSLPeerInfo _x509PeerInfo;
     long long _connectionId;
     AbstractMessagingPort::Tag _tag;

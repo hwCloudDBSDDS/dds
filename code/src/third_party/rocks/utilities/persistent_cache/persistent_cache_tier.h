@@ -141,7 +141,8 @@ struct PersistentCacheConfig {
   //
   // Enable direct IO for reading
   //
-  bool enable_direct_reads = true;
+  bool enable_direct_reads = false;
+
 
   //
   // Enable direct IO for writing

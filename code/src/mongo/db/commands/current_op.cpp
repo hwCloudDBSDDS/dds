@@ -42,12 +42,14 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/matcher/matcher.h"
+#include "mongo/db/modules/rocks/src/gc_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/util/log.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
 
 namespace mongo {
 
@@ -126,6 +128,12 @@ public:
             if (ownOpsOnly &&
                 !AuthorizationSession::get(txn->getClient())->isCoauthorizedWithClient(client)) {
                 continue;
+            }
+
+            if (GLOBAL_CONFIG_GET(enableGlobalGC) && !GLOBAL_CONFIG_GET(ShowInternalInfo)) {
+                if (GCClientThreadName == client->desc() || GCManagerThreadName == client->desc()) {
+                    continue;
+                }
             }
 
             const OperationContext* opCtx = client->getOperationContext();

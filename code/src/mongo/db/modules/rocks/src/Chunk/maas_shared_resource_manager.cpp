@@ -1,223 +1,227 @@
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
-#include "mongo/util/log.h"
 #include "maas_shared_resource_manager.h"
 #include "../rocks_engine.h"
+#include "mongo/com/include/error_code.h"
+#include "mongo/util/log.h"
 
-namespace mongo
-{
+namespace mongo {
 
-namespace TransactionLog
-{
+    namespace TransactionLog {
 
-MaaSSharedResourceManager::MaaSSharedResourceManager(const std::string& dbPath)
-{
-    _dbPath = dbPath;
-    _dbPathWithOutChunkId.assign(dbPath, 0, dbPath.rfind("/"));
-    _chunkId = MaaSSharedResourceModule::ParseChunkId(dbPath);
-    index_LOG(0) << "[transLog] MaaSSharedResourceManager::MaaSSharedResourceManager() dbPath: " << dbPath 
-        << "; _dbPathWithOutChunkId: " << _dbPathWithOutChunkId << "; ChunkId: " << _chunkId;
-}
+#define transLog_log() index_log() << "[transLog][" << getChunkId() << "] "
 
-rocksdb::Status MaaSSharedResourceManager::WriteCheckpoint()
-{
-    //nothing todo
-    return rocksdb::Status::OK();
-}
+#define transLog_err() index_err() << "[transLog][" << getChunkId() << "] "
 
-void MaaSSharedResourceManager::AddSharedResources(const SharedResourceIds& resources)
-{
-    SharedResourceManager::AddSharedResources(resources);
-    stdx::unique_lock<stdx::mutex> lock(_mutex);
-    for(auto resource : resources) {
-        invariant(resource.toString().find("/") != std::string::npos);
-        std::string id = MaaSSharedResourceModule::ParseSSTFileName(resource);
-        index_LOG(0)  << "[transLog] MaaSSharedResourceManager::AddSharedResources(): resource " << resource.toString()
-            << "; id: " << id;
-        _sharedResource[id] = resource;
-    }
-}
+#define transLog_LOG(x) index_LOG(x) << "[transLog][" << getChunkId() << "] "
 
-rocksdb::Status MaaSSharedResourceManager::OnResourcesDeletion(std::vector<SharedResourceRemoveDescription>& resources)
-{
-    //todo  Global GC
-    //RES_RIF(SharedResourceManager::OnResourcesDeletion(resources));
-
-      index_LOG(0) << "[transLog] MaaSSharedResourceManager::OnResourcesDeletion()";
-    for (auto resource : _sharedResource) {
-        index_LOG(0) << "[transLog] MaaSSharedResourceManager::OnResourcesDeletion()-> all sharedid: " << resource.first
-            << "; : " << resource.second.toString();
-    }
-
-    stdx::unique_lock<stdx::mutex> lock(_mutex);
-    for(auto& resource : resources)
-    {
-        std::string id = MaaSSharedResourceModule::ParseSSTFileName(resource.id);
-        if (_sharedResource.end() == _sharedResource.find(id)) {
-            resource.shared_flag = false;
-            resource.remove_result = 0;
-        } else {
-            resource.shared_flag = true;
-            resource.remove_result = 0;
+        MaaSSharedResourceManager::MaaSSharedResourceManager(SharedResourceModule* srm_module,
+                                                             const std::string& dbPath)
+            : SharedResourceManager(srm_module) {
+            _dbPath = dbPath;
+            _dbPathWithOutChunkId.assign(dbPath, 0, dbPath.rfind(SEPARATOR));
+            _chunkId = MaaSSharedResourceModule::ParseChunkId(dbPath);
+            transLog_log() << "init MaaSSharedResourceManager dbPath: " << dbPath
+                           << "; _dbPathWithOutChunkId: " << _dbPathWithOutChunkId
+                           << "; ChunkId: " << _chunkId;
         }
-        index_log() << "[transLog] MaaSSharedResourceManager::OnResourcesDeletion(): resource: " << resource.id.toString()
-            << "; id: " << id << "; shard: " << resource.shared_flag; 
-    }
 
-    return rocksdb::Status::OK();
-}
+        void MaaSSharedResourceManager::AddSharedResources(const SharedResourceIds& resources) {
+            SharedResourceManager::AddSharedResources(resources);
+            stdx::unique_lock<stdx::mutex> lock(_mutex);
+            for (auto resource : resources) {
+                invariant(resource.toString().find(SEPARATOR) != std::string::npos);
+                std::string id = MaaSSharedResourceModule::ParseSSTFileName(resource);
+                transLog_LOG(1) << "AddSharedResources resource " << resource.toString()
+                                << "; id: " << id;
+                _sharedResource[id] = resource;
+            }
+        }
 
-rocksdb::Status MaaSSharedResourceManager::ReplayLogRecord(const LogRecord& record, bool& needMoreRecords) 
-{
-     RES_RIF(SharedResourceManager::ReplayLogRecord(record, needMoreRecords));
+        rocksdb::Status MaaSSharedResourceManager::OnResourcesDeletion(
+            std::vector<SharedResourceRemoveDescription>& resources) {
+            transLog_LOG(2) << "OnResourcesDeletion sharedResource num: " << _sharedResource.size();
+            for (auto resource : _sharedResource) {
+                transLog_LOG(2) << "OnResourcesDeletion()-> all sharedid: " << resource.first
+                                << "; : " << resource.second.toString();
+            }
 
-     SharedResourceFilterOperation* oper = SharedResourceFilterOperation::DecodeFrom(record);
-     const SharedResourceOperationType type = oper->GetType();
+            transLog_LOG(2) << "OnResourcesDeletion resource num: " << resources.size();
+            for (auto resource : resources) {
+                transLog_LOG(2) << "OnResourcesDeletion resource: " << resource.id;
+            }
 
-     std::string id = MaaSSharedResourceModule::ParseSSTFileName(oper->GetResource());
-     log() << "[transLog] MaaSSharedResourceManager::ReplayLogRecord(): resource " << oper->GetResource().toString()
-         << "; id: " << id << "; type: " << (int)type;
+            RES_RIF(SharedResourceManager::OnResourcesDeletion(resources));
 
-     stdx::unique_lock<stdx::mutex> lock(_mutex);
-     if (type == SharedResourceOperationType::AddFilter) {
-         _sharedResource[id] = oper->GetResource();
-     }else {
-          invariant(type == SharedResourceOperationType::RemoveFilter);
-          //_sharedResource.erase(id);
-     }
+            stdx::unique_lock<stdx::mutex> lock(_mutex);
+            for (auto& resource : resources) {
+                std::string id = MaaSSharedResourceModule::ParseSSTFileName(resource.id);
+                if (_sharedResource.end() == _sharedResource.find(id)) {
+                    transLog_LOG(0) << "OnResourcesDeletion not shared id: "
+                                    << resource.id.toString();
+                    if (resource.shared_flag) {
+                        index_err() << "not shared id : " << resource.id.toString();
+                    }
+                    resource.shared_flag = false;
+                    resource.remove_result = 0;
+                } else {
+                    transLog_LOG(0) << "OnResourcesDeletion shared id: " << resource.id.toString();
+                    if (!resource.shared_flag) {
+                        index_err() << "shared id : " << resource.id.toString();
+                    }
+                    resource.shared_flag = true;
+                    resource.remove_result = 0;
+                }
+            }
 
-     return rocksdb::Status::OK();
-}
+            return rocksdb::Status::OK();
+        }
 
-bool MaaSSharedResourceManager::CheckSharedResource(const SharedResourceId &id, std::string &path)  
-{
-    stdx::unique_lock<stdx::mutex> lock(_mutex);
-    for (auto resource : _sharedResource) {
-        index_LOG(1) << "[transLog] MaaSSharedResourceManager::CheckSharedResource()-> all sharedid: " << resource.first
-            << "; : " << resource.second.toString();
-    }
+        rocksdb::Status MaaSSharedResourceManager::ReplayLogRecord(const LogRecord& record,
+                                                                   bool& needMoreRecords) {
+            RES_RIF(SharedResourceManager::ReplayLogRecord(record, needMoreRecords));
 
-    auto it = _sharedResource.find(id.toString());
-    if (it != _sharedResource.end()) {
-        path = _dbPathWithOutChunkId + "/" + it->second.toString();
-        index_LOG(0)  << "[transLog] MaaSSharedResourceManager::CheckSharedResource()-> shared id: " << id.toString() << "; path: " << path;
-        return true;
-    } else {
-        path = _dbPath + ROCKSDB_PATH + "/" + id.toString();
-        index_LOG(0)  << "[transLog] MaaSSharedResourceManager::CheckSharedResource()-> no-shared id: " << id.toString() << "; path: " << path;
-        return false;
-    }
-}
+            SharedResourceFilterOperation* oper = SharedResourceFilterOperation::DecodeFrom(record);
+            const SharedResourceOperationType type = oper->GetType();
+            std::string id = MaaSSharedResourceModule::ParseSSTFileName(oper->GetResource());
 
-bool MaaSSharedResourceManager::getSharedResourcePath(const SharedResourceId &id, std::string &path)  
-{
-    stdx::unique_lock<stdx::mutex> lock(_mutex);
-    auto it = _sharedResource.find(id.toString());
-    if (it != _sharedResource.end()) {
-        path = it->second.toString();
-        index_LOG(1)  << "[transLog] MaaSSharedResourceManager::getSharedResourcePath()-> id: " << id.toString() << "; path: " << path;
-        return true;
-    } else {
-        index_LOG(1)  << "[transLog] MaaSSharedResourceManager::getSharedResourcePath()-> id 2: " << id.toString();
-        return false;
-    }
-}
+            {
+                stdx::unique_lock<stdx::mutex> lock(_mutex);
+                if (type == SharedResourceOperationType::AddFilter) {
+                    transLog_LOG(0) << "ReplayLogRecord: resource "
+                                    << oper->GetResource().toString() << "; id: " << id
+                                    << "; type: " << (int)type;
+                    _sharedResource[id] = oper->GetResource();
+                } else {
+                    invariant(type == SharedResourceOperationType::RemoveFilter);
+                }
+            }
 
-rocksdb::Status MaaSSharedResourceModule::Init(rocksdb::Env* env,
-                                               const std::string& db_path,
-                                               ChunkMetadata* chunk_meta_data)
-{
-    _dbPath = db_path;
-    _chunkId = ParseChunkId(db_path);
-    log() << "[transLog] MaaSSharedResourceModule::Init(): _dbPath: " << _dbPath << "; _chunkId: " << _chunkId;
-    return SharedResourceModule::Init(env, db_path, chunk_meta_data);
-}
+            delete oper;
+            oper = nullptr;
+            return rocksdb::Status::OK();
+        }
 
-int MaaSSharedResourceModule::RegisterSharedResource(std::vector<SharedResourceId>& resource_id_list)
-{
-    auto resources = resource_id_list;
-    for (auto& resource : resources) {
-        index_LOG(1)  << "[transLog] MaaSSharedResourceModule::RegisterSharedResource()-> resource: " << resource;
-        addRootChunkId(resource);
-    }
+        bool MaaSSharedResourceManager::CheckSharedResource(const SharedResourceId& id,
+                                                            std::string& path) {
+            stdx::unique_lock<stdx::mutex> lock(_mutex);
+            for (auto resource : _sharedResource) {
+                transLog_LOG(1) << "CheckSharedResource()-> all sharedid: " << resource.first
+                                << "; : " << resource.second.toString();
+            }
 
-    for (auto resource : resources) {
-        index_LOG(0)  << "[transLog] MaaSSharedResourceModule::RegisterSharedResource()-> resource addRootChunkId: " << resource;
-    }
+            auto it = _sharedResource.find(id.toString());
+            if (it != _sharedResource.end()) {
+                path = _dbPathWithOutChunkId + SEPARATOR + it->second.toString();
+                transLog_LOG(0) << "CheckSharedResource shared id: " << id.toString()
+                                << "; path: " << path;
+                return true;
+            } else {
+                path = _dbPath + ROCKSDB_PATH + SEPARATOR + id.toString();
+                transLog_LOG(1) << "CheckSharedResource no-shared id: " << id.toString()
+                                << "; path: " << path;
+                return false;
+            }
+        }
 
-    return SharedResourceModule::RegisterSharedResource(resources);
-}
+        bool MaaSSharedResourceManager::getSharedResourcePath(const SharedResourceId& id,
+                                                              std::string& path) {
+            stdx::unique_lock<stdx::mutex> lock(_mutex);
+            auto it = _sharedResource.find(id.toString());
+            if (it != _sharedResource.end()) {
+                path = it->second.toString();
+                transLog_LOG(1) << "getSharedResourcePath no shard id: " << id.toString()
+                                << "; path: " << path;
+                return true;
+            } else {
+                transLog_LOG(1) << "getSharedResourcePath shard id: " << id.toString();
+                return false;
+            }
+        }
 
-int MaaSSharedResourceModule::RemoveSharedResource(std::vector<SharedResourceRemoveDescription>& list)
-{
-    for (auto& resource : list) {
-        index_LOG(0) << "[transLog] MaaSSharedResourceModule::RemoveSharedResource()-> resource: " << resource.id.toString();
-        addRootChunkId(resource.id);
-        index_LOG(0)  << "[transLog] MaaSSharedResourceModule::RemoveSharedResource()-> resource addRootChunkId: " << resource.id.toString();
-    }
+        rocksdb::Status MaaSSharedResourceModule::Init(rocksdb::Env* env,
+                                                       const std::string& db_path,
+                                                       ChunkMetadata* chunk_meta_data) {
+            _dbPath = db_path;
+            _chunkId = ParseChunkId(db_path);
+            transLog_LOG(0) << "[transLog] MaaSSharedResourceModule::Init(): _dbPath: " << _dbPath
+                            << "; _chunkId: " << _chunkId;
+            return SharedResourceModule::Init(env, db_path, chunk_meta_data);
+        }
 
-    return SharedResourceModule::RemoveSharedResource(list);
-}
+        int MaaSSharedResourceModule::RegisterSharedResource(
+            std::vector<SharedResourceId>& resource_id_list) {
+            auto resources = resource_id_list;
+            for (auto& resource : resources) {
+                addRootChunkId(resource);
+                transLog_LOG(0) << "RegisterSharedResource resource: " << resource;
+            }
 
-bool MaaSSharedResourceModule::CheckSharedResource(const SharedResourceId &id, std::string &path) 
-{
-    return filter_manager_->CheckSharedResource(id, path);
-}
+            int ret = SharedResourceModule::RegisterSharedResource(resources);
+            if (RET_OK == ret) {
+                filter_manager_->AddSharedResources(resources);
+            } else {
+                transLog_err() << "RegisterSharedResource faild ret: " << ret;
+            }
+            return ret;
+        }
 
-void MaaSSharedResourceModule::addRootChunkId(SharedResourceId& resource)
-{
-    index_LOG(1)  << "[transLog] MaaSSharedResourceModule::addRootChunkId: resource: " << resource.toString();
-    std::string path;
-    if (filter_manager_->getSharedResourcePath(resource, path)) {
-        resource = path;
-    } else {
-        resource = _chunkId + ROCKSDB_PATH + "/" + resource.toString();
-    }
-    index_LOG(1)  << "[transLog] MaaSSharedResourceModule::addRootChunkId: resource: " << resource.toString()
-        <<" ; path: " << path;
-}
+        int MaaSSharedResourceModule::RemoveSharedResource(
+            std::vector<SharedResourceRemoveDescription>& list) {
+            for (auto it = list.begin(); it != list.end(); it++) {
+                it->shared_flag = false;
+                it->remove_result = -1;
+            }
 
-void MaaSSharedResourceModule::delRootChunkId(SharedResourceId& resource)
-{
-    index_LOG(1)  << "[transLog] MaaSSharedResourceModule::delRootChunkId()-> resourece: " << resource.toString();
-    std::string id = ParseSSTFileName(resource);
-    resource = id;
-    index_LOG(1) << "[transLog] MaaSSharedResourceModule::delRootChunkId()-> resourece: " << resource.toString()
-        << "; id: " << id;
-}
+            for (auto& resource : list) {
+                transLog_LOG(0) << "RemoveSharedResource resource: " << resource.id.toString();
+                addRootChunkId(resource.id);
+                transLog_LOG(1) << "RemoveSharedResource()-> resource addRootChunkId: "
+                                << resource.id.toString();
+            }
 
-void MaaSSharedResourceModule::GetUnprocessedOperations(uint32_t maxBatchMaxSize,
-                                                        std::vector<SharedResourceReferenceOperation>& unprocessedRecords)
-{
-    SharedResourceModule::GetUnprocessedOperations(maxBatchMaxSize, unprocessedRecords);
-    for(auto& record : unprocessedRecords) {
-         SharedResourceId resource = record.resource_;
-         index_LOG(1) << "[transLog] MaaSSharedResourceModule::GetUnprocessedOperations()-> resource: " << resource.toString();
-         delRootChunkId(resource);
-         record.resource_ = resource;
-         index_LOG(1) << "[transLog]MaaSSharedResourceModule::GetUnprocessedOperations()-> delRootChunkId resource: " << resource.toString();;
-    }
+            return SharedResourceModule::RemoveSharedResource(list);
+        }
 
-    for(auto record : unprocessedRecords) {
-        index_LOG(0) << "[transLog] MaaSSharedResourceModule::GetUnprocessedOperations()-> delRootChunkId resource: " << record.resource_.toString();
-    }
-}
+        bool MaaSSharedResourceModule::CheckSharedResource(const SharedResourceId& id,
+                                                           std::string& path) {
+            return filter_manager_->CheckSharedResource(id, path);
+        }
 
-std::string MaaSSharedResourceModule::ParseSSTFileName(const SharedResourceId& resource) 
-{
-    std::string id = ParseChunkId(resource.toString());
-    index_LOG(1)  << "[transLog] MaaSSharedResourceModule::ParseSSTFileName()-> id: " << id << "; resource: " << resource.toString();
-    return id;
-}
+        void MaaSSharedResourceModule::addRootChunkId(SharedResourceId& resource) const {
+            transLog_LOG(1) << "addRootChunkId: resource: " << resource.toString();
+            std::string path;
+            if (filter_manager_->getSharedResourcePath(resource, path)) {
+                resource = path;
+            } else {
+                resource = _chunkId + ROCKSDB_PATH + SEPARATOR + resource.toString();
+            }
+            transLog_LOG(1) << "addRootChunkId resource: " << resource.toString()
+                            << " ; path: " << path;
+        }
 
-std::string MaaSSharedResourceModule::ParseChunkId(const std::string& path) 
-{
-    std::string chunkid;
-    chunkid.assign(path, path.rfind("/") + 1, path.size() - path.rfind("/") -1);
-    index_LOG(1)  << "[transLog] MaaSSharedResourceModule::ParseChunkId()-> chunkid: " << chunkid << "; path: " << path;
-    return chunkid;
-}
+        void MaaSSharedResourceModule::delRootChunkId(SharedResourceId& resource) const {
+            transLog_LOG(1) << "delRootChunkId() resourece: " << resource.toString();
+            std::string id = ParseSSTFileName(resource);
+            resource = id;
+            transLog_LOG(1) << "delRootChunkId() resourece: " << resource.toString()
+                            << "; id: " << id;
+        }
 
-}   //  namespace TransactionLog
+        std::string MaaSSharedResourceModule::ParseSSTFileName(const SharedResourceId& resource) {
+            std::string id = ParseChunkId(resource.toString());
+            index_LOG(1) << "ParseSSTFileName id: " << id << "; resource: " << resource.toString();
+            return id;
+        }
 
-}   //  namespace mongo
+        std::string MaaSSharedResourceModule::ParseChunkId(const std::string& path) {
+            std::string chunkid;
+            chunkid.assign(path, path.rfind(SEPARATOR) + 1,
+                           path.size() - path.rfind(SEPARATOR) - 1);
+            index_LOG(1) << "ParseChunkId chunkid: " << chunkid << "; path: " << path;
+            return chunkid;
+        }
+
+    }  //  namespace TransactionLog
+
+}  //  namespace mongo

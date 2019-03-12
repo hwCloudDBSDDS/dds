@@ -339,6 +339,11 @@ class MemTable {
 
   const MemTableOptions* GetMemTableOptions() const { return &moptions_; }
 
+  // REQUIRES: db_mutex held.
+  void SetID(uint64_t id) { id_ = id; }
+
+  uint64_t GetID() const { return id_; }
+
  private:
   enum FlushStateEnum { FLUSH_NOT_REQUESTED, FLUSH_REQUESTED, FLUSH_SCHEDULED };
 
@@ -399,6 +404,9 @@ class MemTable {
 
   // Insert hints for each prefix.
   std::unordered_map<Slice, void*, SliceHasher> insert_hints_;
+
+  // Memtable id to track flush.
+  uint64_t id_ = 0;
 
   // Returns a heuristic flush decision
   bool ShouldFlushNow() const;

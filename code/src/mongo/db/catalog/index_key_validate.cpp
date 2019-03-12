@@ -86,7 +86,7 @@ static const std::set<StringData> allowedFieldNames = {
     IndexDescriptor::kTextVersionFieldName,
     IndexDescriptor::kUniqueFieldName,
     IndexDescriptor::kWeightsFieldName,
-    IndexDescriptor::kPrefix ,
+    IndexDescriptor::kPrefix,
     // Index creation under legacy writeMode can result in an index spec with an _id field.
     "_id"};
 
@@ -281,18 +281,18 @@ StatusWith<BSONObj> validateIndexSpec(
                         str::stream() << "The field '" << IndexDescriptor::kNamespaceFieldName
                                       << "' cannot be an empty string"};
             }
-//TODO
-//            if (ns != expectedNamespace.ns()) {
-//                return {ErrorCodes::BadValue,
-//                        str::stream() << "The value of the field '"
-//                                      << IndexDescriptor::kNamespaceFieldName
-//                                      << "' ("
-//                                      << ns
-//                                      << ") doesn't match the namespace '"
-//                                      << expectedNamespace.ns()
-//                                      << "'"};
-//            }
-//
+            // TODO
+            //            if (ns != expectedNamespace.ns()) {
+            //                return {ErrorCodes::BadValue,
+            //                        str::stream() << "The value of the field '"
+            //                                      << IndexDescriptor::kNamespaceFieldName
+            //                                      << "' ("
+            //                                      << ns
+            //                                      << ") doesn't match the namespace '"
+            //                                      << expectedNamespace.ns()
+            //                                      << "'"};
+            //            }
+            //
             hasNamespaceField = true;
         } else if (IndexDescriptor::kIndexVersionFieldName == indexSpecElemFieldName) {
             if (!indexSpecElem.isNumber()) {

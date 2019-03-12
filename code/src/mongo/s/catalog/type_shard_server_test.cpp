@@ -26,7 +26,6 @@
  *    then also delete it in the license file.
  */
 
-
 #include "mongo/platform/basic.h"
 
 #include "mongo/s/catalog/type_shard_server.h"
@@ -37,58 +36,78 @@
 
 namespace {
 
-	using namespace mongo;
+using namespace mongo;
 
-	using std::string;
+using std::string;
 
-	TEST(ShardServerType, MissingHost) {
-		BSONObj obj = BSON(ShardServerType::state << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(ShardServerType::ShardServerState::kStandby));;
-		StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
-		ASSERT_FALSE(shardRes.isOK());
-	}
+TEST(ShardServerType, MissingHost) {
+    BSONObj obj =
+        BSON(ShardServerType::state
+             << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(
+                 ShardServerType::ShardServerState::kStandby));
+    ;
+    StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
+    ASSERT_FALSE(shardRes.isOK());
+}
 
-	TEST(ShardServerType, MissingNameForActiveState) {
-		BSONObj obj = BSON(ShardServerType::host("localhost:27017") << ShardServerType::state << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(ShardServerType::ShardServerState::kActive));
-		StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
-		ASSERT_FALSE(shardRes.isOK());
-	}
+TEST(ShardServerType, MissingNameForActiveState) {
+    BSONObj obj =
+        BSON(ShardServerType::host("localhost:27017")
+             << ShardServerType::state
+             << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(
+                    ShardServerType::ShardServerState::kActive));
+    StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
+    ASSERT_FALSE(shardRes.isOK());
+}
 
-	TEST(ShardServerType, MissingState) {
-		BSONObj obj = BSON(ShardServerType::host("localhost:27017"));
-		StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
-		ASSERT_FALSE(shardRes.isOK());
-	}
+TEST(ShardServerType, MissingState) {
+    BSONObj obj = BSON(ShardServerType::host("localhost:27017"));
+    StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
+    ASSERT_FALSE(shardRes.isOK());
+}
 
-	TEST(ShardServerType, OnlyMandatoryForActiveState) {
-		BSONObj obj = BSON(ShardServerType::shardName("shard00000000") << ShardServerType::host("localhost:27017") 
-				<< ShardServerType::state << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(ShardServerType::ShardServerState::kActive));
-		StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
-		ASSERT(shardRes.isOK());
-		ShardServerType shard = shardRes.getValue();
-		ASSERT(shard.validate().isOK());
-	}
+TEST(ShardServerType, OnlyMandatoryForActiveState) {
+    BSONObj obj =
+        BSON(ShardServerType::shardName("shard00000000")
+             << ShardServerType::host("localhost:27017")
+             << ShardServerType::state
+             << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(
+                    ShardServerType::ShardServerState::kActive));
+    StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
+    ASSERT(shardRes.isOK());
+    ShardServerType shard = shardRes.getValue();
+    ASSERT(shard.validate().isOK());
+}
 
-	TEST(ShardServerType, OnlyMandatoryForNActiveState) {
-		BSONObj obj = BSON(ShardServerType::host("localhost:27017") << ShardServerType::state << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(ShardServerType::ShardServerState::kStandby));
-		StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
-		ASSERT(shardRes.isOK());
-		ShardServerType shard = shardRes.getValue();
-		ASSERT(shard.validate().isOK());
-	}
+TEST(ShardServerType, OnlyMandatoryForNActiveState) {
+    BSONObj obj =
+        BSON(ShardServerType::host("localhost:27017")
+             << ShardServerType::state
+             << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(
+                    ShardServerType::ShardServerState::kStandby));
+    StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
+    ASSERT(shardRes.isOK());
+    ShardServerType shard = shardRes.getValue();
+    ASSERT(shard.validate().isOK());
+}
 
-	TEST(ShardServerType, AllOptionalsPresent) {
-		BSONObj obj = BSON(ShardServerType::shardName("shard00000000") << ShardServerType::host("localhost:27017") 
-				<< ShardServerType::state << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(ShardServerType::ShardServerState::kActive));
-		StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
-		ASSERT(shardRes.isOK());
-		ShardServerType shard = shardRes.getValue();
-		ASSERT(shard.validate().isOK());
-	}
+TEST(ShardServerType, AllOptionalsPresent) {
+    BSONObj obj =
+        BSON(ShardServerType::shardName("shard00000000")
+             << ShardServerType::host("localhost:27017")
+             << ShardServerType::state
+             << static_cast<std::underlying_type<ShardServerType::ShardServerState>::type>(
+                    ShardServerType::ShardServerState::kActive));
+    StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
+    ASSERT(shardRes.isOK());
+    ShardServerType shard = shardRes.getValue();
+    ASSERT(shard.validate().isOK());
+}
 
-	TEST(ShardServerType, BadType) {
-		BSONObj obj = BSON(ShardServerType::host() << 0);
-		StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
-		ASSERT_FALSE(shardRes.isOK());
-	}
+TEST(ShardServerType, BadType) {
+    BSONObj obj = BSON(ShardServerType::host() << 0);
+    StatusWith<ShardServerType> shardRes = ShardServerType::fromBSON(obj);
+    ASSERT_FALSE(shardRes.isOK());
+}
 
 }  // unnamed namespace

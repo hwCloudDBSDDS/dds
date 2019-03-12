@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "mongo/bson/mutable/document.h"
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
@@ -45,13 +46,14 @@
 #include "mongo/db/client.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/modules/rocks/src/gc_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/rpc/metadata.h"
 #include "mongo/rpc/write_concern_error_detail.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/log.h"
-#include "mongo/bson/util/bson_extract.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
 
 namespace mongo {
 
@@ -115,8 +117,7 @@ string Command::parseNs(const std::string& dbname, const BSONObj& cmdObj) const 
         bsonExtractTypedField(cmdObj, kChunkIdField, BSONType::String, &chunkidElement);
     if (chunkidElementStatus.isOK()) {
         collforchunk = collElement.valueStringData() + "$" + chunkidElement.valueStringData();
-    }
-    else {
+    } else {
         collforchunk = collElement.valuestr();
     }
 
@@ -142,20 +143,14 @@ Command::Command(StringData name, bool webUI, StringData oldName)
         _commands = new CommandMap();
     if (_commandsByBestName == 0)
         _commandsByBestName = new CommandMap();
-    
-    if( _name != "copydb" && _name != "convertToCapped"){
-        Command*& c = (*_commands)[name];
-	
-        if (c)
-            log() << "warning: 2 commands with name: " << _name;
-    
-        c = this;
-        (*_commandsByBestName)[name] = this;
+    Command*& c = (*_commands)[name];
+    if (c)
+        log() << "warning: 2 commands with name: " << _name;
+    c = this;
+    (*_commandsByBestName)[name] = this;
 
-        if (!oldName.empty())
-            (*_commands)[oldName.toString()] = this;
-    }
-
+    if (!oldName.empty())
+        (*_commands)[oldName.toString()] = this;
 }
 
 void Command::help(stringstream& help) const {
@@ -184,6 +179,9 @@ bool Command::appendCommandStatus(BSONObjBuilder& result, const Status& status) 
     if (!status.isOK() && !tmp.hasField("code")) {
         result.append("code", status.code());
         result.append("codeName", ErrorCodes::errorString(status.code()));
+        index_log() << "[Command] errCode: " << static_cast<int>(status.code())
+                    << " ; errStr: " << ErrorCodes::errorString(status.code())
+                    << "; errReason : " << status.reason();
     }
     return status.isOK();
 }
@@ -242,6 +240,256 @@ BSONObj Command::getRedactedCopyForLogging(const BSONObj& cmdObj) {
     return bob.obj();
 }
 
+/*****modify mongodb code start*****/
+
+namespace {
+const std::string CUSTOM_USER = "rwuser@admin";
+}  // namespace
+
+std::set<std::string> globleAllowedCommands{"isMaster",
+                                            "listCollections",
+                                            "getLastError",
+                                            "resetError",
+                                            "logout",
+                                            "updateUser",
+                                            "authenticate",
+                                            "saslStart",
+                                            "saslContinue",
+                                            "buildInfo",
+                                            "serverStatus",
+                                            "listDatabases",
+                                            "ping"};
+
+/*check if allow commands against admin/config database*/
+static bool _checkIfAllowedCommands(const std::string& cmdname) {
+    if (globleAllowedCommands.find(cmdname) != globleAllowedCommands.end()) {
+        return true;
+    }
+    return false;
+}
+
+std::set<std::string> globleDisableCommands{"authSchemaUpgrade",
+                                            "replSetElect",
+                                            "replSetUpdatePosition",
+                                            "appendOplogNote",
+                                            "replSetFreeze",
+                                            "replSetInitiate",
+                                            "replSetMaintenance",
+                                            "replSetReconfig",
+                                            "replSetStepDown",
+                                            "replSetSyncFrom",
+                                            "replSetRequestVotes",
+                                            "resync",
+                                            "applyOps",
+                                            "replSetGetConfig",
+                                            "flushRouterConfig",
+                                            "flushrouterconfig",
+                                            "addShard",
+                                            "addshard",
+                                            "cleanupOrphaned",
+                                            "checkShardingIndex",
+                                            "listShards",
+                                            "listshards",
+                                            "removeShard",
+                                            "removeshard",
+                                            "getShardMap",
+                                            "setShardVersion",
+                                            "getShardVersion",
+                                            "getshardversion",
+                                            "addShardToZone",
+                                            "addshardtozone",
+                                            "removeShardFromZone",
+                                            "removeshardfromzone",
+                                            "shardingState",
+                                            "unsetSharding",
+                                            "copydb",
+                                            "clone",
+                                            "clean",
+                                            "connPoolSync",
+                                            "connpoolsync",
+                                            "compact",
+                                            "setParameter",
+                                            "repairDatabase",
+                                            "repairCursor",
+                                            "shutdown",
+                                            "logRotate",
+                                            "connPoolStats",
+                                            "dbHash",
+                                            "dbhash",
+                                            "diagLogging",
+                                            "driverOIDTest",
+                                            "getCmdLineOpts",
+                                            "getLog",
+                                            "hostInfo",
+                                            "_isSelf",
+                                            "netstat",
+                                            "profile",
+                                            "shardConnPoolStats",
+                                            "validate",
+                                            "handshake",
+                                            "_recvChunkAbort",
+                                            "_recvChunkCommit",
+                                            "_recvChunkStart",
+                                            "_recvChunkStatus",
+                                            "replSetFresh",
+                                            "mapreduce.shardedfinish",
+                                            "_transferMods",
+                                            "replSetHeartbeat",
+                                            "replSetGetRBID",
+                                            "_migrateClone",
+                                            "writeBacksQueued",
+                                            "_getUserCacheGeneration",
+                                            "splitVector",
+                                            "split",
+                                            "moveChunk",
+                                            "movechunk",
+                                            "getPrevError",
+                                            "mergeChunks",
+                                            "movePrimary",
+                                            "moveprimary",
+                                            "authSchemaUpgrade",
+                                            "updateZoneKeyRange",
+                                            "updatezonekeyRange",
+                                            "balancerStart",
+                                            "balancerStop",
+                                            "balancerStatus"};
+
+bool Command::_checkIfDisableCommands(const std::string& cmdname) {
+    // below cmds is hw contains, the
+    // applyOps, flushRouterConfig, flushrouterconfig, addShard, addshard, cleanupOrphaned
+    // checkShardingIndex, listShards, listshards, removeShard, removeshard, getShardMap
+    // setShardVersion, shardingState, unsetSharding, dbHash, dbhash
+    //
+    // below cmds is hw do not contains
+    // setReadOnly
+
+    if (globleDisableCommands.find(cmdname) != globleDisableCommands.end()) {
+        return true;
+    }
+    return false;
+}
+
+static bool _isDisabledCommandsAndPameterForCustomer(Command* c,
+                                                     const std::string& cmdname,
+                                                     const std::string& dbname,
+                                                     const BSONObj& cmdObj) {
+    if (cmdname == "dropDatabase" || cmdname == "createIndexes" || cmdname == "dropIndexes"
+        || cmdname == "convertToCapped") {
+        if (dbname == "admin") {
+            return true;
+        }
+        return false;
+    }
+
+    if (cmdname == "findAndModify" || cmdname == "findandmodify" || cmdname == "group" ||
+        cmdname == "mapreduce" || cmdname == "mapReduce" || cmdname == "aggregate") {
+        const std::string fullNs = c->parseNs(dbname, cmdObj);
+        if (fullNs == "admin.system.users" || fullNs == "admin.system.roles") {
+            return true;
+        }
+        return false;
+    }
+
+    return false;
+}
+
+static Status _checkAuthForUser(Command* c,
+                                Client* client,
+                                const std::string& dbname,
+                                const BSONObj& cmdObj) {
+
+    // because user may connect with inner network because some case in our clould instance,
+    // add temp fix that : when user is auth, do not check the connection way.
+    // TODO: when our cloud instance is fix, need fix this back.
+    if (AuthorizationSession::get(client)->isAuthWithCustomer() ||
+        (client->isCustomerConnection() &&
+         AuthorizationSession::get(client)
+             ->isAuthWithCustomerOrNoAuthUser())) {  // check if consumer
+
+        std::string cmdname = c->getName();
+
+        if (Command::_checkIfDisableCommands(cmdname)) {
+            return Status(ErrorCodes::CommandNotFound, "no this command " + cmdname);
+        }
+
+        if (_checkIfAllowedCommands(cmdname)) {  // check if allowed commands
+            LOG(4) << "Allow Mongodb consumer run command " << cmdname << "against the " << dbname
+                   << " database.";
+        } else if (_isDisabledCommandsAndPameterForCustomer(c, cmdname, dbname, cmdObj)) {
+            return Status(ErrorCodes::Unauthorized, "unauthorized");
+        }
+    }
+
+    return Status::OK();
+}
+
+std::set<std::string> globalReadComand{"find",
+                                       "getMore",
+                                       "authenticate",
+                                       "collStats",
+                                       "collMod",
+                                       "connectionStatus",
+                                       "count",
+                                       "dbStats",
+                                       "dbstats",
+                                       "explain",
+                                       "filemd5",
+                                       "geoNear",
+                                       "getLastError",
+                                       "getParameter",
+                                       "isMaster",
+                                       "killOp",
+                                       "listCollections",
+                                       "listCommands",
+                                       "listDatabases",
+                                       "listIndexes",
+                                       "logout",
+                                       "saslStart",
+                                       "saslContinue",
+                                       "usersInfo",
+                                       "rolesInfo",
+                                       "serverStatus",
+                                       "buildInfo",
+                                       "buildinfo",
+                                       "distinct",
+                                       "isMaster",
+                                       "isdbgrid",
+                                       "planCacheListFilters",
+                                       "planCacheListPlans",
+                                       "planCacheListQueryShapes",
+                                       "availableQueryOptions",
+                                       "availablequeryoptions",
+                                       "datasize",
+                                       "dataSize",
+                                       "features",
+                                       "ping",
+                                       "whatsmyuri"
+};
+
+Status Command::_checkWriteAllow(OperationContext* txn,
+                                 const std::string& dbname,
+                                 const BSONObj& cmdObj) {
+    auto client = txn->getClient();
+    invariant(AuthorizationSession::get(client)->getAuthorizationManager().isAuthEnabled());
+
+    if (!serverGlobalParams.readOnly) {
+        return Status::OK();
+    }
+
+    if (AuthorizationSession::get(client)->isAuthWithCustomer() ||
+        (client->isCustomerConnection() &&
+         AuthorizationSession::get(client)
+             ->isAuthWithCustomerOrNoAuthUser())) {  // check if consumer
+        if (globalReadComand.find(_name) == globalReadComand.end()) {
+            index_err() << "No storage space commandName: " << _name;
+            return Status(ErrorCodes::Unauthorized,
+                          str::stream() << getName() << " No storage space to execute: " << _name);
+        }
+    }
+
+    return Status::OK();
+}
+
 static Status _checkAuthorizationImpl(Command* c,
                                       OperationContext* txn,
                                       const std::string& dbname,
@@ -258,12 +506,41 @@ static Status _checkAuthorizationImpl(Command* c,
         if (status == ErrorCodes::Unauthorized) {
             mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
             c->redactForLogging(&cmdToLog);
+            index_err() << "checkAuthForOperation not authorized on: " << dbname 
+                << " cmd: " << c->getName();
             return Status(ErrorCodes::Unauthorized,
                           str::stream() << "not authorized on " << dbname << " to execute command "
                                         << cmdToLog.toString());
         }
         if (!status.isOK()) {
+            index_err() << "checkAuthForOperation authorized faild cmd: " << c->getName() 
+                << "; dbname: " << dbname << "; status: " << status;
             return status;
+        }
+
+        status = _checkAuthForUser(c, client, dbname, cmdObj);
+        if (status.isOK()) {
+            status = c->_checkWriteAllow(txn, dbname, cmdObj);
+        } else {
+            index_err() << "_checkAuthForUser faild: " << dbname << " cmd: " << c->getName() 
+                << "; status: " << status;
+        }
+
+        if (!status.isOK()) {
+            index_err() << "_checkWriteAllow or _checkAuthForUser faild: " << dbname << 
+                " cmd: " << c->getName() << "; status: " << status;
+            mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
+            c->redactForLogging(&cmdToLog);
+
+            if (status == ErrorCodes::CommandNotFound) {
+                return Status(ErrorCodes::Unauthorized,
+                              str::stream() << "no this command" << cmdToLog.toString());
+            } else {
+                return Status(ErrorCodes::Unauthorized,
+                              str::stream() << "not authorized on " << dbname
+                                            << " to execute command "
+                                            << cmdToLog.toString());
+            }
         }
     } else if (c->adminOnly() && c->localHostOnlyIfNoAuth(cmdObj) &&
                !client->getIsLocalHostConnection()) {
@@ -273,6 +550,8 @@ static Status _checkAuthorizationImpl(Command* c,
     }
     return Status::OK();
 }
+
+/*****modify mongodb code end*****/
 
 Status Command::checkAuthorization(Command* c,
                                    OperationContext* txn,
@@ -367,6 +646,17 @@ void Command::generateErrorResponse(OperationContext* txn,
                                     const DBException& exception) {
     LOG(1) << "assertion while executing command: " << exception.toString();
     _generateErrorResponse(txn, replyBuilder, exception, rpc::makeEmptyMetadata());
+}
+
+bool Command::hideDataBase(const std::string& dbname) const {
+    if (!GLOBAL_CONFIG_GET(ShowInternalInfo)) {
+        if (dbname == GcDbName) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+    return false;
 }
 
 namespace {

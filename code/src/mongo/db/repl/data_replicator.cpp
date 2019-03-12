@@ -39,6 +39,7 @@
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/client/fetcher.h"
 #include "mongo/client/remote_command_retry_scheduler.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/jsobj.h"
@@ -783,7 +784,7 @@ void DataReplicator::_scheduleLastOplogEntryFetcher_inlock(Fetcher::CallbackFn c
                                    query,
                                    callback,
                                    rpc::ServerSelectionMetadata(true, boost::none).toBSON(),
-                                   RemoteCommandRequest::kNoTimeout,
+                                   Milliseconds(kLastOplogEntryFetcherTimeoutMS),
                                    RemoteCommandRetryScheduler::makeRetryPolicy(
                                        numInitialSyncOplogFindAttempts,
                                        executor::RemoteCommandRequest::kNoTimeout,

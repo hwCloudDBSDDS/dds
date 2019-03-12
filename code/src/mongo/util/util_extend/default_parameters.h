@@ -7,50 +7,83 @@
 
 namespace mongo {
 
+// These default parameters should follow the following rules:
+// a. kDefaultConfigElectionTimeoutPeriod = kDefaultConfigHeartbeatTimeoutPeriod;
+// b. kDefaultShardHeartbeatTimeoutPeriod >= kDefaultConfigElectionTimeoutPeriod +
+//        timeReservedForTransitionToPrimary;
+// c. timeReservedForTransitionToPrimary > kDefaultConfigElectionTimeoutOffsetSkew *
+// numberOfConfigMembers +
+//        kDefaultConfigCatchUpTimeoutPeriod + kDefaultConfigOplogBufferGetBatchTimeout * 2;
+// d. kDefaultShardHeartbeatSchedulerTimeout= kDefaultShardHeartbeatTimeoutPeriod;
+// e. kDefaultShardFailureDetectionTimeout = kDefaultShardHeartbeatTimeoutPeriod;
+// f. kDefaultShardFailureDetectionInterval = kDefaultShardHeartbeatInterval * 0.5;
+// g. kDefaultClientExecCommandMaxRetryTimeout >= kDefaultShardHeartbeatTimeoutPeriod +
+//        timeReservedForShardTakeover.
+
 // 1. Parameters for config and shard takeover
 
-// time for shard takeover = 30s
-// time for chunk takeover (100 chunks per shard) = 20s
-// time for shard heartbeat timeout = 10s
-//
-// time for config takeover = 9.5s
-// time for config init = 4.5s
-// time for config heartbeat = 5s
+extern Seconds kDefaultConfigHeartbeatTimeoutPeriod;
+extern Milliseconds kDefaultConfigElectionTimeoutPeriod;
+extern Milliseconds kDefaultShardHeartbeatTimeoutPeriod;
 
+#ifndef BUILD_MOCK
+const Milliseconds kDefaultConfigHeartbeatInterval(500);
+
+const Milliseconds kDefaultShardHeartbeatInterval(1000);
+const Milliseconds kDefaultShardFailureDetectionInterval(500);
+const Milliseconds kDefaultShardHeartBeatOpTimeout(3000);
+
+const Milliseconds kDefaultConfigCatchUpTimeoutPeriod(1000);
+const Milliseconds kDefaultConfigOplogBufferGetBatchTimeout(500);
+
+const Milliseconds kDefaultUpdateDbRetryInterval(500);
+#else
 const Milliseconds kDefaultConfigHeartbeatInterval(1000);
-const Seconds kDefaultConfigHeartbeatTimeoutPeriod(5);
 
-const Milliseconds kDefaultConfigElectionTimeoutPeriod(5000);
+const Milliseconds kDefaultShardHeartbeatInterval(1000);
+const Milliseconds kDefaultShardFailureDetectionInterval(500);
 
 const Milliseconds kDefaultConfigCatchUpTimeoutPeriod(2000);
 const Milliseconds kDefaultConfigOplogBufferGetBatchTimeout(1000);
 
-const Milliseconds kDefaultShardHeartbeatInterval(1000);
-const Milliseconds kDefaultShardHeartbeatRetryInterval(10);
-const Milliseconds kDefaultShardHeartbeatTimeoutPeriod(10000);
+const Milliseconds kDefaultUpdateDbRetryInterval(1000);
+#endif
 
-const Milliseconds kDefaultFailureDetectionInterval(500);
+// Time reserved for a config server primary candidate to win an election
+const Milliseconds kDefaultConfigElectionTimeoutOffsetSkew(100);
+
+const Milliseconds kDefaultShardHeartbeatRetryInterval(10);
+
+const Milliseconds kDefaultReserveForShardHeartbeatStartup(100);
+
+
 const Milliseconds kDefaultRegisterReservedTime(10000);
 
-const Milliseconds kDefaultClientExecCommandMaxRetryTimeout(26000);
-const Milliseconds kDefaultClientExecCommandRetryInterval(3000);
+const Milliseconds kDefaultClientExecCommandMaxRetryTimeout(30000);
+const Milliseconds kDefaultClientExecCommandRetryInterval(1000);
+const Milliseconds kDefaultClientExecCommandRetryMinInterval(500);
+
+const unsigned int kDefaultClientExecCommandSleepAfterTimes(3);
+
+const Milliseconds kDefaultBindRetryInterval(500);
+
+// Time reserved for a config server to trans secondary to primary
+const std::string kConfigSecondaryToPrimaryJobName = "ConfigSecondaryToPrimary";
+const Milliseconds kDefaultConfigSecondaryToPrimaryTimeout(120000);
+
 // 2. Parameters for suspended jobs detection
 
 const std::string kConfigHeartbeatSchedulerJobName = "ConfigServerHeartbeatScheduler";
-const Milliseconds kDefaultConfigHeartbeatSchedulerTimeout(5000);
-
+extern Milliseconds kDefaultConfigHeartbeatSchedulerTimeout;
 
 const std::string kShardHeartbeatSchedulerJobName = "ShardServerHeartbeatScheduler";
-const Milliseconds kDefaultShardHeartbeatSchedulerTimeout(10000);
+extern Milliseconds kDefaultShardHeartbeatSchedulerTimeout;
 
-
-const std::string kShardServerFailureDetectionJobName = "ShardServerFailureDetection";
-const Milliseconds kDefaultShardServerFailureDetectionTimeout(10000);
-
-const Milliseconds kShardServerFailureDetectionInterval(500);
+const std::string kShardFailureDetectionJobName = "ShardServerFailureDetection";
+extern Milliseconds kDefaultShardFailureDetectionTimeout;
 
 const std::string kBalancerJobName = "Balancer";
-const Milliseconds kDefaultBalancerTimeout(60000);
+extern Milliseconds kDefaultBalancerTimeout;
 
 const Milliseconds kBalanceRoundDefaultInterval(10000);
 // Sleep between balancer rounds in the case where the last round found some chunks which needed to
@@ -60,12 +93,11 @@ const Milliseconds kBalanceRoundDefaultInterval(10000);
 const Milliseconds kShortBalanceRoundInterval(1000);
 
 // Time out value for hang task
-const Milliseconds kHangTaskTimeout(120000);
 const Milliseconds kMaxReleaseRootFolderTaskInterval(1000);
 const Milliseconds kMaxReleaseRootFolderForOneChunkInterval(500);
 
-// Check whether to enter debuge-GDB mode.
-void checkGdb();
+//time for status renew
+const Milliseconds kDefaultStatusRenewalInterval(500);
+const Milliseconds kDefaultShardExitTimeoutPeriod(15000);
 
 }
-

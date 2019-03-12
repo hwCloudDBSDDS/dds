@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <set>
 #include <vector>
 
 #include "mongo/config.h"
@@ -125,6 +126,8 @@ public:
      */
     virtual SockAddr localAddr() const = 0;
 
+    virtual HostAndPort local() const = 0;
+
     /**
      * Whether or not this is still connected.
      */
@@ -193,6 +196,23 @@ public:
      * remoteHost - The hostname of the remote server.
      */
     virtual bool secure(SSLManagerInterface* ssl, const std::string& remoteHost) = 0;
+
+
+    /* whitelist interfaces */
+    void setInAdminWhiteList() {
+        _inAdminWhiteList = true;
+    }
+
+    bool inAdminWhiteList() {
+        return _inAdminWhiteList;
+    }
+
+    bool isCustomerConnection() const {
+        return (!_inAdminWhiteList);
+    }
+
+private:
+    bool _inAdminWhiteList{false};
 };
 
 }  // namespace mongo

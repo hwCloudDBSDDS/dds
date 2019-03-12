@@ -103,7 +103,10 @@ Status BuildTable(
     unique_ptr<WritableFileWriter> file_writer;
     {
       unique_ptr<WritableFile> file;
-      s = NewWritableFile(env, fname, &file, env_options);
+      EnvOptions new_options(env_options);
+      new_options.io_pri = IO_PRIORITY_LOW;
+      s = NewWritableFile(env, fname, &file, new_options);
+      
       if (!s.ok()) {
         EventHelpers::LogAndNotifyTableFileCreationFinished(
             event_logger, ioptions.listeners, dbname, column_family_name, fname,
@@ -131,12 +134,13 @@ Status BuildTable(
         &snapshots, earliest_write_conflict_snapshot, env,
         true /* internal key corruption is not ok */, range_del_agg.get());
     c_iter.SeekToFirst();
+    int flag = 0;//printf merge stream
     for (; c_iter.Valid(); c_iter.Next()) {
       const Slice& key = c_iter.key();
       const Slice& value = c_iter.value();
       builder->Add(key, value);
       meta->UpdateBoundaries(key, c_iter.ikey().sequence);
-
+      flag ++;//printf merge stream
       // TODO(noetzli): Update stats after flush, too.
       if (io_priority == Env::IO_HIGH &&
           IOSTATS(bytes_written) >= kReportFlushIOStatsEvery) {
@@ -193,12 +197,22 @@ Status BuildTable(
         }
         s = it->status();
       }
+
+      if (!s.ok()) {
+        Log(InfoLogLevel::ERROR_LEVEL, ioptions.info_log,
+            "[JOB %d] read file (%s) failed %s", job_id, fname.c_str(), s.ToString().c_str());
+      }
     }
   }
 
   // Check for input iterator errors
   if (!iter->status().ok()) {
     s = iter->status();
+  }
+
+  if (!s.ok()) {
+    Log(InfoLogLevel::ERROR_LEVEL, ioptions.info_log,
+        "[JOB %d] read file(%s) failed %s", job_id, fname.c_str(), s.ToString().c_str());
   }
 
   if (!s.ok() || meta->fd.GetFileSize() == 0) {

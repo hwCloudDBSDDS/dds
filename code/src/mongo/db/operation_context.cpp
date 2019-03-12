@@ -78,13 +78,13 @@ MONGO_FP_DECLARE(checkForInterruptFail);
 OperationContext::OperationContext(Client* client, unsigned int opId)
     : _client(client),
       _opId(opId),
-      _cmdFlag(NONE),
-      _elapsedTime(client ? client->getServiceContext()->getTickSource()
-                          : SystemTickSource::get()) {}
+      _elapsedTime(client ? client->getServiceContext()->getTickSource() : SystemTickSource::get()),
+      _buildInMode(false),
+      _isCustomerTxn(false) {}
 
 void OperationContext::setDeadlineAndMaxTime(Date_t when, Microseconds maxTime) {
-    invariant(!getClient()->isInDirectClient());
-    uassert(40120, "Illegal attempt to change operation deadline", !hasDeadline());
+    // invariant(!getClient()->isInDirectClient());
+    // uassert(40120, "Illegal attempt to change operation deadline", !hasDeadline());
     _deadline = when;
     _maxTime = maxTime;
 }
@@ -333,7 +333,7 @@ StatusWith<stdx::cv_status> OperationContext::waitForConditionOrInterruptNoAsser
         }
         const auto clockSource = getServiceContext()->getPreciseClockSource();
         if (clockSource->tracksSystemClock()) {
-            return cv.wait_until(m, deadline.toSystemTimePoint());
+            return cv.wait_for(m, Milliseconds(deadline - Date_t::now()).toSteadyDuration());
         }
 
         // The following cases only occur during testing, when the precise clock source is
@@ -408,9 +408,6 @@ void OperationContext::setLockState(std::unique_ptr<Locker> locker) {
     dassert(locker);
     _locker = std::move(locker);
 }
-
-
-
 
 
 }  // namespace mongo

@@ -1,4 +1,3 @@
-
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/repl/repl_extend/shard_server_heartbeat_args.h"

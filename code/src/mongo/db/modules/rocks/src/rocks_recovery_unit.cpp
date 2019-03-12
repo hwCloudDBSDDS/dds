@@ -30,30 +30,32 @@
 
 #include "mongo/platform/basic.h"
 
+
 #include "rocks_recovery_unit.h"
+
 #include <rocksdb/comparator.h>
 #include <rocksdb/db.h>
 #include <rocksdb/iterator.h>
-#include <rocksdb/slice.h>
 #include <rocksdb/options.h>
 #include <rocksdb/perf_context.h>
-#include <rocksdb/write_batch.h>
+#include <rocksdb/slice.h>
 #include <rocksdb/utilities/write_batch_with_index.h>
+#include <rocksdb/write_batch.h>
 
 #include "mongo/base/checked_cast.h"
+#include "mongo/base/string_data.h"
+#include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/s/operation_sharding_state.h"
+#include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/storage/journal_listener.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/log.h"
-#include "mongo/db/client.h"
-#include "mongo/db/s/operation_sharding_state.h"
-#include "mongo/db/s/sharded_connection_info.h"
-#include "mongo/base/string_data.h"
 
+#include "rocks_engine.h"
 #include "rocks_transaction.h"
 #include "rocks_util.h"
-#include "rocks_engine.h"
 
 #include "rocks_snapshot_manager.h"
 
@@ -110,9 +112,13 @@ namespace mongo {
             virtual void Seek(const rocksdb::Slice& target) {
                 startOp();
                 std::unique_ptr<char[]> buffer(new char[_prefix.size() + target.size()]);
-                memcpy(buffer.get(), _prefix.data(), _prefix.size());
-                memcpy(buffer.get() + _prefix.size(), target.data(), target.size());
-                _baseIterator->Seek(rocksdb::Slice(buffer.get(), _prefix.size() + target.size()));
+                if (buffer) {
+                    memcpy(buffer.get(),  _prefix.data(), _prefix.size());
+                    memcpy(buffer.get() + _prefix.size(), target.data(),
+                             target.size());
+                    _baseIterator->Seek(
+                        rocksdb::Slice(buffer.get(), _prefix.size() + target.size()));
+                }
                 endOp();
             }
 
@@ -129,8 +135,8 @@ namespace mongo {
             }
 
             virtual void SeekForPrev(const rocksdb::Slice& target) {
-              // noop since we don't use it and it's only available in
-              // RocksDB 4.12 and higher
+                // noop since we don't use it and it's only available in
+                // RocksDB 4.12 and higher
             }
 
             virtual rocksdb::Slice key() const {
@@ -148,7 +154,8 @@ namespace mongo {
             virtual void SeekPrefix(const rocksdb::Slice& target) {
                 std::unique_ptr<char[]> buffer(new char[_prefix.size() + target.size()]);
                 memcpy(buffer.get(), _prefix.data(), _prefix.size());
-                memcpy(buffer.get() + _prefix.size(), target.data(), target.size());
+                memcpy(buffer.get() + _prefix.size(), target.data(),
+                         target.size());
 
                 std::string tempUpperBound = rocksGetNextPrefix(
                     rocksdb::Slice(buffer.get(), _prefix.size() + target.size()));
@@ -207,11 +214,11 @@ namespace mongo {
 
     std::atomic<int> RocksRecoveryUnit::_totalLiveRecoveryUnits(0);
 
-    RocksRecoveryUnit::RocksRecoveryUnit(RocksSnapshotManager* snapshotManager, ChunkRocksDBInstance* db)
-        :
-         _snapshotManager(snapshotManager),
-         _db(db),
-         _transaction(db->GetTransactionEngine()),
+    RocksRecoveryUnit::RocksRecoveryUnit(RocksSnapshotManager* snapshotManager,
+                                         ChunkRocksDBInstance* db)
+        : _snapshotManager(snapshotManager),
+          _db(db),
+          _transaction(db->GetTransactionEngine()),
           _writeBatch(rocksdb::BytewiseComparator(), 0, true),
           _snapshot(nullptr),
           _preparedSnapshot(nullptr),
@@ -239,24 +246,26 @@ namespace mongo {
             _commit(_txn);
         }
 
+
         try {
             for (Changes::const_iterator it = _changes.begin(), end = _changes.end(); it != end;
-                    ++it) {
+                 ++it) {
                 (*it)->commit();
             }
             _changes.clear();
         } catch (...) {
             std::terminate();
         }
+
+
         _releaseSnapshot();
+
     }
 
-    void RocksRecoveryUnit::abortUnitOfWork() {
-        _abort();
-    }
+    void RocksRecoveryUnit::abortUnitOfWork() { _abort(); }
 
     void RocksRecoveryUnit::goingToWaitUntilDurable() {
-      // noop, based on recent discussion with Geert
+        // noop, based on recent discussion with Geert
     }
 
     bool RocksRecoveryUnit::waitUntilDurable() {
@@ -288,14 +297,20 @@ namespace mongo {
         return Status::OK();
     }
 
-    void RocksRecoveryUnit::clearReadFromMajorityCommittedSnapshot() {
+    void RocksRecoveryUnit::clearSnapshotInfo() {
+        if(serverGlobalParams.clusterRole != ClusterRole::ConfigServer)
+            return; 
+
         _readFromMajorityCommittedSnapshot = false;
-        return;
+        if (_snapshot) {
+            _transaction.abort();
+            getDB()->ReleaseSnapshot(_snapshot);
+            _snapshot = nullptr;
+        }
     }
 
     boost::optional<SnapshotName> RocksRecoveryUnit::getMajorityCommittedSnapshot() const {
-        if (!_readFromMajorityCommittedSnapshot)
-            return {};
+        if (!_readFromMajorityCommittedSnapshot) return {};
         return SnapshotName(GetSnapshotManager()->getCommittedSnapshot().get()->name);
     }
 
@@ -322,31 +337,21 @@ namespace mongo {
         _preparedSnapshot = _db->GetDB()->GetSnapshot();
     }
 
-    bool RocksRecoveryUnit::isBelongRightDB(rocksdb::WriteBatchWithIndex* wb, ChunkRocksDBInstance* db) 
-    {
-        rocksdb::WBWIIterator* iter = wb->NewIterator(db->GetColumnFamily(ChunkRocksDBInstance::dataColumnFamilyId));
+    bool RocksRecoveryUnit::isBelongRightDB(rocksdb::WriteBatchWithIndex* wb,
+                                            ChunkRocksDBInstance* db) {
+        rocksdb::WBWIIterator* iter =
+            wb->NewIterator(db->GetColumnFamily(ChunkRocksDBInstance::dataColumnFamilyId));
         if (nullptr == iter) {
             return false;
         }
 
         iter->SeekToFirst();
-        while(iter->Valid()) {
+        while (iter->Valid()) {
             if (!db->getColumnFamilyDescriptionInPreperSplit(rocksdb::kDefaultColumnFamilyName)
-                ->DoesRecordBelongToChunk(iter->Entry().key, iter->Entry().value))
-            {
-                index_LOG(1)  << "[splitChunk] RocksRecoveryUnit::isBelongRightDB()-> belong right db keyLow: "
-                    << db->GetMetadata().GetKeyRange().GetKeyLow() << "; keyHigh: " << 
-                    db->GetMetadata().GetKeyRange().GetKeyHigh() << "; key: " << iter->Entry().key.ToString() 
-                    << "; value: " << iter->Entry().value.ToString();
-
+                     ->DoesRecordBelongToChunk(iter->Entry().key, iter->Entry().value)) {
                 delete iter;
                 return true;
             }
-
-            index_LOG(1)  << "[splitChunk] RocksRecoveryUnit::isBelongRightDB()-> not belong right db keyLow: "
-                << db->GetMetadata().GetKeyRange().GetKeyLow() << "; keyHigh: " <<  
-                db->GetMetadata().GetKeyRange().GetKeyHigh() << "; key: " << iter->Entry().key.ToString() << 
-                "; value: " << iter->Entry().value.ToString();
 
             iter->Next();
         }
@@ -355,11 +360,11 @@ namespace mongo {
         return false;
     }
 
-    void RocksRecoveryUnit::throwExceptionIfWriteBatchBelongsToChildSide(OperationContext* txn, 
-                                                                         rocksdb::WriteBatchWithIndex* writeBatch,
-                                                                         ChunkRocksDBInstance* db,
-                                                                         bool isSplitOnGoing) {
-        /* -------------todo , temporary realization: block all write IO of right db;------------------*/
+    void RocksRecoveryUnit::throwExceptionIfWriteBatchBelongsToChildSide(
+        OperationContext* txn, rocksdb::WriteBatchWithIndex* writeBatch, ChunkRocksDBInstance* db,
+        bool isSplitOnGoing) {
+        /* -------------todo , temporary realization: block all write IO of right
+         * db;------------------*/
         if (db->isSystemChunk()) {
             return;
         }
@@ -368,56 +373,18 @@ namespace mongo {
             mongo::ChunkVersion wanted;
             getChunkVersion(txn, db, received, wanted);
             _abort();
-            index_warning() << "[splitChunk] split belong right db, ns: " << txn->getNs().toString() << ";chunkid"
-                << db->getLeftChunkID();
-            throw mongo::SendStaleConfigException(txn->getNs().ns(),
-                str::stream() << "chunk " << txn->getNs().ns() << " chunk version not equal:",
-                received,
-                wanted);
+            NamespaceString nss = db->GetMetadata().GetCollection().getNs();
+            index_warning() << "[splitChunk] split belong right db, ns: " << nss << ";chunkid"
+                            << db->getLeftChunkID();
+            throw mongo::SendStaleConfigException(
+                nss.ns(), str::stream() << "chunk " << nss.ns() << " chunk version not equal:",
+                received, wanted);
         } else {
-            index_LOG(1)  << "[splitChunk] split not belong right db, ns: " << txn->getNs().toString() << ";chunkid"
-                << db->getLeftChunkID();
+            index_LOG(1) << "[splitChunk] split not belong right db, ns: "
+                         << db->GetMetadata().GetCollection().getNs() << ";chunkid"
+                         << db->getLeftChunkID();
             return;
         }
-        /* --------------------------------------------------------------------------------------------*/
-
-        mongo::ChunkVersion received;
-        mongo::ChunkVersion wanted;
-        /**************************test******************************************/
-        getChunkVersion(txn, db, received, wanted);
-        index_LOG(1)  << "[splitChunk] RocksRecoveryUnit::throwExceptionIfWriteBatchBelongsToChildSide() recevid ChunkVersion: "
-            << received << "; wanted: " << wanted << "; isSplitOnGoing: " << isSplitOnGoing;
-        /**************************test******************************************/
-        if (isSplitOnGoing) {
-            if (!isBelongRightDB(writeBatch, db)) {
-                index_LOG(1)  << "[splitChunk] spliting belong right db";
-                return;
-            }
-            index_LOG(1) << "[splitChunk] spliting not belong right db";
-            getChunkVersion(txn, db, received, wanted);
-        } else {
-            index_LOG(1)  << "[splitChunk] not spliting";
-            getChunkVersion(txn, db, received, wanted);
-            if (received.equals(wanted)){
-                index_LOG(1)  << "[splitChunk] not spliting version not equal";
-                return;
-            }
-
-            index_LOG(1)  << "[splitChunk] not spliting version equal";
-            if (!isBelongRightDB(writeBatch, db)) {
-                index_LOG(1)  << "[splitChunk] not spliting not belong right db";
-                return;
-            }
-
-            index_LOG(1)  << "[splitChunk] not spliting belong right db";
-        }
-        
-        _abort();
-
-        throw mongo::SendStaleConfigException(txn->getNs().ns(),
-                str::stream() << "chunk " << txn->getNs().ns() << " chunk version not equal:",
-                received,
-                wanted);
     }
 
     void RocksRecoveryUnit::_commit(OperationContext* txn) {
@@ -434,16 +401,17 @@ namespace mongo {
             addCountOfActive(isSplitOnGoing, _db);
 
             rocksdb::Status status;
-            try{
-                //TODO
+            try {
+                // TODO
                 for (auto pair : _deltaCounters) {
                     auto& counter = pair.second;
-                    counter._value->fetch_add(counter._delta, std::memory_order::memory_order_relaxed);
-                    long long newValue = counter._value->load(std::memory_order::memory_order_relaxed);
-                    LOG(3)<<"RocksRecoveryUnit::_commit counterKey:"<<pair.first
-                          <<",newValue:"<<newValue;
+                    counter._value->fetch_add(counter._delta,
+                                              std::memory_order::memory_order_relaxed);
+                    long long newValue =
+                        counter._value->load(std::memory_order::memory_order_relaxed);
                     _db->GetCounterManager()->updateCounter(pair.first, newValue, wb);
                 }
+
                 rrucmtPrpFlg = true;
 
                 rocksdb::WriteOptions writeOptions;
@@ -451,14 +419,13 @@ namespace mongo {
                 status = getDB()->Write(writeOptions, wb);
                 rrucmtDbWrtFlg = true;
 
-            } catch(const std::exception& e) {
+            } catch (const std::exception& e) {
                 decCountOfActive(isSplitOnGoing, _db);
-                throw  e;
-            } 
+
+                throw e;
+            }
 
             decCountOfActive(isSplitOnGoing, _db);
-
-            /* END:   Added for PN:UpdateTpoint by Xiexiaoqin, 2017/5/23 */
             // rocksdb return err but not timeout,return error
             if (status.IsTimedOut()) {
                 invariantRocksOKWithNoCore(status);
@@ -469,13 +436,12 @@ namespace mongo {
 
             transaction()->commit();
         }
+
         _deltaCounters.clear();
         _writeBatch.Clear();
-
     }
 
-    void RocksRecoveryUnit::decCountOfActive(bool isSplitOnGoing, ChunkRocksDBInstance* db) 
-    {
+    void RocksRecoveryUnit::decCountOfActive(bool isSplitOnGoing, ChunkRocksDBInstance* db) {
         if (isSplitOnGoing) {
             db->GetTransactionEngine()->subtractCountOfActiveWriteBatchesDuringSplit();
         } else {
@@ -493,8 +459,7 @@ namespace mongo {
         }
     }
 
-    void RocksRecoveryUnit::addCountOfActive(bool isSplitOnGoing, ChunkRocksDBInstance* db)
-    {
+    void RocksRecoveryUnit::addCountOfActive(bool isSplitOnGoing, ChunkRocksDBInstance* db) {
         if (isSplitOnGoing) {
             db->GetTransactionEngine()->increaseCountOfActiveWriteBatchesDuringSplit();
         } else {
@@ -502,40 +467,38 @@ namespace mongo {
         }
     }
 
-    void RocksRecoveryUnit::getChunkVersion(OperationContext* txn, 
-                                            const ChunkRocksDBInstance* db,
+    void RocksRecoveryUnit::getChunkVersion(OperationContext* txn, const ChunkRocksDBInstance* db,
                                             mongo::ChunkVersion& expectedChunkVersion,
-                                            mongo::ChunkVersion& actualChunkVersion)
-    {
+                                            mongo::ChunkVersion& actualChunkVersion) {
         const auto& oss = OperationShardingState::get(txn);
+        NamespaceString nss = db->GetMetadata().GetCollection().getNs();
         if (oss.hasShardVersion()) {
-            expectedChunkVersion = oss.getShardVersion(txn->getNs());
+            expectedChunkVersion = oss.getShardVersion(nss);
         } else {
             Client* client = txn->getClient();
             ShardedConnectionInfo* info = ShardedConnectionInfo::get(client, false);
             if (!info) {
-                index_LOG(1)  << "[_checkTwoChunkVersionEqual] error info is null";
+                index_LOG(1) << "[_checkTwoChunkVersionEqual] error info is null";
             } else {
-                expectedChunkVersion = info->getVersion(txn->getNs().ns());
+                expectedChunkVersion = info->getVersion(nss.ns());
             }
         }
 
-        index_LOG(1)  << "[_checkTwoChunkVersionEqual]expectedChunkVersion:"<< expectedChunkVersion;
+        index_LOG(1) << "[_checkTwoChunkVersionEqual]expectedChunkVersion:" << expectedChunkVersion;
         actualChunkVersion = db->GetMetadata().GetChunk().getVersion();
-        index_LOG(1)  << "[_checkTwoChunkVersionEqual]actualChunkVersion:" << actualChunkVersion;
-    }      
-    
+        index_LOG(1) << "[_checkTwoChunkVersionEqual]actualChunkVersion:" << actualChunkVersion;
+    }
+
     void RocksRecoveryUnit::_abort() {
         try {
             for (Changes::const_reverse_iterator it = _changes.rbegin(), end = _changes.rend();
-                    it != end; ++it) {
+                 it != end; ++it) {
                 Change* change = *it;
                 LOG(2) << "CUSTOM ROLLBACK " << demangleName(typeid(*change));
                 change->rollback();
             }
             _changes.clear();
-        }
-        catch (...) {
+        } catch (...) {
             std::terminate();
         }
 
@@ -549,10 +512,6 @@ namespace mongo {
         auto ret = _preparedSnapshot;
         _preparedSnapshot = nullptr;
         return ret;
-    }
-
-    void RocksRecoveryUnit::dbReleaseSnapshot(const rocksdb::Snapshot* snapshot) {
-        getDB()->ReleaseSnapshot(snapshot);
     }
 
     const rocksdb::Snapshot* RocksRecoveryUnit::snapshot() {
@@ -572,7 +531,8 @@ namespace mongo {
         return _snapshot;
     }
 
-    rocksdb::Status RocksRecoveryUnit::Get(const rocksdb::Slice& key, std::string* value, rocksdb::ColumnFamilyHandle* cf) {
+    rocksdb::Status RocksRecoveryUnit::Get(const rocksdb::Slice& key, std::string* value,
+                                           rocksdb::ColumnFamilyHandle* cf) {
         cf = ResolveColumnFamily(cf);
         if (_writeBatch.GetWriteBatch()->Count() > 0) {
             std::unique_ptr<rocksdb::WBWIIterator> wb_iterator(_writeBatch.NewIterator(cf));
@@ -592,22 +552,23 @@ namespace mongo {
         return getDB()->Get(options, cf, key, value);
     }
 
-    RocksIterator* RocksRecoveryUnit::NewIterator(std::string prefix, bool isOplog, rocksdb::ColumnFamilyHandle* cf) {
+    RocksIterator* RocksRecoveryUnit::NewIterator(std::string prefix, bool isOplog,
+                                                  rocksdb::ColumnFamilyHandle* cf) {
         cf = ResolveColumnFamily(cf);
         std::unique_ptr<rocksdb::Slice> upperBound(new rocksdb::Slice());
         rocksdb::ReadOptions options;
         options.iterate_upper_bound = upperBound.get();
         options.snapshot = snapshot();
         auto iterator = writeBatch()->NewIteratorWithBase(cf, getDB()->NewIterator(options, cf));
-        auto prefixIterator = new PrefixStrippingIterator(std::move(prefix), iterator,
-                                                          isOplog ? nullptr : _db->GetCompactionScheduler(),
-                                                          std::move(upperBound));
+        auto prefixIterator = new PrefixStrippingIterator(
+            std::move(prefix), iterator, isOplog ? nullptr : _db->GetCompactionScheduler(),
+            std::move(upperBound));
         return prefixIterator;
     }
 
-    RocksIterator* RocksRecoveryUnit::NewIteratorNoSnapshot(rocksdb::DB* db, std::string prefix, rocksdb::ColumnFamilyHandle* cf) {
-        if(cf == nullptr)
-            cf = db->DefaultColumnFamily();
+    RocksIterator* RocksRecoveryUnit::NewIteratorNoSnapshot(rocksdb::DB* db, std::string prefix,
+                                                            rocksdb::ColumnFamilyHandle* cf) {
+        if (cf == nullptr) cf = db->DefaultColumnFamily();
         std::unique_ptr<rocksdb::Slice> upperBound(new rocksdb::Slice());
         rocksdb::ReadOptions options;
         options.iterate_upper_bound = upperBound.get();
@@ -618,12 +579,11 @@ namespace mongo {
 
     void RocksRecoveryUnit::incrementCounter(const rocksdb::Slice& counterKey,
                                              std::atomic<long long>* counter, long long delta) {
+        index_LOG(3) << "RocksRecoveryUnit::incrementCounter"
+                     << ", counterKey:" << counterKey.ToString()
+                     << ", counter:" << counter->load(std::memory_order::memory_order_relaxed)
+                     << ", delta:" << delta;
 
-        LOG(3)<<"@@## RocksRecoveryUnit::incrementCounter"
-              <<", counterKey:"<<counterKey.ToString()
-              <<", counter:" << counter->load(std::memory_order::memory_order_relaxed)
-              <<", delta:" <<delta;
-       
         if (delta == 0) {
             return;
         }
@@ -650,8 +610,5 @@ namespace mongo {
         return checked_cast<RocksRecoveryUnit*>(opCtx->recoveryUnit());
     }
 
-    rocksdb::DB* RocksRecoveryUnit::getDB() const
-    {
-        return _db->GetDB();
-    }
+    rocksdb::DB* RocksRecoveryUnit::getDB() const { return _db->GetDB(); }
 }

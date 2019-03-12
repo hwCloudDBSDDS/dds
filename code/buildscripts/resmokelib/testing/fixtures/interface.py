@@ -35,7 +35,7 @@ class Fixture(object):
 
         self.port = None  # Port that the mongo shell should connect to.
 
-    def setup(self):
+    def setup(self, logflag=""):
         """
         Creates the fixture.
         """

@@ -42,9 +42,8 @@
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"
 #include "mongo/base/status.h"
-#include "mongo/base/remote_command_timeout.h"
-
 #include "mongo/client/replica_set_monitor.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/config.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/auth_index_d.h"
@@ -69,13 +68,6 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/dbwebserver.h"
 #include "mongo/db/exec/working_set_common.h"
-#include "mongo/executor/connection_pool.h"
-#include "mongo/executor/network_interface.h"
-#include "mongo/executor/network_interface_factory.h"
-#include "mongo/executor/network_interface_thread_pool.h"
-#include "mongo/executor/task_executor.h"
-#include "mongo/executor/task_executor_pool.h"
-#include "mongo/executor/thread_pool_task_executor.h"
 #include "mongo/db/ftdc/ftdc_mongod.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/index_rebuilder.h"
@@ -91,11 +83,11 @@
 #include "mongo/db/range_deleter_service.h"
 #include "mongo/db/repair_database.h"
 #include "mongo/db/repl/oplog.h"
+#include "mongo/db/repl/repl_extend/shard_server_heartbeat_coordinator.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_coordinator_external_state_impl.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/replication_coordinator_impl.h"
-#include "mongo/db/repl/repl_extend/shard_server_heartbeat_coordinator.h"
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/repl/topology_coordinator_impl.h"
 #include "mongo/db/restapi.h"
@@ -119,9 +111,18 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_customization_hooks.h"
 #include "mongo/db/ttl.h"
 #include "mongo/db/wire_version.h"
+#include "mongo/executor/connection_pool.h"
+#include "mongo/executor/network_interface.h"
 #include "mongo/executor/network_interface_factory.h"
+#include "mongo/executor/network_interface_factory.h"
+#include "mongo/executor/network_interface_thread_pool.h"
+#include "mongo/executor/task_executor.h"
+#include "mongo/executor/task_executor_pool.h"
+#include "mongo/executor/thread_pool_task_executor.h"
 #include "mongo/platform/process_id.h"
+#include "mongo/platform/random.h"
 #include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/sharding_initialization.h"
@@ -133,9 +134,9 @@
 #include "mongo/transport/transport_layer_legacy.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/cmdline_utils/censor_cmdline.h"
+#include "mongo/util/concurrency/notification.h"
 #include "mongo/util/concurrency/task.h"
 #include "mongo/util/concurrency/thread_name.h"
-#include "mongo/util/concurrency/notification.h"
 #include "mongo/util/exception_filter_win32.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/fast_clock_source_factory.h"
@@ -153,14 +154,21 @@
 #include "mongo/util/static_observer.h"
 #include "mongo/util/text.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/util/util_extend/default_parameters.h"
 #include "mongo/util/version.h"
-#include "mongo/db/modules/rocks/src/GlobalConfig.h"
+#include "mongo/db/modules/rocks/src/rocks_engine.h"
+#include "mongo/util/util_extend/config_reader.h"
+#include "mongo/util/util_extend/status_renewal.h"
+
 
 #if !defined(_WIN32)
 #include <sys/file.h>
 #endif
 
 namespace mongo {
+
+StatusRenewal* globalStatusRenewal = NULL;
 
 using std::unique_ptr;
 using std::cout;
@@ -191,9 +199,14 @@ using repl::ShardServerHeartbeatCoordinator;
 
 const NamespaceString startupLogCollectionName("local.startup_log");
 const Milliseconds kDefaultRetryInterval(500);
+const Milliseconds kNotSwitchTargetRetryInterval(2000);
 const int kMaxRegisterRetries = 2;
 const int kMaxActiveReadyRetries = 2;
 const int kRandomUpBound = 100000000;
+const int kRetryMultiplier = 10;
+
+const std::string registerAbnormalStr = "registration abnormal in phase 1";
+const std::string activateAbnormalStr = "registration abnormal in phase 2";
 
 #ifdef _WIN32
 ntservice::NtServiceDefaultStrings defaultServiceStrings = {
@@ -245,13 +258,12 @@ void logStartup(OperationContext* txn) {
 }
 
 void createStartupExecutor(std::unique_ptr<executor::TaskExecutor>& exec) {
-    auto network =
-        executor::makeNetworkInterface("NetworkInterfaceASIO-ServiceStartup");
+    auto network = executor::makeNetworkInterface("NetworkInterfaceASIO-ServiceStartup");
     auto networkPtr = network.get();
     exec = stdx::make_unique<ThreadPoolTaskExecutor>(
         stdx::make_unique<NetworkInterfaceThreadPool>(networkPtr), std::move(network));
     exec->startup();
-    log() << "create a service startup executor";
+    index_log() << "create a service startup executor";
 }
 
 void destroyStartupExecutor(std::unique_ptr<executor::TaskExecutor>& exec) {
@@ -262,13 +274,30 @@ void destroyStartupExecutor(std::unique_ptr<executor::TaskExecutor>& exec) {
 }
 
 void startupShardServerHeartbeat(const HostAndPort& primaryConfigServer) {
-    log() << "Startup shard server heartbeat";
+    index_log() << "Startup shard server heartbeat";
 
-    setGlobalShardServerHeartbeatCoordinator(
-        stdx::make_unique<ShardServerHeartbeatCoordinator>(
-            mongodGlobalParams.configdbs.getServers()));
+    setGlobalShardServerHeartbeatCoordinator(stdx::make_unique<ShardServerHeartbeatCoordinator>(
+        mongodGlobalParams.configdbs.getServers()));
     getGlobalShardServerHeartbeatCoordinator()->startup(primaryConfigServer);
 }
+
+Status startupMongodStatusRenewal() {
+    index_log() << "Startup status renewal...";
+    
+    if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
+        return Status::OK();
+    }    
+    setGlobalStatusRenewal(stdx::make_unique<StatusRenewal>());
+
+    std::string workerName;
+    std::string dotString = ".";
+    workerName = "shardsvr" + dotString + std::to_string(serverGlobalParams.port);
+
+    Status status = getGlobalStatusRenewal()->Init(workerName);
+
+    return status;
+}
+
 
 int64_t getProcessRandomNumber() {
     SecureRandom* pSecureRandom = NULL;
@@ -280,28 +309,21 @@ int64_t getProcessRandomNumber() {
 
 // format of process identity: <pid_time_randomNum>
 const std::string constructProcessIdentityString() {
-    return str::stream() << ProcessId::getCurrent().asLongLong() << "_"
-                         << jsTime().asInt64() << "_"
+    return str::stream() << ProcessId::getCurrent().asLongLong() << "_" << jsTime().asInt64() << "_"
                          << getProcessRandomNumber();
 }
 
-Status registerForShardsvr(executor::TaskExecutor* executor,
-                           const HostAndPort& primaryHAP) {
+Status registerForShardsvr(executor::TaskExecutor* executor, const HostAndPort& primaryHAP) {
     // send register request to primary config server
     BSONObjBuilder regBuilder;
-    ConnectionString localCS(HostAndPort(serverGlobalParams.bind_ip, serverGlobalParams.port));
+    ConnectionString localCS(HostAndPort(serverGlobalParams.bindIp, serverGlobalParams.port));
 
     regBuilder.append("_configsvrRegShardSvr", "admin");
     regBuilder.append("hostAndPort", localCS.toString());
-    regBuilder.append("extendIPs", serverGlobalParams.extendIPs);    
-    regBuilder.append("processIdentity", serverGlobalParams.processIdentity);    
+    regBuilder.append("extendIPs", serverGlobalParams.extendIPs);
+    regBuilder.append("processIdentity", serverGlobalParams.processIdentity);
 
-    const RemoteCommandRequest regRequest(
-        primaryHAP,
-        "admin",
-        regBuilder.obj(),
-        NULL,
-        Milliseconds(kShardRegisterTimeoutMS));
+    const RemoteCommandRequest regRequest(primaryHAP, "admin", regBuilder.obj(), NULL);
 
     RemoteCommandResponse regResponse =
         Status(ErrorCodes::InternalError, "Internal error running command");
@@ -310,90 +332,48 @@ Status registerForShardsvr(executor::TaskExecutor* executor,
         regRequest,
         [&regResponse](const RemoteCommandCallbackArgs& args) { regResponse = args.response; });
     if (!callStatus.isOK()) {
-        LOG(0) << "!callStatus.isOK() cause by " << callStatus.getStatus();
+        index_LOG(0) << "!callStatus.isOK() cause by " << callStatus.getStatus();
         return callStatus.getStatus();
     }
 
     executor->wait(callStatus.getValue());
 
     if (!regResponse.status.isOK()) {
-        LOG(0) << "!regResponse.status.isOK()";
+        index_LOG(0) << "!regResponse.status.isOK()";
         if (regResponse.status.code() == ErrorCodes::ExceededTimeLimit) {
-            LOG(0) << "Operation timed out with status " << redact(regResponse.status);
+            index_LOG(0) << "Operation timed out with status " << redact(regResponse.status);
         }
         return regResponse.status;
     }
 
     Status commandStatus = getStatusFromCommandResult(regResponse.data);
     if (!commandStatus.isOK()) {
-        LOG(0) << "!commandStatus.isOK() cause by " << commandStatus;
+        index_LOG(0) << "!commandStatus.isOK() cause by " << commandStatus;
         return commandStatus;
     }
 
     if (GLOBAL_CONFIG_GET(SSHeartBeat)) {
         startupShardServerHeartbeat(primaryHAP);
     } else {
-        log() << "GLOBAL_CONFIG_GET(SSHeartBeat)=" << GLOBAL_CONFIG_GET(SSHeartBeat);
+        index_log() << "GLOBAL_CONFIG_GET(SSHeartBeat)=" << GLOBAL_CONFIG_GET(SSHeartBeat);
     }
     storageGlobalParams.usingPlogEnv = true;
 
     BSONObj regRspObj = regResponse.data.getOwned();
     // Save shardName to serverGlobalParams
     serverGlobalParams.shardName = regRspObj.getStringField("shardName");
-    log() << "Register role: active";
 
     {
         stdx::lock_guard<stdx::mutex> shardStateLock(serverGlobalParams.shardStateMutex);
-        serverGlobalParams.shardState = ShardType::ShardState::kShardRegistering;
+        // serverGlobalParams.shardState = ShardType::ShardState::kShardRegistering;
+        serverGlobalParams.shardState = ShardType::ShardState::kShardActive;
     }
+    index_log() << "Register role: active"
+                << ", shardName: " << serverGlobalParams.shardName
+                << ", processIdentity: " << serverGlobalParams.processIdentity;
     return Status::OK();
 }
 
-Status activeReadyForShardsvr(executor::TaskExecutor* executor,
-                              const HostAndPort& primaryHAP) {
-    // send active ready to config server
-    BSONObjBuilder actBuilder;
-    ConnectionString localCS(HostAndPort(serverGlobalParams.bind_ip, serverGlobalParams.port));
-    actBuilder.append("_configsvrActiveReady", "admin");
-    actBuilder.append("hostAndPort", localCS.toString());
-    actBuilder.append("shardName", serverGlobalParams.shardName);
-    actBuilder.append("processIdentity", serverGlobalParams.processIdentity);
-
-    const RemoteCommandRequest actRequest(
-        primaryHAP,
-        "admin",
-        actBuilder.obj(),
-        NULL,
-        Milliseconds(kShardActiveReadyTimeoutMS));
-
-    RemoteCommandResponse actResponse =
-        Status(ErrorCodes::InternalError, "Internal error running command");
-
-    auto callStatus = executor->scheduleRemoteCommand(
-        actRequest,
-        [&actResponse](const RemoteCommandCallbackArgs& args) { actResponse = args.response; });
-    if (!callStatus.isOK()) {
-        return callStatus.getStatus();
-    }
-
-    executor->wait(callStatus.getValue());
-
-    if (!actResponse.status.isOK()) {
-        if (actResponse.status.code() == ErrorCodes::ExceededTimeLimit) {
-            LOG(0) << "Operation timed out with status " << redact(actResponse.status);
-        }
-        return actResponse.status;
-    }
-
-    Status commandStatus = getStatusFromCommandResult(actResponse.data);
-    if (!commandStatus.isOK()) {
-        return commandStatus;
-    }
-
-    log() << "Shard server transition to active now";
-
-    return Status::OK();
-}
 
 void checkForIdIndexes(OperationContext* txn, Database* db) {
     if (db->name() == "local") {
@@ -692,6 +672,13 @@ void _initWireSpec() {
 ExitCode _initAndListen(int listenPort) {
     Client::initThread("initandlisten");
 
+    auto startupStatusRenewalStatus = startupMongodStatusRenewal();
+    if (!startupStatusRenewalStatus.isOK()) {
+        index_log() << "Fail to startup status renewal"
+              << causedBy(startupStatusRenewalStatus);
+        return EXIT_UNCAUGHT;
+    }
+
     _initWireSpec();
     auto globalServiceContext = getGlobalServiceContext();
 
@@ -731,7 +718,7 @@ ExitCode _initAndListen(int listenPort) {
 
     transport::TransportLayerLegacy::Options options;
     options.port = listenPort;
-    //options.ipList = serverGlobalParams.bind_ip;
+    options.ipList = serverGlobalParams.bind_ip;
 
     auto sep =
         stdx::make_unique<ServiceEntryPointMongod>(getGlobalServiceContext()->getTransportLayer());
@@ -747,13 +734,13 @@ ExitCode _initAndListen(int listenPort) {
         return EXIT_NET_ERROR;
     }
 
-        getGlobalServiceContext()->initializeGlobalStorageEngine();
+    getGlobalServiceContext()->initializeGlobalStorageEngine();
 
-    auto start = getGlobalServiceContext()->addAndStartTransportLayer(std::move(transportLayer));
+    /*auto start = getGlobalServiceContext()->addAndStartTransportLayer(std::move(transportLayer));
     if (!start.isOK()) {
-        error() << "Failed to start the listener: " << start.toString();
+        index_err() << "Failed to start the listener: " << start.toString();
         return EXIT_NET_ERROR;
-    }
+    }*/
 
     std::shared_ptr<DbWebServer> dbWebServer;
     if (serverGlobalParams.isHttpInterfaceEnabled) {
@@ -770,62 +757,10 @@ ExitCode _initAndListen(int listenPort) {
 
     HostAndPort primaryHP;
     serverGlobalParams.activeNotification = std::make_shared<Notification<void>>();
-    
+
     serverGlobalParams.processIdentity = constructProcessIdentityString();
 
-    std::unique_ptr<executor::TaskExecutor> taskExecutor;
-    createStartupExecutor(taskExecutor);
-    invariant(taskExecutor != NULL);
-    auto taskExec = taskExecutor.get();
-
-    if (GLOBAL_CONFIG_GET(SSRegisterToCS) && serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
-        bool doRegisterRound = true;
-        int registerRound = 0;
-        std::vector<HostAndPort> configServers = mongodGlobalParams.configdbs.getServers();
-        HostAndPort targetConfigServer = configServers[0];
-        int registerRetryCount = 0;
-        while (doRegisterRound) {
-            log() << std::to_string(registerRound) << "-th registerForShardsvr round ("
-                  << targetConfigServer.toString() << ") starts...";
-
-            auto registerShardsvrStatus = registerForShardsvr(taskExec, targetConfigServer);
-            if (registerShardsvrStatus.isOK()) {
-                primaryHP = targetConfigServer;
-                doRegisterRound = false;
-            }
-            else {
-                log() << "Fail to register shard server" << causedBy(registerShardsvrStatus);
-
-                if (registerRetryCount >= kMaxRegisterRetries) {
-                    // Try another target after kMaxRegisterRetries tries now
-                    int configServerIndex;
-                    for (configServerIndex = 0;
-                         configServerIndex < (int)configServers.size();
-                         configServerIndex++) {
-                        if (configServers[configServerIndex] == targetConfigServer) {
-                            break;
-                        }
-                    }
-                    targetConfigServer = configServers[(configServerIndex + 1)%((int)configServers.size())];
-                    registerRetryCount = 0;
-                }
-                else {
-                    registerRetryCount++;
-                }
-
-                doRegisterRound = true;
-            }
-
-            if (doRegisterRound) {
-                stdx::this_thread::sleep_for(kDefaultRetryInterval.toSystemDuration());
-            }
-
-            registerRound++;
-        }
-    } else {
-        storageGlobalParams.usingPlogEnv = false;
-    }
-    //getGlobalServiceContext()->initializeGlobalStorageEngine();
+// getGlobalServiceContext()->initializeGlobalStorageEngine();
 
 #ifdef MONGO_CONFIG_WIREDTIGER_ENABLED
     if (WiredTigerCustomizationHooks::get(getGlobalServiceContext())->restartRequired()) {
@@ -897,7 +832,12 @@ ExitCode _initAndListen(int listenPort) {
     }
 
     if (!storageGlobalParams.readOnly) {
-        boost::filesystem::remove_all(storageGlobalParams.dbpath + "/_tmp/");
+        //boost::filesystem::remove_all(storageGlobalParams.dbpath + "/_tmp/");
+        auto s = deleteDir(storageGlobalParams.dbpath + "/_tmp/");
+        if (!s.ok()) {
+            index_err() << "deleteDir : " << storageGlobalParams.dbpath + "/_tmp/" << 
+                "; error: " << s.ToString();
+        }
     }
 
     if (mmapv1GlobalOptions.journalOptions & MMAPV1Options::JournalRecoverOnly)
@@ -1038,64 +978,68 @@ ExitCode _initAndListen(int listenPort) {
 
     startClientCursorMonitor();
 
+    startAuditLogFlusher();
+
     PeriodicTask::startRunningPeriodicTasks();
+
+    auto start = getGlobalServiceContext()->addAndStartTransportLayer(std::move(transportLayer));
+    if (!start.isOK()) {
+        index_err() << "Failed to start the listener: " << start.toString();
+        return EXIT_NET_ERROR;
+    }
 
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
         std::vector<HostAndPort> configServers = mongodGlobalParams.configdbs.getServers();
-        HostAndPort me(serverGlobalParams.bind_ip, serverGlobalParams.port);
-        if (me == configServers[0]) {
-            stdx::unordered_map<std::string, std::string> configDBManager = mongodGlobalParams.configDBManager;
+        if (configServers.size() != 0) {
+            HostAndPort me(serverGlobalParams.bindIp, serverGlobalParams.port);
+            if (me == configServers[0]) {
+                stdx::unordered_map<std::string, std::string> configDBManager =
+                    mongodGlobalParams.configDBManager;
 
-            BSONObjBuilder b;
-            b.append("_id", mongodGlobalParams.configdbs.getSetName());
-            b.append("configsvr", true);
-            b.append("version", 1);
-            BSONObjBuilder members;
-            for (unsigned i = 0; i < configServers.size(); i++) {
-                members.append(BSONObjBuilder::numStr(i),
-                               BSON("_id" << i <<
-                                    "host" << configServers[i].toString() <<
-                                    "extendIPs" << configDBManager[configServers[i].toString()]));
-            }
-            b.appendArray("members", members.obj());
-
-            BSONObj configObj = b.obj();
-            log() << "Start replica set initiation for configuration: " << configObj.toString();
-
-            bool doReplSetInitiateRound = true;
-            int replSetInitiateRound = 0;
-            while (doReplSetInitiateRound) {
-                log() << std::to_string(replSetInitiateRound)
-                    << "-th processReplSetInitiate round starts...";
-
-                BSONObjBuilder result;
-                Status replSetInitiateStatus =
-                    repl::getGlobalReplicationCoordinator()->processReplSetInitiate(
-                        startupOpCtx.get(),
-                        configObj,
-                        &result);
-
-                if (replSetInitiateStatus.isOK()) {
-                    log() << "Successful replica set initiation";
-                    doReplSetInitiateRound = false;
+                BSONObjBuilder b;
+                b.append("_id", mongodGlobalParams.configdbs.getSetName());
+                b.append("configsvr", true);
+                b.append("version", 1);
+                BSONObjBuilder members;
+                for (unsigned i = 0; i < configServers.size(); i++) {
+                    members.append(BSONObjBuilder::numStr(i),
+                                   BSON("_id" << i << "host" << configServers[i].toString()
+                                              << "extendIPs"
+                                              << configDBManager[configServers[i].toString()]));
                 }
-                else if (replSetInitiateStatus.code() == ErrorCodes::AlreadyInitialized) {
-                    log() << "Nothing to do for replica set initiation, "
-                        << causedBy(replSetInitiateStatus);
-                    doReplSetInitiateRound = false;
-                }
-                else {
-                    log() << "Failed replica set initiation (with result: "
-                        << result.obj().toString() << "), "
-                        << causedBy(replSetInitiateStatus);
-                    doReplSetInitiateRound = true;
-                }
+                b.appendArray("members", members.obj());
 
-                if (doReplSetInitiateRound) {
-                    stdx::this_thread::sleep_for(kDefaultRetryInterval.toSystemDuration());
-                }
+                BSONObj configObj = b.obj();
+                bool doReplSetInitiateRound = true;
+                int replSetInitiateRound = 0;
+                while (doReplSetInitiateRound) {
+                    index_log() << "the " << std::to_string(replSetInitiateRound)
+                                << "-th processReplSetInitiate round starts...";
 
-                replSetInitiateRound++;
+                    BSONObjBuilder result;
+                    Status replSetInitiateStatus =
+                        repl::getGlobalReplicationCoordinator()->processReplSetInitiate(
+                            startupOpCtx.get(), configObj, &result);
+
+                    if (replSetInitiateStatus.isOK()) {
+                        index_log() << "Successful replica set initiation";
+                        doReplSetInitiateRound = false;
+                    } else if (replSetInitiateStatus.code() == ErrorCodes::AlreadyInitialized) {
+                        index_log() << "Nothing to do for replica set initiation, "
+                                    << causedBy(replSetInitiateStatus);
+                        doReplSetInitiateRound = false;
+                    } else {
+                        index_log() << "Failed replica set initiation (with result: "
+                                    << causedBy(replSetInitiateStatus);
+                        doReplSetInitiateRound = true;
+                    }
+
+                    if (doReplSetInitiateRound) {
+                        stdx::this_thread::sleep_for(kDefaultRetryInterval.toSteadyDuration());
+                    }
+
+                    replSetInitiateRound++;
+                }
             }
         }
     }
@@ -1113,59 +1057,73 @@ ExitCode _initAndListen(int listenPort) {
     }
 #endif
 
-    if (GLOBAL_CONFIG_GET(SSRegisterToCS) && serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
-    	{
-            stdx::lock_guard<stdx::mutex> shardStateLock(serverGlobalParams.shardStateMutex);
-            serverGlobalParams.shardState = ShardType::ShardState::kShardActive;
-            LOG(0)<<"shard state:" <<(int)serverGlobalParams.shardState;
-        }        
+    std::unique_ptr<executor::TaskExecutor> taskExecutor;
+    createStartupExecutor(taskExecutor);
+    invariant(taskExecutor != NULL);
+    auto taskExec = taskExecutor.get();
 
-        bool doActiveReadyRound = true;
-        int activeReadyRound = 0;
+    if (GLOBAL_CONFIG_GET(SSRegisterToCS) &&
+        serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
+        bool doRegisterRound = true;
+        int registerRound = 0;
+
         std::vector<HostAndPort> configServers = mongodGlobalParams.configdbs.getServers();
-        HostAndPort targetConfigServer = primaryHP;
-        int activeReadyRetryCount = 0;
-        while (doActiveReadyRound) {
-            log() << std::to_string(activeReadyRound) << "-th activeReadyForShardsvr round (" 
-                  << targetConfigServer.toString() << ")  starts..."; 
-            
-            Status registerShardsvrStatus = activeReadyForShardsvr(taskExec, targetConfigServer);
-            if (registerShardsvrStatus.isOK()) {
-                doActiveReadyRound = false;
-            }
-            else {
-                log() << "Fail to activate shard server" << causedBy(registerShardsvrStatus);
+        HostAndPort targetConfigServer = configServers[0];
+        int curTargetRetryCount = 0;
+        bool needSwitchTarget = false;
 
-                if (activeReadyRetryCount >= kMaxActiveReadyRetries) {
-                    // Try another target after kMaxActiveReadyRetries tries now
+        while (doRegisterRound) {
+            index_log() << "the " << std::to_string(registerRound)
+                        << "-th registerForShardsvr round (" << targetConfigServer.toString()
+                        << ") starts...";
+
+            auto registerShardsvrStatus = registerForShardsvr(taskExec, targetConfigServer);
+            if (registerShardsvrStatus.isOK()) {
+                primaryHP = targetConfigServer;
+                doRegisterRound = false;
+            } else {
+                index_log() << "Fail to register shard server" << causedBy(registerShardsvrStatus);
+
+                if ((ErrorCodes::NotMaster == registerShardsvrStatus) ||
+                    (ErrorCodes::isNetworkError(registerShardsvrStatus.code()))) {
+                    index_LOG(2) << "not master or network error, need to change target";
+                    needSwitchTarget = true;
+                } else {
+                    index_LOG(2) << "no need to change target";
+                    needSwitchTarget = false;
+                    curTargetRetryCount++;
+                }
+
+                if (needSwitchTarget || curTargetRetryCount >= kMaxRegisterRetries) {
+                    // Try another target after kMaxRegisterRetries tries now
                     int configServerIndex;
-                    for (configServerIndex = 0;
-                         configServerIndex < (int)configServers.size();
+                    for (configServerIndex = 0; configServerIndex < (int)configServers.size();
                          configServerIndex++) {
                         if (configServers[configServerIndex] == targetConfigServer) {
                             break;
                         }
                     }
-                    targetConfigServer = configServers[(configServerIndex + 1)%((int)configServers.size())];
-                    activeReadyRetryCount = 0;
-                }
-                else {
-                    activeReadyRetryCount++;
+                    targetConfigServer =
+                        configServers[(configServerIndex + 1) % ((int)configServers.size())];
+                    curTargetRetryCount = 0;
                 }
 
-                doActiveReadyRound = true;
+                doRegisterRound = true;
             }
 
-            if (doActiveReadyRound) {
-                stdx::this_thread::sleep_for(kDefaultRetryInterval.toSystemDuration());
+            if (needSwitchTarget) {
+                stdx::this_thread::sleep_for(kDefaultRetryInterval.toSteadyDuration());
+            } else {
+                stdx::this_thread::sleep_for(kNotSwitchTargetRetryInterval.toSteadyDuration());
             }
 
-            activeReadyRound++;
+            registerRound++;
         }
+    } else {
+        storageGlobalParams.usingPlogEnv = false;
     }
 
     destroyStartupExecutor(taskExecutor);
-
     return waitForShutdown();
 }
 
@@ -1367,9 +1325,11 @@ static void reportEventToSystemImpl(const char* msg) {
 static void shutdownTask() {
     log(LogComponent::kNetwork) << "shutdownTask to do..." << endl;
 
-    // exit directly without source release
-    quickExit(0);
     auto serviceContext = getGlobalServiceContext();
+    if (serviceContext && serviceContext->getGlobalStorageEngine()) {
+        index_log() << "shutdown: going to stop GC ..." << endl;
+        serviceContext->getGlobalStorageEngine()->stopGC();
+    }
 
     Client::initThreadIfNotAlready();
     Client& client = cc();
@@ -1384,20 +1344,29 @@ static void shutdownTask() {
     log(LogComponent::kNetwork) << "shutdown: going to close listening sockets..." << endl;
     ListeningSockets::get()->closeAll();
 
+    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        grid.catalogManager()->getShardServerManager()->shutDown();
+    }
+
     log(LogComponent::kNetwork) << "shutdown: going to flush diaglog..." << endl;
     _diaglog.flush();
 
     if (txn) {
         // This can wait a long time while we drain the secondary's apply queue, especially if it is
         // building an index.
+        index_log() << "shutdown: going to shutdown ReplicationCoordinator..." << endl;
         repl::ReplicationCoordinator::get(txn)->shutdown(txn);
     }
 
-    if (serviceContext)
+    if (serviceContext) {
+        index_log() << "shutdown: going to kill all operations..." << endl;
         serviceContext->setKillAllOperations();
+    }
 
+    index_log() << "shutdown: going to shutdown ReplicaSetMonitor..." << endl;
     ReplicaSetMonitor::shutdown();
     if (auto sr = grid.shardRegistry()) {  // TODO: race: sr is a naked pointer
+        index_log() << "shutdown: going to shutdown ShardRegistry..." << endl;
         sr->shutdown();
     }
 #if __has_feature(address_sanitizer)
@@ -1435,7 +1404,7 @@ static void shutdownTask() {
 
         auto dryNotification = dryOutTask.get_future();
         stdx::thread(std::move(dryOutTask)).detach();
-        if (dryNotification.wait_for(Seconds(10).toSystemDuration()) !=
+        if (dryNotification.wait_for(Seconds(10).toSteadyDuration()) !=
             stdx::future_status::ready) {
             log(LogComponent::kNetwork) << "shutdown: exhausted grace period for"
                                         << " active workers to drain; continuing with shutdown... ";
@@ -1448,7 +1417,7 @@ static void shutdownTask() {
     stopFTDC();
 
     if (txn) {
-        LOG(1) << "shutdown: going to shutdown ShardingState..." << endl;
+        index_LOG(1) << "shutdown: going to shutdown ShardingState..." << endl;
         ShardingState::get(txn)->shutDown(txn);
     }
 
@@ -1462,23 +1431,26 @@ static void shutdownTask() {
     // For a Windows service, dbexit does not call exit(), so we must leak the lock outside
     // of this function to prevent any operations from running that need a lock.
     //
+    index_log() << "shutdown: going to lock the global lock with MODE_X..." << endl;
     DefaultLockerImpl* globalLocker = new DefaultLockerImpl();
     LockResult result = globalLocker->lockGlobalBegin(MODE_X);
     if (result == LOCK_WAITING) {
+        index_log() << "shutdown: waiting for the global lock with MODE_X..." << endl;
         result = globalLocker->lockGlobalComplete(UINT_MAX);
     }
 
     invariant(LOCK_OK == result);
 
     // Global storage engine may not be started in all cases before we exit
-
     if (serviceContext && serviceContext->getGlobalStorageEngine()) {
+        index_log() << "shutdown: going to shutdownGlobalStorageEngineCleanly..." << endl;
         serviceContext->shutdownGlobalStorageEngineCleanly();
     }
 
     // We drop the scope cache because leak sanitizer can't see across the
     // thread we use for proxying MozJS requests. Dropping the cache cleans up
     // the memory and makes leak sanitizer happy.
+    index_log() << "shutdown: going to dropScopeCache..." << endl;
     ScriptEngine::dropScopeCache();
 
     log(LogComponent::kControl) << "now exiting" << endl;
@@ -1527,6 +1499,11 @@ static int mongoDbMain(int argc, char* argv[], char** envp) {
 
     StartupTest::runTests();
     ExitCode exitCode = initAndListen(serverGlobalParams.port);
+
+    if(ConfigReader::getInstance()->getDecimalNumber<int>(
+        "PublicOptions", "open_ftds")) {
+    }
+
     exitCleanly(exitCode);
     return 0;
 }

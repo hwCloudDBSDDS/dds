@@ -27,6 +27,7 @@
 #include "util/coding.h"
 #include "util/file_reader_writer.h"
 
+
 namespace rocksdb {
 
 class Block;
@@ -282,7 +283,7 @@ class BlockBasedTable : public TableReader {
   explicit BlockBasedTable(const TableReader&) = delete;
   void operator=(const TableReader&) = delete;
 };
-//from .cc to here by jerousrb for support split DB
+//from .cc to here by split-feature: support split DB
 class BlockEntryIteratorState : public TwoLevelIteratorState {
  public:
   BlockEntryIteratorState(BlockBasedTable* table,

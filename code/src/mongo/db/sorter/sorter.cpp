@@ -50,6 +50,10 @@
 #include <boost/filesystem/operations.hpp>
 #include <snappy.h>
 #include <vector>
+#include <rocksdb/env.h>
+#include <rocksdb/options.h>
+#include <rocksdb/status.h>
+#include <rocksdb/options.h>
 
 #include "mongo/base/string_data.h"
 #include "mongo/config.h"
@@ -65,6 +69,7 @@
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/print.h"
 #include "mongo/util/unowned_ptr.h"
+#include "mongo/db/modules/rocks/src/rocks_engine.h"
 
 namespace mongo {
 namespace sorter {
@@ -125,7 +130,14 @@ class FileDeleter {
 public:
     FileDeleter(const std::string& fileName) : _fileName(fileName) {}
     ~FileDeleter() {
-        DESTRUCTOR_GUARD(boost::filesystem::remove(_fileName);)
+        //DESTRUCTOR_GUARD(boost::filesystem::remove(_fileName);)
+         DESTRUCTOR_GUARD(
+             auto status = getGlobalEnv()->DeleteFile(_fileName);
+             if (!status.ok()) {
+                 index_err() << "DeleteFile : " << _fileName << "; status: " << status.ToString();
+             }
+             //invariant(status.ok());
+         )
     }
 
 private:
@@ -176,16 +188,30 @@ public:
         : _settings(settings),
           _done(false),
           _fileName(fileName),
-          _fileDeleter(fileDeleter),
-          _file(_fileName.c_str(), std::ios::in | std::ios::binary) {
-        massert(16814,
-                str::stream() << "error opening file \"" << _fileName << "\": "
-                              << myErrnoWithDescription(),
-                _file.good());
+          _fileDeleter(fileDeleter)/*,
+          _file(_fileName.c_str(), std::ios::in | std::ios::binary)*/ {
+        //massert(16814,
+        //        str::stream() << "error opening file \"" << _fileName << "\": "
+        //                      << myErrnoWithDescription(),
+        //        _file.good());
 
-        massert(16815,
-                str::stream() << "unexpected empty file: " << _fileName,
-                boost::filesystem::file_size(_fileName) != 0);
+        //massert(16815,
+        //        str::stream() << "unexpected empty file: " << _fileName,
+        //        boost::filesystem::file_size(_fileName) != 0);
+
+        auto s = getGlobalEnv()->GetFileSize(_fileName, &_fileSize);
+        if (!s.ok()) {
+            index_err() << "GetFileSize : " << _fileName << "; status: " << s.ToString();
+        }
+        invariant(s.ok());
+
+        s = getGlobalEnv()->NewSequentialFile(_fileName, &_rFile, rocksdb::EnvOptions());
+        if (!s.ok()) {
+            index_err() << "NewSequentialFile : " << _fileName << "; status: " << s.ToString();
+        }
+
+        invariant(s.ok());
+        invariant(_fileSize != 0);
     }
 
     bool more() {
@@ -266,18 +292,40 @@ private:
 
     // sets _done to true on EOF - asserts on any other error
     void read(void* out, size_t size) {
-        _file.read(reinterpret_cast<char*>(out), size);
-        if (!_file.good()) {
-            if (_file.eof()) {
-                _done = true;
-                return;
-            }
+        auto buffer = mongo::stdx::make_unique<char[]>(size);
+        rocksdb::Slice data;
+        auto s = _rFile->Read(size, &data, buffer.get());
 
-            msgasserted(16817,
-                        str::stream() << "error reading file \"" << _fileName << "\": "
-                                      << myErrnoWithDescription());
+        if (!s.ok()){
+            index_err() << "Read : " << _fileName << "; status: " << s.ToString()
+                << "; size: " << size << "; readSize: " << _readSize << "; fileSize: "
+                << _fileSize;
+
+            invariant(s.ok());
         }
-        verify(_file.gcount() == static_cast<std::streamsize>(size));
+
+        if (_readSize >= _fileSize) {
+            invariant(0 == data.size());
+            _done = true;
+            return;
+        }
+
+        _readSize += size;
+        invariant(size == data.size());
+        memcpy(reinterpret_cast<char*>(out), reinterpret_cast<const char*>(data.data()), size);
+
+        //_file.read(reinterpret_cast<char*>(out), size);
+        //if (!_file.good()) {
+        //    if (_file.eof()) {
+        //        _done = true;
+        //        return;
+        //    }
+
+        //    msgasserted(16817,
+        //                str::stream() << "error reading file \"" << _fileName << "\": "
+        //                              << myErrnoWithDescription());
+        //}
+        //verify(_file.gcount() == static_cast<std::streamsize>(size));
     }
 
     const Settings _settings;
@@ -286,7 +334,10 @@ private:
     std::unique_ptr<BufReader> _reader;
     std::string _fileName;
     std::shared_ptr<FileDeleter> _fileDeleter;  // Must outlive _file
-    std::ifstream _file;
+    std::unique_ptr<rocksdb::SequentialFile> _rFile;
+    uint64_t _fileSize = 0;
+    uint64_t _readSize = 0;
+    //std::ifstream _file;
 };
 
 /** Merge-sorts results from 0 or more FileIterators */
@@ -840,18 +891,34 @@ SortedFileWriter<Key, Value>::SortedFileWriter(const SortOptions& opts, const Se
         _fileName = sb.str();
     }
 
-    boost::filesystem::create_directories(opts.tempDir);
+    //boost::filesystem::create_directories(opts.tempDir);
 
-    _file.open(_fileName.c_str(), std::ios::binary | std::ios::out);
-    massert(16818,
-            str::stream() << "error opening file \"" << _fileName << "\": "
-                          << sorter::myErrnoWithDescription(),
-            _file.good());
+    //_file.open(_fileName.c_str(), std::ios::binary | std::ios::out);
+    //massert(16818,
+    //        str::stream() << "error opening file \"" << _fileName << "\": "
+    //                      << sorter::myErrnoWithDescription(),
+    //        _file.good());
+
+    auto status = createDir(opts.tempDir);
+    if (!status.ok()) {
+        index_err() << "createDir : " << opts.tempDir << "; error: " << status.ToString();
+    }
+
+    status = getGlobalEnv()->NewWritableFile(_fileName,
+        &_wFile,
+        rocksdb::EnvOptions());
+ 
+    if (!status.ok()) {
+        index_err() << "NewWritableFile : " << _fileName << "; error: " << status.ToString();
+        invariant(false);
+    } else {
+        index_log() << "createIndex NewWritableFile: " << _fileName;
+    }
 
     _fileDeleter = std::make_shared<sorter::FileDeleter>(_fileName);
 
     // throw on failure
-    _file.exceptions(std::ios::failbit | std::ios::badbit | std::ios::eofbit);
+    //_file.exceptions(std::ios::failbit | std::ios::badbit | std::ios::eofbit);
 }
 
 template <typename Key, typename Value>
@@ -904,8 +971,20 @@ void SortedFileWriter<Key, Value>::spill() {
     // negative size means compressed
     size = shouldCompress ? -size : size;
     try {
-        _file.write(reinterpret_cast<const char*>(&size), sizeof(size));
-        _file.write(outBuffer, std::abs(size));
+        //_file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+        //_file.write(outBuffer, std::abs(size));
+
+        auto s = _wFile->Append(rocksdb::Slice(reinterpret_cast<char*>(&size), sizeof(size)));
+        if (!s.ok()) {
+            index_err() << "Append size: " << _fileName << "; error: " << s.ToString(); 
+            invariant(s.ok());
+        }
+        
+        s = _wFile->Append(rocksdb::Slice(outBuffer, std::abs(size)));
+        if (!s.ok()) {
+            index_err() << "Append buf: " << _fileName << "; error: " << s.ToString(); 
+            invariant(s.ok());
+        }
 
     } catch (const std::exception&) {
         msgasserted(16821,
@@ -919,7 +998,9 @@ void SortedFileWriter<Key, Value>::spill() {
 template <typename Key, typename Value>
 SortIteratorInterface<Key, Value>* SortedFileWriter<Key, Value>::done() {
     spill();
-    _file.close();
+    //_file.close();
+    _wFile->Fsync();
+    _wFile->Close();
     return new sorter::FileIterator<Key, Value>(_fileName, _settings, _fileDeleter);
 }
 

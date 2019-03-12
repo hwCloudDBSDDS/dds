@@ -10,6 +10,7 @@ GeoNearRandomTest = function(name) {
     print("starting test: " + name);
 };
 
+
 GeoNearRandomTest.prototype.mkPt = function mkPt(scale, indexBounds) {
     if (!indexBounds) {
         scale = scale || 1;  // scale is good for staying away from edges

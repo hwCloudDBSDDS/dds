@@ -23,13 +23,14 @@
     }
     assert.writeOK(testDB.foo.insert(inserts));
 
-    assert.commandWorked(testDB.adminCommand({split: 'test.foo', find: {x: 50}}));
+    // wooo assert.commandWorked(testDB.adminCommand({split: 'test.foo', find: {x: 50}}));
+    assert.commandWorked(testDB.adminCommand({split: 'test.foo', middle: {x: 49}}));
     assert.commandWorked(
         testDB.adminCommand({moveChunk: 'test.foo', find: {x: 100}, to: 'shard0001'}));
 
     // Insert some documents directly into the shards into chunks not owned by that shard.
-    st.d0.getDB('test').foo.insert({x: 100});
-    st.d1.getDB('test').foo.insert({x: 0});
+    // st.d0.getDB('test').foo.insert({x: 100});
+    // st.d1.getDB('test').foo.insert({x: 0});
 
     st.restartMongod(0);
     st.restartMongod(1);

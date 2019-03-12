@@ -265,6 +265,7 @@ void ReplicationCoordinatorImpl::_onElectCmdRunnerComplete() {
     }
 
     log() << "election succeeded, assuming primary role";
+    //_topCoord->resetConfigClusterDegradeAlarmParameters();
 
     lossGuard.dismiss();
     _freshnessChecker.reset(NULL);

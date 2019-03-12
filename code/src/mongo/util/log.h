@@ -165,10 +165,22 @@ inline bool shouldLog(logger::LogSeverity severity) {
 
 #define LOG MONGO_LOG
 
-#define index_log() log() << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
-#define index_warning() warning() << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
-#define index_err() error() << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
-#define index_LOG(DLEVEL) LOG(DLEVEL) << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
+#define index_log()                                       \
+    log() << "[DFV_MONGODB_TAG]"                          \
+          << "[tid:" << (int64_t)(pthread_self()) << "] " \
+          << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
+#define index_warning()                                       \
+    warning() << "[DFV_MONGODB_TAG]"                          \
+              << "[tid:" << (int64_t)(pthread_self()) << "] " \
+              << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
+#define index_err()                                         \
+    error() << "[DFV_MONGODB_TAG]"                          \
+            << "[tid:" << (int64_t)(pthread_self()) << "] " \
+            << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
+#define index_LOG(DLEVEL)                                       \
+    LOG(DLEVEL) << "[DFV_MONGODB_TAG]"                          \
+                << "[tid:" << (int64_t)(pthread_self()) << "] " \
+                << "[" << (char*)__FUNCTION__ << "," << __LINE__ << "]"
 
 #define MONGO_LOG_COMPONENT(DLEVEL, COMPONENT1)                                            \
     if (!(::mongo::logger::globalLogDomain())                                              \

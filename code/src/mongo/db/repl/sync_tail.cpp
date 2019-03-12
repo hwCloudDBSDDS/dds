@@ -75,6 +75,7 @@
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/util_extend/default_parameters.h"
 
 namespace mongo {
 
@@ -90,6 +91,7 @@ std::atomic<int> SyncTail::replBatchLimitOperations{50 * 1000};  // NOLINT
  * "replWriterThreadCount" server parameter.
  */
 namespace {
+// MONGO_FP_DECLARE(hangBeforeCallSignalDrainComplete);
 #if defined(MONGO_PLATFORM_64)
 int replWriterThreadCount = 16;
 #elif defined(MONGO_PLATFORM_32)
@@ -676,12 +678,12 @@ public:
         _thread.join();
     }
 
-    OpQueue getNextBatch(Seconds maxWaitTime) {
+    OpQueue getNextBatch(Milliseconds maxWaitTime) {
         stdx::unique_lock<stdx::mutex> lk(_mutex);
         if (_ops.empty() && !_ops.mustShutdown()) {
             // We intentionally don't care about whether this returns due to signaling or timeout
             // since we do the same thing either way: return whatever is in _ops.
-            (void)_cv.wait_for(lk, maxWaitTime.toSystemDuration());
+            (void)_cv.wait_for(lk, maxWaitTime.toSteadyDuration());
         }
 
         OpQueue ops = std::move(_ops);
@@ -775,7 +777,7 @@ void SyncTail::oplogApplication(ReplicationCoordinator* replCoord) {
 
         // Blocks up to a second waiting for a batch to be ready to apply. If one doesn't become
         // ready in time, we'll loop again so we can do the above checks periodically.
-        OpQueue ops = batcher.getNextBatch(Seconds(1));
+        OpQueue ops = batcher.getNextBatch(kDefaultConfigOplogBufferGetBatchTimeout);
         if (ops.empty()) {
             if (ops.mustShutdown()) {
                 return;
@@ -788,8 +790,10 @@ void SyncTail::oplogApplication(ReplicationCoordinator* replCoord) {
             // data.
             invariant(ops.getCount() == 1);
             if (replCoord->isWaitingForApplierToDrain()) {
-                getGlobalServiceContext()->getProcessStageTime("secondaryToPrimary")->noteStageStart(
-                    "signalDrainComplete");
+                getGlobalServiceContext()
+                    ->getProcessStageTime("secondaryToPrimary")
+                    ->noteStageStart("signalDrainComplete");
+                // MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangBeforeCallSignalDrainComplete);
                 replCoord->signalDrainComplete(&txn);
             }
             continue;  // This wasn't a real op. Don't try to apply it.

@@ -839,4 +839,37 @@ bool AuthorizationSession::isImpersonating() const {
     return _impersonationFlag;
 }
 
+bool AuthorizationSession::isAuthWithBuiltinUser() const {
+    UserNameIterator it = _authenticatedUsers.getNames();
+    while (it.more()) {
+        const UserName& user = it.next();
+        if (user.isBuildinUser() || user == internalSecurity.user->getName()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AuthorizationSession::isAuthWithCustomerOrNoAuthUser() const {
+    if (isAuthWithBuiltinUser() || _authenticatedUsers.isEmpyt()) {
+        return false;
+    }
+    return true;
+}
+
+bool AuthorizationSession::isAuthWithCustomer() const {
+    if (_authenticatedUsers.isEmpyt()) {
+        return false;
+    }
+    return !isAuthWithBuiltinUser();
+}
+
+bool AuthorizationSession::isNoAuthUser() const {
+    return _authenticatedUsers.isEmpyt();
+}
+
+bool AuthorizationSession::shouldAllowLocalhost() const {
+    return _externalState->shouldAllowLocalhost();
+}
+
 }  // namespace mongo

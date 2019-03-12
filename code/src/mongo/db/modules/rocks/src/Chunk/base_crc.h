@@ -3,13 +3,13 @@
 
 #ifdef __cplusplus
 #if __cplusplus
-extern "C"{
+extern "C" {
 #endif
 #endif /* __cplusplus */
 
 // metadata online check : tlv crc
 #define IndexOffsetOf(t, m) ((uint64_t)(&((t *)0)->m))
-#define INDEX_CRC_INIT_VALUE        0xffffffff;
+#define INDEX_CRC_INIT_VALUE 0xffffffff;
 
 extern void IndexCRC32Init();
 extern uint32_t IndexCRC32(uint32_t crc, char *buffer, uint64_t size);
@@ -21,4 +21,3 @@ extern uint32_t IndexCRC32(uint32_t crc, char *buffer, uint64_t size);
 #endif /* __cplusplus */
 
 #endif
-

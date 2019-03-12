@@ -1,9 +1,8 @@
 
 #pragma once
 
-#include <rocksdb/status.h>
 #include <rocksdb/env.h>
-
+#include <rocksdb/status.h>
 
 //
 //  If given operation failed, return its error status from the function that
@@ -11,53 +10,29 @@
 //
 #define RDB_RIF(op) RES_RIF(op)
 
-
 //
 //  Return result of the given operation.
 //  If result is failure - log it.
 //
 #define RDB_RET(op) RES_RET(op)
 
+namespace ResultHandling {
 
+    inline bool IsOK(const rocksdb::Status& status) { return status.ok(); }
 
-namespace ResultHandling
-{
+    inline std::string ToString(const rocksdb::Status& status) { return status.ToString(); }
 
-inline bool IsOK(const rocksdb::Status& status)
-{
-    return status.ok();
-}
+    class RocksDBLogging {
+        static rocksdb::Logger* logger;
 
-inline std::string ToString(const rocksdb::Status& status)
-{
-    return status.ToString();
-}
+    public:
+        static void SetLogger(rocksdb::Logger* l) { logger = l; }
 
-class RocksDBLogging
-{
-    static rocksdb::Logger* logger;
-public:
-    static void SetLogger(rocksdb::Logger* l)
-    {
-        logger = l;
-    }
-
-    static rocksdb::Logger* Logger()
-    {
-        return logger; 
-    }
-};
+        static rocksdb::Logger* Logger() { return logger; }
+    };
 #if 1
-void LogError(
-    const rocksdb::Status& result,
-    const char* operationText,
-    const char* file,
-    int line,
-    const char* function);
+    void LogError(const rocksdb::Status& result, const char* operationText, const char* file,
+                  int line, const char* function);
 #endif
 
 }  // ResultHandling
-
-
-
-

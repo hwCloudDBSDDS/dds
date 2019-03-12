@@ -74,7 +74,7 @@ public:
 
     Status setReadFromMajorityCommittedSnapshot() final;
 
-    void clearReadFromMajorityCommittedSnapshot() final;
+    void clearSnapshotInfo() final;
 
     bool isReadingFromMajorityCommittedSnapshot() const final {
         return _readFromMajorityCommittedSnapshot;

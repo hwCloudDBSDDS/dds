@@ -51,8 +51,8 @@ public:
         auto shardingState = ShardingState::get(txn);
         if (shardingState->enabled() &&
             serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
-            result.append("configsvrConnectionString",
-                          shardingState->getConfigServer(txn).toString());
+            // result.append("configsvrConnectionString",
+            //              shardingState->getConfigServer(txn).toString());
 
             Grid::get(txn)->configOpTime().append(&result, "lastSeenConfigServerOpTime");
 

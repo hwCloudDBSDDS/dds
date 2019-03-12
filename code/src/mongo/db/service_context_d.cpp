@@ -280,32 +280,29 @@ void ServiceContextMongoD::registerProcessStageTime(const std::string& processNa
     stdx::lock_guard<stdx::mutex> lk(_processStageTimeMapMutex);
 
     ProcessStageTimeMap::iterator it = _processStageTimeMap.find(processName);
-    
-    if(it == _processStageTimeMap.end()) {
-        _processStageTimeMap.emplace(processName, stdx::make_unique<ProcessStageTime>(processName));
-    }
-    else {
-        //if it exists, clear its content
-        it->second->clear();
+
+    if (it == _processStageTimeMap.end()) {
+        _processStageTimeMap.emplace(processName, std::make_shared<ProcessStageTime>(processName));
     }
 }
 
-ProcessStageTime* ServiceContextMongoD::getProcessStageTime(const std::string& processName) {
+std::shared_ptr<ProcessStageTime> ServiceContextMongoD::getProcessStageTime(
+    const std::string& processName) {
     stdx::lock_guard<stdx::mutex> lk(_processStageTimeMapMutex);
 
     ProcessStageTimeMap::iterator it = _processStageTimeMap.find(processName);
-    
-    if(it == _processStageTimeMap.end()) {
-        _processStageTimeMap.emplace(processName, stdx::make_unique<ProcessStageTime>(processName));
+
+    if (it == _processStageTimeMap.end()) {
+        _processStageTimeMap.emplace(processName, std::make_shared<ProcessStageTime>(processName));
         it = _processStageTimeMap.find(processName);
     }
 
-    return it->second.get();
+    return it->second;
 }
 
 void ServiceContextMongoD::cancelProcessStageTime(const std::string& processName) {
     stdx::lock_guard<stdx::mutex> lk(_processStageTimeMapMutex);
-    
+
     _processStageTimeMap.erase(processName);
 }
 

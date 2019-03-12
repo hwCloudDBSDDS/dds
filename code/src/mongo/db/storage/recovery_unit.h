@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string>
 
+#include <rocksdb/db.h>
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
 #include "mongo/db/storage/snapshot.h"
@@ -100,8 +101,8 @@ public:
                 "Current storage engine does not support majority readConcerns"};
     }
 
-    //recover unit might be shared for read and write, after finishing read, clear the flag
-    virtual void clearReadFromMajorityCommittedSnapshot() {
+    // recover unit might be shared for read and write, after finishing read, clear the flag
+    virtual void clearSnapshotInfo() {
         return;
     }
 
@@ -250,6 +251,14 @@ public:
      * Setting the flag may permit increased performance.
      */
     virtual void setRollbackWritesDisabled() = 0;
+
+    virtual const rocksdb::Snapshot* snapshot() {
+        return nullptr;
+    }
+
+    virtual void _releaseSnapshot() {
+        return;
+    }
 
 protected:
     RecoveryUnit() {}

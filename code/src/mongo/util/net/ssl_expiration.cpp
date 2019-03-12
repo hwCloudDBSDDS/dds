@@ -39,19 +39,20 @@ namespace mongo {
 static const auto oneDay = Hours(24);
 
 CertificateExpirationMonitor::CertificateExpirationMonitor(Date_t date)
-    : _certExpiration(date), _lastCheckTime(Date_t::now()) {}
+    : _certExpiration(date), _lastCheckTime(Date_t::now(Date_t::ClockType::kSystemClock)) {}
 
 std::string CertificateExpirationMonitor::taskName() const {
     return "CertificateExpirationMonitor";
 }
 
 void CertificateExpirationMonitor::taskDoWork() {
-    const Milliseconds timeSinceLastCheck = Date_t::now() - _lastCheckTime;
+    const Milliseconds timeSinceLastCheck =
+        Date_t::now(Date_t::ClockType::kSystemClock) - _lastCheckTime;
 
     if (timeSinceLastCheck < oneDay)
         return;
 
-    const Date_t now = Date_t::now();
+    const Date_t now = Date_t::now(Date_t::ClockType::kSystemClock);
     _lastCheckTime = now;
 
     if (_certExpiration <= now) {

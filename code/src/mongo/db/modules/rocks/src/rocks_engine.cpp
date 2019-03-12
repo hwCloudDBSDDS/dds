@@ -33,6 +33,7 @@
 
 #include "rocks_engine.h"
 
+#include <sys/stat.h>
 #include <algorithm>
 #include <mutex>
 
@@ -41,21 +42,23 @@
 #include <rocksdb/cache.h>
 #include <rocksdb/compaction_filter.h>
 #include <rocksdb/comparator.h>
-#include <rocksdb/db.h>
-#include <rocksdb/experimental.h>
-#include <rocksdb/slice.h>
-#include <rocksdb/options.h>
-#include <rocksdb/rate_limiter.h>
-#include <rocksdb/table.h>
 #include <rocksdb/convenience.h>
-#include <rocksdb/filter_policy.h>
-#include <rocksdb/utilities/write_batch_with_index.h>
-#include <rocksdb/utilities/checkpoint.h>
+#include <rocksdb/db.h>
 #include <rocksdb/env.h>
+#include <rocksdb/experimental.h>
+#include <rocksdb/filter_policy.h>
+#include <rocksdb/options.h>
+#include <rocksdb/persistent_cache.h>
+#include <rocksdb/rate_limiter.h>
+#include <rocksdb/slice.h>
 #include <rocksdb/status.h>
+#include <rocksdb/table.h>
+#include <rocksdb/utilities/checkpoint.h>
+#include <rocksdb/utilities/write_batch_with_index.h>
 
-#include "mongo/db/client.h"
+
 #include "mongo/db/catalog/collection_options.h"
+#include "mongo/db/client.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
@@ -69,89 +72,57 @@
 #include "mongo/util/processinfo.h"
 #include "rocks_counter_manager.h"
 #include "rocks_global_options.h"
+#include "rocks_index.h"
 #include "rocks_record_store.h"
 #include "rocks_recovery_unit.h"
-#include "rocks_index.h"
 #include "rocks_util.h"
 
-#include "config/config_reader.h"
-#include "GlobalConfig.h"
 #include <stdio.h>
 #include <iostream>
-
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/util/util_extend/config_reader.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 using namespace std;
 
 #define ROCKS_TRACE log()
 
 // Memory Config for shard and config svr
 // TODO We will get this config from deploy yml soon
-#define M_MIN_MEMORY_SIZEMB              (1024ULL)
-#define M_SHARDSVR_MEMORY_CONFMB         (128*1024ULL)
-#define M_CONFIGSVR_MEMORY_CONFMB        (16*1024ULL)
-#define M_SHARDSVR_PLOGCLIENT_CONFMB     (10*1024ULL)
+#define M_MIN_MEMORY_SIZEMB (1024ULL)
+#define M_SHARDSVR_MEMORY_CONFMB (128 * 1024ULL)
+#define M_CONFIGSVR_MEMORY_CONFMB (16 * 1024ULL)
+#define M_SHARDSVR_PLOGCLIENT_CONFMB (10 * 1024ULL)
 
 // Memory Model for shard svr and config svr
 // TODO We will make following Macro into Config file
-#define M_SHARDSVR_SYSTEM_OVERHEAD_MAXSIZEMB   (16*1024ULL)
-#define M_SHARDSVR_SYSTEM_OVERHEAD_PERMILLAGE  (130ULL)
-#define M_SHARDSVR_SYSTEM_DYNAMIC_MAXSIZEMB    (32*1024ULL)
-#define M_SHARDSVR_SYSTEM_DYNAMIC_PERMILLAGE   (260ULL)
-#define M_SHARDSVR_READAHEADBUFF_MAXSIZEMB     (1536ULL) //(1.5*1024)
-#define M_SHARDSVR_READAHEADBUFF_PERMILLAGE    (15ULL)
-#define M_SHARDSVR_TABLECACHE_PERMILLAGE       (220ULL)
-#define M_SHARDSVR_BLOCKCACHE_PERMILLAGE       (330ULL)
-#define M_SHARDSVR_ZBLOCKCACHE_PERMILLAGE      (45ULL)
+#define M_SHARDSVR_SYSTEM_OVERHEAD_MAXSIZEMB (16 * 1024ULL)
+#define M_SHARDSVR_SYSTEM_OVERHEAD_PERMILLAGE (130ULL)
+#define M_SHARDSVR_SYSTEM_DYNAMIC_MAXSIZEMB (32 * 1024ULL)
+#define M_SHARDSVR_SYSTEM_DYNAMIC_PERMILLAGE (260ULL)
+#define M_SHARDSVR_READAHEADBUFF_MAXSIZEMB (1536ULL)  //(1.5*1024)
+#define M_SHARDSVR_READAHEADBUFF_PERMILLAGE (15ULL)
+#define M_SHARDSVR_TABLECACHE_PERMILLAGE (220ULL)
+#define M_SHARDSVR_BLOCKCACHE_PERMILLAGE (330ULL)
+#define M_SHARDSVR_ZBLOCKCACHE_PERMILLAGE (45ULL)
 
-#define M_CONFIGSVR_SYSTEM_OVERHEAD_MAXSIZEMB   (4*1024ULL)
-#define M_CONFIGSVR_SYSTEM_OVERHEAD_PERMILLAGE  (250ULL)
-#define M_CONFIGSVR_SYSTEM_DYNAMIC_MAXSIZEMB    (2*1024ULL)
-#define M_CONFIGSVR_SYSTEM_DYNAMIC_PERMILLAGE   (130ULL)
-#define M_CONFIGSVR_READAHEADBUFF_MAXSIZEMB     (0ULL)
-#define M_CONFIGSVR_READAHEADBUFF_PERMILLAGE    (0ULL)
-#define M_CONFIGSVR_TABLECACHE_PERMILLAGE       (130ULL)
-#define M_CONFIGSVR_BLOCKCACHE_PERMILLAGE       (430ULL)
-#define M_CONFIGSVR_ZBLOCKCACHE_PERMILLAGE      (60ULL)
+#define M_CONFIGSVR_SYSTEM_OVERHEAD_MAXSIZEMB (4 * 1024ULL)
+#define M_CONFIGSVR_SYSTEM_OVERHEAD_PERMILLAGE (250ULL)
+#define M_CONFIGSVR_SYSTEM_DYNAMIC_MAXSIZEMB (2 * 1024ULL)
+#define M_CONFIGSVR_SYSTEM_DYNAMIC_PERMILLAGE (130ULL)
+#define M_CONFIGSVR_READAHEADBUFF_MAXSIZEMB (0ULL)
+#define M_CONFIGSVR_READAHEADBUFF_PERMILLAGE (0ULL)
+#define M_CONFIGSVR_TABLECACHE_PERMILLAGE (130ULL)
+#define M_CONFIGSVR_BLOCKCACHE_PERMILLAGE (430ULL)
+#define M_CONFIGSVR_ZBLOCKCACHE_PERMILLAGE (60ULL)
 
 namespace mongo {
-const uint32_t      RET_OK                      = 0;
-const uint32_t      RET_ERROR                   = 1;
-
-
-//
-//    class ShardsvrService : public UpLayerService {
-//        public:
-//         ShardsvrService() {}
-//         virtual ~ShardsvrService() {}
-//
-//         virtual int AllocRootPlog(void* root_plog_id) {
-//            return _createRootFolderFunc(_chunkId, root_plog_id);
-//         }
-//
-//         virtual void SetRootPlogFunc(void* pFunc) {
-//            _createRootFolderFunc = (shardsvrCreateRootFolder)pFunc;
-//         }
-//
-//         virtual void SetChunkId(std::string chunkId) {
-//            _chunkId = chunkId;
-//         }
-//
-//        private:
-//         shardsvrCreateRootFolder _createRootFolderFunc;
-//         std::string _chunkId;
-//    };
-
-bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
-    if (slice.size() < sizeof(uint32_t)) {
-        return false;
-    }
-    *prefix = endian::bigToNative(*reinterpret_cast<const uint32_t*>(slice.data()));
-    return true;
-}
+    const uint32_t RET_OK = 0;
+    const uint32_t RET_ERROR = 1;
 
     namespace {
         // we encode prefixes in big endian because we want to quickly jump to the max prefix
         // (iter->SeekToLast())
-
 
         class PrefixDeletingCompactionFilter : public rocksdb::CompactionFilter {
         public:
@@ -189,15 +160,13 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
 
         class PrefixDeletingCompactionFilterFactory : public rocksdb::CompactionFilterFactory {
         public:
-            explicit
-            PrefixDeletingCompactionFilterFactory(const RocksEngine* engine) : _engine(engine) {}
+            explicit PrefixDeletingCompactionFilterFactory(const RocksEngine* engine)
+                : _engine(engine) {}
 
             virtual std::unique_ptr<rocksdb::CompactionFilter> CreateCompactionFilter(
                 const rocksdb::CompactionFilter::Context& context) override {
-
                 //  Make sure we do it only for our own column family
-                if(context.column_family_id > 0)
-                    return nullptr;
+                if (context.column_family_id > 0) return nullptr;
 
                 auto droppedPrefixes = _engine->getDroppedPrefixes();
                 if (droppedPrefixes.size() == 0) {
@@ -233,394 +202,104 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
                 memSizeMB = pi.getMemSizeMB();
                 if (memSizeMB > 0) {
                     // reserve 1GB for system and binaries, and use 30% of the rest
-                    double cacheMB = (memSizeMB - 1024) * 0.3; //RocksCreateCompressedCache by Xiexiaoqin
+                    double cacheMB = (memSizeMB - 1024) * 0.3;
                     cacheSizeGB = static_cast<uint64_t>(cacheMB / 1024);
                 }
                 if (cacheSizeGB < 1) {
                     cacheSizeGB = 1;
                 }
             }
-            _block_cache = rocksdb::NewLRUCache(cacheSizeGB * 1024 * 1024 * 1024LL, 6);
+            size_t block_cache_size = ConfigReader::getInstance()->getDecimalNumber<size_t>(
+                "TableOptions", "block_cache");
+            size_t db_write_buffer_size = ConfigReader::getInstance()->getDecimalNumber<size_t>(
+                "TableOptions", "db_write_buffer_size");
+            index_log() << "block_cache_size: " << block_cache_size
+                        << "; db_write_buffer_size: " << db_write_buffer_size << "; paht: " << path;
+            //_block_cache = rocksdb::NewLRUCache(cacheSizeGB * 1024 * 1024 * 1024LL, 6);
+            _block_cache = rocksdb::NewLRUCache(block_cache_size, 6);
+            _write_buf.reset(new rocksdb::WriteBufferManager(db_write_buffer_size));
+            int enable_row_cache =
+                ConfigReader::getInstance()->getDecimalNumber<int>("CFOptions", "enable_row_cache");
+            if (enable_row_cache) {
+                _row_cache =
+                    rocksdb::NewLRUCache(ConfigReader::getInstance()->getDecimalNumber<size_t>(
+                        "CFOptions", "row_cache_size"));
+            }
+            rocksdb::Status ret;
+            std::shared_ptr<rocksdb::Logger> info_log;
+            std::string file_path =
+                ConfigReader::getInstance()->getString("TableOptions", "persistent_cache_path");
+            size_t persistent_cache_size = ConfigReader::getInstance()->getDecimalNumber<size_t>(
+                "TableOptions", "persistent_cache_size");
+            info_log.reset(new ResultHandling::MongoRocksLoggerForChunk(path));
+            int enable_persisentce_cache = ConfigReader::getInstance()->getDecimalNumber<int>(
+                "TableOptions", "enable_persistent_cache");
+            if (enable_persisentce_cache) {
+                index_log() << "[MongoRocks] NewPersistentCache path(" << file_path << ") size("
+                            << persistent_cache_size << ") log ptr(" << (int64_t)(info_log.get())
+                            << ")";
+                ret = rocksdb::NewPersistentCache(rocksdb::Env::Default(), file_path,
+                                                  persistent_cache_size, info_log, true,
+                                                  &_persistent_cache);
+                if (ret != rocksdb::Status::OK()) {
+                    index_LOG(3) << "[MongoRocks]NewPersistentCache failed. may be ERROR"
+                                 << ret.ToString();
+                }
+            }
         }
         _maxWriteMBPerSec = rocksGlobalOptions.maxWriteMBPerSec;
         _rateLimiter.reset(
             rocksdb::NewGenericRateLimiter(static_cast<int64_t>(_maxWriteMBPerSec) * 1024 * 1024));
         if (rocksGlobalOptions.counters) {
             _statistics = rocksdb::CreateDBStatistics();
+        } else {
+            index_warning() << "[Init] not init rocksGlobalOptions.counters!";
         }
 
-        log() << "RocksEngine::RocksEngine() path: " << path << "; _path: " << _path;
         Init();
     }
 
     RocksEngine::~RocksEngine() {
-         cleanShutdown();
-         _db.reset();
+        cleanShutdown();
+        _db.reset();
     }
 
-    void RocksEngine::_initMemPlan() {
-        // get system memory info
-        ProcessInfo pi;
-        unsigned long long systemSizeMB = 0;
-        systemSizeMB = pi.getMemSizeMB();
-
-        if (serverGlobalParams.clusterRole != ClusterRole::ShardServer
-            && serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
-            // default behavior
-            invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-
-            return;
-        }
-
-        _initMemPlanForShardConfigSvr(systemSizeMB);
-        return;
-    }
-
-    void RocksEngine::_initMemPlanForShardConfigSvr(unsigned long long systemTotalSizeMB) {
-        //// macro array
-        //static unsigned long long memoryConfigTable[E_PROCESS_ROLE_BUTT][E_MEM_CONFIG_BUTT] = {
-        //    // shard svr config
-        //  { M_SHARDSVR_MEMORY_CONFMB,
-        //    M_SHARDSVR_SYSTEM_OVERHEAD_MAXSIZEMB,
-        //    M_SHARDSVR_SYSTEM_OVERHEAD_PERMILLAGE,
-        //    M_SHARDSVR_SYSTEM_DYNAMIC_MAXSIZEMB,
-        //    M_SHARDSVR_SYSTEM_DYNAMIC_PERMILLAGE,
-        //    M_SHARDSVR_READAHEADBUFF_MAXSIZEMB,
-        //    M_SHARDSVR_READAHEADBUFF_PERMILLAGE,
-        //    M_SHARDSVR_TABLECACHE_PERMILLAGE,
-        //    M_SHARDSVR_BLOCKCACHE_PERMILLAGE,
-        //    M_SHARDSVR_ZBLOCKCACHE_PERMILLAGE},
-
-        //  // config svr
-        //  { M_CONFIGSVR_MEMORY_CONFMB,
-        //    M_CONFIGSVR_SYSTEM_OVERHEAD_MAXSIZEMB,
-        //    M_CONFIGSVR_SYSTEM_OVERHEAD_PERMILLAGE,
-        //    M_CONFIGSVR_SYSTEM_DYNAMIC_MAXSIZEMB,
-        //    M_CONFIGSVR_SYSTEM_DYNAMIC_PERMILLAGE,
-        //    M_CONFIGSVR_READAHEADBUFF_MAXSIZEMB,
-        //    M_CONFIGSVR_READAHEADBUFF_PERMILLAGE,
-        //    M_CONFIGSVR_TABLECACHE_PERMILLAGE,
-        //    M_CONFIGSVR_BLOCKCACHE_PERMILLAGE,
-        //    M_CONFIGSVR_ZBLOCKCACHE_PERMILLAGE}
-        //};
-
-        //uint64_t indexAvaiableSizeMB = 0;
-        //uint64_t leftAvaiableSize  = 0;
-
-        //uint64_t systemOverHeadSize = 0;
-        //uint64_t systemDynamicSize = 0;
-        //uint64_t readAheadBufferSize = 0;
-
-        //uint64_t cacheTotalSize  = 0;
-        //uint64_t cachePermillageBase = 0;
-        //uint64_t tableCacheSize  = 0;
-        //uint64_t blockCacheSize  = 0;
-        //uint64_t zblockCacheSize = 0;
-
-        //eProcessType svrType = E_PROCESS_ROLE_BUTT;
-
-        //// get and check svr type
-        //if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
-        //    svrType = E_PROCESS_ROLE_SHARD;
-        //} else if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-        //    svrType = E_PROCESS_ROLE_CONFIG;
-        //} else {
-        //    // default behavior
-        //    index_err() << "unknown svr type, init mem plan failed";
-        //    invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-        //    return;
-        //}
-
-        //// get and check M_MIN_MEMORY_SIZEMB
-        //if (systemTotalSizeMB <= M_MIN_MEMORY_SIZEMB)
-        //{
-        //    // default behavior
-        //    index_err() << "systemTotalSizeMB("
-        //          << systemTotalSizeMB
-        //          << ") < ("
-        //          << M_MIN_MEMORY_SIZEMB
-        //          << ") init mem plan failed";
-        //    invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-        //    return;
-        //}
-
-        //indexAvaiableSizeMB = std::min((systemTotalSizeMB - M_MIN_MEMORY_SIZEMB),
-        //                              memoryConfigTable[svrType][E_MEM_CONFIG_CONFMB]);
-        //leftAvaiableSize  = M_INDEX_MB*indexAvaiableSizeMB;
-
-        //// (1) assign operating system overhead resources, has max size upper limit
-        //systemOverHeadSize = M_INDEX_MB*
-        //    std::min(indexAvaiableSizeMB*memoryConfigTable[svrType][E_SYSTEM_OVERHEAD_PERMILLAGE]/M_PERMILLAGE_BASE,
-        //             memoryConfigTable[svrType][E_SYSTEM_OVERHEAD_MAXSIZEMB]);
-        //leftAvaiableSize -= systemOverHeadSize;
-
-        //// (2) assign dynamic allocation memory resources, has max size upper limit
-        //systemDynamicSize = M_INDEX_MB*
-        //    std::min(indexAvaiableSizeMB*memoryConfigTable[svrType][E_SYSTEM_DYNAMIC_PERMILLAGE]/M_PERMILLAGE_BASE,
-        //            memoryConfigTable[svrType][E_SYSTEM_DYNAMIC_MAXSIZEMB]);
-        //leftAvaiableSize -= systemDynamicSize;
-
-        //// (3) assign compaction read ahead buffer resources, has max size upper limit
-        //readAheadBufferSize = M_INDEX_MB*
-        //    std::min(indexAvaiableSizeMB*memoryConfigTable[svrType][E_READAHEADBUFF_PERMILLAGE]/M_PERMILLAGE_BASE,
-        //            memoryConfigTable[svrType][E_READAHEADBUFF_MAXSIZEMB]);
-        //leftAvaiableSize -= readAheadBufferSize;
-
-        //// (4) assign TableCache/BlockCache/ZBlockCache resources, no max size upper limit
-        //cacheTotalSize = leftAvaiableSize;
-        //cachePermillageBase = memoryConfigTable[svrType][E_TABLECACHE_PERMILLAGE] +
-        //                      memoryConfigTable[svrType][E_BLOCKCACHE_PERMILLAGE] +
-        //                      memoryConfigTable[svrType][E_ZBLOCKCACHE_PERMILLAGE];
-
-        //tableCacheSize  = static_cast<uint64_t>((static_cast<double>(cacheTotalSize) *
-        //                            memoryConfigTable[svrType][E_TABLECACHE_PERMILLAGE])/cachePermillageBase);
-        //blockCacheSize  = static_cast<uint64_t>((static_cast<double>(cacheTotalSize) *
-        //                            memoryConfigTable[svrType][E_BLOCKCACHE_PERMILLAGE])/cachePermillageBase);
-        //zblockCacheSize = static_cast<uint64_t>((static_cast<double>(cacheTotalSize) *
-        //                            memoryConfigTable[svrType][E_ZBLOCKCACHE_PERMILLAGE])/cachePermillageBase);
-
-        //// create read ahead buffer
-        //_bufferSizeCtrl = NewBufferSizeCtrl(readAheadBufferSize);
-        //if (!_bufferSizeCtrl
-        //    && serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
-        //    _bufferSizeCtrl = nullptr;
-        //    index_err() << "new BufferSizeCtrl failed";
-        //    invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-        //}
-
-        //// create cache
-        //if (0 != tableCacheSize) {
-        //    _table_cache = rocksdb::NewLRUCache(tableCacheSize, M_CACHE_NUMSHARDBITS, true, 0.0, rocksdb::E_ROCKS_CACHE_TABLE);
-        //    if (!_table_cache) {
-        //        _table_cache = nullptr;
-        //        index_err() << "new NewLRUCache for TableCache failed";
-        //        invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-        //    }
-        //} else {
-        //    _table_cache = nullptr;
-        //    index_err() << "tableCacheSize == 0, NoSharedTableCache";
-        //    invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-        //}
-
-        //if (0 != blockCacheSize) {
-        //    _block_cache = rocksdb::NewLRUCache(blockCacheSize, M_CACHE_NUMSHARDBITS, true, 0.0, rocksdb::E_ROCKS_CACHE_BLOCK);
-        //    if (!_block_cache) {
-        //        _block_cache = nullptr;
-        //        index_err() << "new NewLRUCache for BlockCache failed";
-        //        invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-        //    }
-        //} else {
-        //    _block_cache = nullptr;
-        //    index_err() << "blockCacheSize == 0, NoSharedBlockCache";
-        //    invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-        //}
-
-        //#if (defined(__SWITCH_PERF_ADDCOMPRESSED_CACHE___) && (__SWITCH_PERF_ADDCOMPRESSED_CACHE___))
-        //if (0 != zblockCacheSize) {
-        //    _block_cache_compressed = rocksdb::NewLRUCache(zblockCacheSize,M_CACHE_NUMSHARDBITS, true, 0.0, rocksdb::E_ROCKS_CACHE_COMPRESSED_BLOCK);
-        //    if (!_block_cache_compressed) {
-        //        _block_cache_compressed = nullptr;
-        //        index_err() << "new NewLRUCache for ZBlockCache failed";
-        //        invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-        //    }
-        //} else {
-        //    _block_cache_compressed = nullptr;
-        //    index_err() << "zblockCacheSize == 0, NoSharedZBlockCache";
-        //    invariantRocksOKWithNoCore(rocksdb::Status::Aborted());
-        //}
-        //#else
-        //_block_cache_compressed = nullptr;
-        //#endif
-
-        //index_err() << "M_SVR_MEMORY_CONFBYTE("
-        //      << memoryConfigTable[svrType][E_MEM_CONFIG_CONFMB]
-        //      << ")M_SVR_SYSTEM_OVERHEAD_MAXSIZEBYTE("
-        //      << memoryConfigTable[svrType][E_SYSTEM_OVERHEAD_MAXSIZEMB]
-        //      << ")M_SVR_SYSTEM_OVERHEAD_PERMILLAGE("
-        //      << memoryConfigTable[svrType][E_SYSTEM_OVERHEAD_PERMILLAGE]
-        //      << ")M_SVR_SYSTEM_DYNAMIC_MAXSIZEBYTE("
-        //      << memoryConfigTable[svrType][E_SYSTEM_DYNAMIC_MAXSIZEMB]
-        //      << ")M_SVR_SYSTEM_DYNAMIC_PERMILLAGE("
-        //      << memoryConfigTable[svrType][E_SYSTEM_DYNAMIC_PERMILLAGE]
-        //      << ")M_SVR_READAHEADBUFF_MAXSIZEBYTE("
-        //      << memoryConfigTable[svrType][E_READAHEADBUFF_MAXSIZEMB]
-        //      << ")M_SVR_READAHEADBUFF_PERMILLAGE("
-        //      << memoryConfigTable[svrType][E_READAHEADBUFF_PERMILLAGE]
-        //      << ")M_SVR_TABLECACHE_PERMILLAGE("
-        //      << memoryConfigTable[svrType][E_TABLECACHE_PERMILLAGE]
-        //      << ")M_SVR_BLOCKCACHE_PERMILLAGE("
-        //      << memoryConfigTable[svrType][E_BLOCKCACHE_PERMILLAGE]
-        //      << ")M_SVR_ZBLOCKCACHE_PERMILLAGE("
-        //      << memoryConfigTable[svrType][E_ZBLOCKCACHE_PERMILLAGE]
-        //      << ")";
-
-        //index_err() << "systemTotalSizeMB("  << systemTotalSizeMB
-        //      << ")systemReservedSizeMB("  << M_MIN_MEMORY_SIZEMB
-        //      << ")indexAvaiableSizeMB("  << indexAvaiableSizeMB
-        //      << ")systemOverHeadSize("  << systemOverHeadSize
-        //      << ")systemDynamicSize("  << systemDynamicSize
-        //      << ")readAheadBufferSize("  << readAheadBufferSize
-        //      << ")TableCacheSize("  << tableCacheSize
-        //      << ")BlockCacheSize(" << blockCacheSize
-        //      << ")ZBlockCacheSize(" << zblockCacheSize
-        //      << ")";
-
-        return;
-    }
-
-    void RocksEngine::Init()
-    {
+    void RocksEngine::Init() {
+        index_log() << "configInfo: " << getConfigInfo();
         index_log() << "[MongoRocks] Start initialization of RocksEngine....";
-
-        if (!GLOBAL_CONFIG_GET(IsCoreTest) && 
-            ClusterRole::ConfigServer != serverGlobalParams.clusterRole) {
+        if (ClusterRole::ShardServer == serverGlobalParams.clusterRole) {
             std::string dbpath = _path + ROCKSDB_PATH;
             deleteDir(dbpath);
-        } 
+        }
         //  Always should be able to open system DB to start
-        invariantOK(OpenDB(_path, _db));
+        _db = stdx::make_unique<ChunkRocksDBInstance>(_path, nullptr);
+        invariantOK(OpenDB(_path, _db.get()));
         LoadMetadata();
 
         index_log() << "[MongoRocks] RocksEngine initialized";
     }
-    rocksdb::CompressionType RocksEngine::getCompressLevelByName(const std::string cmprsLvl)
-    {
-        if (0 == cmprsLvl.compare("kSnappyCompression"))
-        {
-            return rocksdb::kSnappyCompression;
-        }
-        else if (0 == cmprsLvl.compare("kZlibCompression"))
-        {
-            return rocksdb::kZlibCompression;
-        }
-        else if (0 == cmprsLvl.compare("kBZip2Compression"))
-        {
-            return rocksdb::kBZip2Compression;
-        }
-        else if (0 == cmprsLvl.compare("kLZ4Compression"))
-        {
-            return rocksdb::kLZ4Compression;
-        }
-        else if (0 == cmprsLvl.compare("kLZ4HCCompression"))
-        {
-            return rocksdb::kLZ4HCCompression;
-        }
-        else if (0 == cmprsLvl.compare("kXpressCompression"))
-        {
-            return rocksdb::kXpressCompression;
-        }
-        else if (0 == cmprsLvl.compare("kZSTD"))
-        {
-            return rocksdb::kZSTD;
-        }
-        else if (0 == cmprsLvl.compare("kDisableCompressionOption"))
-        {
-            return rocksdb::kDisableCompressionOption;
-        }
-        else
-        {
-            return rocksdb::kNoCompression;
-        }
-    }
 
-    uint32_t RocksEngine::getAllConfig(rocksdb::Options &option, rocksdb::BlockBasedTableOptions & blkBasedTblOption)
-    {
-        std::string val;
-
-        val = ConfigReader::getInstance()->getString("DBOptions", "base_background_compactions");
-        option.base_background_compactions = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "max_background_compactions");
-        option.max_background_compactions = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "max_subcompactions");
-        option.max_subcompactions = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "max_background_flushes");
-        option.max_background_flushes = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "max_manifest_file_size");
-        option.max_manifest_file_size = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "manifest_preallocation_size");
-        option.manifest_preallocation_size = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "stats_dump_period_sec");
-        option.stats_dump_period_sec = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "new_table_reader_for_compaction_inputs");
-        option.new_table_reader_for_compaction_inputs = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "compaction_readahead_size");
-        option.compaction_readahead_size = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "writable_file_max_buffer_size");
-        option.writable_file_max_buffer_size = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "use_adaptive_mutex");
-        option.use_adaptive_mutex = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "write_thread_max_yield_usec");
-        option.write_thread_max_yield_usec = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "write_thread_slow_yield_usec");
-        option.write_thread_slow_yield_usec = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "skip_stats_update_on_db_open");
-        option.skip_stats_update_on_db_open = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("DBOptions", "dump_malloc_stats");
-        option.dump_malloc_stats = atoi(val.c_str());
-
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "write_buffer_size");
-        option.write_buffer_size = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "max_write_buffer_number");
-        option.max_write_buffer_number = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "min_write_buffer_number_to_merge");
-        option.min_write_buffer_number_to_merge = atoi(val.c_str());
-#if 0
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "compression");
-        option.compression = getCompressLevelByName(val);
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "compression_per_level0");
-        option.compression_per_level[0] = getCompressLevelByName(val);
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "compression_per_level1");
-        option.compression_per_level[1] = getCompressLevelByName(val);
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "compression_per_level2");
-        option.compression_per_level[2] = getCompressLevelByName(val);
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "bottommost_compression");
-        option.bottommost_compression = getCompressLevelByName(val);
-#endif
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "num_levels");
-        option.num_levels = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "level0_stop_writes_trigger");
-        option.level0_stop_writes_trigger = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "target_file_size_base");
-        option.target_file_size_base = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "max_bytes_for_level_base");
-        option.max_bytes_for_level_base = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "max_compaction_bytes");
-        option.max_compaction_bytes = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("ColumnFamilyOptions", "report_bg_io_stats");
-        option.report_bg_io_stats = atoi(val.c_str());
-
-        val = ConfigReader::getInstance()->getString("BlockBasedTableOptions", "cache_index_and_filter_blocks");
-        blkBasedTblOption.cache_index_and_filter_blocks = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("BlockBasedTableOptions", "cache_index_and_filter_blocks_with_high_priority");
-        blkBasedTblOption.cache_index_and_filter_blocks_with_high_priority = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("BlockBasedTableOptions", "pin_l0_filter_and_index_blocks_in_cache");
-        blkBasedTblOption.pin_l0_filter_and_index_blocks_in_cache = atoi(val.c_str());
-        val = ConfigReader::getInstance()->getString("BlockBasedTableOptions", "block_size");
-        blkBasedTblOption.block_size = atoi(val.c_str());
-
-        return RET_OK;
-    }
-
-
-    mongo::Status RocksEngine::OpenDB(const std::string& path, std::unique_ptr<mongo::ChunkRocksDBInstance>& dbInstance) const
-    {
-        std::unique_ptr<mongo::ChunkRocksDBInstance> db(new mongo::ChunkRocksDBInstance(path));
-
-        //TODO remove after the dbpath is no longer used by RocksDB
+    Status RocksEngine::OpenDB(const std::string& path, ChunkRocksDBInstance* dbInstance,
+                                      const CollectionOptions* options) const {
+        index_log()<<"this is sys db.";
+        // TODO remove after the dbpath is no longer used by RocksDB
         std::string pathWithoutPlog = path;
-        if (pathWithoutPlog.find("plogcnt")  != std::string::npos ){
+        if (pathWithoutPlog.find("plogcnt") != std::string::npos) {
             pathWithoutPlog.assign(pathWithoutPlog, 0, pathWithoutPlog.find_last_of('/'));
         }
-        MDB_RIF(db->Open(_options(path), pathWithoutPlog, _durable));
+        auto db_options = _options(path);
+        db_options.compaction_filter_factory.reset(new PrefixDeletingCompactionFilterFactory(this));
+        MDB_RIF(dbInstance->Open(db_options, pathWithoutPlog, _durable, options));
 
-        dbInstance = std::move(db);
         return mongo::Status::OK();
     }
 
-    void RocksEngine::LoadMetadata()
-    {
+    void RocksEngine::LoadMetadata() {
+        auto mdb = getMetadataDB();
+        if (!mdb) return;
+
         // open iterator
-        std::unique_ptr<rocksdb::Iterator> iter(getMetadataDB()->NewIterator(rocksdb::ReadOptions()));
+        std::unique_ptr<rocksdb::Iterator> iter(mdb->NewIterator(rocksdb::ReadOptions()));
 
         // find maxPrefix
         iter->SeekToLast();
@@ -654,7 +333,8 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
                 _identMap[StringData(ident.data(), ident.size())] =
                     std::move(identConfig.getOwned());
 
-                log() << "add one collection to _identmap,ident:" << ident.data() << ",value:" << identConfig << ".";
+                index_log() << "add one collection to _identmap,ident:" << ident.data()
+                            << ",value:" << identConfig << ".";
                 _maxPrefix = std::max(_maxPrefix, identPrefix);
             }
         }
@@ -667,7 +347,7 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
         {
             rocksdb::WriteBatch wb;
             // we will use this iter to check if prefixes are still alive
-            std::unique_ptr<rocksdb::Iterator> prefixIter(getMetadataDB()->NewIterator(rocksdb::ReadOptions()));
+            std::unique_ptr<rocksdb::Iterator> prefixIter(mdb->NewIterator(rocksdb::ReadOptions()));
             for (iter->Seek(kDroppedPrefix);
                  iter->Valid() && iter->key().starts_with(kDroppedPrefix); iter->Next()) {
                 invariantRocksOK(iter->status());
@@ -691,7 +371,7 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
                 }
             }
             if (wb.Count() > 0) {
-                auto s = getMetadataDB()->Write(rocksdb::WriteOptions(), &wb);
+                auto s = mdb->Write(rocksdb::WriteOptions(), &wb);
                 invariantRocksOK(s);
             }
         }
@@ -720,13 +400,14 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
                 getMetadataDB()->Put(rocksdb::WriteOptions(), encodedPrefix, rocksdb::Slice()));
         }
 
-        LOG(5) << "create Record return " << s.codeString()
-              << ",reason:" << s.reason() <<",ns: " << ns.toString() << ", ident:" << ident.toString() <<".";
+        index_LOG(5) << "create Record return " << s.codeString() << ",reason:" << s.reason()
+                     << ",ns: " << ns.toString() << ", ident:" << ident.toString() << ".";
         return s;
     }
 
     std::unique_ptr<RecordStore> RocksEngine::getRecordStore(OperationContext* opCtx, StringData ns,
-                                             StringData ident, const CollectionOptions& options) {
+                                                             StringData ident,
+                                                             const CollectionOptions& options) {
         if (NamespaceString::oplog(ns)) {
             _oplogIdent = ident.toString();
         }
@@ -734,30 +415,30 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
         auto config = _getIdentConfig(ident);
         std::string prefix = _extractPrefix(config);
 
-   
-        std::unique_ptr<RocksRecordStore> recordStore = populateRecordStore(ns, ident, prefix, options);    
-        if(nullptr == recordStore){
+        std::unique_ptr<RocksRecordStore> recordStore =
+            populateRecordStore(ns, ident, prefix, options);
+        if (nullptr == recordStore) {
             Status s(ErrorCodes::InternalError, "init record store fail");
-            //invariantRocksOK(s);
+            // invariantRocksOK(s);
         }
         recordStore->Init();
 
-        {
+        if (NamespaceString(ns).isSystemCollection()) {
             stdx::lock_guard<stdx::mutex> lk(_identObjectMapMutex);
             _identCollectionMap[ident] = recordStore.get();
         }
+
         return std::move(recordStore);
     }
 
-    std::unique_ptr<RocksRecordStore> RocksEngine::populateRecordStore(StringData ns, StringData ident,
-                                        const std::string& prefix, const CollectionOptions& options)
-    {
-        return options.capped
-                ? stdx::make_unique<RocksRecordStore>(
-                      ns, ident, _db.get(), prefix,
-                      true, options.cappedSize ? options.cappedSize : 4096,  // default size
-                      options.cappedMaxDocs ? options.cappedMaxDocs : -1)
-                : stdx::make_unique<RocksRecordStore>(ns, ident, _db.get(), prefix);
+    std::unique_ptr<RocksRecordStore> RocksEngine::populateRecordStore(
+        StringData ns, StringData ident, const std::string& prefix,
+        const CollectionOptions& options) {
+        return options.capped ? stdx::make_unique<RocksRecordStore>(
+                                    ns, ident, _db.get(), prefix, true,
+                                    options.cappedSize ? options.cappedSize : 4096,  // default size
+                                    options.cappedMaxDocs ? options.cappedMaxDocs : -1)
+                              : stdx::make_unique<RocksRecordStore>(ns, ident, _db.get(), prefix);
     }
 
     Status RocksEngine::createSortedDataInterface(OperationContext* opCtx, StringData ident,
@@ -771,7 +452,6 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
     SortedDataInterface* RocksEngine::getSortedDataInterface(OperationContext* opCtx,
                                                              StringData ident,
                                                              const IndexDescriptor* desc) {
-
         BSONObj config = _getIdentConfig(ident);
         std::string prefix = _extractPrefix(config);
 
@@ -783,39 +463,31 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
         return index;
     }
 
-    RocksIndexBase* RocksEngine::populateIndex(
-        StringData ident,
-        const IndexDescriptor* desc,
-        const std::string& prefix,
-        BSONObj&& config
-        )
-    {
+    RocksIndexBase* RocksEngine::populateIndex(StringData ident, const IndexDescriptor* desc,
+                                               const std::string& prefix, BSONObj&& config) {
         return populateIndex(_db.get(), ident.toString(), desc, prefix, std::move(config));
     }
 
-    RocksIndexBase* RocksEngine::populateIndex(
-        mongo::ChunkRocksDBInstance* db,
-        const std::string& ident,
-        const IndexDescriptor* desc,
-        const std::string& prefix,
-        BSONObj&& config
-        )
-    {
+    RocksIndexBase* RocksEngine::populateIndex(mongo::ChunkRocksDBInstance* db,
+                                               const std::string& ident,
+                                               const IndexDescriptor* desc,
+                                               const std::string& prefix, BSONObj&& config) {
         if (desc->unique())
-            return new RocksUniqueIndex(db, prefix, ident, Ordering::make(desc->keyPattern()), std::move(config));
+            return new RocksUniqueIndex(db, prefix, ident, Ordering::make(desc->keyPattern()),
+                                        std::move(config));
 
         //
         //  Non unique
         //
-        RocksStandardIndex* si = new RocksStandardIndex(db, prefix, ident, Ordering::make(desc->keyPattern()), std::move(config));
-        if (rocksGlobalOptions.singleDeleteIndex)
-            si->enableSingleDelete();
+        RocksStandardIndex* si = new RocksStandardIndex(
+            db, prefix, ident, Ordering::make(desc->keyPattern()), std::move(config));
+        if (rocksGlobalOptions.singleDeleteIndex) si->enableSingleDelete();
 
         return si;
     }
 
     // cannot be rolled back
-    Status RocksEngine::dropIdent(OperationContext* opCtx, StringData ident) {
+    Status RocksEngine::dropIdent(OperationContext* opCtx, StringData ident, StringData ns) {
         rocksdb::WriteBatch wb;
         wb.Delete(kMetadataPrefix + ident.toString());
 
@@ -846,7 +518,7 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
         {
             stdx::lock_guard<stdx::mutex> lk(_identMapMutex);
             _identMap.erase(ident);
-            log() << "drop ident from identmap,ident:" << ident.toString() << ".";
+            index_log() << "drop ident from identmap,ident:" << ident.toString() << ".";
         }
 
         // instruct compaction filter to start deleting
@@ -867,7 +539,8 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
 
             rocksdb::Slice start_prefix = prefix;
             rocksdb::Slice end_prefix = end_prefix_str;
-            s = rocksdb::experimental::SuggestCompactRange(getMetadataDB(), &start_prefix, &end_prefix);
+            s = rocksdb::experimental::SuggestCompactRange(getMetadataDB(), &start_prefix,
+                                                           &end_prefix);
             if (!s.ok()) {
                 log() << "failed to suggest compaction for prefix " << prefix;
             }
@@ -891,9 +564,9 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
 
     void RocksEngine::cleanShutdown() {
         //_db.reset();
-        _snapshotManager.dropAllSnapshots();  
-        _db->GetCounterManager()->sync();  
-        //if (_db->GetJournalFlusher()) {
+        _snapshotManager.dropAllSnapshots();
+        _db->GetCounterManager()->sync();
+        // if (_db->GetJournalFlusher()) {
         //    _journalFlusher->shutdown();
         //}
     }
@@ -934,18 +607,19 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
         return 1;
     }
 
-    void  RocksEngine::resetEngineStats(){
-
+    void RocksEngine::resetEngineStats() {
         auto stats = getStatistics();
-        stats->Reset();//wait rocksdb interface
-        return ;
+        if (stats) {
+            stats->Reset();  // wait rocksdb interface
+        }
     }
 
-    void  RocksEngine::getEngineStats( std::vector<std::string> & vs) {
+    void RocksEngine::getEngineStats(std::vector<std::string>& vs) {
         auto stats = getStatistics();
-        vs = stats->ToFormatString();//wait rocksdb interface
-        return;
-    } 
+        if (stats) {
+            vs = stats->ToFormatString();  // wait rocksdb interface
+        }
+    }
 
     Status RocksEngine::beginBackup(OperationContext* txn) {
         return rocksToMongoStatus(getDB()->PauseBackgroundWork());
@@ -994,14 +668,19 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
         }
 
         BSONObjBuilder builder;
+        auto mdb = getMetadataDB();
+        if (mdb == nullptr) {
+            index_err() << "getMetadataDB failed.";
+            return Status(ErrorCodes::InternalError, "getMetadataDB failed.");
+        }
 
-        auto s = getMetadataDB()->Put(rocksdb::WriteOptions(), kMetadataPrefix + ident.toString(),
+        auto s = mdb->Put(rocksdb::WriteOptions(), kMetadataPrefix + ident.toString(),
                           rocksdb::Slice(config.objdata(), config.objsize()));
 
         if (s.ok()) {
             // As an optimization, add a key <prefix> to the DB
             std::string encodedPrefix(encodePrefix(prefix));
-            s = getMetadataDB()->Put(rocksdb::WriteOptions(), encodedPrefix, rocksdb::Slice());
+            s = mdb->Put(rocksdb::WriteOptions(), encodedPrefix, rocksdb::Slice());
         }
 
         return rocksToMongoStatus(s);
@@ -1018,42 +697,124 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
         return encodePrefix(config.getField("prefix").numberInt());
     }
 
-    rocksdb::Options RocksEngine::_options(const std::string& dbPath) const {
-        // default options
-        rocksdb::Options options;
-        options.rate_limiter = _rateLimiter;
-        rocksdb::BlockBasedTableOptions table_options;
+    void RocksEngine::_setFixRocksTableOptions(
+        rocksdb::BlockBasedTableOptions& table_options) const {
+        table_options.cache_index_and_filter_blocks = true;                     //?????false
+        table_options.cache_index_and_filter_blocks_with_high_priority = true;  //?????false
+        table_options.pin_l0_filter_and_index_blocks_in_cache = true;           //?????false
+        table_options.skip_table_builder_flush = true;
+        table_options.no_block_cache = false;
         table_options.block_cache = _block_cache;
+        if (nullptr != _persistent_cache) {
+            table_options.persistent_cache = _persistent_cache;
+        } else {
+            index_LOG(3) << "[MongoRocks]RocksEngine not init the persistent cache  may be a ERROR";
+        }
+
         table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
-        table_options.block_size = 16 * 1024; // 16KB
+        table_options.block_size = 16 * 1024;  // 16KB
         table_options.format_version = 2;
-        //options.table_factory.reset(rocksdb::NewBlockBasedTableFactory(table_options));
+    }
 
-        options.write_buffer_size = /*64*/32 * 1024 * 1024;  // 64MB
-        options.level0_slowdown_writes_trigger = 8;
-        options.max_write_buffer_number = 4;
-        options.max_background_compactions = 128;
-        options.max_background_flushes = 128;
-        options.base_background_compactions = 64;
-        options.target_file_size_base = 64 * 1024 * 1024;  // 64MB
-        options.soft_rate_limit = 2.5;
-        options.hard_rate_limit = 3;
-        options.level_compaction_dynamic_level_bytes = true;
-        options.max_bytes_for_level_base = 512 * 1024 * 1024;  // 512 MB
-        // This means there is no limit on open files. Make sure to always set ulimit so that it can
-        // keep all RocksDB files opened.
-        options.max_open_files = -1;
-        options.optimize_filters_for_hits = true;
-        options.compaction_filter_factory.reset(new PrefixDeletingCompactionFilterFactory(this));
+    void RocksEngine::_setRocksTableOptionWithFlavor(
+        rocksdb::BlockBasedTableOptions& table_options) const {}
+
+    void RocksEngine::_setRocksOptionsWithFlavor(rocksdb::Options& options) const {
+        options.write_buffer_manager = _write_buf;
+        options.max_background_compactions = ConfigReader::getInstance()->getDecimalNumber<int>(
+            "DBOptions", "max_background_compactions");
+        options.base_background_compactions = ConfigReader::getInstance()->getDecimalNumber<int>(
+            "DBOptions", "base_background_compactions");
+        options.max_background_flushes = ConfigReader::getInstance()->getDecimalNumber<int>(
+            "DBOptions", "max_background_flushes");
+        if (ConfigReader::getInstance()->getDecimalNumber<int>("CFOptions", "enable_row_cache")) {
+            options.row_cache = _row_cache;
+        }
+    }
+
+    void RocksEngine::_setFixRocksOptions(rocksdb::Options& options) const {
+        // DBOptions
+        options.avoid_flush_during_recovery = false;
+        options.max_file_opening_threads = 16;
+        options.use_direct_writes = false;
+        // options.access_hint_on_compaction_start = rocksdb::AccessHint::NORMAL;
+        options.create_if_missing = true;
+        options.allow_fallocate = false;
+        options.disableDataSync = false;
+        options.paranoid_checks = true;
+        options.delayed_write_rate = 2097152;
+        options.create_missing_column_families = true;
+        options.use_direct_reads = false;
+        // options.max_log_file_size = 0; rocksdb????o1??????o|??DEBUG????????????o???2??oy?T???
+        options.is_fd_close_on_exec = true;
+        options.random_access_max_buffer_size = 1048576;
+        options.delete_obsolete_files_period_micros = 21600000000;
         options.enable_thread_tracking = true;
-        // Enable concurrent memtable
+        options.error_if_exists = false;
+        options.new_table_reader_for_compaction_inputs = true;
+        options.skip_log_error_on_recovery = false;
+        options.avoid_flush_during_shutdown = false;
+        options.skip_stats_update_on_db_open = false;
+        options.compaction_readahead_size = 256 * 1024;
+        // options.disable_data_sync = false;
+        options.writable_file_max_buffer_size = 1048576;
+        options.allow_mmap_reads = false;
+        options.allow_mmap_writes = false;
+        options.use_adaptive_mutex = true;
+        options.use_fsync = false;
+        // options.db_log_dir   //????o1???rocksdb???|?aDEBUG????????????o?2??|????
+        options.max_open_files = -1;
+        options.table_cache_numshardbits = 6;
+        options.db_write_buffer_size = 0;  //??2??oy???DB??12??a2??oy?o?|??????????????T???a?????o?
         options.allow_concurrent_memtable_write = true;
+        // options.recycle_log_file_num=0; //????o1???rocksdb???|?aDEBUG????????????o?2??|????
+        options.manifest_preallocation_size = 4194304;
         options.enable_write_thread_adaptive_yield = true;
-
+        // options.WAL_ttl_seconds = 0; //??2??oy????Archived
+        // Log?o?D?????a?????Y????Y??2????DD?????o?????3?|???????Y??1??23?
+        // options.WAL_size_limit_MB = 0; //??2??oy????Archived
+        // Log?o?D?????a?????Y????Y??2????DD????
+        options.max_subcompactions = 2;
+        options.dump_malloc_stats = false;
+        options.bytes_per_sync = 1048576;
+        options.max_manifest_file_size = 128 * 1024 * 1024;  // 128MB
+        options.wal_bytes_per_sync = 0;
+        options.wal_recovery_mode = rocksdb::WALRecoveryMode::kPointInTimeRecovery;
+        // options.keep_log_file_num = 100; //????o1???rocksdb???|?aDEBUG????????????o?2??|????
+        options.max_total_wal_size = 0;  // 0??a?o?memtable??1????D?|??4???o?
+        options.stats_dump_period_sec = 600;
+        options.fail_if_options_file_error = false;
+        options.write_thread_slow_yield_usec = 3;
+        options.write_thread_max_yield_usec = 100;
+        options.advise_random_on_open = true;
+        options.target_file_size_multiplier = 1;
+        //options.max_bytes_for_level_base = 640 * 1024 * 1024;
+        options.level_compaction_dynamic_level_bytes = false;
+        // CF options
+        options.write_buffer_size = ConfigReader::getInstance()->getDecimalNumber<int>(
+            "CFOptions", "data_write_buffer_size");
+        options.max_write_buffer_number = ConfigReader::getInstance()->getDecimalNumber<int>(
+            "CFOptions", "data_max_write_buffer_number");
+        options.min_write_buffer_number_to_merge = 1;
+        options.max_write_buffer_number_to_maintain = 0;
+        //options.num_levels = 3;
+        options.level0_file_num_compaction_trigger = 4;
+        options.level0_slowdown_writes_trigger = 20;
+        options.level0_stop_writes_trigger = 128;
+        options.target_file_size_base = 64 * 1024 * 1024;
+        options.max_bytes_for_level_multiplier = 10;
+        options.soft_pending_compaction_bytes_limit = 8 * 1024 * 1024 * 1024ull;
+        options.hard_pending_compaction_bytes_limit = 12 * 1024 * 1024 * 1024ull;
+        // options.arena_block_size =  //??????|??o?write_buffer_size*1/8
+        options.disable_auto_compactions = false;
+        options.compaction_style = rocksdb::CompactionStyle::kCompactionStyleLevel;
+        options.verify_checksums_in_compaction = true;
+        options.inplace_update_support = false;
+        options.optimize_filters_for_hits = true;
+        options.report_bg_io_stats = true;
         options.compression_per_level.resize(3);
         options.compression_per_level[0] = rocksdb::kNoCompression;
         options.compression_per_level[1] = rocksdb::kNoCompression;
-
         if (rocksGlobalOptions.compression == "snappy") {
             options.compression_per_level[2] = rocksdb::kSnappyCompression;
         } else if (rocksGlobalOptions.compression == "zlib") {
@@ -1068,75 +829,290 @@ bool extractPrefix(const rocksdb::Slice& slice, uint32_t* prefix) {
             log() << "Unknown compression, will use default (snappy)";
             options.compression_per_level[2] = rocksdb::kSnappyCompression;
         }
+    }
 
+    rocksdb::Options RocksEngine::_options(const std::string& dbPath) const {
+        rocksdb::Options options;
+        rocksdb::BlockBasedTableOptions table_options;
+        _setFixRocksOptions(options);
+        _setRocksOptionsWithFlavor(options);
+        _setFixRocksTableOptions(table_options);
+        _setRocksTableOptionWithFlavor(table_options);
+        options.table_factory.reset(rocksdb::NewFilterBlockTableFactory(table_options));
         options.statistics = _statistics;
 
-        // create the DB if it's not already present
-        options.create_if_missing = true;
         options.wal_dir = dbPath + ROCKSDB_PATH + "/journal";
-        log() << "rocksdb wal path: " << options.wal_dir;
-        
+        index_log() << "rocksdb wal path: " << options.wal_dir;
+
         // allow override
         if (!rocksGlobalOptions.configString.empty()) {
             rocksdb::Options base_options(options);
             auto s = rocksdb::GetOptionsFromString(base_options, rocksGlobalOptions.configString,
                                                    &options);
             if (!s.ok()) {
-                log() << "Invalid rocksdbConfigString \"" << rocksGlobalOptions.configString
-                      << "\"";
+                index_err() << "Invalid rocksdbConfigString ";
                 invariantRocksOK(s);
             }
         }
 
         //  Set the logger for database
-        options.info_log = std::shared_ptr<rocksdb::Logger>(new ResultHandling::MongoRocksLoggerForChunk(dbPath));
-        //options.env = rocksdb::Env::Default();       
-        rocksdb::NewHdfsEnv(&options.env, GLOBAL_CONFIG_GET(hdfsUri),false);
-        options.table_factory.reset(rocksdb::NewFilterBlockTableFactory(table_options));
+        options.info_log =
+            std::shared_ptr<rocksdb::Logger>(new ResultHandling::MongoRocksLoggerForChunk(dbPath));
 
+        options.env = initEnv();
         return options;
     }
 
-    bool RocksEngine::IsSystemCollection(const StringData& ns)
-    {        
-        if(ns.compare("_mdb_catalog") == 0)
-            return true;
+    bool RocksEngine::IsSystemCollection(const StringData& ns) {
+        if (ns.compare("_mdb_catalog") == 0) return true;
 
         mongo::NamespaceString nameSpace(ns);
         return nameSpace.isSystemCollection();
-        //return nameSpace.isOnInternalDb();            
+        // return nameSpace.isOnInternalDb();
     }
 
-    bool RocksEngine::IsPLogUsed()
-    {
-        return GLOBAL_CONFIG_GET(UsePLogEnv);
+    Status RocksEngine::endSnapshot() {
+        index_log() << "entry endSnapshot ";
+        stdx::unique_lock<stdx::mutex> pauseLock(pauseMutex);
+        if (pauseState == kRunning) {
+            index_log() << "repeate endSnapshot!";
+            // return Status::OK();
+        }
+
+        bool isSystemDone = false;
+        {
+            stdx::lock_guard<stdx::mutex> lk(_identObjectMapMutex);
+            for (auto recordStoreEntry : _identCollectionMap) {
+                // start compaction
+                bool isSystem = recordStoreEntry.second->GetChunkDBInstance().isSystemChunk();
+                std::string ns = isSystem ? "System" : recordStoreEntry.second->ns();
+                if (isSystem && isSystemDone) {
+                    continue;
+                }
+
+                // start compaction
+                rocksdb::Status status = recordStoreEntry.second->GetChunkDBInstance()
+                                             .GetDB()
+                                             ->ContinueBackgroundCompation();
+                if (!status.ok()) {
+                    index_err() << "ContinueBackgroundCompation Failed with " << status.ToString();
+                    // return rocksToMongoStatus(status);
+                }
+                index_log() << "ContinueBackgroundCompation Success";
+
+                // start file deletion
+                status =
+                    recordStoreEntry.second->GetChunkDBInstance().GetDB()->EnableFileDeletions();
+                if (!status.ok()) {
+                    index_err() << "EnableFileDeletions Failed with " << status.ToString();
+                    // return rocksToMongoStatus(status);
+                }
+                index_log() << "EnableFileDeletions Success";
+
+                if (isSystem && !isSystemDone) {
+                    isSystemDone = true;
+                }
+            }
+        }
+
+        // start gc
+        if (!continueGC()) {
+            index_warning() << "[prepareSnapshot] pauseGC faild!";
+        }
+
+        pauseState = kRunning;
+        return Status::OK();
     }
 
-    bool RocksEngine::IsStreamUsed()
-    {
-        return GLOBAL_CONFIG_GET(UseStreamEnv);
+    Status RocksEngine::prepareSnapshot(BSONObj& cmdObj, BSONObjBuilder& result) {
+        index_log() << "entry prepareSnapshot ";
+
+        stdx::unique_lock<stdx::mutex> pauseLock(pauseMutex);
+
+        if (pauseState == kPause) {
+            return Status::OK();
+        }
+
+        // stop gc
+        if (!pauseGC()) {
+            index_err() << "[prepareSnapshot] pauseGC faild!";
+            continueGC();
+            return Status(ErrorCodes::OperationFailed, str::stream() << "pause GC faild! ");
+        }
+
+        BSONObjBuilder temp(result.subobjStart("walPaths"));
+        bool isSystemDone = false;
+        bool needRollBack = false;
+        BSONElement elementRepairDBWAL = cmdObj["repairDBWAL"];
+        bool needRepairWal = elementRepairDBWAL.eoo() ? false : true;
+        rocksdb::Status status;
+        StringMap<RocksRecordStore*> _disableFileDeletionsRollBackMap;
+        StringMap<RocksRecordStore*> _pauseBackgroundCompationRollBackMap;
+        stdx::lock_guard<stdx::mutex> lk(_identObjectMapMutex);
+        for (auto recordStoreEntry : _identCollectionMap) {
+            bool isSystem = recordStoreEntry.second->GetChunkDBInstance().isSystemChunk();
+            if (isSystem && isSystemDone) {
+                continue;
+            }
+
+            // stop file deletion
+            status = recordStoreEntry.second->GetChunkDBInstance().GetDB()->DisableFileDeletions();
+            if (!status.ok()) {
+                index_err() << "DisableFileDeletions Failed with " << status.ToString();
+                needRollBack = true;
+                break;
+            }
+            _disableFileDeletionsRollBackMap[recordStoreEntry.first] = recordStoreEntry.second;
+            index_log() << "DisableFileDeletions Success";
+            // stop compaction
+            status =
+                recordStoreEntry.second->GetChunkDBInstance().GetDB()->PauseBackgroundCompation();
+            if (!status.ok()) {
+                index_err() << "PauseBackgroundCompation Failed with " << status.ToString();
+                needRollBack = true;
+                break;
+            }
+            _pauseBackgroundCompationRollBackMap[recordStoreEntry.first] = recordStoreEntry.second;
+            index_log() << "PauseBackgroundCompation Success";
+
+            // repair wal
+            if (needRepairWal) {
+                status = recordStoreEntry.second->GetChunkDBInstance().GetDB()->RecoverSyncOldWal();
+                if (!status.ok()) {
+                    index_err() << "RepairWal Failed with " << status.ToString();
+                    needRollBack = true;
+                    break;
+                }
+                index_log() << "RepairWal Success";
+            }
+            // sync wal
+            uint64_t lastWalNumber = 0;
+            status = recordStoreEntry.second->GetChunkDBInstance().GetDB()->SwitchAndSyncWal(
+                lastWalNumber);
+            if (!status.ok()) {
+                index_err() << "SwitchAndSyncWal Failed with " << status.ToString();
+                needRollBack = true;
+                break;
+            }
+            index_log() << "SwitchAndSyncWal Success " << lastWalNumber;
+
+            if (isSystem && !isSystemDone) {
+                isSystemDone = true;
+            }
+
+            temp.append(recordStoreEntry.second->GetChunkDBInstance().getPath(),
+                        std::to_string(lastWalNumber) + ".log");
+        }
+
+        if (needRollBack) {
+            index_err() << "entry prepareSnapshot rollback";
+            for (auto recordStoreEntry : _disableFileDeletionsRollBackMap) {
+                recordStoreEntry.second->GetChunkDBInstance().GetDB()->EnableFileDeletions();
+            }
+            for (auto recordStoreEntry : _pauseBackgroundCompationRollBackMap) {
+                recordStoreEntry.second->GetChunkDBInstance()
+                    .GetDB()
+                    ->ContinueBackgroundCompation();
+            }
+
+            continueGC();
+
+            return rocksToMongoStatus(status);
+        }
+
+        pauseState = kPause;
+        return Status::OK();
     }
 
-    std::string RocksEngine::encodePrefix(uint32_t prefix)
-    {
-        uint32_t bigEndianPrefix = endian::nativeToBig(prefix);
-        return std::string(reinterpret_cast<const char*>(&bigEndianPrefix), sizeof(uint32_t));
+    Status RocksEngine::compact() {
+        stdx::lock_guard<stdx::mutex> lk(_identObjectMapMutex);
+        for (auto recordStoreEntry : _identCollectionMap) {
+            bool isSystem = recordStoreEntry.second->GetChunkDBInstance().isSystemChunk();
+            if (isSystem) {
+                continue;
+            }
+
+            recordStoreEntry.second->GetChunkDBInstance().compact();
+        }
+
+        return Status::OK();
     }
 
-    rocksdb::Status createDir(rocksdb::Env* fileSystem, const std::string& path)
-    {
-        log() << "ChunkRocksDBInstance::createDir path: " << path;
-        return fileSystem->CreateDirIfMissing(path);
+    Status RocksEngine::rmCollectionDir(OperationContext* txn, const std::string& path) {
+        return rocksToMongoStatus(deleteDir(path));
     }
 
-    rocksdb::Status deleteDir( const std::string& path)
-    {
-        log() << "ChunkRocksDBInstance::deleteDir path: " << path;
-        rocksdb::Env* env = nullptr;
+    Status RocksEngine::dropFromIdentCollectionMap(const mongo::StringData& ident) {
+        rocksdb::WriteBatch wb;
+        wb.Delete(kMetadataPrefix + ident.toString());
+        rocksdb::WriteOptions syncOptions;
+        syncOptions.sync = true;
 
-        //auto env = rocksdb::Env::Default();
-        rocksdb::NewHdfsEnv(&env, GLOBAL_CONFIG_GET(hdfsUri),false);
-        rocksdb::Status status = env->DeleteDir(path);
-        return status;
+        auto db = getMetadataDB();
+        if (db == nullptr) {
+            index_err() << "getMetadataDB failed.";
+            return Status(ErrorCodes::InternalError, "getMetadataDB failed.");
+        }
+        MDB_RIF(db->Write(syncOptions, &wb));
+        {
+            stdx::lock_guard<stdx::mutex> lk(_identObjectMapMutex);
+            _identCollectionMap.erase(ident);
+        }
+
+        return Status::OK();
+    }
+
+    void RocksEngine::setStorageEngineLogLevel(int level) {
+        rocksdb::InfoLogLevel rlevel;
+        switch (level) {
+            case 0:
+            case 1:
+            case 2:
+            case 3:
+            case 4:
+            case 5:
+                rlevel = rocksdb::InfoLogLevel::DEBUG_LEVEL;
+                break;
+            case -1:
+                rlevel = rocksdb::InfoLogLevel::INFO_LEVEL;
+                break;
+            case -2:
+                rlevel = rocksdb::InfoLogLevel::WARN_LEVEL;
+                break;
+            case -3:
+                rlevel = rocksdb::InfoLogLevel::ERROR_LEVEL;
+                break;
+            case -4:
+                rlevel = rocksdb::InfoLogLevel::FATAL_LEVEL;
+                break;
+            default:
+                rlevel = rocksdb::InfoLogLevel::HEADER_LEVEL;
+        }
+
+        index_LOG(0) << "[setLog] PartitionedRocksEngine::setStorageEngineLogLevel newLevel: "
+                     << level;
+
+        ResultHandling::MongoRocksLoggerForChunk::setLogLevel(rlevel);
+
+        stdx::lock_guard<stdx::mutex> lk(_identObjectMapMutex);
+        for (auto it = _identCollectionMap.begin(); it != _identCollectionMap.end(); ++it) {
+            if (it->second->GetChunkDBInstance().getLogger()) {
+                it->second->GetChunkDBInstance().getLogger()->SetInfoLogLevel(rlevel);
+            }
+        }
+    }
+
+    void  RocksEngine::getTransactionEngineStat(long long& numKey, long long& numActiveSnapshot) {
+        numKey = static_cast<long long>(getTransactionEngine()->numKeysTracked());
+        numActiveSnapshot = static_cast<long long>(getTransactionEngine()->numActiveSnapshots());
+    }
+
+    std::string RocksEngine::getConfigInfo() const {
+        mongo::BSONObjBuilder builder;
+        for(auto it=ConfigReader::getInstance()->getConfigMap().begin(); 
+            it!=ConfigReader::getInstance()->getConfigMap().end(); it++) {
+            builder.append(it->first.key, it->second);
+        }
+        return builder.obj().toString();
     }
 }

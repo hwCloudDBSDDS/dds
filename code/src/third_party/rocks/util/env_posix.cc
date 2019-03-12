@@ -52,7 +52,7 @@
 #include "util/thread_local.h"
 #include "util/thread_status_updater.h"
 #include "util/threadpool_imp.h"
-
+#include "common/common.h"
 #if !defined(TMPFS_MAGIC)
 #define TMPFS_MAGIC 0x01021994
 #endif
@@ -99,7 +99,7 @@ static int LockOrUnlock(const std::string& fname, int fd, bool lock) {
   }
   errno = 0;
   struct flock f;
-  memset(&f, 0, sizeof(f));
+  CommonMemZero(&f, sizeof(f));
   f.l_type = (lock ? F_WRLCK : F_UNLCK);
   f.l_whence = SEEK_SET;
   f.l_start = 0;
@@ -138,9 +138,9 @@ class PosixEnv : public Env {
       delete thread_status_updater_;
     }
   }
-
+  /*start: merge stream*/
   const char* Name() const { return "PosixEnv"; }
-
+  /*end: merge stream*/
   void SetFD_CLOEXEC(int fd, const EnvOptions* options) {
     if ((options == nullptr || options->set_fd_cloexec) && fd > 0) {
       fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
@@ -382,8 +382,6 @@ class PosixEnv : public Env {
       result->reset(new PosixWritableFile(fname, fd, no_mmap_writes_options));
     }
     return s;
-
-    return s;
   }
 
   virtual Status NewRandomRWFile(const std::string& fname,
@@ -599,7 +597,7 @@ class PosixEnv : public Env {
       *result = env;
     } else {
       char buf[100];
-      snprintf(buf, sizeof(buf), "/CloudBuild/rocksdbnew-%d", int(geteuid()));
+      CommonSnprintf(buf, sizeof(buf), sizeof(buf)- 1, "/CloudBuild/rocksdbnew-%d", int(geteuid()));
       *result = buf;
     }
     // Directory may already exist
@@ -615,7 +613,8 @@ class PosixEnv : public Env {
 
   static uint64_t gettid(pthread_t tid) {
     uint64_t thread_id = 0;
-    memcpy(&thread_id, &tid, std::min(sizeof(thread_id), sizeof(tid)));
+    CommonMemCopy(&thread_id, std::min(sizeof(thread_id), sizeof(tid)), 
+                &tid, std::min(sizeof(thread_id), sizeof(tid)));
     return thread_id;
   }
 
@@ -740,7 +739,7 @@ class PosixEnv : public Env {
     dummy.resize(maxsize);
     char* p = &dummy[0];
     localtime_r(&seconds, &t);
-    snprintf(p, maxsize,
+    CommonSnprintf(p, maxsize, maxsize - 1, 
              "%04d/%02d/%02d-%02d:%02d:%02d ",
              t.tm_year + 1900,
              t.tm_mon + 1,
@@ -894,8 +893,8 @@ std::string Env::GenerateUniqueId() {
     r.Uniform(std::numeric_limits<uint64_t>::max());
   uint64_t nanos_uuid_portion = NowNanos();
   char uuid2[200];
-  snprintf(uuid2,
-           200,
+  CommonSnprintf(uuid2,
+           sizeof(uuid2), sizeof(uuid2) -1,
            "%lx-%lx",
            (unsigned long)nanos_uuid_portion,
            (unsigned long)random_uuid_portion);
@@ -924,6 +923,7 @@ Env* Env::Default() {
   // the destructor of static PosixEnv will go first, then the
   // the singletons of ThreadLocalPtr.
   ThreadLocalPtr::InitSingletons();
+
   static PosixEnv default_env;
   return &default_env;
 }

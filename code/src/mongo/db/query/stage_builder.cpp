@@ -260,6 +260,7 @@ PlanStage* buildStages(OperationContext* txn,
         // planning a query that contains "no-op" expressions. TODO: make StageBuilder::build()
         // fail in this case (this improvement is being tracked by SERVER-21510).
         params.query = static_cast<FTSQueryImpl&>(*node->ftsQuery);
+        params.wantTextScore = (cq.getProj() && cq.getProj()->wantTextScore());
         return new TextStage(txn, params, ws, node->filter.get());
     } else if (STAGE_SHARDING_FILTER == root->getType()) {
         const ShardingFilterNode* fn = static_cast<const ShardingFilterNode*>(root);

@@ -109,5 +109,9 @@ void TaskExecutorProxy::appendConnectionStats(executor::ConnectionPoolStats* sta
     _executor->appendConnectionStats(stats);
 }
 
+uint32_t TaskExecutorProxy::getTaskCountInNetwork() const {
+    return 1;
+}
+
 }  // namespace unittest
 }  // namespace mongo

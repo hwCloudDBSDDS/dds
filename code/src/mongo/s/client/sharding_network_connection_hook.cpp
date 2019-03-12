@@ -31,6 +31,7 @@
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/executor/remote_command_request.h"
@@ -107,7 +108,7 @@ ShardingNetworkConnectionHook::makeRequest(const HostAndPort& remoteHost) {
     executor::RemoteCommandRequest request;
     request.dbname = "admin";
     request.target = remoteHost;
-    request.timeout = Seconds{30};
+    request.timeout = Milliseconds(kShardVersionTimeoutMS);
     request.cmdObj = ssv.toBSON();
 
     return {request};

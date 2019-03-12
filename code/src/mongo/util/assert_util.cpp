@@ -32,6 +32,7 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/util/assert_util.h"
+#include "mongo/util/time_support.h"
 
 using namespace std;
 
@@ -109,16 +110,16 @@ void ExceptionInfo::append(BSONObjBuilder& b, const char* m, const char* c) cons
 /* "warning" assert -- safe to continue, so we don't throw exception. */
 NOINLINE_DECL void wasserted(const char* expr, const char* file, unsigned line) {
     static bool rateLimited;
-    static time_t lastWhen;
+    static Date_t lastWhen;
     static unsigned lastLine;
-    if (lastLine == line && time(0) - lastWhen < 5) {
+    if (lastLine == line && Date_t::now() - lastWhen < Seconds(5)) {
         if (!rateLimited) {
             rateLimited = true;
             log() << "rate limiting wassert" << endl;
         }
         return;
     }
-    lastWhen = time(0);
+    lastWhen = Date_t::now();
     lastLine = line;
 
     log() << "warning assertion failure " << expr << ' ' << file << ' ' << dec << line << endl;
@@ -166,16 +167,15 @@ NOINLINE_DECL void invariantOKFailed(const char* expr,
 }
 
 NOINLINE_DECL void invariantOKFailedWithNoCore(const char* expr,
-                                     const Status& status,
-                                     const char* file,
-                                     unsigned line) noexcept {
-    log() << "Invariant failure: " << expr << " resulted in status " << redact(status) << " at "
-          << file << ' ' << dec << line;
+                                               const Status& status,
+                                               const char* file,
+                                               unsigned line) noexcept {
+    index_log() << "Invariant failure: " << expr << " resulted in status " << redact(status)
+                << " at " << file << ' ' << dec << line;
     breakpoint();
-    log() << "\n\n***aborting after invariant() failure\n\n" << endl;
+    index_log() << "\n\n***aborting after invariant() failure\n\n" << endl;
     quickExit(EXIT_ABRUPT);
 }
-
 
 
 NOINLINE_DECL void fassertFailedWithLocation(int msgid, const char* file, unsigned line) noexcept {

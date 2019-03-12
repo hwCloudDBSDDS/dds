@@ -68,6 +68,8 @@ namespace {
 // Include kReplSetMetadataFieldName in a request to get the shard's ReplSetMetadata in the
 // response.
 const BSONObj kReplMetadata(BSON(rpc::kReplSetMetadataFieldName << 1));
+const BSONObj kCustomerReplMetadata(BSON(rpc::kReplSetMetadataFieldName << 1 << "customerCmd"
+                                                                        << 1));
 
 // Allow the command to be executed on a secondary (see ServerSelectionMetadata).
 const BSONObj kSecondaryOkMetadata{rpc::ServerSelectionMetadata(true, boost::none).toBSON()};
@@ -162,10 +164,18 @@ BSONObj ShardRemote::_appendMetadataForCommand(OperationContext* txn,
 
     if (isConfig()) {
         if (readPref.pref == ReadPreference::PrimaryOnly) {
-            builder.appendElements(kReplMetadata);
+            if (readPref.customerMeta == true) {
+                builder.appendElements(kCustomerReplMetadata);
+            } else {
+                builder.appendElements(kReplMetadata);
+            }
         } else {
             builder.appendElements(kSecondaryOkMetadata);
-            builder.appendElements(kReplMetadata);
+            if (readPref.customerMeta == true) {
+                builder.appendElements(kCustomerReplMetadata);
+            } else {
+                builder.appendElements(kReplMetadata);
+            }
         }
     } else {
         if (readPref.pref != ReadPreference::PrimaryOnly) {
@@ -219,7 +229,7 @@ Shard::HostWithResponse ShardRemote::_runCommand(OperationContext* txn,
 
     if (!swResponse.isOK()) {
         if (swResponse.status.compareCode(ErrorCodes::ExceededTimeLimit)) {
-            warning() << "Operation timed out with status " << redact(swResponse.status);
+            LOG(0) << "Operation timed out with status " << redact(swResponse.status);
         }
         return Shard::HostWithResponse(host.getValue(), swResponse.status);
     }
@@ -352,7 +362,7 @@ StatusWith<Shard::QueryResponse> ShardRemote::_exhaustiveFindOnConfig(
 
     if (!status.isOK()) {
         if (status.compareCode(ErrorCodes::ExceededTimeLimit)) {
-            warning() << "Operation timed out " << causedBy(status);
+            LOG(0) << "Operation timed out " << causedBy(status);
         }
         return status;
     }

@@ -9,26 +9,40 @@
     var keyfile = "jstests/libs/key1";
     var numShards = 2;
     var username = "foo";
-    var password = "bar";
+    var password = "WEak@2password";
 
     var createUser = function(mongo) {
         print("============ adding a user.");
-        mongo.getDB("admin").createUser(
-            {user: username, pwd: password, roles: jsTest.adminUserRoles});
+        mongo.getDB("admin").createUser({
+            user: username,
+            pwd: password,
+            roles: jsTest.adminUserRoles,
+            passwordDigestor: "server"
+        });
     };
 
     var addUsersToEachShard = function(st) {
         for (var i = 0; i < numShards; i++) {
             print("============ adding a user to shard " + i);
             var d = st["shard" + i];
-            d.getDB("admin").createUser(
-                {user: username, pwd: password, roles: jsTest.adminUserRoles});
+            d.getDB("admin").createUser({
+                user: username,
+                pwd: password,
+                roles: jsTest.adminUserRoles,
+                passwordDigestor: "server"
+            });
         }
     };
 
     var addShard = function(st, shouldPass) {
-        var m =
-            MongoRunner.runMongod({auth: "", keyFile: keyfile, useHostname: false, 'shardsvr': ''});
+        var m = MongoRunner.runMongod({
+            auth: "",
+            keyFile: keyfile,
+            useHostname: false,
+            'shardsvr': '',
+            "configdb": st.configRS.getURL(),
+            "bind_ip": "localhost"
+        });
         var res = st.getDB("admin").runCommand({addShard: m.host});
         if (shouldPass) {
             assert.commandWorked(res, "Add shard");

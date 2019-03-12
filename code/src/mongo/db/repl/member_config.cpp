@@ -118,7 +118,7 @@ Status MemberConfig::initialize(const BSONObj& mcfg, ReplicaSetTagConfig* tagCon
     if (!status.isOK()) {
         return status;
     }
-    
+
     //
     // Parse votes field.
     //

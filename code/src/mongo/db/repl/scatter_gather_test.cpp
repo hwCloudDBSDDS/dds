@@ -340,51 +340,6 @@ TEST_F(ScatterGatherTest, DoNotCreateCallbacksIfHasSufficientResponsesReturnsTru
     ASSERT_TRUE(ranCompletion);
 }
 
-#if 0
-    // TODO Enable this test once we have a way to test for invariants.
-
-    // This test ensures we do not process more responses than we've scheduled callbacks for.
-    TEST_F(ScatterGatherTest, NeverEnoughResponses) {
-        ScatterGatherTestAlgorithm sga(5);
-        ScatterGatherRunner sgr(&sga);
-        bool ranCompletion = false;
-        StatusWith<ReplicationExecutor::EventHandle> status = sgr.start(getExecutor(),
-                getOnCompletionTestFunction(&ranCompletion));
-        ASSERT_OK(status.getStatus());
-        ASSERT_FALSE(ranCompletion);
-
-        NetworkInterfaceMock* net = getNet();
-        net->enterNetwork();
-        NetworkInterfaceMock::NetworkOperationIterator noi = net->getNextReadyRequest();
-        net->scheduleResponse(noi,
-                              net->now(),
-                              ResponseStatus(RemoteCommandResponse(
-                                    BSON("ok" << 1),
-                                    boost::posix_time::milliseconds(10))));
-        net->runReadyNetworkOperations();
-        ASSERT_FALSE(ranCompletion);
-
-        noi = net->getNextReadyRequest();
-        net->scheduleResponse(noi,
-                              net->now(),
-                              ResponseStatus(RemoteCommandResponse(
-                                    BSON("ok" << 1),
-                                    boost::posix_time::milliseconds(10))));
-        net->runReadyNetworkOperations();
-        ASSERT_FALSE(ranCompletion);
-
-        noi = net->getNextReadyRequest();
-        net->scheduleResponse(noi,
-                              net->now(),
-                              ResponseStatus(RemoteCommandResponse(
-                                    BSON("ok" << 1),
-                                    boost::posix_time::milliseconds(10))));
-        net->runReadyNetworkOperations();
-        net->exitNetwork();
-        ASSERT_FALSE(ranCompletion);
-    }
-#endif  // 0
-
 // Confirm that running via run() will finish once sufficient responses have been received.
 TEST_F(ScatterGatherTest, SuccessfulScatterGatherViaRun) {
     ScatterGatherTestAlgorithm sga;

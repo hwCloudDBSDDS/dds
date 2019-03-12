@@ -1,4 +1,4 @@
-//  Copyright (c) 2017-present, huawei, Inc.  All rights reserved.
+//  Copyright (c) 2017-present.  All rights reserved.
 //  This source code is licensed under the BSD-style license found in the
 //  LICENSE file in the root directory of this source tree. An additional grant
 //  of patent rights can be found in the PATENTS file in the same directory.
@@ -25,7 +25,7 @@ class DbManager {
      info_log_(logger),
      checker_list_(range_checker){};
   
-  ~DbManager();
+  ~DbManager(){};
 
   // Prepare the child db files, except the sst file and manifest file
   Status PrepareSplit(std::vector<std::string>& files);
@@ -45,7 +45,7 @@ class DbManager {
 
   Env* env_;
   const std::string dbname_;
-  const DbInstanceOption& options_;
+  DbInstanceOption  options_;
   std::shared_ptr<Logger> info_log_;
   const std::vector<const IKeyRangeChecker*> checker_list_;
 

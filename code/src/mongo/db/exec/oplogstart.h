@@ -76,6 +76,7 @@ public:
     void doRestoreState() final;
     void doDetachFromOperationContext() final;
     void doReattachToOperationContext() final;
+    void doReleaseCursor() final;
 
     // Returns empty PlanStageStats object
     std::unique_ptr<PlanStageStats> getStats() final;

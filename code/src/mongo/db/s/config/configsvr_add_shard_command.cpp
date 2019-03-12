@@ -38,22 +38,22 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/replica_set_config.h"
 #include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/s/catalog/catalog_extend/sharding_catalog_shard_server_manager.h"
 #include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/add_shard_request_type.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
-#include "mongo/s/catalog/catalog_extend/sharding_catalog_shard_server_manager.h"
 
 namespace mongo {
 namespace {
-//add
+// add
 using std::unordered_map;
 using std::list;
 using std::vector;
-//end
- 
+// end
+
 
 using std::string;
 
@@ -126,16 +126,33 @@ public:
                            parsedRequest.hasMaxSize() ? parsedRequest.getMaxSize()
                                                       : kMaxSizeMBDefault);
 
-        
+
         HostAndPort hostandport = parsedRequest.getConnString().getServers()[0];
-        auto getShardInMap = 
-            Grid::get(txn)->catalogManager()->getShardServerManager()->getShardByHostAndPort(hostandport);
-        if (!getShardInMap.isOK())
-        {
-            return appendCommandStatus(result,getShardInMap.getStatus());
+#if 1
+        StatusWith<ShardType> getShardInMap(Status::OK());
+        bool first = true;
+        int count = 0;
+        do {
+            count++;
+            if (!first) {
+                index_LOG(0) << " _configsvrAddShard retry num: " << count
+                             << ", hostandport:" << hostandport;
+                sleepmillis(500);
+            }
+            first = false;
+            getShardInMap =
+                Grid::get(txn)->catalogManager()->getShardServerManager()->getShardTypeByHostInfo(
+                    hostandport.toString());
+        } while (!getShardInMap.isOK() && count < 100);
+#endif
+        // auto getShardInMap =
+        //    Grid::get(txn)->catalogManager()->getShardServerManager()->getShardByHostAndPort(hostandport);
+
+        if (!getShardInMap.isOK()) {
+            return appendCommandStatus(result, getShardInMap.getStatus());
         }
         ShardType shard = getShardInMap.getValue();
-        
+
         ConnectionString conn = parsedRequest.getConnString();
         /*if (parsedRequest.getConnString().type() != ConnectionString::SET){
             conn = ConnectionString(ConnectionString::SET,
@@ -152,7 +169,7 @@ public:
 
         if (!addShardResult.isOK()) {
             log() << "addShard request '" << parsedRequest << ""
-                << "failed" << causedBy(addShardResult.getStatus());
+                  << "failed" << causedBy(addShardResult.getStatus());
             return appendCommandStatus(result, addShardResult.getStatus());
         }
 

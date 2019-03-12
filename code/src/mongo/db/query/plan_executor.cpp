@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/query/plan_executor.h"
@@ -45,9 +47,14 @@
 #include "mongo/db/query/plan_yield_policy.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/record_fetcher.h"
+#include "mongo/s/stale_exception.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
+#include "mongo/util/log.h"
 #include "mongo/util/stacktrace.h"
+#include "mongo/util/util_extend/GlobalConfig.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 
 namespace mongo {
 
@@ -519,6 +526,20 @@ void PlanExecutor::deregisterExec() {
 
 void PlanExecutor::kill(string reason) {
     _killReason = std::move(reason);
+    auto replMode = repl::getGlobalReplicationCoordinator()->getReplicationMode();
+    auto single_mongod= ClusterRole::None == serverGlobalParams.clusterRole && 
+                        replMode != repl::ReplicationCoordinator::Mode::modeReplSet;
+    if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer &&
+        GLOBAL_CONFIG_GET(UseMultiRocksDBInstanceEngine) &&
+        (NamespaceString(_ns).isChunk() || single_mongod)) {
+        releaseCusor();
+    }
+}
+
+void PlanExecutor::releaseCusor() {
+    invariant(killed());
+    index_LOG(2) << "[QueryPlan] kill PlanExecutor reason: " << *_killReason << "; ns: " << _ns;
+    _root->releaseCursor();
 }
 
 Status PlanExecutor::executePlan() {
@@ -531,8 +552,14 @@ Status PlanExecutor::executePlan() {
 
     if (PlanExecutor::DEAD == state || PlanExecutor::FAILURE == state) {
         if (killed()) {
-            return Status(ErrorCodes::QueryPlanKilled,
-                          str::stream() << "Operation aborted because: " << *_killReason);
+            if (ClusterRole::None == serverGlobalParams.clusterRole){
+                return Status(ErrorCodes::QueryPlanKilled,
+                                          str::stream() << "Operation aborted because: " << *_killReason);
+            }
+            throw SendStaleConfigException("killed",
+                                           "Operation aborted",
+                                           ChunkVersion(0, 0, OID()),
+                                           ChunkVersion(0, 0, OID()));
         }
 
         return Status(ErrorCodes::OperationFailed,

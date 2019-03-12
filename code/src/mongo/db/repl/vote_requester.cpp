@@ -112,7 +112,13 @@ void VoteRequester::Algorithm::processResponse(const RemoteCommandRequest& reque
                 << voteResponse.getReason() << '"';
     }
 
-    if (voteResponse.getTerm() > _term) {
+    long long termIncrementIfElectionSucceed;
+    if (_dryRun) {
+        termIncrementIfElectionSucceed = 1;
+    } else {
+        termIncrementIfElectionSucceed = 0;
+    }
+    if (voteResponse.getTerm() > _term + termIncrementIfElectionSucceed) {
         _staleTerm = true;
     }
     logLine << "; response message: " << response.data;

@@ -208,13 +208,18 @@ error_code("ChunkBusy", 207)
 error_code("RebalanceEventFailed", 208)
 error_code("RebalanceEventInterrupted", 209)
 error_code("NeedRollBackSplit", 210)
-error_code("TargetShardMismatch", 211)
+error_code("NeedChangeShard", 211)
+error_code("NeedIsolateChunk", 212)
+error_code("ChunkDisbaled", 213)
+
 
 # Non-sequential error codes (for compatibility only)
 error_code("SocketException", 9001)
 error_code("RecvStaleConfig", 9996)
 error_code("NotMaster", 10107)
+# BEGIN: Modified by JevonQiao 00391113, 2017/4/23 */
 error_code("NoPrimary", 10201)
+# END:   Modified by JevonQiao 00391113, 2017/4/23 */
 error_code("CannotGrowDocumentInCappedNamespace", 10003)
 error_code("NotInOneChunk", 10301)
 error_code("DuplicateKey", 11000)
@@ -272,3 +277,4 @@ error_class("WriteConcernError", ["WriteConcernFailed",
                                   "UnknownReplWriteConcern",
                                   "CannotSatisfyWriteConcern"])
 error_class("ShutdownError", ["ShutdownInProgress", "InterruptedAtShutdown"])
+error_class("SocketError", ["SocketException", "SocketError"])

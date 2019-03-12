@@ -35,6 +35,7 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/remote_command_retry_scheduler.h"
+#include "mongo/com/include/remote_command_timeout.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/initial_sync_common.h"
@@ -93,7 +94,7 @@ CollectionCloner::CollectionCloner(executor::TaskExecutor* executor,
                                            BSON("count" << _sourceNss.coll()),
                                            rpc::ServerSelectionMetadata(true, boost::none).toBSON(),
                                            nullptr,
-                                           RemoteCommandRequest::kNoTimeout),
+                                           Milliseconds(kCollectionCountTimeoutMS)),
                       stdx::bind(&CollectionCloner::_countCallback, this, stdx::placeholders::_1),
                       RemoteCommandRetryScheduler::makeRetryPolicy(
                           numInitialSyncCollectionCountAttempts,
@@ -109,7 +110,7 @@ CollectionCloner::CollectionCloner(executor::TaskExecutor* executor,
                                      stdx::placeholders::_2,
                                      stdx::placeholders::_3),
                           rpc::ServerSelectionMetadata(true, boost::none).toBSON(),
-                          RemoteCommandRequest::kNoTimeout,
+                          Milliseconds(kCollectionListIndexesTimeoutMS),
                           RemoteCommandRetryScheduler::makeRetryPolicy(
                               numInitialSyncListIndexesAttempts,
                               executor::RemoteCommandRequest::kNoTimeout,
@@ -127,7 +128,7 @@ CollectionCloner::CollectionCloner(executor::TaskExecutor* executor,
                      stdx::placeholders::_2,
                      stdx::placeholders::_3),
           rpc::ServerSelectionMetadata(true, boost::none).toBSON(),
-          RemoteCommandRequest::kNoTimeout,
+          Milliseconds(kCollectionFindTimeoutMS),
           RemoteCommandRetryScheduler::makeRetryPolicy(
               numInitialSyncCollectionFindAttempts,
               executor::RemoteCommandRequest::kNoTimeout,

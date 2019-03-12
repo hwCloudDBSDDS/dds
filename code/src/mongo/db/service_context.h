@@ -387,15 +387,13 @@ public:
      */
     void setServiceEntryPoint(std::unique_ptr<ServiceEntryPoint> sep);
 
-    virtual void registerProcessStageTime(const std::string& processName) {
-    }
+    virtual void registerProcessStageTime(const std::string& processName) {}
 
-    virtual ProcessStageTime* getProcessStageTime(const std::string& processName) {
+    virtual std::shared_ptr<ProcessStageTime> getProcessStageTime(const std::string& processName) {
         return NULL;
     }
 
-    virtual void cancelProcessStageTime(const std::string& processName) {
-    }
+    virtual void cancelProcessStageTime(const std::string& processName) {}
 
 protected:
     ServiceContext();

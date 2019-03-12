@@ -299,8 +299,8 @@ Status parseProcStatFile(StringData filename,
 }
 
 Status parseProcSelfStatusInfo(const std::vector<StringData>& keys,
-                        StringData data,
-                        BSONObjBuilder* builder) {
+                               StringData data,
+                               BSONObjBuilder* builder) {
     bool foundKeys = false;
 
     using string_split_iterator = boost::split_iterator<StringData::const_iterator>;
@@ -313,11 +313,11 @@ Status parseProcSelfStatusInfo(const std::vector<StringData>& keys,
          ++lineIt) {
 
         StringData line((*lineIt).begin(), (*lineIt).end());
-        string_split_iterator partIt =
-            string_split_iterator(line.begin(),
-                                  line.end(),
-                                  boost::token_finder([](char c) { return c == ' ' || c == ':' || c == '\t'; },
-                                                      boost::token_compress_on));
+        string_split_iterator partIt = string_split_iterator(
+            line.begin(),
+            line.end(),
+            boost::token_finder([](char c) { return c == ' ' || c == ':' || c == '\t'; },
+                                boost::token_compress_on));
 
         if (partIt == string_split_iterator()) {
             continue;
@@ -365,8 +365,8 @@ Status parseProcSelfStatusInfo(const std::vector<StringData>& keys,
 }
 
 Status parseProcSelfStatusFile(StringData filename,
-                            const std::vector<StringData>& keys,
-                            BSONObjBuilder* builder) {
+                               const std::vector<StringData>& keys,
+                               BSONObjBuilder* builder) {
     auto swString = readFileAsString(filename);
     if (!swString.isOK()) {
         return swString.getStatus();
@@ -660,7 +660,7 @@ std::vector<std::string> findPhysicalDisks(StringData sysBlockPath) {
 
     auto statusSysBlock = boost::filesystem::status(sysBlockPathStr, ec);
     if (ec) {
-        warning() << "Error checking directory '" << sysBlockPathStr << "': " << ec.message();
+        index_warning() << "Error checking directory '" << sysBlockPathStr << "': " << ec.message();
         return {};
     }
 

@@ -85,7 +85,31 @@ StatusWith<WriteConcernOptions> extractWriteConcern(OperationContext* txn,
                 WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::UNSET, Seconds(30)};
         }
     } else if (supportsWriteConcern) {
-        // If it supports writeConcern and does not use the default, validate the writeConcern.
+        // If it supports writeConcern and does not use the default, validate the writeConcern.           
+        /* 
+        modify: j=true 
+        j=true w=0;
+        j=true w=1£»
+        j=true w>1;
+        j=true w=majorty;
+        j=false w>2£»
+        j=false w=majorty;
+
+        modify j=false
+        j=false w=0;
+        j=false w=1£»
+        */
+        if (ClusterRole::ShardServer == serverGlobalParams.clusterRole) {
+            if (WriteConcernOptions::SyncMode::NONE == writeConcern.syncMode && 
+                writeConcern.wNumNodes <= 1 && writeConcern.wMode.empty()) {
+            } else {
+                if (writeConcern.wNumNodes > 1) {
+                     writeConcern.wNumNodes = 1;
+                }
+                writeConcern.syncMode = WriteConcernOptions::SyncMode::JOURNAL;
+            }
+        }
+
         Status wcStatus = validateWriteConcern(txn, writeConcern, dbName);
         if (!wcStatus.isOK()) {
             return wcStatus;
@@ -106,21 +130,6 @@ Status validateWriteConcern(OperationContext* txn,
         !txn->getServiceContext()->getGlobalStorageEngine()->isDurable()) {
         return Status(ErrorCodes::BadValue,
                       "cannot use 'j' option when a host does not have journaling enabled");
-    }
-
-    // Remote callers of the config server (as in callers making network calls, not the internal
-    // logic) should never be making non-majority writes against the config server, because sharding
-    // is not resilient against rollbacks of metadata writes.
-    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer &&
-        dbName != NamespaceString::kLocalDb && !writeConcern.validForConfigServers()) {
-        // The only cases where we allow non-majority writes are from within the config servers
-        // themselves, because these wait for write concern explicitly.
-        if (!txn->getClient()->isInDirectClient()) {
-            return {ErrorCodes::BadValue,
-                    str::stream() << "w:'majority' is the only valid write concern when writing "
-                                     "to config servers, got: "
-                                  << writeConcern.toBSON()};
-        }
     }
 
     const auto replMode = repl::ReplicationCoordinator::get(txn)->getReplicationMode();
@@ -254,10 +263,10 @@ Status waitForWriteConcern(OperationContext* txn,
     result->wTime = durationCount<Milliseconds>(replStatus.duration);
 
     if (replStatus.duration >= Milliseconds(500)) {
-        warning() << "time-consuming write concern. OpTime: " << replOpTime
-            << ", write concern: " << writeConcern.toBSON()
-            << ", total time: " << replStatus.duration;
-    }        
+        index_warning() << "time-consuming write concern. OpTime: " << replOpTime
+                        << ", write concern: " << writeConcern.toBSON()
+                        << ", total time: " << replStatus.duration;
+    }
 
     return replStatus.status;
 }

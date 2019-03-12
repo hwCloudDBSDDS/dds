@@ -6,6 +6,7 @@ from __future__ import absolute_import
 
 import threading
 import time
+import os
 
 from . import fixtures
 from . import hooks as _hooks
@@ -71,39 +72,48 @@ class TestGroupExecutor(object):
         self.logger.info("Starting execution of %ss...", self._test_group.test_kind)
 
         return_code = 0
-        try:
-            if not self._setup_fixtures():
-                return_code = 2
-                return
+        _num_repeats = 10000
+        test_queue = self._make_test_queue()
+        while _num_repeats > 0:
+            try:
+                if not self._setup_fixtures():
+                    return_code = 2
+                    return
 
-            num_repeats = _config.REPEAT
-            while num_repeats > 0:
-                test_queue = self._make_test_queue()
-                self._test_group.record_start()
-                (report, interrupted) = self._run_tests(test_queue)
-                self._test_group.record_end(report)
+                num_repeats = _config.REPEAT
+                while num_repeats > 0:
+                    self._test_group.record_start()
+                    (report, interrupted) = self._run_tests(test_queue)
+                    self._test_group.record_end(report)
 
-                # If the user triggered a KeyboardInterrupt, then we should stop.
-                if interrupted:
-                    raise errors.UserInterrupt("Received interrupt from user")
+                    # If the user triggered a KeyboardInterrupt, then we should stop.
+                    if interrupted:
+                        raise errors.UserInterrupt("Received interrupt from user")
 
-                sb = []  # String builder.
-                self._test_group.summarize_latest(sb)
-                self.logger.info("Summary: %s", "\n    ".join(sb))
+                    sb = []  # String builder.
+                    self._test_group.summarize_latest(sb)
+                    self.logger.info("Summary: %s", "\n    ".join(sb))
 
-                if not report.wasSuccessful():
-                    return_code = 1
-                    if _config.FAIL_FAST:
-                        break
+                    if not report.wasSuccessful():
+                        return_code = 1
+                        if _config.FAIL_FAST:
+                            break
 
-                # Clear the report so it can be reused for the next execution.
+                    # Clear the report so it can be reused for the next execution.
+                    for job in self._jobs:
+                        job.report.reset()
+                    num_repeats -= 1
+            finally:
+                if not self._teardown_fixtures():
+                    return_code = 2
+                self._test_group.return_code = return_code
+                os.system("killall -q -9 mongod mongo mongos")
                 for job in self._jobs:
                     job.report.reset()
-                num_repeats -= 1
-        finally:
-            if not self._teardown_fixtures():
-                return_code = 2
-            self._test_group.return_code = return_code
+                _num_repeats -= 1
+                if test_queue.empty():
+                    break
+
 
     def _setup_fixtures(self):
         """
@@ -112,7 +122,7 @@ class TestGroupExecutor(object):
 
         for job in self._jobs:
             try:
-                job.fixture.setup()
+                job.fixture.setup("%06d" % _config.log_counter.next())
             except:
                 self.logger.exception("Encountered an error while setting up %s.", job.fixture)
                 return False
@@ -154,7 +164,7 @@ class TestGroupExecutor(object):
                 if len(threads) >= 5:
                     time.sleep(10)
 
-            joined = False
+            joined = True
             while not joined:
                 # Need to pass a timeout to join() so that KeyboardInterrupt exceptions
                 # are propagated.
@@ -166,7 +176,7 @@ class TestGroupExecutor(object):
             # Only wait for all the Job instances if not interrupted by the user.
             for t in threads:
                 t.join()
-
+            
         reports = [job.report for job in self._jobs]
         combined_report = _report.TestReport.combine(*reports)
 

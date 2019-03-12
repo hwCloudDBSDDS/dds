@@ -15,8 +15,10 @@ function runTest(db) {
     db.dropDatabase();
     db.dropAllUsers();
 
-    db.createUser({user: "spencer", pwd: "password", roles: ['readWrite']});
-    db.createUser({user: "andy", pwd: "password", roles: ['readWrite']});
+    db.createUser(
+        {user: "spencer", pwd: "WEak@2password", roles: ['readWrite'], passwordDigestor: "server"});
+    db.createUser(
+        {user: "andy", pwd: "WEak@3password", roles: ['readWrite'], passwordDigestor: "server"});
 
     // Test getUser
     var userObj = db.getUser('spencer');
@@ -84,10 +86,10 @@ function runTest(db) {
     assert.throws(function() {
         db.createUser({user: 'user1', pwd: 'x', roles: [], passwordDigestor: 'foo'});
     });
-    db.createUser({user: 'user1', pwd: 'x', roles: [], passwordDigestor: "server"});
-    db.createUser({user: 'user2', pwd: 'x', roles: [], passwordDigestor: "client"});
-    assert(db.auth('user1', 'x'));
-    assert(db.auth('user2', 'x'));
+    db.createUser({user: 'user1', pwd: 'WEak@2password', roles: [], passwordDigestor: "server"});
+    db.createUser({user: 'user2', pwd: 'WEak@2password', roles: [], passwordDigestor: "server"});
+    assert(db.auth('user1', 'WEak@2password'));
+    assert(db.auth('user2', 'WEak@2password'));
 
     assert.throws(function() {
         db.updateUser('user1', {pwd: 'y', digestPassword: true});
@@ -98,10 +100,10 @@ function runTest(db) {
     assert.throws(function() {
         db.updateUser('user1', {pwd: 'y', passwordDigestor: 'foo'});
     });
-    db.updateUser('user1', {pwd: 'y', passwordDigestor: 'server'});
-    db.updateUser('user2', {pwd: 'y', passwordDigestor: 'client'});
-    assert(db.auth('user1', 'y'));
-    assert(db.auth('user2', 'y'));
+    db.updateUser('user1', {pwd: 'WEak@4password', passwordDigestor: 'server'});
+    db.updateUser('user2', {pwd: 'WEak@4password', passwordDigestor: 'server'});
+    assert(db.auth('user1', 'WEak@4password'));
+    assert(db.auth('user2', 'WEak@4password'));
 }
 
 try {

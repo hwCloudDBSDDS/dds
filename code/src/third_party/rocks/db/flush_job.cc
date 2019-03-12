@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <vector>
 
+
 #include "db/builder.h"
 #include "db/db_iter.h"
 #include "db/dbformat.h"
@@ -152,7 +153,7 @@ void FlushJob::PickMemTable() {
   base_->Ref();  // it is likely that we do not need this reference
 }
 
-// jerousrb modify for split-feature
+// split-feature: support split DB
 Status FlushJob::Run(SequenceNumber& max_encoded_seq, FileMetaData* file_meta) {
 
   db_mutex_->AssertHeld();
@@ -197,7 +198,7 @@ Status FlushJob::Run(SequenceNumber& max_encoded_seq, FileMetaData* file_meta) {
     s = cfd_->imm()->InstallMemtableFlushResults(
         cfd_, mutable_cf_options_, mems_, versions_, db_mutex_,
         meta_.fd.GetNumber(), &job_context_->memtables_to_free, db_directory_,
-        // jerousrb modify for split-feature
+        // split-feature: support split DB
         log_buffer_, max_encoded_seq);
   }
 

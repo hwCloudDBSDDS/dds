@@ -100,11 +100,8 @@ public:
      * expires. If the wait is interrupted, throws an exception. Otherwise, returns immediately.
      */
     bool waitFor(OperationContext* txn, Microseconds waitTimeout) {
-        const auto waitDeadline = Date_t::now() + waitTimeout;
-
         stdx::unique_lock<stdx::mutex> lock(_mutex);
-        return _condVar.wait_until(
-            lock, waitDeadline.toSystemTimePoint(), [&]() { return !!_value; });
+        return _condVar.wait_for(lock, waitTimeout.toSteadyDuration(), [&]() { return !!_value; });
     }
 
 private:

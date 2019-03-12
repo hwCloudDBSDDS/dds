@@ -28,6 +28,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
+
 #include "mongo/platform/basic.h"
 
 #include <set>
@@ -44,7 +46,9 @@
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/logger/logger.h"
 #include "mongo/logger/parse_log_component_settings.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/net/listen.h"
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/net/ssl_options.h"
 
@@ -145,6 +149,7 @@ public:
              BSONObjBuilder& result) {
         int numSet = 0;
         bool found = false;
+
         const ServerParameter::Map& parameterMap = ServerParameterSet::getGlobal()->getMap();
 
         // First check that we aren't setting the same parameter twice and that we actually are
@@ -387,6 +392,7 @@ private:
     Status _set(const BSONObj& bsonSettings) const {
         StatusWith<std::vector<LogComponentSetting>> parseStatus =
             parseLogComponentSettings(bsonSettings);
+
         if (!parseStatus.isOK()) {
             return parseStatus.getStatus();
         }
@@ -406,12 +412,13 @@ private:
                 (newSetting.level > 0) ? LogSeverity::Debug(newSetting.level) : LogSeverity::Log();
             globalLogDomain()->setMinimumLoggedSeverity(newSetting.component, newSeverity);
 
-            if (LogComponent::Value::kDefault == newSetting.component 
-                || LogComponent::Value::kStorage  == newSetting.component) {
-                    if (getGlobalServiceContext() && getGlobalServiceContext()->getGlobalStorageEngine())
-                    {
-                        getGlobalServiceContext()->getGlobalStorageEngine()->setStorageEngineLogLevel(newSetting.level);
-                    }
+            if (LogComponent::Value::kDefault == newSetting.component ||
+                LogComponent::Value::kStorage == newSetting.component) {
+                if (hasGlobalServiceContext() &&
+                    getGlobalServiceContext()->getGlobalStorageEngine()) {
+                    getGlobalServiceContext()->getGlobalStorageEngine()->setStorageEngineLogLevel(
+                        newSetting.level);
+                }
             }
         }
 
@@ -649,6 +656,131 @@ private:
     stdx::mutex _mutex;
     std::string _value;
 } automationServiceDescriptor;
+
+class MaxIncomingConnectionsSetting : public ServerParameter {
+public:
+    MaxIncomingConnectionsSetting()
+        : ServerParameter(ServerParameterSet::getGlobal(), "maxIncomingConnections") {}
+
+    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+        b << name << Listener::globalTicketHolder.outof();
+    }
+
+    virtual Status set(const BSONElement& newValueElement) {
+        int newValue = 0;
+        if (!newValueElement.coerce(&newValue) || newValue < 0)
+            return Status(ErrorCodes::BadValue,
+                          mongoutils::str::stream() << "Invalid value for maxIncomingConnections: "
+                                                    << newValueElement);
+
+
+        Status status = Listener::globalTicketHolder.resize(newValue);
+        if (!status.isOK())
+            return status;
+        status = Listener::checkTicketNumbers();
+        if (!status.isOK())
+            return status;
+        return Status::OK();
+    }
+
+    virtual Status setFromString(const std::string& str) {
+        int newValue = 0;
+        Status status = parseNumberFromString(str, &newValue);
+        if (!status.isOK())
+            return status;
+        if (newValue < 0)
+            return Status(ErrorCodes::BadValue,
+                          mongoutils::str::stream() << "Invalid value for maxIncomingConnections: "
+                                                    << newValue);
+        status = Listener::globalTicketHolder.resize(newValue);
+        if (!status.isOK())
+            return status;
+        status = Listener::checkTicketNumbers();
+        if (!status.isOK())
+            return status;
+        return Status::OK();
+    }
+} maxIncomingConnectionsSetting;
+
+class MaxInternalIncomingConnectionsSetting : public ServerParameter {
+public:
+    MaxInternalIncomingConnectionsSetting()
+        : ServerParameter(ServerParameterSet::getGlobal(), "maxInternalIncomingConnections") {}
+
+    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+        b << name << Listener::internalTicketHolder.outof();
+    }
+
+    virtual Status set(const BSONElement& newValueElement) {
+        int newValue = 0;
+        if (!newValueElement.coerce(&newValue) || newValue < 0)
+            return Status(ErrorCodes::BadValue,
+                          mongoutils::str::stream()
+                              << "Invalid value for maxInternalIncomingConnections: "
+                              << newValueElement);
+        Status status = Listener::internalTicketHolder.resize(newValue);
+        if (!status.isOK())
+            return status;
+        status = Listener::checkInternalTicketNumbers();
+        if (!status.isOK())
+            return status;
+        return Status::OK();
+    }
+
+    virtual Status setFromString(const std::string& str) {
+        int newValue = 0;
+        Status status = parseNumberFromString(str, &newValue);
+        if (!status.isOK())
+            return status;
+        if (newValue < 0)
+            return Status(ErrorCodes::BadValue,
+                          mongoutils::str::stream()
+                              << "Invalid value for maxInternalIncomingConnections: "
+                              << newValue);
+        status = Listener::internalTicketHolder.resize(newValue);
+        if (!status.isOK())
+            return status;
+        status = Listener::checkInternalTicketNumbers();
+        if (!status.isOK())
+            return status;
+        return Status::OK();
+    }
+} maxInternalIncomingConnections;
+
+class ReadOnlySetting : public ServerParameter {
+public:
+    ReadOnlySetting() : ServerParameter(ServerParameterSet::getGlobal(), "readOnly") {}
+
+    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+        b << name << serverGlobalParams.readOnly;
+    }
+
+    virtual Status set(const BSONElement& newValueElement) {
+        if (newValueElement.type() != BSONType::Bool) {
+            return Status(ErrorCodes::BadValue, str::stream() << "Invalid value type for readOnly");
+        }
+
+        serverGlobalParams.readOnly = newValueElement.Bool();
+        index_warning() << "readOnlySetting set " << serverGlobalParams.readOnly;
+        return Status::OK();
+    }
+
+    virtual Status setFromString(const std::string& str) {
+        index_warning() << "readOnlySetting setFromString " << str;
+        bool newValue = true;
+        if (str == "true") {
+            newValue = true;
+        } else if (str == "false") {
+            newValue = false;
+        } else {
+            return Status(ErrorCodes::BadValue,
+                          str::stream() << "Invalid value type for readOnly: " << str);
+        }
+
+        serverGlobalParams.readOnly = newValue;
+        return Status::OK();
+    }
+} readOnlySetting;
 
 constexpr decltype(AutomationServiceDescriptor::kName) AutomationServiceDescriptor::kName;
 constexpr decltype(AutomationServiceDescriptor::kMaxSize) AutomationServiceDescriptor::kMaxSize;

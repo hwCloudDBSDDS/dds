@@ -34,6 +34,7 @@
 #include "util/thread_status_util.h"
 #include "util/xfunc.h"
 
+
 namespace rocksdb {
 
 ColumnFamilyHandleImpl::ColumnFamilyHandleImpl(
@@ -371,7 +372,8 @@ ColumnFamilyData::ColumnFamilyData(
       pending_flush_(false),
       pending_compaction_(false),
       prev_compaction_needed_bytes_(0),
-      allow_2pc_(db_options.allow_2pc) {
+      allow_2pc_(db_options.allow_2pc),
+      last_memtable_id_(0) {
   Ref();
 
   // Convert user defined table properties collector factories to internal ones.
@@ -381,7 +383,7 @@ ColumnFamilyData::ColumnFamilyData(
   if (_dummy_versions != nullptr) {
     internal_stats_.reset(
         new InternalStats(ioptions_.num_levels, db_options.env, this));
-    table_cache_.reset(new TableCache(ioptions_, env_options, _table_cache));
+    table_cache_.reset(new TableCache(ioptions_, env_options, _table_cache, mutable_cf_options_));
     if (ioptions_.compaction_style == kCompactionStyleLevel) {
       compaction_picker_.reset(
           new LevelCompactionPicker(ioptions_, &internal_comparator_));
@@ -410,9 +412,9 @@ ColumnFamilyData::ColumnFamilyData(
     }
 
     if (column_family_set_->NumberOfColumnFamilies() < 10) {
-      Log(InfoLogLevel::INFO_LEVEL, ioptions_.info_log,
+      Log(InfoLogLevel::DEBUG_LEVEL, ioptions_.info_log,
           "--------------- Options for column family [%s]:\n", name.c_str());
-      initial_cf_options_.Dump(ioptions_.info_log);
+      //initial_cf_options_.Dump(ioptions_.info_log);
     } else {
       Log(InfoLogLevel::INFO_LEVEL, ioptions_.info_log,
           "\t(skipping printing options)\n");
@@ -627,6 +629,7 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
     bool needed_delay = write_controller->NeedsDelay();
 
     if (imm()->NumNotFlushed() >= mutable_cf_options.max_write_buffer_number) {
+
       write_controller_token_ = write_controller->GetStopToken();
       internal_stats_->AddCFStats(InternalStats::MEMTABLE_COMPACTION, 1);
       Log(InfoLogLevel::WARN_LEVEL, ioptions_.info_log,
@@ -660,6 +663,7 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
     } else if (mutable_cf_options.max_write_buffer_number > 3 &&
                imm()->NumNotFlushed() >=
                    mutable_cf_options.max_write_buffer_number - 1) {
+
       write_controller_token_ =
           SetupDelay(write_controller, compaction_needed_bytes,
                      prev_compaction_needed_bytes_, was_stopped,
@@ -752,9 +756,11 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
       // double the slowdown ratio. This is to balance the long term slowdown
       // increase signal.
       if (needed_delay) {
+
         uint64_t write_rate = write_controller->delayed_write_rate();
         write_controller->set_delayed_write_rate(static_cast<uint64_t>(
             static_cast<double>(write_rate) * kDelayRecoverSlowdownRatio));
+
       }
     }
     prev_compaction_needed_bytes_ = compaction_needed_bytes;

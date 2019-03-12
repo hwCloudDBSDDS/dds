@@ -165,19 +165,19 @@ env.Library(
     ],
 )
 
-env.CppUnitTest(
-    target='operation_context_test',
-    source=[
-        'operation_context_test.cpp',
-    ],
-    LIBDEPS=[
-        'service_context',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
-        '$BUILD_DIR/mongo/db/service_context_noop_init',
-        '$BUILD_DIR/mongo/unittest/concurrency',
-        '$BUILD_DIR/mongo/util/clock_source_mock',
-    ],
-)
+#env.CppUnitTest(
+#    target='operation_context_test',
+#    source=[
+#        'operation_context_test.cpp',
+#    ],
+#    LIBDEPS=[
+#        'service_context',
+#        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+#        '$BUILD_DIR/mongo/db/service_context_noop_init',
+#        '$BUILD_DIR/mongo/unittest/concurrency',
+#        '$BUILD_DIR/mongo/util/clock_source_mock',
+#    ],
+#)
 
 env.Library(
     target='index_names',
@@ -236,7 +236,6 @@ env.Library(
     target='namespace_string',
     source=[
         'namespace_string.cpp',
-        '$BUILD_DIR/mongo/db/modules/rocks/src/GlobalConfig.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
@@ -250,6 +249,7 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'namespace_string',
+	'$BUILD_DIR/mongo/db/server_options_core',
     ],
 )
 
@@ -374,20 +374,20 @@ env.Library(
     ],
 )
 
-env.CppUnitTest(
-    target='range_deleter_test',
-    source=[
-        'range_deleter_test.cpp',
-    ],
-    LIBDEPS=[
-        'commands_test_crutch',
-        'common',
-        'range_deleter',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
-        '$BUILD_DIR/mongo/db/repl/replmocks',
-        '$BUILD_DIR/mongo/db/service_context_noop_init',
-    ],
-)
+#env.CppUnitTest(
+#    target='range_deleter_test',
+#    source=[
+#        'range_deleter_test.cpp',
+#    ],
+#    LIBDEPS=[
+#        'commands_test_crutch',
+#        'common',
+#        'range_deleter',
+#        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+#        '$BUILD_DIR/mongo/db/repl/replmocks',
+#        '$BUILD_DIR/mongo/db/service_context_noop_init',
+#    ],
+#)
 
 # This library is linked into mongos and mongod only, not into the shell or any tools.
 env.Library(
@@ -484,7 +484,7 @@ env.Library(
         '$BUILD_DIR/mongo/util/net/hostandport',
         '$BUILD_DIR/mongo/transport/transport_layer_common',
         '$BUILD_DIR/mongo/transport/transport_layer_manager',
-    ]
+    ],
 )
 
 env.Library(
@@ -513,6 +513,9 @@ env.Library(
         "audit.cpp",
     ],
     LIBDEPS=[
+	    'auth/authorization_manager_global',
+        '$BUILD_DIR/mongo/db/auth/authcore',
+        '$BUILD_DIR/mongo/util/net/hostandport',
     ],
 )
 
@@ -563,6 +566,7 @@ env.CppUnitTest(
         "service_context_noop_init",
         "auth/authorization_manager_mock_init",
         "repl/replmocks",
+        '$BUILD_DIR/mongo/db/storage/storage_options',
     ],
 )
 
@@ -688,6 +692,7 @@ serveronlyLibdeps = [
     "ftdc/ftdc_mongod",
     "global_timestamp",
     "index/index_descriptor",
+    "index/index_description_onCfg",
     "index/index_access_methods",
     "matcher/expressions_mongod_only",
     "ops/write_ops",

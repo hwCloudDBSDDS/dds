@@ -57,7 +57,11 @@ public:
     virtual void commit() {}
     virtual void rollback() {
         // Intentionally ignoring failure.
-        _cce->_engine->dropIdent(_opCtx, _ident);
+        StringData coll_ns = StringData();
+        if(serverGlobalParams.clusterRole == ClusterRole::ShardServer){
+            coll_ns = _cce->ns().ns();
+        }
+        _cce->_engine->dropIdent(_opCtx, _ident,coll_ns);
     }
 
     OperationContext* const _opCtx;
@@ -74,7 +78,12 @@ public:
     virtual void commit() {
         // Intentionally ignoring failure here. Since we've removed the metadata pointing to the
         // index, we should never see it again anyway.
-        _cce->_engine->dropIdent(_opCtx, _ident);
+        StringData coll_ns = StringData();
+        if(serverGlobalParams.clusterRole == ClusterRole::ShardServer 
+            && _opCtx->getDroppedIndexFlag()){
+            coll_ns = _cce->ns().ns();
+        }
+        _cce->_engine->dropIdent(_opCtx, _ident,coll_ns);
     }
 
     OperationContext* const _opCtx;

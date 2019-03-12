@@ -1,0 +1,13 @@
+selector:
+  js_test:
+    roots:
+    - jstests/slow1/large_role_chain_cluster.js
+    - jstests/slow1/sharding_multiple_collections.js
+    exclude_files:
+
+executor:
+  js_test:
+    config:
+      shell_options:
+        nodb: ''
+        readMode: commands

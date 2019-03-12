@@ -88,15 +88,15 @@ public:
 
     Protocol getProtocol() const final;
 
-    void setMetadata(const BSONObj& metaData){
+    void setMetadata(const BSONObj& metaData) {
         _metadata = metaData;
     }
 
-    virtual void setCommandArgs(const BSONObj& commandArgs) override{
+    virtual void setCommandArgs(const BSONObj& commandArgs) override {
         _commandArgs = commandArgs;
     }
 
-    virtual void setCommandName(const StringData& commandName) override{
+    virtual void setCommandName(const StringData& commandName) override {
         _commandName = commandName;
     }
 

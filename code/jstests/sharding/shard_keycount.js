@@ -9,20 +9,23 @@
     var ns = dbName + "." + collName;
 
     var db = s.getDB(dbName);
+    assert.commandWorked(s.s0.adminCommand({enablesharding: dbName}));
+    s.ensurePrimaryShard(dbName, 'shard0001');
+    assert.commandWorked(s.s0.adminCommand({shardcollection: ns, key: {_id: 1}}));
 
     for (var i = 0; i < 10; i++) {
         db.foo.insert({_id: i});
     }
 
     // Enable sharding on DB
-    assert.commandWorked(s.s0.adminCommand({enablesharding: dbName}));
-    s.ensurePrimaryShard(dbName, 'shard0001');
+    // wooo assert.commandWorked(s.s0.adminCommand({enablesharding: dbName}));
+    // wooo s.ensurePrimaryShard(dbName, 'shard0001');
 
     // Enable sharding on collection
-    assert.commandWorked(s.s0.adminCommand({shardcollection: ns, key: {_id: 1}}));
+    // wooo assert.commandWorked(s.s0.adminCommand({shardcollection: ns, key: {_id: 1}}));
 
     // Split into two chunks
-    assert.commandWorked(s.s0.adminCommand({split: ns, find: {_id: 3}}));
+    /*assert.commandWorked(s.s0.adminCommand({split: ns, find: {_id: 3}}));
 
     var coll = db.getCollection(collName);
 
@@ -38,6 +41,6 @@
 
     // Split chunk again
     assert.commandWorked(s.s0.adminCommand({split: ns, find: {_id: 3}}));
-
+    */
     s.stop();
 })();

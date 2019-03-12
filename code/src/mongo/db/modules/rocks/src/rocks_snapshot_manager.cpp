@@ -30,8 +30,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include "rocks_snapshot_manager.h"
 #include "rocks_recovery_unit.h"
+#include "rocks_snapshot_manager.h"
 
 #include <rocksdb/db.h>
 

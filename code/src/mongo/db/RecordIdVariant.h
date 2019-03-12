@@ -3,8 +3,7 @@
 #include <limits>
 #include <sstream>
 
-namespace mongo
-{
+namespace mongo {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -21,53 +20,47 @@ namespace mongo
 //  E.g. if somebody compares RecordIds, while other thread overwrites it. Or when
 //  one thread assign RecordId to another value, while different thread overwrites it.
 //  Most probably, we shouldn't hit into these scenarios, because it produces undetermined
-//  behaviour even for original uint64_t. However, for uint64_t it doesn't crash and 
+//  behaviour even for original uint64_t. However, for uint64_t it doesn't crash and
 //  doesn't leak for sure. So, need to re-think how we can make it more safe or check
-//  that nobody actually overwrites RecordId from different threads. Potentially, we 
+//  that nobody actually overwrites RecordId from different threads. Potentially, we
 //  need to disallow assignment operators.
 //
-class RecordIdVariant
-{
+class RecordIdVariant {
 protected:
-
-    enum ObjectType : uint8_t
-    {
+    enum ObjectType : uint8_t {
         //  Flags
         DataFlag = 1 << 6,
         Int64ConvertableFlag = 1 << 7,
 
         Null = Int64ConvertableFlag,
         Minimum = Int64ConvertableFlag | 1,
-        Maximum = Int64ConvertableFlag | 2,       
+        Maximum = Int64ConvertableFlag | 2,
         Int64 = Int64ConvertableFlag | 3,
 
         InPlaceData = DataFlag | 4,
         OutPlaceData = DataFlag | 5
     };
 
-    struct Header
-    {
+    struct Header {
         std::atomic<uint32_t> refCount;
         char data[4];
 
-        static constexpr int HeaderSize()
-        {
+        static constexpr int HeaderSize() {
             return sizeof(refCount);
         }
     };
 
 protected:  //  Fields
-    
     //
     //  GCC is pretty dump when it comes to setting alignments for fields/struct
-    //  After spending some time playing with union/struct and __attribute__ ((packed))/__attribute__ ((aligned (4)))
+    //  After spending some time playing with union/struct and __attribute__
+    //  ((packed))/__attribute__ ((aligned (4)))
     //  i didn't find any good way to align data the way i want. So i give up on using unions
-    //  and just put fields sequentially. It takes 16 bytes overall, however inPlaceData can actually store 14 bytes.
+    //  and just put fields sequentially. It takes 16 bytes overall, however inPlaceData can
+    //  actually store 14 bytes.
     //
-    union
-    {
-        struct
-        {
+    union {
+        struct {
             ObjectType type;
             uint8_t inPlaceSize;
             char inPlaceData[2];
@@ -77,8 +70,7 @@ protected:  //  Fields
         int64_t metaNum;
     };
 
-    union
-    {
+    union {
         Header* header;
         int64_t intNum;
     };
@@ -86,44 +78,36 @@ protected:  //  Fields
     static const int MaxInPlaceSize = 14;
 
 protected:
-
-    bool HasHeader() const
-    {
+    bool HasHeader() const {
         return type == ObjectType::OutPlaceData;
     }
 
-    void Release()
-    {
-        if(!HasHeader())
+    void Release() {
+        if (!HasHeader())
             return;
-        
-        if(header->refCount.fetch_sub(1) == 1)
-        {
-            delete[] (char*)header;
+
+        if (header->refCount.fetch_sub(1) == 1) {
+            delete[](char*) header;
             Clean();
         }
-            
     }
 
-    void Clean()
-    {
+    void Clean() {
         header = nullptr;
         type = ObjectType::Null;
     }
 
-    void AddRef()
-    {
-        if(!HasHeader())
+    void AddRef() {
+        if (!HasHeader())
             return;
 
         header->refCount.fetch_add(1);
     }
 
-    void AllocateData(int size)
-    {
+    void AllocateData(int size) {
         invariant(size > 0);
 
-        if(size < MaxInPlaceSize)   //  In place update
+        if (size < MaxInPlaceSize)  //  In place update
         {
             type = ObjectType::InPlaceData;
             inPlaceSize = (uint8_t)size;
@@ -136,55 +120,45 @@ protected:
         outPlaceSize = (uint32_t)size;
     }
 
-    void Set(const void* buffer, int size)
-    {
+    void Set(const void* buffer, int size) {
         AllocateData(size);
-        std::memcpy((void*)Data(), buffer, size);
+        memcpy((void*)Data(), buffer, size);
     }
 
-    RecordIdVariant(ObjectType inType, int64_t num) : type(inType), intNum(num)
-    {}
+    RecordIdVariant(ObjectType inType, int64_t num) : type(inType), intNum(num) {}
 
-    inline void CopyFieldsFrom(const RecordIdVariant& other)
-    {
+    inline void CopyFieldsFrom(const RecordIdVariant& other) {
         metaNum = other.metaNum;
         intNum = other.intNum;
     }
 
 public:
-    RecordIdVariant() : RecordIdVariant(ObjectType::Null, 0)
-    {}
+    RecordIdVariant() : RecordIdVariant(ObjectType::Null, 0) {}
 
-    RecordIdVariant(int64_t value) : RecordIdVariant(ObjectType::Int64, value)
-    {
+    RecordIdVariant(int64_t value) : RecordIdVariant(ObjectType::Int64, value) {
         type = ObjectType::Int64;
         intNum = value;
     }
 
-    RecordIdVariant(const void* buffer, size_t size)
-    {        
+    RecordIdVariant(const void* buffer, size_t size) {
         Set(buffer, size);
     }
 
-    RecordIdVariant(const std::string& str)
-    {
+    RecordIdVariant(const std::string& str) {
         Set(str.c_str(), str.size());
     }
 
-    ~RecordIdVariant()
-    {
+    ~RecordIdVariant() {
         Release();
     }
-    
-    RecordIdVariant(const RecordIdVariant& other)
-    {
+
+    RecordIdVariant(const RecordIdVariant& other) {
         CopyFieldsFrom(other);
         AddRef();
     }
 
-    RecordIdVariant& operator=(const RecordIdVariant& other)
-    {
-        if(HasHeader() && header == other.header)
+    RecordIdVariant& operator=(const RecordIdVariant& other) {
+        if (HasHeader() && header == other.header)
             return *this;
 
         Release();
@@ -194,17 +168,15 @@ public:
         return *this;
     }
 
-    RecordIdVariant(RecordIdVariant&& other)
-    {
+    RecordIdVariant(RecordIdVariant&& other) {
         CopyFieldsFrom(other);
         other.Clean();
     }
 
-    RecordIdVariant& operator=(RecordIdVariant&& other)
-    {
-        if(HasHeader() && header == other.header)
+    RecordIdVariant& operator=(RecordIdVariant&& other) {
+        if (HasHeader() && header == other.header)
             return *this;
-        
+
         Release();
         CopyFieldsFrom(other);
         other.Clean();
@@ -212,10 +184,8 @@ public:
         return *this;
     }
 
-    inline const char* Data() const
-    {
-        switch(type)
-        {
+    inline const char* Data() const {
+        switch (type) {
             case ObjectType::Int64:
                 return (char*)&intNum;
 
@@ -227,13 +197,11 @@ public:
 
             default:
                 return nullptr;
-        }        
+        }
     }
 
-    inline int Size() const
-    {
-        switch(type)
-        {
+    inline int Size() const {
+        switch (type) {
             case ObjectType::InPlaceData:
                 return inPlaceSize;
 
@@ -245,128 +213,113 @@ public:
 
             default:
                 return 0;
-        }        
+        }
     }
 
-    inline bool IsNull() const
-    {
-        return 
-            type == ObjectType::Null ||
-            (type == ObjectType::Int64 && intNum == 0);
+    inline bool IsNull() const {
+        return type == ObjectType::Null || (type == ObjectType::Int64 && intNum == 0);
     }
 
-    inline bool IsMin() const
-    {
-        return
-            IsConvertableToInt64() && intNum == std::numeric_limits<int64_t>::min();
+    inline bool IsMin() const {
+        return IsConvertableToInt64() && intNum == std::numeric_limits<int64_t>::min();
     }
 
-    inline bool IsMax() const
-    {
-        return
-            IsConvertableToInt64() && intNum == std::numeric_limits<int64_t>::max();
+    inline bool IsMax() const {
+        return IsConvertableToInt64() && intNum == std::numeric_limits<int64_t>::max();
     }
 
-    inline bool IsSpecial() const
-    {
-        return IsNull() || IsMax() || IsMin();;
+    inline bool IsSpecial() const {
+        return IsNull() || IsMax() || IsMin();
+        ;
     }
 
-    inline const bool IsConvertableToInt64() const
-    {
+    inline const bool IsConvertableToInt64() const {
         return (type & ObjectType::Int64ConvertableFlag);
     }
 
-    inline const bool IsData() const
-    {
+    inline const bool IsData() const {
         return (type & ObjectType::DataFlag);
     }
 
-    static const RecordIdVariant Min()
-    {
+    static const RecordIdVariant Min() {
         return RecordIdVariant(ObjectType::Minimum, std::numeric_limits<int64_t>::min());
     }
 
-    static const RecordIdVariant Max()
-    {
+    static const RecordIdVariant Max() {
         return RecordIdVariant(ObjectType::Maximum, std::numeric_limits<int64_t>::max());
     }
 
     //
     //  Todo: need to optimize
     //
-    static int Compare(const RecordIdVariant& l, const RecordIdVariant& r)
-    {
+    static int Compare(const RecordIdVariant& l, const RecordIdVariant& r) {
         //
         //  Check Int64
         //
-        if(l.IsConvertableToInt64() && r.IsConvertableToInt64())
-        {
+        if (l.IsConvertableToInt64() && r.IsConvertableToInt64()) {
             return l.intNum == r.intNum ? 0 : (l.intNum < r.intNum) ? -1 : 1;
         }
 
-        // 
+        //
         //  Check for NULL. Not: both cannot be NULL, since NULL is convertable to Int64
         //  and in this case the previous condition would return 0;
         //
-        if(l.IsNull())
+        if (l.IsNull())
             return -1;
 
-        if(r.IsNull())
+        if (r.IsNull())
             return 1;
 
         //
         //  Firstly check Min/Max cases
         //
-        if(l.IsMin())
+        if (l.IsMin())
             return r.IsMin() ? 0 : -1;
 
-        if(r.IsMin())
-            return 1;        
+        if (r.IsMin())
+            return 1;
 
-        if(l.IsMax())
+        if (l.IsMax())
             return r.IsMax() ? 0 : 1;
 
-        if(r.IsMax())
+        if (r.IsMax())
             return -1;
 
         invariant(l.IsData() && r.IsData());
 
-        if(l.Data() == r.Data())
+        if (l.Data() == r.Data())
             return 0;
 
         auto sizeToCompare = std::min(l.Size(), r.Size());
 
         int result = memcmp(l.Data(), r.Data(), sizeToCompare);
 
-        if(result != 0)
+        if (result != 0)
             return result;
 
-        if(l.Size() == r.Size())
+        if (l.Size() == r.Size())
             return 0;
 
         return l.Size() > r.Size() ? 1 : -1;
     }
 
-    std::string ToString() const
-    {
-        if(type == ObjectType::Int64)
+    std::string ToString() const {
+        if (type == ObjectType::Int64)
             return std::to_string(intNum);
 
-        if(IsNull())
+        if (IsNull())
             return "Null";
 
-        if(IsMin())
+        if (IsMin())
             return "Min";
 
-        if(IsMax())
+        if (IsMax())
             return "Max";
 
         std::stringstream stream;
-        for(auto i = 0; i < Size(); i++)
-        {
+        for (auto i = 0; i < Size(); i++) {
             char c = ((char*)Data())[i];
-            if(isprint(c))
+            if (isprint(c))
                 stream << c;
             else
                 stream << "{" << std::hex << (int)c << "}";
@@ -375,21 +328,18 @@ public:
         return stream.str();
     }
 
-    inline int64_t ToInt64() const
-    {
+    inline int64_t ToInt64() const {
         invariant(IsConvertableToInt64());
         return intNum;
     }
 
     //  For backward compatibility with old MongoDB RecordId
-    operator int64_t() const
-    {
+    operator int64_t() const {
         return ToInt64();
     }
 
-    int GetMemoryUsage() const
-    {
-        if(type == ObjectType::OutPlaceData)
+    int GetMemoryUsage() const {
+        if (type == ObjectType::OutPlaceData)
             return sizeof(RecordIdVariant) + Header::HeaderSize() + outPlaceSize;
 
         return sizeof(RecordIdVariant);
@@ -400,45 +350,37 @@ public:
 };
 
 
-inline bool operator==(const RecordIdVariant& l, const RecordIdVariant& r)
-{   
+inline bool operator==(const RecordIdVariant& l, const RecordIdVariant& r) {
     return RecordIdVariant::Compare(l, r) == 0;
 }
 
-inline bool operator!=(const RecordIdVariant& l, const RecordIdVariant& r)
-{
+inline bool operator!=(const RecordIdVariant& l, const RecordIdVariant& r) {
     return !(l == r);
 }
 
-inline bool operator<(const RecordIdVariant& l, const RecordIdVariant& r)
-{
+inline bool operator<(const RecordIdVariant& l, const RecordIdVariant& r) {
     return RecordIdVariant::Compare(l, r) < 0;
 }
 
-inline bool operator<=(const RecordIdVariant& l, const RecordIdVariant& r)
-{
+inline bool operator<=(const RecordIdVariant& l, const RecordIdVariant& r) {
     int result = RecordIdVariant::Compare(l, r);
     return result == 0 || result < 0;
 }
 
-inline bool operator>(const RecordIdVariant& l, const RecordIdVariant& r)
-{
+inline bool operator>(const RecordIdVariant& l, const RecordIdVariant& r) {
     return RecordIdVariant::Compare(l, r) > 0;
 }
 
-inline bool operator>=(const RecordIdVariant& l, const RecordIdVariant& r)
-{
+inline bool operator>=(const RecordIdVariant& l, const RecordIdVariant& r) {
     int result = RecordIdVariant::Compare(l, r);
     return result == 0 || result > 0;
 }
 
-inline bool operator==(const RecordIdVariant& l, int64_t r)
-{   
+inline bool operator==(const RecordIdVariant& l, int64_t r) {
     return RecordIdVariant::Compare(l, RecordIdVariant(r)) == 0;
 }
 
-inline bool operator==(int64_t l, const RecordIdVariant& r)
-{   
+inline bool operator==(int64_t l, const RecordIdVariant& r) {
     return RecordIdVariant::Compare(RecordIdVariant(l), r) == 0;
 }
 

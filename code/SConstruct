@@ -1566,6 +1566,7 @@ if env.TargetOSIs('posix'):
 
     env.Append( CXXFLAGS=["-Woverloaded-virtual"] )
     env.Append( LINKFLAGS=["-pthread"] )
+    env.Append( LINKFLAGS=["-Wl,--library-path=/home/cuixin/mongodb/dfv3/code/build/rocksdb/lib"] )
 
     # SERVER-9761: Ensure early detection of missing symbols in dependent libraries at program
     # startup.

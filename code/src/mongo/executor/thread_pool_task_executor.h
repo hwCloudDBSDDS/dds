@@ -88,6 +88,8 @@ public:
      */
     void cancelAllCommands();
 
+    uint32_t getTaskCountInNetwork() const override;
+
 private:
     class CallbackState;
     class EventState;

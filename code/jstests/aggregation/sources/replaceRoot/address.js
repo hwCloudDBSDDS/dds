@@ -91,11 +91,11 @@
     let conn = db.getMongo();
     doExecutionTest(conn);
     print("Success! Standalone execution test for $replaceRoot passed.");
-
+    
     // Test against a sharded cluster.
-    let st = new ShardingTest({shards: 2});
+    /*let st = new ShardingTest({shards: 2});
     doExecutionTest(st.s0);
     st.stop();
     print("Success! Sharding test for $replaceRoot passed.");
-
+    */
 }());

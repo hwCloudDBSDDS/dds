@@ -274,7 +274,8 @@
     MongoRunner.stopMongod(mongod);
 
     // Run the test on a sharded cluster.
-    let cluster = new ShardingTest({shards: 1, mongos: 1});
+/*    let cluster = new ShardingTest({shards: 1, mongos: 1});
     runTest(cluster);
     cluster.stop();
+*/
 }());

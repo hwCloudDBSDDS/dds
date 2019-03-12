@@ -56,6 +56,26 @@
     while (false)                                               \
         ;
 
+#define MONGO_WRITE_CONFLICT_RETRY_OR_THROW_LOOP_END(PTXN, THROW, OPSTR, NSSTR) \
+    catch (const ::mongo::WriteConflictException& wce) {                        \
+        if (THROW) {                                                            \
+            throw wce;                                                          \
+        }                                                                       \
+        const OperationContext* ptxn = (PTXN);                                  \
+        ++CurOp::get(ptxn)->debug().writeConflicts;                             \
+        wce.logAndBackoff(wcr__Attempts, (OPSTR), (NSSTR));                     \
+        ++wcr__Attempts;                                                        \
+        ptxn->recoveryUnit()->abandonSnapshot();                                \
+        continue;                                                               \
+    }                                                                           \
+    break;                                                                      \
+    }                                                                           \
+    while (true)                                                                \
+        ;                                                                       \
+    }                                                                           \
+    while (false)                                                               \
+        ;
+
 namespace mongo {
 
 /**

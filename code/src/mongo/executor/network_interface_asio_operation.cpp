@@ -126,7 +126,7 @@ bool NetworkInterfaceASIO::AsyncOp::canceled() const {
 }
 
 void NetworkInterfaceASIO::AsyncOp::timeOut_inlock() {
-    LOG(2) << "Operation timing out; original request was: " << redact(request().toString());
+    LOG(0) << "Operation timing out; original request was: " << redact(request().toString());
     auto access = _access;
     auto generation = access->id;
 
@@ -194,9 +194,6 @@ NetworkInterfaceASIO::AsyncCommand* NetworkInterfaceASIO::AsyncOp::command() {
 void NetworkInterfaceASIO::AsyncOp::finish(const ResponseStatus& rs) {
     // We never hold the access lock when we call finish from NetworkInterfaceASIO.
     _transitionToState(AsyncOp::State::kFinished);
-
-    LOG(2) << "Request " << _request.id << " finished with response: "
-           << redact(rs.isOK() ? rs.data.toString() : rs.status.toString());
 
     // Calling the completion handler may invalidate state in this op, so do it last.
     _onFinish(rs);

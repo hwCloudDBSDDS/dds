@@ -34,6 +34,7 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/s/shard_id.h"
 
 namespace mongo {
 
@@ -42,7 +43,7 @@ class DBConfig;
 class OperationContext;
 template <typename T>
 class StatusWith;
-
+class BSONObjBuilder;
 
 /**
  * This is the root of the "read-only" hierarchy of cached catalog metadata. It is read only
@@ -51,6 +52,23 @@ class StatusWith;
  */
 class CatalogCache {
     MONGO_DISALLOW_COPYING(CatalogCache);
+
+class DbCacheInfo {
+    std::string     _name; 
+    ShardId         _primaryId;
+    int             _collNums;
+
+public:
+    DbCacheInfo(const std::string name, ShardId      primaryId, int collNums)
+        : _name(name), _primaryId(primaryId), _collNums(collNums) {}
+
+    const std::string &GetName() const { return _name; }
+    ShardId GetPrimaryId() const { return _primaryId; }
+    int GetCollNums() const { return _collNums; }
+
+};
+
+
 
 public:
     CatalogCache();
@@ -77,6 +95,9 @@ public:
      * Purges all cached database information, which will cause the data to be reloaded again.
      */
     void invalidateAll();
+
+    void getStat(BSONObjBuilder& result);
+    void periodFlushDbIfNeeded(OperationContext* txn);
 
 private:
     typedef std::map<std::string, std::shared_ptr<DBConfig>> ShardedDatabasesMap;

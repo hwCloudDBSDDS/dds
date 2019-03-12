@@ -17,7 +17,15 @@
     test.insertPts(50);
 
     for (var i = (test.nPts / 10); i < test.nPts; i += (test.nPts / 10)) {
-        s.adminCommand({split: ('test.' + testName), middle: {_id: i}});
+        try {
+	    s.adminCommand({split: ('test.' + testName), middle: {_id: i}});
+        }catch (e){
+	    if (e.message.indexOf("is a boundary key of existing chunk") != -1){
+               print("split is ok");
+            }else{
+               throw e;
+            }
+	}
         try {
             s.adminCommand({
                 moveChunk: ('test.' + testName),

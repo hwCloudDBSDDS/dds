@@ -200,12 +200,11 @@ Status BackgroundJob::cancel() {
 
 bool BackgroundJob::wait(unsigned msTimeOut) {
     verify(!_selfDelete);  // you cannot call wait on a self-deleting job
-    const auto deadline = Date_t::now() + Milliseconds(msTimeOut);
     stdx::unique_lock<stdx::mutex> l(_status->mutex);
     while (_status->state != Done) {
         if (msTimeOut) {
             if (stdx::cv_status::timeout ==
-                _status->done.wait_until(l, deadline.toSystemTimePoint()))
+                _status->done.wait_for(l, Milliseconds(msTimeOut).toSteadyDuration()))
                 return false;
         } else {
             _status->done.wait(l);
@@ -309,7 +308,7 @@ void PeriodicTaskRunner::run() {
 
     stdx::unique_lock<stdx::mutex> lock(_mutex);
     while (!_shutdownRequested) {
-        if (stdx::cv_status::timeout == _cond.wait_for(lock, waitTime.toSystemDuration()))
+        if (stdx::cv_status::timeout == _cond.wait_for(lock, waitTime.toSteadyDuration()))
             _runTasks();
     }
 }

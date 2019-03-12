@@ -420,7 +420,8 @@ def get_repos():
     mongo_modules = moduleconfig.discover_module_directories(
                         os.path.join(base_dir, MODULE_DIR), None)
 
-    paths = [os.path.join(base_dir, MODULE_DIR, m) for m in mongo_modules]
+    #paths = [os.path.join(base_dir, MODULE_DIR, m) for m in mongo_modules]
+    paths = []
 
     paths.append(base_dir)
 

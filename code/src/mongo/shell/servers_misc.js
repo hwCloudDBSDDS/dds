@@ -25,6 +25,13 @@ ToolTest.prototype.startDB = function(coll) {
 
     Object.extend(options, this.options);
 
+    if ((!options.binVersion) ||
+        (MongoRunner.laterThan(options.binVersion, "3.2.18.1")) && !options.adminWhiteListPath) {
+        if (!options.adminWhiteListPath) {
+            options.adminWhiteListPath = "/tmp/adminWhiteList";
+        }
+    }
+
     this.m = startMongoProgram.apply(null, MongoRunner.arrOptions("mongod", options));
     this.db = this.m.getDB(this.baseName);
     if (coll)
@@ -96,6 +103,10 @@ ReplTest.prototype.getOptions = function(master, extra, putBinaryFirst, norepl) 
 
     if (!extra.oplogSize)
         extra.oplogSize = "40";
+
+    if (!extra.adminWhiteListPath) {
+        extra.adminWhiteListPath = "/tmp/adminWhiteList";
+    }
 
     var a = [];
     if (putBinaryFirst)
@@ -194,8 +205,7 @@ allocatePort = (function(prev) {
         }
         if (!prev) {
             return nextPort++;
-        }
-        else {
+        } else {
             return nextPort--;
         }
     };

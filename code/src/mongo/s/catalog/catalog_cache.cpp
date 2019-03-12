@@ -25,17 +25,17 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
 #include "mongo/platform/basic.h"
 
 #include "mongo/s/catalog/catalog_cache.h"
-
-
 #include "mongo/base/status_with.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_database.h"
+#include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/config.h"
 #include "mongo/s/grid.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -44,6 +44,16 @@ using std::string;
 
 
 CatalogCache::CatalogCache() {}
+
+void CatalogCache::getStat(BSONObjBuilder& result) {
+    stdx::lock_guard<stdx::mutex> guard(_mutex);
+
+    for (auto db : _databases) {
+        db.second->getStat(result);
+    }
+
+    return;
+}
 
 StatusWith<shared_ptr<DBConfig>> CatalogCache::getDatabase(OperationContext* txn,
                                                            const string& dbName) {
@@ -88,5 +98,58 @@ void CatalogCache::invalidateAll() {
 
     _databases.clear();
 }
+
+void CatalogCache::periodFlushDbIfNeeded(OperationContext* txn) {
+        std::vector<DbCacheInfo> _dbCacheInfo;
+        {
+            stdx::lock_guard<stdx::mutex> guard(_mutex);
+            for(auto db: _databases){
+                _dbCacheInfo.push_back(DbCacheInfo(db.second->name(),db.second->getPrimaryId(),db.second->getCollNums()));
+            }
+        }
+        for(auto info: _dbCacheInfo){
+            index_LOG(3)<<"dbname : "<< info.GetName() <<", primaryId: "<<info.GetPrimaryId()<<", collNums: "<<info.GetCollNums();
+            auto status = grid.catalogClient(txn)->getDatabase(txn, info.GetName());
+            if (!status.isOK()) {
+                invalidate(info.GetName());
+                index_err()<<"dbnamme "<< info.GetName()<<" is not exist on config.";
+                continue;
+            }
+
+            const auto dbOpTimePair = status.getValue();
+            const DatabaseType& dbt = dbOpTimePair.value;
+            if(dbt.getPrimary() != info.GetPrimaryId()){
+                invalidate(info.GetName());
+                index_err()<<"dbnamme "<< info.GetName() <<"primaryId not equal,"
+                            <<", local primaryId: "<< info.GetPrimaryId()<<", config primaryId:"<< dbt.getPrimary();
+                continue;
+            }
+
+            std::vector<CollectionType> collections;
+            repl::OpTime configOpTimeWhenLoadingColl;
+            auto coll_status = grid.catalogClient(txn)->getCollections(
+                                txn, &info.GetName(), &collections, &configOpTimeWhenLoadingColl);
+
+            if (!coll_status.isOK()) {
+                index_err()<<"dbnamme "<< info.GetName()<<", getCollections failed, status: "<< coll_status;
+                break;
+            }
+
+            int cfg_coll_nums = 0;
+            for (const auto& coll : collections) {
+                if (coll.getCreated() && !coll.getDropped()) {
+                    cfg_coll_nums++;
+                }
+            }
+            if(info.GetCollNums() != cfg_coll_nums){
+                invalidate(info.GetName());
+                index_err()<<"dbnamme: "<< info.GetName() <<", collection number not equal,"
+                           <<", local number: "<< info.GetCollNums()<<", config number:"<< cfg_coll_nums;
+                continue;
+            }
+        }
+
+        return;
+    }
 
 }  // namespace mongo

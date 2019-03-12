@@ -30,7 +30,7 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/pipeline/document_source_out.h"
-
+#include "mongo/db/server_options.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/destructor_guard.h"
 #include "mongo/util/log.h"
@@ -92,52 +92,60 @@ void DocumentSourceOut::initialize() {
             str::stream() << "namespace '" << _outputNs.ns()
                           << "' is capped so it can't be used for $out",
             _originalOutOptions["capped"].eoo());
+    if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
+        // We will write all results into a temporary collection, then rename the temporary
+        // collection
+        // to be the target collection once we are done.
+        _tempNs = NamespaceString(str::stream() << _outputNs.db() << ".tmp.agg_out."
+                                                << aggOutCounter.addAndFetch(1));
 
-    // We will write all results into a temporary collection, then rename the temporary collection
-    // to be the target collection once we are done.
-    _tempNs = NamespaceString(str::stream() << _outputNs.db() << ".tmp.agg_out."
-                                            << aggOutCounter.addAndFetch(1));
+        // Create output collection, copying options from existing collection if any.
+        {
+            BSONObjBuilder cmd;
+            cmd << "create" << _tempNs.coll();
+            cmd << "temp" << true;
+            cmd.appendElementsUnique(_originalOutOptions);
 
-    // Create output collection, copying options from existing collection if any.
-    {
-        BSONObjBuilder cmd;
-        cmd << "create" << _tempNs.coll();
-        cmd << "temp" << true;
-        cmd.appendElementsUnique(_originalOutOptions);
+            BSONObj info;
+            bool ok = conn->runCommand(_outputNs.db().toString(), cmd.done(), info);
+            uassert(16994,
+                    str::stream() << "failed to create temporary $out collection '" << _tempNs.ns()
+                                  << "': "
+                                  << info.toString(),
+                    ok);
+        }
 
-        BSONObj info;
-        bool ok = conn->runCommand(_outputNs.db().toString(), cmd.done(), info);
-        uassert(16994,
-                str::stream() << "failed to create temporary $out collection '" << _tempNs.ns()
-                              << "': "
-                              << info.toString(),
-                ok);
+        // copy indexes to _tempNs
+        for (std::list<BSONObj>::const_iterator it = _originalIndexes.begin();
+             it != _originalIndexes.end();
+             ++it) {
+            MutableDocument index((Document(*it)));
+            index.remove("_id");  // indexes shouldn't have _ids but some existing ones do
+            index["ns"] = Value(_tempNs.ns());
+
+            BSONObj indexBson = index.freeze().toBson();
+            conn->insert(_tempNs.getSystemIndexesCollection(), indexBson);
+            BSONObj err = conn->getLastErrorDetailed();
+            uassert(16995,
+                    str::stream() << "copying index for $out failed."
+                                  << " index: "
+                                  << indexBson
+                                  << " error: "
+                                  << err,
+                    DBClientWithCommands::getLastErrorString(err).empty());
+        }
     }
 
-    // copy indexes to _tempNs
-    for (std::list<BSONObj>::const_iterator it = _originalIndexes.begin();
-         it != _originalIndexes.end();
-         ++it) {
-        MutableDocument index((Document(*it)));
-        index.remove("_id");  // indexes shouldn't have _ids but some existing ones do
-        index["ns"] = Value(_tempNs.ns());
-
-        BSONObj indexBson = index.freeze().toBson();
-        conn->insert(_tempNs.getSystemIndexesCollection(), indexBson);
-        BSONObj err = conn->getLastErrorDetailed();
-        uassert(16995,
-                str::stream() << "copying index for $out failed."
-                              << " index: "
-                              << indexBson
-                              << " error: "
-                              << err,
-                DBClientWithCommands::getLastErrorString(err).empty());
-    }
     _initialized = true;
 }
 
 void DocumentSourceOut::spill(const vector<BSONObj>& toInsert) {
-    BSONObj err = _mongod->insert(_tempNs, toInsert);
+    BSONObj err;
+    if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
+        err = _mongod->insert(_tempNs, toInsert);
+    } else {
+        err = _mongod->insert(_outputNs, toInsert);
+    }
     uassert(16996,
             str::stream() << "insert for $out failed: " << err,
             DBClientWithCommands::getLastErrorString(err).empty());
@@ -181,14 +189,15 @@ DocumentSource::GetNextResult DocumentSourceOut::getNext() {
             return nextInput;  // Propagate the pause.
         }
         case GetNextResult::ReturnStatus::kEOF: {
+            if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
+                auto renameCommandObj = BSON(
+                    "renameCollection" << _tempNs.ns() << "to" << _outputNs.ns() << "dropTarget"
+                                       << true);
 
-            auto renameCommandObj =
-                BSON("renameCollection" << _tempNs.ns() << "to" << _outputNs.ns() << "dropTarget"
-                                        << true);
-
-            auto status = _mongod->renameIfOptionsAndIndexesHaveNotChanged(
-                renameCommandObj, _outputNs, _originalOutOptions, _originalIndexes);
-            uassert(16997, str::stream() << "$out failed: " << status.reason(), status.isOK());
+                auto status = _mongod->renameIfOptionsAndIndexesHaveNotChanged(
+                    renameCommandObj, _outputNs, _originalOutOptions, _originalIndexes);
+                uassert(16997, str::stream() << "$out failed: " << status.reason(), status.isOK());
+            }
 
             // We don't need to drop the temp collection in our destructor if the rename succeeded.
             _tempNs = {};
@@ -219,7 +228,10 @@ intrusive_ptr<DocumentSource> DocumentSourceOut::createFromBson(
             !pExpCtx->opCtx->recoveryUnit()->isReadingFromMajorityCommittedSnapshot());
 
     NamespaceString outputNs(pExpCtx->ns.db().toString() + '.' + elem.str());
-    uassert(17385, "Can't $out to special collection: " + elem.str(), !outputNs.isSpecial());
+    if (outputNs.isSpecial()) {
+        mongo::uassertedWithLocation(
+            17385, "Can't $out to special collection: " + elem.str(), __FILE__, __LINE__);
+    }
     return new DocumentSourceOut(outputNs, pExpCtx);
 }
 

@@ -35,6 +35,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/bson/dotted_path_support.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
@@ -44,7 +45,6 @@
 #include "mongo/db/keypattern.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/util/log.h"
-#include "mongo/db/catalog/database_holder.h"
 
 namespace mongo {
 

@@ -2,7 +2,27 @@ selector:
   js_test:
     roots:
     - jstests/core/*.js
-
+    exclude_files:
+    # all added by xiangyu
+    - jstests/core/geo_sort1.js
+    - jstests/core/repair_database.js
+    - jstests/core/repair_server12955.js
+    - jstests/core/bypass_doc_validation.js
+    - jstests/core/capped_update.js
+    - jstests/core/constructors.js
+    - jstests/core/eval_mr.js
+    - jstests/core/mr*.js
+    - jstests/core/operation_latency_histogram.js
+    - jstests/core/profile_mapreduce.js
+    - jstests/core/temp_cleanup.js
+    - jstests/core/drop2.js  #only for shardinged_coll.. and sharding_jscore...
+    # not to run due to disallow copydb and convertToCapped command 
+    - jstests/core/auth_copydb.js
+    - jstests/core/collation.js
+    - jstests/core/copydatabase_no_id_index.js
+    - jstests/core/copydb.js
+    - jstests/core/system_profile.js
+    - jstests/core/convert_to_capped_nonexistant.js
 executor:
   js_test:
     config:
