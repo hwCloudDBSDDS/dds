@@ -14,7 +14,7 @@ auditLog:
   opFilter: off|all|...
   path: /path/to/your/audit_log
 ```
-For the details of configuring auditing parameters, please see [Audit Configuration]()
+For the details of configuring auditing parameters, please see [Audit Configuration](https://github.com/hwCloudDBSDDS/dds/wiki/Audit-Configuration)
 
 ## QueryStage Memory Limit
 Although MongoDB limited the memory used for wiredTiger/rocksDB engine. It sometimes may still OOM, that's because MongoDB's QueryStage does not
