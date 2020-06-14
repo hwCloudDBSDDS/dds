@@ -9,9 +9,11 @@
 
         const userCount = 200;
         for (let i = 0; i < userCount; ++i) {
-            assert.commandWorked(db.runCommand({createUser: "user" + i, pwd: "pwd", roles: []}));
+            assert.commandWorked(
+                db.runCommand({createUser: "user" + i, pwd: "Password@a1b", roles: []}));
         }
-        assert.commandWorked(otherDB.runCommand({createUser: "otherUser", pwd: "pwd", roles: []}));
+        assert.commandWorked(
+            otherDB.runCommand({createUser: "otherUser", pwd: "Password@a1b", roles: []}));
 
         // Check info for all users on the "test" database.
         const allTestInfo = assert.commandWorked(db.runCommand({usersInfo: 1}));

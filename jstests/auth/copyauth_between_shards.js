@@ -23,11 +23,12 @@ function copydbWithinShardedCluster(useReplSets, passCredentials, useAuth) {
     var test2 = mongos.getDB('test2');
 
     if (useAuth) {
-        mongos.getDB("admin").createUser({user: "super", pwd: "super", roles: ["root"]});
+        mongos.getDB("admin").createUser(
+            {user: "super", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
         assert.throws(function() {
             mongos.getDB("test1")["test1"].findOne();
         });
-        mongos.getDB("admin").auth("super", "super");
+        mongos.getDB("admin").auth("super", "Password@a1b");
     }
 
     test1.getCollection('test').insert({foo: 'bar'});
@@ -37,8 +38,8 @@ function copydbWithinShardedCluster(useReplSets, passCredentials, useAuth) {
 
     // The copyDatabase command acts differently depending on whether we pass username and password
     if (passCredentials) {
-        var result =
-            mongos.getDB('admin').copyDatabase('test1', 'test2', undefined, "super", "super");
+        var result = mongos.getDB('admin').copyDatabase(
+            'test1', 'test2', undefined, "super", "Password@a1b");
     } else {
         var result = mongos.getDB('admin').copyDatabase('test1', 'test2');
     }

@@ -7,8 +7,12 @@
     conn = MongoRunner.runMongod({auth: ""});
     admin = conn.getDB("admin");
 
-    admin.createUser({user: 'admin', pwd: 'admin', roles: jsTest.adminUserRoles});
-    admin.auth("admin", "admin");
+    admin.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
+    admin.auth("admin", "Password@a1b");
 
     result = admin.runCommand({
         createRole: 'impersonate',
@@ -17,20 +21,24 @@
     });
     assert.commandWorked(result, "couldn't make impersonate role");
 
-    admin.createUser({user: 'internal', pwd: 'pwd', roles: ['impersonate']});
+    admin.createUser({
+        user: 'internal',
+        pwd: 'Password@a1b',
+        roles: ['impersonate'], "passwordDigestor": "server"
+    });
 
     // Test that we cannot run refreshSessions unauthenticated if --auth is on.
     var result = admin.runCommand({refreshSessionsInternal: []});
     assert.commandFailed(result, "able to run refreshSessionsInternal without authenticating");
 
     // Test that we cannot run refreshSessionsInternal without impersonate privileges.
-    admin.auth("admin", "admin");
+    admin.auth("admin", "Password@a1b");
     result = admin.runCommand({refreshSessionsInternal: []});
     assert.commandFailed(result, "able to run refreshSessions without impersonate privileges");
     admin.logout();
 
     // Test that we can run refreshSessionsInternal if we can impersonate.
-    admin.auth("internal", "pwd");
+    admin.auth("internal", "Password@a1b");
     result = admin.runCommand({refreshSessionsInternal: []});
     assert.commandWorked(result, "unable to run command with impersonate privileges");
     admin.logout();

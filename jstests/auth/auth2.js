@@ -13,7 +13,7 @@ assert.throws(function() {
     db.shutdownServer();
 });
 
-db.createUser({user: "eliot", pwd: "eliot", roles: ["root"]});
+db.createUser({user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
 
 // These statements throw because we have a user but have not authenticated
 // as that user.
@@ -24,7 +24,7 @@ assert.throws(function() {
     db.shutdownServer();
 });
 
-db.auth("eliot", "eliot");
+db.auth("admin", "Password@a1b");
 
 users = db.getCollection("system.users");
 assert.eq(1, users.count());

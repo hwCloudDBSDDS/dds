@@ -53,6 +53,7 @@ using stdx::make_unique;
 
 // static
 const char* SortStage::kStageType = "SORT";
+const size_t SortStage::_dataMapItemSize = sizeof(RecordId) + sizeof(WorkingSetID);
 
 SortStage::WorkingSetComparator::WorkingSetComparator(BSONObj p) : pattern(p) {}
 
@@ -80,6 +81,7 @@ SortStage::SortStage(OperationContext* opCtx,
       _resultIterator(_data.end()),
       _memUsage(0) {
     _children.emplace_back(child);
+    incStageObj(STAGE_SORT);
 
     BSONObj sortComparator = FindCommon::transformSortSpec(_pattern);
     _sortKeyComparator = stdx::make_unique<WorkingSetComparator>(sortComparator);
@@ -92,7 +94,9 @@ SortStage::SortStage(OperationContext* opCtx,
     }
 }
 
-SortStage::~SortStage() {}
+SortStage::~SortStage() {
+    decStageObjAndMem(STAGE_SORT);
+}
 
 bool SortStage::isEOF() {
     // We're done when our child has no more results, we've sorted the child's results, and
@@ -115,6 +119,11 @@ PlanStage::StageState SortStage::doWork(WorkingSetID* out) {
         return PlanStage::IS_EOF;
     }
 
+    if (chkCachedMemOversize()) {
+        *out = chkMemFailureRet(_ws);
+        return PlanStage::FAILURE;
+    }
+
     // Still reading in results to sort.
     if (!_sorted) {
         WorkingSetID id = WorkingSet::INVALID_ID;
@@ -131,6 +140,9 @@ PlanStage::StageState SortStage::doWork(WorkingSetID* out) {
 
             // We might be sorting something that was invalidated at some point.
             if (member->hasRecordId()) {
+                if (_wsidByRecordId.find(member->recordId) == _wsidByRecordId.end()) {
+                    incCachedMemory(_dataMapItemSize);
+                }
                 _wsidByRecordId[member->recordId] = id;
             }
 
@@ -182,6 +194,7 @@ PlanStage::StageState SortStage::doWork(WorkingSetID* out) {
     WorkingSetMember* member = _ws->get(*out);
     if (member->hasRecordId()) {
         _wsidByRecordId.erase(member->recordId);
+        decCachedMemory(_dataMapItemSize);
     }
 
     return PlanStage::ADVANCED;
@@ -207,6 +220,7 @@ void SortStage::doInvalidate(OperationContext* opCtx, const RecordId& dl, Invali
 
         // Remove the RecordId from our set of active DLs.
         _wsidByRecordId.erase(it);
+        decCachedMemory(_dataMapItemSize);
         ++_specificStats.forcedFetches;
     }
 }
@@ -253,17 +267,23 @@ void SortStage::addToBuffer(const SortableDataItem& item) {
     // Holds ID of working set member to be freed at end of this function.
     WorkingSetID wsidToFree = WorkingSet::INVALID_ID;
 
+    size_t cachedSize = 0;
+    size_t releasedSize = 0;
+
     WorkingSetMember* member = _ws->get(item.wsid);
     if (_limit == 0) {
         // Ensure that the BSONObj underlying the WorkingSetMember is owned in case we yield.
         member->makeObjOwnedIfNeeded();
         _data.push_back(item);
         _memUsage += member->getMemUsage();
+        cachedSize = item.getObjSize() + member->getMemUsage();
     } else if (_limit == 1) {
         if (_data.empty()) {
             member->makeObjOwnedIfNeeded();
             _data.push_back(item);
+            incCachedMemory(item.getObjSize());
             _memUsage = member->getMemUsage();
+            incCachedMemory(member->getMemUsage());
             return;
         }
         wsidToFree = item.wsid;
@@ -271,6 +291,8 @@ void SortStage::addToBuffer(const SortableDataItem& item) {
         // Compare new item with existing item in vector.
         if (cmp(item, _data[0])) {
             wsidToFree = _data[0].wsid;
+            cachedSize = item.getObjSize();
+            releasedSize = _data[0].getObjSize();
             member->makeObjOwnedIfNeeded();
             _data[0] = item;
             _memUsage = member->getMemUsage();
@@ -282,7 +304,10 @@ void SortStage::addToBuffer(const SortableDataItem& item) {
         if (_dataSet->size() < limit) {
             member->makeObjOwnedIfNeeded();
             _dataSet->insert(item);
+            cachedSize = item.getObjSize();
             _memUsage += member->getMemUsage();
+            cachedSize += member->getMemUsage();
+            incCachedMemory(cachedSize);
             return;
         }
         // Limit will be exceeded - compare with item with lowest key
@@ -294,12 +319,16 @@ void SortStage::addToBuffer(const SortableDataItem& item) {
         const WorkingSetComparator& cmp = *_sortKeyComparator;
         if (cmp(item, lastItem)) {
             _memUsage -= _ws->get(lastItem.wsid)->getMemUsage();
+            releasedSize = _ws->get(lastItem.wsid)->getMemUsage();
             _memUsage += member->getMemUsage();
+            cachedSize = member->getMemUsage();
             wsidToFree = lastItem.wsid;
             // According to std::set iterator validity rules,
             // it does not matter which of erase()/insert() happens first.
             // Here, we choose to erase first to release potential resources
             // used by the last item and to keep the scope of the iterator to a minimum.
+            cachedSize += item.getObjSize();
+            releasedSize -= lastItem.getObjSize();
             _dataSet->erase(lastItemIt);
             member->makeObjOwnedIfNeeded();
             _dataSet->insert(item);
@@ -312,9 +341,12 @@ void SortStage::addToBuffer(const SortableDataItem& item) {
         WorkingSetMember* member = _ws->get(wsidToFree);
         if (member->hasRecordId()) {
             _wsidByRecordId.erase(member->recordId);
+            releasedSize += _dataMapItemSize;
         }
         _ws->free(wsidToFree);
     }
+    incCachedMemory(cachedSize);
+    decCachedMemory(releasedSize);
 }
 
 void SortStage::sortBuffer() {

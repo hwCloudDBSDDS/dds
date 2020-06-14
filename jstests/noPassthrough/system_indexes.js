@@ -14,7 +14,7 @@
     assert.eq(0, db.system.roles.getIndexes().length);
 
     // TEST: User and role creation generates indexes
-    db.createUser({user: "user", pwd: "pwd", roles: []});
+    db.createUser({user: "user", pwd: "Password@a1b", roles: [], "passwordDigestor": "server"});
     assert.eq(2, db.system.users.getIndexes().length);
 
     db.createRole({role: "role", privileges: [], roles: []});
@@ -55,7 +55,7 @@
         db: "",
         drop: true
     }));
-    db.createUser({user: "user", pwd: "pwd", roles: []});
+    db.createUser({user: "user", pwd: "Password@a1b", roles: [], "passwordDigestor": "server"});
     assert.commandWorked(db.system.users.dropIndexes());
     MongoRunner.stopMongod(conn);
     conn = MongoRunner.runMongod({restart: conn, cleanData: false});

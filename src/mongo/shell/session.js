@@ -438,6 +438,7 @@ var {
         }
 
         this.runCommand = function runCommand(driverSession, dbName, cmdObj, options) {
+
             cmdObj = prepareCommandRequest(driverSession, cmdObj);
 
             const res = runClientFunctionWithRetries(

@@ -244,6 +244,10 @@ RoutingTableHistory::overlappingRanges(const BSONObj& min,
         return it == _chunkMap.end() ? it : ++it;
     }();
 
+    massert(13507,
+            str::stream() << "no chunks found between bounds " << min << " and " << max,
+            itMin != _chunkMap.end());
+
     return {itMin, itMax};
 }
 

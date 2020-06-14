@@ -161,6 +161,7 @@ struct CommandHelpers {
             arg == "$queryOptions" ||                    //
             arg == "$readPreference" ||                  //
             arg == "$replData" ||                        //
+            arg == "customerCmd" ||                      //
             arg == "$clusterTime" ||                     //
             arg == "maxTimeMS" ||                        //
             arg == "readConcern" ||                      //
@@ -246,6 +247,10 @@ struct CommandHelpers {
 class Command {
 public:
     using CommandMap = StringMap<Command*>;
+
+    virtual std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const {
+        return CommandHelpers::parseNsFromCommand(dbname, cmdObj);
+    }
     enum class AllowedOnSecondary { kAlways, kNever, kOptIn };
 
     /**
@@ -402,6 +407,8 @@ public:
                                      rpc::ReplyBuilderInterface* replyBuilder,
                                      const Command& command);
 
+    bool _checkWriteAllow(OperationContext* txn, const std::string& dbname) const;
+
 private:
     // The full name of the command
     const std::string _name;
@@ -412,6 +419,10 @@ private:
     // Pointers to hold the metrics tree references
     ServerStatusMetricField<Counter64> _commandsExecutedMetric;
     ServerStatusMetricField<Counter64> _commandsFailedMetric;
+
+public:
+    static std::set<std::string> globleDisableCommands;
+    static bool checkIfDisableCommands(const std::string& cmdname);
 };
 
 class CommandReplyBuilder {
@@ -562,7 +573,7 @@ private:
 public:
     using Command::Command;
 
-    virtual std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const {
+    virtual std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
         return CommandHelpers::parseNsFromCommand(dbname, cmdObj);
     }
 
@@ -580,6 +591,7 @@ public:
      *
      * return value is true if succeeded.  if false, set errmsg text.
      */
+    // begin for dds
     virtual bool run(OperationContext* opCtx,
                      const std::string& db,
                      const BSONObj& cmdObj,

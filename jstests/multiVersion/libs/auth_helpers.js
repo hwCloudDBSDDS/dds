@@ -2,6 +2,7 @@
 
 // Get a user document for username in db.
 var getUserDoc = function(db, username) {
+    // sleep(100000);
     return db.runCommand({'usersInfo': {user: username, db: db._name}, showCredentials: true})
         .users[0];
 };

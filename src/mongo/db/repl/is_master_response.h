@@ -97,6 +97,10 @@ public:
         return _hosts;
     }
 
+    void setHosts(std::vector<HostAndPort>& hosts) {
+        _hosts.swap(hosts);
+    }
+
     const std::vector<HostAndPort>& getPassives() const {
         return _passives;
     }
@@ -111,6 +115,14 @@ public:
 
     bool hasPrimary() const {
         return _primarySet;
+    }
+
+    bool hasHosts() const {
+        return _hostsSet;
+    }
+
+    bool hasMe() const {
+        return _meSet;
     }
 
     bool isArbiterOnly() const {

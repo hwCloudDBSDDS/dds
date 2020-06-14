@@ -6,8 +6,8 @@
     const mongod = MongoRunner.runMongod({auth: ""});
     const admin = mongod.getDB('admin');
 
-    admin.createUser({user: 'admin', pwd: 'pass', roles: jsTest.adminUserRoles});
-    assert(admin.auth('admin', 'pass'));
+    admin.createUser({user: 'admin', pwd: 'Password@a1b', roles: jsTest.adminUserRoles});
+    assert(admin.auth('admin', 'Password@a1b'));
 
     // Establish db0..db7
     for (let i = 0; i < 8; ++i) {
@@ -25,9 +25,9 @@
     const readWriteLow = [0, 1, 2, 3].map(function(i) {
         return makeRole("readWrite", i);
     });
-    admin.createUser({user: 'user1', pwd: 'pass', roles: readEven});
-    admin.createUser({user: 'user2', pwd: 'pass', roles: readWriteLow});
-    admin.createUser({user: 'user3', pwd: 'pass', roles: readEven.concat(readWriteLow)});
+    admin.createUser({user: 'user1', pwd: 'Password@a1b', roles: readEven});
+    admin.createUser({user: 'user2', pwd: 'Password@a1b', roles: readWriteLow});
+    admin.createUser({user: 'user3', pwd: 'Password@a1b', roles: readEven.concat(readWriteLow)});
     admin.logout();
 
     var admin_dbs = ["admin", "db0", "db1", "db2", "db3", "db4", "db5", "db6", "db7"];
@@ -41,7 +41,7 @@
      {user: "user3", dbs: ["db0", "db1", "db2", "db3", "db4", "db6"]},
      {user: "admin", dbs: admin_dbs},
     ].forEach(function(test) {
-        admin.auth(test.user, 'pass');
+        admin.auth(test.user, 'Password@a1b');
         const dbs = assert.commandWorked(admin.runCommand({listDatabases: 1}));
         assert.eq(dbs.databases
                       .map(function(db) {

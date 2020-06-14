@@ -35,6 +35,7 @@
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/record_id.h"
+#include "mongo/db/stats/counters.h"
 #include "mongo/stdx/unordered_set.h"
 
 namespace mongo {
@@ -68,6 +69,9 @@ struct CountScanParams {
 class CountScan final : public PlanStage {
 public:
     CountScan(OperationContext* opCtx, const CountScanParams& params, WorkingSet* workingSet);
+    ~CountScan() {
+        decStageObjAndMem(STAGE_COUNT_SCAN);
+    }
 
     StageState doWork(WorkingSetID* out) final;
     bool isEOF() final;

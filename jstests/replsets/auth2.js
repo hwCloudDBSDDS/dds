@@ -50,7 +50,11 @@ TestData.skipGossipingClusterTime = true;
     var master = replSetTest.getPrimary();
 
     print("add an admin user");
-    master.getDB("admin").createUser({user: "foo", pwd: "bar", roles: jsTest.adminUserRoles},
+    master.getDB("admin").createUser({
+        user: "foo",
+        pwd: "Password@a1b",
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    },
                                      {w: 3, wtimeout: replSetTest.kDefaultTimeoutMS});
     var m = replSetTest.nodes[0];
 
@@ -61,8 +65,8 @@ TestData.skipGossipingClusterTime = true;
     replSetTest.restart(2, {"keyFile": key1});
 
     // auth to all nodes with auth
-    replSetTest.nodes[1].getDB("admin").auth("foo", "bar");
-    replSetTest.nodes[2].getDB("admin").auth("foo", "bar");
+    replSetTest.nodes[1].getDB("admin").auth("foo", "Password@a1b");
+    replSetTest.nodes[2].getDB("admin").auth("foo", "Password@a1b");
     testInvalidAuthStates(replSetTest);
 
     print("restart mongod with bad keyFile");
@@ -71,9 +75,9 @@ TestData.skipGossipingClusterTime = true;
     m = replSetTest.restart(0, {"keyFile": key2});
 
     // auth to all nodes
-    replSetTest.nodes[0].getDB("admin").auth("foo", "bar");
-    replSetTest.nodes[1].getDB("admin").auth("foo", "bar");
-    replSetTest.nodes[2].getDB("admin").auth("foo", "bar");
+    replSetTest.nodes[0].getDB("admin").auth("foo", "Password@a1b");
+    replSetTest.nodes[1].getDB("admin").auth("foo", "Password@a1b");
+    replSetTest.nodes[2].getDB("admin").auth("foo", "Password@a1b");
     testInvalidAuthStates(replSetTest);
 
     replSetTest.stop(0);

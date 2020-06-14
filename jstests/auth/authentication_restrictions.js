@@ -19,9 +19,12 @@
         // Create a session for modifying user data during the life of the test
         var adminSession = new Mongo("localhost:" + conn.port);
         var admin = adminSession.getDB("admin");
-        assert.commandWorked(admin.runCommand(
-            {createUser: "admin", pwd: "admin", roles: [{role: "root", db: "admin"}]}));
-        assert(admin.auth("admin", "admin"));
+        assert.commandWorked(admin.runCommand({
+            createUser: "admin",
+            pwd: "Password@a1b",
+            roles: [{role: "root", db: "admin"}], "digestPassword": true
+        }));
+        assert(admin.auth("admin", "Password@a1b"));
 
         // Create a strongly consistent session for consuming user data
         var db = conn.getDB("admin");
@@ -33,25 +36,31 @@
 
         assert.commandWorked(admin.runCommand({
             createUser: "user2",
-            pwd: "user",
+            pwd: "Password@a1b",
             roles: [],
-            authenticationRestrictions: [{clientSource: ["127.0.0.1"]}]
+            authenticationRestrictions: [{clientSource: ["127.0.0.1"]}], "digestPassword": true
         }));
-        assert.commandWorked(admin.runCommand({createUser: "user3", pwd: "user", roles: []}));
+        assert.commandWorked(admin.runCommand(
+            {createUser: "user3", pwd: "Password@a1b", roles: [], "digestPassword": true}));
         assert.commandWorked(admin.runCommand(
             {updateUser: "user3", authenticationRestrictions: [{serverAddress: ["127.0.0.1"]}]}));
 
         print("=== User creation tests");
         print(
             "When a client creates users with empty authenticationRestrictions, the operation succeeds, though it has no effect");
-        assert.commandWorked(admin.runCommand(
-            {createUser: "user4", pwd: "user", roles: [], authenticationRestrictions: []}));
+        assert.commandWorked(admin.runCommand({
+            createUser: "user4",
+            pwd: "Password@a1b",
+            roles: [],
+            authenticationRestrictions: [], "digestPassword": true
+        }));
         assert(!Object.keys(admin.system.users.findOne({user: "user4"}))
                     .includes("authenticationRestrictions"));
 
         print(
             "When a client updates a user's authenticationRestrictions to be empty, the operation succeeds, and removes the authenticationRestrictions field");
-        assert.commandWorked(admin.runCommand({createUser: "user5", pwd: "user", roles: []}));
+        assert.commandWorked(admin.runCommand(
+            {createUser: "user5", pwd: "Password@a1b", roles: [], "digestPassword": true}));
         assert.commandWorked(
             admin.runCommand({updateUser: "user5", authenticationRestrictions: []}));
         assert(!Object.keys(admin.system.users.findOne({user: "user5"}))
@@ -84,89 +93,96 @@
             "When a client creates users, it may use clientSource and serverAddress authenticationRestrictions");
         assert.commandWorked(admin.runCommand({
             createUser: "user6",
-            pwd: "user",
+            pwd: "Password@a1b",
             roles: [],
-            authenticationRestrictions: [{clientSource: ["127.0.0.1"]}]
+            authenticationRestrictions: [{clientSource: ["127.0.0.1"]}], "digestPassword": true
         }));
         assert.commandWorked(admin.runCommand({
             createUser: "user7",
-            pwd: "user",
+            pwd: "Password@a1b",
             roles: [],
-            authenticationRestrictions: [{serverAddress: ["127.0.0.1"]}]
+            authenticationRestrictions: [{serverAddress: ["127.0.0.1"]}], "digestPassword": true
         }));
         assert.commandWorked(admin.runCommand({
             createUser: "user8",
-            pwd: "user",
+            pwd: "Password@a1b",
             roles: [],
             authenticationRestrictions:
-                [{clientSource: ["127.0.0.1"], serverAddress: ["127.0.0.1"]}]
+                [{clientSource: ["127.0.0.1"], serverAddress: ["127.0.0.1"]}],
+            "digestPassword": true
         }));
         assert.commandWorked(admin.runCommand({
             createUser: "user9",
-            pwd: "user",
+            pwd: "Password@a1b",
             roles: [],
             authenticationRestrictions:
-                [{clientSource: ["127.0.0.1"]}, {serverAddress: ["127.0.0.1"]}]
+                [{clientSource: ["127.0.0.1"]}, {serverAddress: ["127.0.0.1"]}],
+            "digestPassword": true
         }));
         assert.commandFailed(admin.runCommand({
             createUser: "user10",
-            pwd: "user",
+            pwd: "Password@a1b",
             roles: [],
-            authenticationRestrictions: [{invalidRestriction: ["127.0.0.1"]}]
+            authenticationRestrictions: [{invalidRestriction: ["127.0.0.1"]}],
+            "digestPassword": true
         }));
 
         print("=== Localhost access tests");
 
         print(
             "When a client on the loopback authenticates to a user with {clientSource: \"127.0.0.1\"}, it will succeed");
-        assert(db.auth("user6", "user"));
+        assert(db.auth("user6", "Password@a1b"));
 
         print(
             "When a client on the loopback authenticates to a user with {serverAddress: \"127.0.0.1\"}, it will succeed");
-        assert(db.auth("user7", "user"));
+        assert(db.auth("user7", "Password@a1b"));
 
         print(
             "When a client on the loopback authenticates to a user with {clientSource: \"127.0.0.1\", serverAddress: \"127.0.0.1\"}, it will succeed");
-        assert(db.auth("user8", "user"));
+        assert(db.auth("user8", "Password@a1b"));
 
         print("=== Remote access tests");
         print(
             "When a client on the external interface authenticates to a user with {clientSource: \"127.0.0.1\"}, it will fail");
-        assert(!externalDb.auth("user6", "user"));
+        assert(!externalDb.auth("user6", "Password@a1b"));
 
         print(
             "When a client on the external interface authenticates to a user with {serverAddress: \"127.0.0.1\"}, it will fail");
-        assert(!externalDb.auth("user7", "user"));
+        assert(!externalDb.auth("user7", "Password@a1b"));
 
         print(
             "When a client on the external interface authenticates to a user with {clientSource: \"127.0.0.1\", serverAddress: \"127.0.0.1\"}, it will fail");
-        assert(!externalDb.auth("user8", "user"));
+        assert(!externalDb.auth("user8", "Password@a1b"));
 
         print("=== Invalidation tests");
         print(
             "When a client removes all authenticationRestrictions from a user, authentication will succeed");
         assert.commandWorked(admin.runCommand({
             createUser: "user11",
-            pwd: "user",
+            pwd: "Password@a1b",
             roles: [],
             authenticationRestrictions:
-                [{clientSource: ["127.0.0.1"], serverAddress: ["127.0.0.1"]}]
+                [{clientSource: ["127.0.0.1"], serverAddress: ["127.0.0.1"]}],
+            "digestPassword": true
         }));
-        assert(!externalDb.auth("user11", "user"));
+        assert(!externalDb.auth("user11", "Password@a1b"));
         assert.commandWorked(
             admin.runCommand({updateUser: "user11", authenticationRestrictions: []}));
-        assert(externalDb.auth("user11", "user"));
+        assert(externalDb.auth("user11", "Password@a1b"));
 
         print(
             "When a client sets authenticationRestrictions on a user, authorization privileges are revoked");
-        assert.commandWorked(admin.runCommand(
-            {createUser: "user12", pwd: "user", roles: [{role: "readWrite", db: "test"}]}));
+        assert.commandWorked(admin.runCommand({
+            createUser: "user12",
+            pwd: "Password@a1b",
+            roles: [{role: "readWrite", db: "test"}], "digestPassword": true
+        }));
 
-        assert(db.auth("user12", "user"));
+        assert(db.auth("user12", "Password@a1b"));
         assert.commandWorked(db.getSiblingDB("test").runCommand({find: "foo", batchSize: 0}));
 
         sleepUntilUserDataPropagated();
-        assert(eventualDb.auth("user12", "user"));
+        assert(eventualDb.auth("user12", "Password@a1b"));
         assert.commandWorked(
             eventualDb.getSiblingDB("test").runCommand({find: "foo", batchSize: 0}));
 

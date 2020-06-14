@@ -16,17 +16,32 @@
         var db = m.getDB("foo");
         var admin = m.getDB("admin");
 
-        admin.createUser({user: 'admin', pwd: 'password', roles: jsTest.adminUserRoles});
-        admin.auth('admin', 'password');
-        db.createUser({user: 'reader', pwd: 'reader', roles: [{db: 'foo', role: 'read'}]});
-        db.createUser(
-            {user: 'otherReader', pwd: 'otherReader', roles: [{db: 'foo', role: 'read'}]});
+        admin.createUser({
+            user: 'admin',
+            pwd: 'Password@a1b',
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        });
+        admin.auth('admin', 'Password@a1b');
+        db.createUser({
+            user: 'reader',
+            pwd: 'Password@a1b',
+            roles: [{db: 'foo', role: 'read'}], "passwordDigestor": "server"
+        });
+        db.createUser({
+            user: 'otherReader',
+            pwd: 'Password@a1b',
+            roles: [{db: 'foo', role: 'read'}], "passwordDigestor": "server"
+        });
         admin.createRole({
             role: 'opAdmin',
             roles: [],
             privileges: [{resource: {cluster: true}, actions: ['inprog', 'killop']}]
         });
-        db.createUser({user: 'opAdmin', pwd: 'opAdmin', roles: [{role: 'opAdmin', db: 'admin'}]});
+        db.createUser({
+            user: 'opAdmin',
+            pwd: 'Password@a1b',
+            roles: [{role: 'opAdmin', db: 'admin'}], "passwordDigestor": "server"
+        });
 
         var t = db.jstests_killop;
         t.save({x: 1});
@@ -62,10 +77,10 @@
         }
 
         var queryAsReader =
-            'db = db.getSiblingDB("foo"); db.auth("reader", "reader"); db.jstests_killop.find().comment("kill_own_ops").toArray()';
+            'db = db.getSiblingDB("foo"); db.auth("reader", "Password@a1b"); db.jstests_killop.find().comment("kill_own_ops").toArray()';
 
         jsTestLog("Starting long-running operation");
-        db.auth('reader', 'reader');
+        db.auth('reader', 'Password@a1b');
         assert.commandWorked(
             db.adminCommand({configureFailPoint: failPointName, mode: "alwaysOn"}));
         var s1 = startParallelShell(queryAsReader, m.port);
@@ -82,16 +97,16 @@
             60000);
         jsTestLog("Checking that another user cannot see or kill the op");
         db.logout();
-        db.auth('otherReader', 'otherReader');
+        db.auth('otherReader', 'Password@a1b');
         assert.eq([], ops());
         assert.commandFailed(db.killOp(o[0]));
         db.logout();
-        db.auth('reader', 'reader');
+        db.auth('reader', 'Password@a1b');
         assert.eq(1, ops().length);
         db.logout();
         jsTestLog("Checking that originating user can kill operation");
         var start = new Date();
-        db.auth('reader', 'reader');
+        db.auth('reader', 'Password@a1b');
         assert.commandWorked(db.killOp(o[0]));
         assert.commandWorked(db.adminCommand({configureFailPoint: failPointName, mode: "off"}));
 
@@ -123,7 +138,7 @@
             60000);
 
         db.logout();
-        db.auth('opAdmin', 'opAdmin');
+        db.auth('opAdmin', 'Password@a1b');
 
         jsTestLog("Checking that an administrative user can find others' operations");
         assert.eq(o2, ops(false));

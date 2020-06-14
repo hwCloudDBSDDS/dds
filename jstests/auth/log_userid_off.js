@@ -6,10 +6,14 @@
  */
 var doTest = function(mongo, callSetParam) {
     var TEST_USER = 'foo';
-    var TEST_PWD = 'bar';
+    var TEST_PWD = 'Password@a1b';
     var testDB = mongo.getDB('test');
 
-    testDB.createUser({user: TEST_USER, pwd: TEST_PWD, roles: jsTest.basicUserRoles});
+    testDB.createUser({
+        user: TEST_USER,
+        pwd: TEST_PWD,
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+    });
     testDB.auth(TEST_USER, TEST_PWD);
 
     testDB.runCommand({dbStats: 1});

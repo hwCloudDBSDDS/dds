@@ -17,17 +17,25 @@
     const db = mongod.getDB("test");
     const config = mongod.getDB("config");
 
-    admin.createUser({user: 'admin', pwd: 'pass', roles: jsTest.adminUserRoles});
-    assert(admin.auth('admin', 'pass'));
+    admin.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
+    assert(admin.auth('admin', 'Password@a1b'));
 
     const longUserName = "x".repeat(1000);
 
     // Create a user with a long name, so that the refresh records have a chance to blow out the
     // 16MB limit, if all the sessions are flushed in one batch
-    db.createUser({user: longUserName, pwd: 'pass', roles: jsTest.basicUserRoles});
+    db.createUser({
+        user: longUserName,
+        pwd: 'Password@a1b',
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+    });
     admin.logout();
 
-    assert(db.auth(longUserName, 'pass'));
+    assert(db.auth(longUserName, 'Password@a1b'));
 
     // 20k * 1k = 20mb which is greater than 16mb
     const numSessions = 20000;

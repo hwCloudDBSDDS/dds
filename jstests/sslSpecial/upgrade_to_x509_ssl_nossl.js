@@ -14,7 +14,7 @@ load("jstests/ssl/libs/ssl_helpers.js");
 
 function authAllNodes() {
     for (var n = 0; n < rst.nodes.length; n++) {
-        var status = rst.nodes[n].getDB("admin").auth("root", "pwd");
+        var status = rst.nodes[n].getDB("admin").auth("admin", "Password@a1b");
         assert.eq(status, 1);
     }
 }
@@ -48,8 +48,10 @@ rst.initiateWithAnyNodeAsPrimary(Object.extend(
 
 // Connect to master and do some basic operations
 var rstConn1 = rst.getPrimary();
-rstConn1.getDB("admin").createUser({user: "root", pwd: "pwd", roles: ["root"]}, {w: NUM_NODES});
-rstConn1.getDB("admin").auth("root", "pwd");
+rstConn1.getDB("admin").createUser(
+    {user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"},
+    {w: NUM_NODES});
+rstConn1.getDB("admin").auth("admin", "Password@a1b");
 rstConn1.getDB("test").a.insert({a: 1, str: "TESTTESTTEST"});
 assert.eq(1, rstConn1.getDB("test").a.find().itcount(), "Error interacting with replSet");
 
@@ -63,8 +65,8 @@ rst.upgradeSet({
     keyFile: KEYFILE,
     sslCAFile: CA_CERT
 },
-               "root",
-               "pwd");
+               "admin",
+               "Password@a1b");
 authAllNodes();
 rst.awaitReplication();
 
@@ -81,8 +83,8 @@ rst.upgradeSet({
     keyFile: KEYFILE,
     sslCAFile: CA_CERT
 },
-               "root",
-               "pwd");
+               "admin",
+               "Password@a1b");
 authAllNodes();
 rst.awaitReplication();
 
@@ -111,8 +113,8 @@ rst.upgradeSet({
     keyFile: KEYFILE,
     sslCAFile: CA_CERT
 },
-               "root",
-               "pwd");
+               "admin",
+               "Password@a1b");
 authAllNodes();
 rst.awaitReplication();
 var rstConn4 = rst.getPrimary();

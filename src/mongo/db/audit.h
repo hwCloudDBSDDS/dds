@@ -36,23 +36,25 @@
 #include "mongo/base/error_codes.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/auth/user.h"
-#include "mongo/rpc/op_msg.h"
+#include "mongo/db/concurrency/lock_stats.h"
+//#include "mongo/util/concurrency/rwlock.h"
+
 
 namespace mongo {
 
 class AuthorizationSession;
 class BSONObj;
 class Client;
+class Command;
 class NamespaceString;
 class OperationContext;
 class StringData;
 class UserName;
-
-namespace mutablebson {
-class Document;
-}  // namespace mutablebson
+class CurOp;
 
 namespace audit {
+
+// RWLock& getAuditGlobalRWLock();
 
 /**
  * Narrow API for the parts of mongo::Command used by the audit library.
@@ -63,7 +65,9 @@ public:
     virtual void redactForLogging(mutablebson::Document* cmdObj) const = 0;
     virtual NamespaceString ns() const = 0;
     virtual bool redactArgs() const = 0;
+    virtual const Command* getCommand() const = 0;
 };
+
 
 /**
  * Logs the result of an authentication attempt.
@@ -320,4 +324,7 @@ void logShardCollection(Client* client, StringData ns, const BSONObj& keyPattern
 void writeImpersonatedUsersToMetadata(OperationContext* opCtx, BSONObjBuilder* metadataBob);
 
 }  // namespace audit
+
+void startAuditLogFlusher();
+
 }  // namespace mongo

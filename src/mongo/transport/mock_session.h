@@ -65,6 +65,22 @@ public:
         return _local;
     }
 
+    bool isCustomerConnection() const override {
+        return false;
+    }
+
+    bool isFromPublicIp() const override {
+        return false;
+    }
+
+    bool isFromPrivateIp1() const override {
+        return false;
+    }
+
+    bool isFromIpv6() const override {
+        return false;
+    }
+
     void end() override {
         if (!_tl || !_tl->owns(id()))
             return;

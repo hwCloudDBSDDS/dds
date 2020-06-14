@@ -20,11 +20,11 @@
     // TODO SERVER-32672: remove this flag.
     TestData.skipGossipingClusterTime = true;
 
-    var adminUser = {db: "admin", username: "foo", password: "bar"};
+    var adminUser = {db: "admin", username: "admin", password: "Password@a1b"};
 
-    var testUser = {db: "test", username: "bar", password: "baz"};
+    var testUser = {db: "test", username: "bar", password: "Password@a1b"};
 
-    var testUserReadOnly = {db: "test", username: "sad", password: "bat"};
+    var testUserReadOnly = {db: "test", username: "sad", password: "Password@a1b"};
 
     function login(userObj, thingToUse) {
         if (!thingToUse) {
@@ -66,7 +66,7 @@
     s.getDB(adminUser.db).createUser({
         user: adminUser.username,
         pwd: adminUser.password,
-        roles: jsTest.adminUserRoles
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
     });
     login(adminUser);
 
@@ -132,12 +132,12 @@
     s.getDB(testUser.db).createUser({
         user: testUser.username,
         pwd: testUser.password,
-        roles: jsTest.basicUserRoles
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
     });
     s.getDB(testUserReadOnly.db).createUser({
         user: testUserReadOnly.username,
         pwd: testUserReadOnly.password,
-        roles: jsTest.readOnlyUserRoles
+        roles: jsTest.readOnlyUserRoles, "passwordDigestor": "server"
     });
 
     logout(adminUser);
@@ -269,14 +269,20 @@
     // add admin on shard itself, hack to prevent localhost auth bypass
     d1.getPrimary()
         .getDB(adminUser.db)
-        .createUser(
-            {user: adminUser.username, pwd: adminUser.password, roles: jsTest.adminUserRoles},
-            {w: 3, wtimeout: 60000});
+        .createUser({
+            user: adminUser.username,
+            pwd: adminUser.password,
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        },
+                    {w: 3, wtimeout: 60000});
     d2.getPrimary()
         .getDB(adminUser.db)
-        .createUser(
-            {user: adminUser.username, pwd: adminUser.password, roles: jsTest.adminUserRoles},
-            {w: 3, wtimeout: 60000});
+        .createUser({
+            user: adminUser.username,
+            pwd: adminUser.password,
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        },
+                    {w: 3, wtimeout: 60000});
 
     login(testUser);
     print("testing map reduce");

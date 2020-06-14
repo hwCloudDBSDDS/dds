@@ -86,46 +86,110 @@ void ServiceEntryPointImpl::startSession(transport::SessionHandle session) {
 
     const bool quiet = serverGlobalParams.quiet.load();
     size_t connectionCount;
+    size_t internalConnectCount;
+    size_t externalConnectCount;
+    std::string countErrmsg;
     auto transportMode = _svcCtx->getServiceExecutor()->transportMode();
+
+    if (serverGlobalParams.adminWhiteList.include(session->remote().host()) ||
+        serverGlobalParams.adminWhiteList.include(session->local().host())) {
+        session->setInAdminWhiteList();
+    }
+
+    // ipv4 host str should be x.x.x.x,  ipv6 host str should be x:x:x:x:x:x:x:x or x::x or ::1
+    if (session->remote().host().find(":") != std::string::npos) {
+        session->setIpv6();
+    }
+
+    if (serverGlobalParams.externalConfig.getPublicIpPrivateIpRange().isPublicIp(
+            session->remote().host())) {
+        session->setPublicIp();
+    }
+
+    if (serverGlobalParams.externalConfig.getPrivateIpPrivateIpRange().isPrivateIp(
+            session->remote().host())) {
+        session->setPrivateIp1();
+    }
+
+    if (session->inAdminWhiteList()) {
+        log() << "this is adminWhiteList conn: " << session->remote() << " #" << session->id();
+        internalConnectCount = _currentInternalConnections.load() + 1;
+    } else {
+        log() << "this is normal conn: " << session->remote() << " #" << session->id();
+        internalConnectCount = _currentInternalConnections.load();
+    }
 
     auto ssm = ServiceStateMachine::create(_svcCtx, session, transportMode);
     {
         stdx::lock_guard<decltype(_sessionsMutex)> lk(_sessionsMutex);
         connectionCount = _sessions.size() + 1;
-        if (connectionCount <= _maxNumConnections) {
+        if (connectionCount >= internalConnectCount) {
+            externalConnectCount = connectionCount - internalConnectCount;
+        } else {
+            warning() << "totalConnectionCount: " << connectionCount
+                      << " is smaller than internalConnectCount: " << internalConnectCount;
+            externalConnectCount = 0;
+        }
+        if ((!session->inAdminWhiteList() && (externalConnectCount <= _maxNumConnections)) ||
+            (session->inAdminWhiteList() && (internalConnectCount <= _maxInternalConnections))) {
             ssmIt = _sessions.emplace(_sessions.begin(), ssm);
             _currentConnections.store(connectionCount);
             _createdConnections.addAndFetch(1);
         }
-    }
-
-    // Checking if we successfully added a connection above. Separated from the lock so we don't log
-    // while holding it.
-    if (connectionCount > _maxNumConnections) {
-        if (!quiet) {
-            log() << "connection refused because too many open connections: " << connectionCount;
+        if (!session->inAdminWhiteList()) {
+            if (externalConnectCount > _maxNumConnections) {
+                if (!quiet) {
+                    log() << "connection refused because too many open connections: "
+                          << externalConnectCount;
+                }
+                return;
+            }
+        } else {
+            internalConnectCount = _currentInternalConnections.load() + 1;
+            _currentInternalConnections.store(internalConnectCount);
+            if (internalConnectCount > _maxInternalConnections) {
+                if (!quiet) {
+                    log() << "connection refused because too many internal connections: "
+                          << internalConnectCount;
+                }
+                return;
+            }
         }
-        return;
     }
 
     if (!quiet) {
         const auto word = (connectionCount == 1 ? " connection"_sd : " connections"_sd);
         log() << "connection accepted from " << session->remote() << " #" << session->id() << " ("
-              << connectionCount << word << " now open)";
+              << connectionCount << word << ", internalCount: " << internalConnectCount
+              << " now open)";
     }
 
     ssm->setCleanupHook([ this, ssmIt, session = std::move(session) ] {
         size_t connectionCount;
+        size_t internalConnectCount;
         auto remote = session->remote();
         {
             stdx::lock_guard<decltype(_sessionsMutex)> lk(_sessionsMutex);
             _sessions.erase(ssmIt);
             connectionCount = _sessions.size();
+            if (session->inAdminWhiteList()) {
+                if (_currentInternalConnections.load() >= 1) {
+                    internalConnectCount = _currentInternalConnections.load() - 1;
+                } else {
+                    warning() << "currentInternalConnections: "
+                              << _currentInternalConnections.load() << " is smaller than 1";
+                    internalConnectCount = 0;
+                }
+                _currentInternalConnections.store(internalConnectCount);
+            } else {
+                internalConnectCount = _currentInternalConnections.load();
+            }
             _currentConnections.store(connectionCount);
         }
         _shutdownCondition.notify_one();
         const auto word = (connectionCount == 1 ? " connection"_sd : " connections"_sd);
-        log() << "end connection " << remote << " (" << connectionCount << word << " now open)";
+        log() << "end connection " << remote << " ( connectCount: " << connectionCount << word
+              << ", internalCount: " << internalConnectCount << " now open)";
 
     });
 
@@ -186,11 +250,13 @@ bool ServiceEntryPointImpl::shutdown(Milliseconds timeout) {
 ServiceEntryPoint::Stats ServiceEntryPointImpl::sessionStats() const {
 
     size_t sessionCount = _currentConnections.load();
+    size_t internalSessionCount = _currentInternalConnections.load();
+    size_t externalSessionCount = sessionCount - internalSessionCount;
 
     ServiceEntryPoint::Stats ret;
     ret.numOpenSessions = sessionCount;
     ret.numCreatedSessions = _createdConnections.load();
-    ret.numAvailableSessions = _maxNumConnections - sessionCount;
+    ret.numAvailableSessions = _maxNumConnections - externalSessionCount;
     return ret;
 }
 

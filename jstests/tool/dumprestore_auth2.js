@@ -10,11 +10,17 @@ var dumpRestoreAuth2 = function(backup_role, restore_role) {
     admindb = coll.getDB().getSiblingDB("admin");
 
     // Create the relevant users and roles.
-    admindb.createUser({user: "root", pwd: "pass", roles: ["root"]});
-    admindb.auth("root", "pass");
+    admindb.createUser(
+        {user: "root", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
+    admindb.auth("root", "Password@a1b");
 
-    admindb.createUser({user: "backup", pwd: "pass", roles: [backup_role]});
-    admindb.createUser({user: "restore", pwd: "pass", roles: [restore_role]});
+    admindb.createUser(
+        {user: "backup", pwd: "Password@a1b", roles: [backup_role], "passwordDigestor": "server"});
+    admindb.createUser({
+        user: "restore",
+        pwd: "Password@a1b",
+        roles: [restore_role], "passwordDigestor": "server"
+    });
 
     admindb.createRole({
         role: "customRole",
@@ -24,7 +30,8 @@ var dumpRestoreAuth2 = function(backup_role, restore_role) {
         }],
         roles: []
     });
-    admindb.createUser({user: "test", pwd: "pass", roles: ["customRole"]});
+    admindb.createUser(
+        {user: "test", pwd: "Password@a1b", roles: ["customRole"], "passwordDigestor": "server"});
 
     coll.insert({word: "tomato"});
     assert.eq(1, coll.count());
@@ -42,15 +49,15 @@ var dumpRestoreAuth2 = function(backup_role, restore_role) {
     admindb.logout();
 
     // Verify that the custom role works as expected.
-    admindb.auth("test", "pass");
+    admindb.auth("test", "Password@a1b");
     assert.eq("tomato", coll.findOne().word);
     admindb.logout();
 
     // Dump the database.
-    t.runTool("dump", "--out", t.ext, "--username", "backup", "--password", "pass");
+    t.runTool("dump", "--out", t.ext, "--username", "backup", "--password", "Password@a1b");
 
     // Drop the relevant data in the database.
-    admindb.auth("root", "pass");
+    admindb.auth("root", "Password@a1b");
     coll.getDB().dropDatabase();
     admindb.dropUser("backup");
     admindb.dropUser("test");
@@ -68,7 +75,7 @@ var dumpRestoreAuth2 = function(backup_role, restore_role) {
               "--username",
               "restore",
               "--password",
-              "pass",
+              "Password@a1b",
               "--writeConcern",
               "0");
 
@@ -81,12 +88,13 @@ var dumpRestoreAuth2 = function(backup_role, restore_role) {
     admindb.logout();
 
     // Login as user with customRole to verify privileges are restored.
-    admindb.auth("test", "pass");
+    admindb.auth("test", "Password@a1b");
     assert.eq("tomato", coll.findOne().word);
     admindb.logout();
 
-    admindb.auth("root", "pass");
-    admindb.createUser({user: "root2", pwd: "pass", roles: ["root"]});
+    admindb.auth("root", "Password@a1b");
+    admindb.createUser(
+        {user: "root2", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
     admindb.dropRole("customRole");
     admindb.createRole({role: "customRole2", roles: [], privileges: []});
     admindb.dropUser("root");
@@ -98,12 +106,12 @@ var dumpRestoreAuth2 = function(backup_role, restore_role) {
               "--username",
               "restore",
               "--password",
-              "pass",
+              "Password@a1b",
               "--drop",
               "--writeConcern",
               "0");
 
-    admindb.auth("root", "pass");
+    admindb.auth("root", "Password@a1b");
     assert.soon("1 == admindb.system.users.find({user:'root'}).count()", "didn't restore users 2");
     assert.eq(0, admindb.system.users.find({user: 'root2'}).count(), "didn't drop users");
     assert.eq(0, admindb.system.roles.find({role: 'customRole2'}).count(), "didn't drop roles");

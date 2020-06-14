@@ -2294,9 +2294,9 @@ var authCommandsLib = {
           testname: "createUser_authenticationRestrictions",
           command: {
               createUser: "testUser",
-              pwd: "test",
+              pwd: "Password@a1b",
               roles: [],
-              authenticationRestrictions: [{clientSource: ["127.0.0.1"]}]
+              authenticationRestrictions: [{clientSource: ["127.0.0.1"]}], "digestPassword": true
           },
           teardown: function(db) {
               db.runCommand({dropUser: "testUser"});
@@ -5681,9 +5681,10 @@ var authCommandsLib = {
           setup: function(db) {
               db.runCommand({
                   createUser: "testUser",
-                  pwd: "test",
+                  pwd: "Password@a1b",
                   roles: [],
-                  authenticationRestrictions: [{clientSource: ["127.0.0.1"]}]
+                  authenticationRestrictions: [{clientSource: ["127.0.0.1"]}],
+                  "digestPassword": true
               });
           },
           teardown: function(db) {
@@ -5906,7 +5907,7 @@ var authCommandsLib = {
     setup: function(conn, t, runOnDb) {
         var adminDb = conn.getDB(adminDbName);
         if (t.setup) {
-            adminDb.auth("admin", "password");
+            adminDb.auth("admin", "Password@a1b");
             var state = t.setup(runOnDb);
             runOnDb.getLastError();
             adminDb.logout();
@@ -5925,7 +5926,7 @@ var authCommandsLib = {
     teardown: function(conn, t, runOnDb) {
         var adminDb = conn.getDB(adminDbName);
         if (t.teardown) {
-            adminDb.auth("admin", "password");
+            adminDb.auth("admin", "Password@a1b");
             t.teardown(runOnDb);
             runOnDb.getLastError();
             adminDb.logout();

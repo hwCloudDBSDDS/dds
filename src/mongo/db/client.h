@@ -93,6 +93,34 @@ public:
 
     static Client* getCurrent();
 
+    bool isCustomerConnection() const {
+        if (_session) {
+            return _session->isCustomerConnection();
+        }
+        return false;
+    }
+
+    bool isFromPublicIp() const {
+        if (_session) {
+            return _session->isFromPublicIp();
+        }
+        return false;
+    }
+
+    bool isFromPrivateIp1() const {
+        if (_session) {
+            return _session->isFromPrivateIp1();
+        }
+        return false;
+    }
+
+    bool isFromIpv6() const {
+        if (_session) {
+            return _session->isFromIpv6();
+        }
+        return false;
+    }
+
     bool getIsLocalHostConnection() {
         if (!hasRemote()) {
             return false;
@@ -107,6 +135,11 @@ public:
     HostAndPort getRemote() const {
         verify(_session);
         return _session->remote();
+    }
+
+    HostAndPort getLocal() const {
+        verify(_session);
+        return _session->local();
     }
 
     /**

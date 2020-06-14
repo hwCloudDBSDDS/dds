@@ -14,7 +14,7 @@ in jstests/auth/commands.js.
 TestData.disableImplicitSessions = true;
 
 // constants
-var testUser = "userDefinedRolesTestUser";
+var testUser = "monitor";
 var testRole = "userDefinedRolesTestRole";
 
 load("jstests/auth/lib/commands_lib.js");
@@ -31,11 +31,11 @@ function testProperAuthorization(conn, t, testcase, privileges) {
 
     var state = authCommandsLib.setup(conn, t, runOnDb);
 
-    adminDb.auth("admin", "password");
+    adminDb.auth("admin", "Password@a1b");
     assert.commandWorked(adminDb.runCommand({updateRole: testRole, privileges: privileges}));
     adminDb.logout();
 
-    assert(adminDb.auth(testUser, "password"));
+    assert(adminDb.auth(testUser, "Password@a1b"));
 
     authCommandsLib.authenticatedSetup(t, runOnDb);
 
@@ -69,11 +69,11 @@ function testInsufficientPrivileges(conn, t, testcase, privileges) {
 
     var state = authCommandsLib.setup(conn, t, runOnDb);
 
-    adminDb.auth("admin", "password");
+    adminDb.auth("admin", "Password@a1b");
     assert.commandWorked(adminDb.runCommand({updateRole: testRole, privileges: privileges}));
     adminDb.logout();
 
-    assert(adminDb.auth(testUser, "password"));
+    assert(adminDb.auth(testUser, "Password@a1b"));
 
     authCommandsLib.authenticatedSetup(t, runOnDb);
 
@@ -190,13 +190,17 @@ function runOneTest(conn, t) {
 function createUsers(conn) {
     var adminDb = conn.getDB(adminDbName);
     var firstDb = conn.getDB(firstDbName);
-    adminDb.createUser({user: "admin", pwd: "password", roles: ["__system"]});
+    adminDb.createUser(
+        {user: "admin", pwd: "Password@a1b", roles: ["__system"], "passwordDigestor": "server"});
 
-    assert(adminDb.auth("admin", "password"));
+    assert(adminDb.auth("admin", "Password@a1b"));
 
     assert.commandWorked(adminDb.runCommand({createRole: testRole, privileges: [], roles: []}));
-    assert.commandWorked(adminDb.runCommand(
-        {createUser: testUser, pwd: "password", roles: [{role: testRole, db: adminDbName}]}));
+    assert.commandWorked(adminDb.runCommand({
+        createUser: testUser,
+        pwd: "Password@a1b",
+        roles: [{role: testRole, db: adminDbName}], "digestPassword": true
+    }));
 
     adminDb.logout();
 }

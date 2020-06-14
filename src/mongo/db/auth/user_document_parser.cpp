@@ -126,10 +126,18 @@ Status _checkV2RolesArray(const BSONElement& rolesElement) {
 }
 
 Status V2UserDocumentParser::checkValidUserDocument(const BSONObj& doc) const {
+    BSONElement userTokenElement = doc[AuthorizationManager::USER_TOKEN_FIELD_NAME];
     BSONElement userElement = doc[AuthorizationManager::USER_NAME_FIELD_NAME];
     BSONElement userDBElement = doc[AuthorizationManager::USER_DB_FIELD_NAME];
     BSONElement credentialsElement = doc[CREDENTIALS_FIELD_NAME];
     BSONElement rolesElement = doc[ROLES_FIELD_NAME];
+
+    // Validate the "userToken" element.
+    if (!userTokenElement.eoo()) {
+        if (!userTokenElement.isNumber()) {
+            return _badValue("User document needs 'userToken' field to be a number");
+        }
+    }
 
     // Validate the "user" element.
     if (userElement.type() != String)
@@ -214,6 +222,18 @@ Status V2UserDocumentParser::checkValidUserDocument(const BSONObj& doc) const {
 
 std::string V2UserDocumentParser::extractUserNameFromUserDocument(const BSONObj& doc) const {
     return doc[AuthorizationManager::USER_NAME_FIELD_NAME].str();
+}
+
+Status V2UserDocumentParser::initializeUserTokenFromUserDocument(const BSONObj& privDoc,
+                                                                 User* user) const {
+    auto userToken = privDoc[AuthorizationManager::USER_TOKEN_FIELD_NAME];
+    if (!userToken.eoo()) {
+        auto token = userToken.Long();
+        user->setToken(token);
+    } else {
+        user->setToken(0);
+    }
+    return Status::OK();
 }
 
 Status V2UserDocumentParser::initializeUserCredentialsFromUserDocument(

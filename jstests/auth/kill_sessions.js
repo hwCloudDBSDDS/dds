@@ -11,7 +11,7 @@ load("jstests/libs/kill_sessions.js");
     var forKill = new Mongo(forExec.host);
     var forVerify = new Mongo(forExec.host);
     KillSessionsTestHelper.initializeAuth(forExec);
-    forVerify.getDB("admin").auth("super", "password");
+    forVerify.getDB("admin").auth("super", "Password@a1b");
     KillSessionsTestHelper.runAuth(forExec, forKill, [forVerify]);
     MongoRunner.stopMongod(forExec);
 })();

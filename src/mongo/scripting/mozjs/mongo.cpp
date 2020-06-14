@@ -54,6 +54,7 @@
 #include "mongo/scripting/mozjs/wrapconstrainedmethod.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/net/socket_utils.h"
 #include "mongo/util/quick_exit.h"
 
 namespace mongo {
@@ -743,6 +744,15 @@ void MongoExternalInfo::construct(JSContext* cx, JS::CallArgs args) {
 
     if (args.length() > 0 && args.get(0).isString()) {
         host = ValueWriter(cx, args.get(0)).toString();
+    }
+
+    // for mongo test, add ipv6 option to enable client ipv6
+    if (args.length() > 1 && args.get(1).isString()) {
+        std::string parm("");
+        parm = ValueWriter(cx, args.get(1)).toString();
+        if (parm == "ipv6") {
+            mongo::enableIPv6(true);
+        }
     }
 
     auto statusWithHost = MongoURI::parse(host);

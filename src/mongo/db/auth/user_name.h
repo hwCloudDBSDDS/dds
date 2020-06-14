@@ -29,8 +29,8 @@
 
 #include <iosfwd>
 #include <memory>
+#include <set>
 #include <string>
-
 
 #include "mongo/base/clonable_ptr.h"
 #include "mongo/base/disallow_copying.h"
@@ -92,6 +92,44 @@ public:
 
     bool operator<(const UserName& rhs) const {
         return getUser() < rhs.getUser() || (getUser() == rhs.getUser() && getDB() < rhs.getDB());
+    }
+
+    static bool isBuildinUser(const std::string& username) {
+        if (username == "admin@admin" || username == "monitor@admin" ||
+            username == "backupuser@admin") {
+
+            return true;
+        }
+        return false;
+    }
+
+    static bool isRwUser(const std::string username) {
+        if (username == "rwuser@admin") {
+            return true;
+        }
+        return false;
+    }
+
+    static void getBuildinUsers(std::set<std::string>& buildInUsers) {
+        buildInUsers.insert("admin");
+        buildInUsers.insert("monitor");
+        buildInUsers.insert("backupuser");
+    }
+    static void getBuildinUsersAndRwuser(std::set<std::string>& buildInUsers) {
+        getBuildinUsers(buildInUsers);
+        buildInUsers.insert("rwuser");
+    }
+
+    bool isBuildinUser() const {
+        return isBuildinUser(_fullName);
+    }
+
+    bool isRwUser() const {
+        return isRwUser(_fullName);
+    }
+
+    bool isCustomer() const {
+        return !isBuildinUser();
     }
 
 private:

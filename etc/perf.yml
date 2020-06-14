@@ -121,7 +121,7 @@ functions:
           # benchRun() authenticates against the admin db, with a user that must has admin access.
           # Note: This is possibly a legacy requirement from times when it would call serverStatus.
           # Btw, when mongod is started without --auth, these should be harmless no-ops
-          ./mongo --eval "db.createUser({user: 'admin', pwd: 'password', roles:\
+          ./mongo --eval "db.createUser({user: 'admin', pwd: 'Password@a1b', roles:\
                          [ { role: 'root', db: 'admin' } ] })"\
                            admin
 

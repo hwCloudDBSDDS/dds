@@ -143,6 +143,11 @@ public:
             return false;
         }
 
+        if (source.ns() == "admin.system.users" || target.ns() == "admin.system.users") {
+            errmsg = "It is not allowed to rename admin.system.users";
+            return false;
+        }
+
         if (source.isSystemDotIndexes() || target.isSystemDotIndexes()) {
             errmsg = "renaming system.indexes is not allowed";
             return false;

@@ -44,7 +44,9 @@ using stdx::make_unique;
 const char* OrStage::kStageType = "OR";
 
 OrStage::OrStage(OperationContext* opCtx, WorkingSet* ws, bool dedup, const MatchExpression* filter)
-    : PlanStage(kStageType, opCtx), _ws(ws), _filter(filter), _currentChild(0), _dedup(dedup) {}
+    : PlanStage(kStageType, opCtx), _ws(ws), _filter(filter), _currentChild(0), _dedup(dedup) {
+    incStageObj(STAGE_OR);
+}
 
 void OrStage::addChild(PlanStage* child) {
     _children.emplace_back(child);
@@ -63,6 +65,11 @@ bool OrStage::isEOF() {
 PlanStage::StageState OrStage::doWork(WorkingSetID* out) {
     if (isEOF()) {
         return PlanStage::IS_EOF;
+    }
+
+    if (chkCachedMemOversize()) {
+        *out = chkMemFailureRet(_ws);
+        return PlanStage::FAILURE;
     }
 
     WorkingSetID id = WorkingSet::INVALID_ID;
@@ -84,6 +91,7 @@ PlanStage::StageState OrStage::doWork(WorkingSetID* out) {
             } else {
                 // Otherwise, note that we've seen it.
                 _seen.insert(member->recordId);
+                incCachedMemory(sizeof(RecordId));
             }
         }
 
@@ -132,6 +140,7 @@ void OrStage::doInvalidate(OperationContext* opCtx, const RecordId& dl, Invalida
         stdx::unordered_set<RecordId, RecordId::Hasher>::iterator it = _seen.find(dl);
         if (_seen.end() != it) {
             ++_specificStats.recordIdsForgotten;
+            decCachedMemory(sizeof(RecordId));
             _seen.erase(dl);
         }
     }

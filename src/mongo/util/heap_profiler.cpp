@@ -515,8 +515,8 @@ private:
     // once a stack is deemed "important" it remains important from that point on.
     // "Important" is a sticky quality to improve the stability of the set of stacks we emit,
     // and we always emit them in stackNum order, greatly improving ftdc compression efficiency.
-    std::set<StackInfo*, bool (*)(StackInfo*, StackInfo*)> importantStacks{
-        [](StackInfo* a, StackInfo* b) -> bool { return a->stackNum < b->stackNum; }};
+    std::set<StackInfo, bool (*)(const StackInfo&, const StackInfo&)> importantStacks{
+        [](const StackInfo& a, const StackInfo& b) -> bool { return a.stackNum < b.stackNum; }};
 
     int numImportantSamples = 0;                // samples currently included in importantStacks
     const int kMaxImportantSamples = 4 * 3600;  // reset every 4 hours at default 1 sample / sec
@@ -555,26 +555,26 @@ private:
         // forEach guarantees this is safe wrt to insert(), and we never call remove().
         // We use stackinfo_mutex to ensure safety wrt concurrent updates to the StackInfo objects.
         // We can get skew between entries, which is ok.
-        std::vector<StackInfo*> stackInfos;
+        std::vector<StackInfo> stackInfos;
         stackHashTable.forEach([&](Stack& stack, StackInfo& stackInfo) {
             if (stackInfo.activeBytes) {
                 generateStackIfNeeded(stack, stackInfo);
-                stackInfos.push_back(&stackInfo);
+                stackInfos.push_back(stackInfo);
             }
         });
 
         // Sort the stacks and find enough stacks to account for at least 99% of the active bytes
         // deem any stack that has ever met this criterion as "important".
-        auto sortByActiveBytes = [](StackInfo* a, StackInfo* b) -> bool {
-            return a->activeBytes > b->activeBytes;
+        auto sortByActiveBytes = [](const StackInfo& a, const StackInfo& b) -> bool {
+            return a.activeBytes > b.activeBytes;
         };
         std::stable_sort(stackInfos.begin(), stackInfos.end(), sortByActiveBytes);
         size_t threshold = totalActiveBytes * 0.99;
         size_t cumulative = 0;
         for (auto it = stackInfos.begin(); it != stackInfos.end(); ++it) {
-            StackInfo* stackInfo = *it;
+            auto& stackInfo = *it;
             importantStacks.insert(stackInfo);
-            cumulative += stackInfo->activeBytes;
+            cumulative += stackInfo.activeBytes;
             if (cumulative > threshold)
                 break;
         }
@@ -582,11 +582,11 @@ private:
         // Build the stacks subsection by emitting the "important" stacks.
         BSONObjBuilder stacksBuilder(builder.subobjStart("stacks"));
         for (auto it = importantStacks.begin(); it != importantStacks.end(); ++it) {
-            StackInfo* stackInfo = *it;
+            auto& stackInfo = *it;
             std::ostringstream shortName;
-            shortName << "stack" << stackInfo->stackNum;
+            shortName << "stack" << stackInfo.stackNum;
             BSONObjBuilder stackBuilder(stacksBuilder.subobjStart(shortName.str()));
-            stackBuilder.appendNumber("activeBytes", stackInfo->activeBytes);
+            stackBuilder.appendNumber("activeBytes", stackInfo.activeBytes);
         }
         stacksBuilder.doneFast();
 

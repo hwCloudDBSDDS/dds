@@ -119,6 +119,11 @@ public:
                        const UserName& userName,
                        User** acquiredUser) override;
 
+    Status acquireUserForConsiderToken(OperationContext* opCtx,
+                                       const UserName& userName,
+                                       int64_t userToken,
+                                       User** acquiredUser) override;
+
     void releaseUser(User* user) override;
 
     void invalidateUserByName(const UserName& user) override;

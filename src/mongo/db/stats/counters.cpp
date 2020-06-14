@@ -200,7 +200,93 @@ void NetworkCounter::append(BSONObjBuilder& b) {
 }
 
 
+const StringData stageName[] = {
+    "AndHashStage",             /// STAGE_AND_HASH,
+    "AndSortedStage",           /// STAGE_AND_SORTED,
+    "CachedPlanStage",          /// STAGE_CACHED_PLAN,
+    "CollectionScan",           /// STAGE_COLLSCAN,
+    "CountStage",               /// STAGE_COUNT,
+    "CountStageScan",           /// STAGE_COUNT_SCAN,
+    "DeleteStage",              /// STAGE_DELETE,
+    "DistinctScan",             /// STAGE_DISTINCT_SCAN,
+    "DeleteNotificationStage",  /// STAGE_NOTIFY_DELETE,
+    "EnsureSortedStage",        /// STAGE_ENSURE_SORTED,
+    "EOFStage",                 /// STAGE_EOF,
+    "KeepMutationsStage",       /// STAGE_KEEP_MUTATIONS,
+    "FetchStage",               /// STAGE_FETCH,
+    "GeoNear2DStage",           /// STAGE_GEO_NEAR_2D,
+    "GeoNear2DSphereStage",     /// STAGE_GEO_NEAR_2DSPHERE,
+    "GroupStage",               /// STAGE_GROUP,
+    "IDHackStage",              /// STAGE_IDHACK,
+    "IndexIteratorStage",       /// STAGE_INDEX_ITERATOR,
+    "IndexScan",                /// STAGE_IXSCAN,
+    "LimitStage",               /// STAGE_LIMIT,
+    "MultiIteratorStage",       /// STAGE_MULTI_ITERATOR,
+    "MultiPlanStage",           /// STAGE_MULTI_PLAN,
+    "OplogStart",               /// STAGE_OPLOG_START,
+    "OrStage",                  /// STAGE_OR,
+    "ProjectionStage",          /// STAGE_PROJECTION,
+    "PipelineProxyStage",       /// STAGE_PIPELINE_PROXY,
+    "QueuedDataStage",          /// STAGE_QUEUED_DATA,
+    "ShardFilterStage",         /// STAGE_SHARDING_FILTER,
+    "SkipStage",                /// STAGE_SKIP,
+    "SortStage",                /// STAGE_SORT,
+    "SortKeyGeneratorStage",    /// STAGE_SORT_KEY_GENERATOR,
+    "MergeSortStage",           /// STAGE_SORT_MERGE,
+    "SubplanStage",             /// STAGE_SUBPLAN,
+    "TextStage",                /// STAGE_TEXT,
+    "TextOrStage",              /// STAGE_TEXT_OR,
+    "TextMatchStage",           /// STAGE_TEXT_MATCH,
+    "UnknownStage",             /// STAGE_UNKNOWN,
+    "UpdateStage",              /// STAGE_UPDATE,
+    ""                          /// STAGE_INVALID
+};
+
+BSONObj StageMemCounter::getObj() const {
+    if (!internalQueryStageMemUsageSwitch.load()) {
+        return BSONObj();
+    }
+    BSONObjBuilder b;
+    b.append("Total Stage Memory", _totalMem.get());
+    for (int32_t i = 0; (i < STAGE_INVALID) && (stageName[i] != ""); ++i) {
+        BSONObjBuilder sub;
+        sub.append("objectCount", _stageMap[i]._objectCount.get());
+        sub.append("StageMem", _stageMap[i]._memSize.get());
+        b.append(stageName[i], sub.obj());
+    }
+    return b.obj();
+}
+
+void StageMemCounter::incCachedMemSize(const StageType& type, const size_t& size) {
+    _totalMem.increment(size);
+    _stageMap[type]._memSize.increment(size);
+}
+
+void StageMemCounter::incMemObj(const StageType& type) {
+    _stageMap[type]._objectCount.increment();
+}
+
+void StageMemCounter::decCachedMemSize(const StageType& type, const size_t& size) {
+    _totalMem.decrement(size);
+    _stageMap[type]._memSize.decrement(size);
+}
+
+void StageMemCounter::decMemObj(const StageType& type) {
+    _stageMap[type]._objectCount.decrement();
+}
+
+bool StageMemCounter::chkCachedMemOversize(const size_t& cachedMemSize) const {
+    if (internalQueryStageMemUsageSwitch.load() &&
+        (cachedMemSize > static_cast<size_t>(internalQueryStageMemUsageMIN.load())) &&
+        (_totalMem.get() > static_cast<int64_t>(internalQueryStageMemUsageMAX.load()))) {
+        return true;
+    }
+    return false;
+}
+
 OpCounters globalOpCounters;
 OpCounters replOpCounters;
 NetworkCounter networkCounter;
+/// OOM feature
+StageMemCounter globalStageMemCounters;
 }

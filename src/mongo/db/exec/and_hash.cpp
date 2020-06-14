@@ -53,6 +53,7 @@ const size_t AndHashStage::kLookAheadWorks = 10;
 
 // static
 const char* AndHashStage::kStageType = "AND_HASH";
+const size_t AndHashStage::_dataMapItemSize = sizeof(RecordId) + sizeof(WorkingSetID);
 
 AndHashStage::AndHashStage(OperationContext* opCtx, WorkingSet* ws, const Collection* collection)
     : PlanStage(kStageType, opCtx),
@@ -61,7 +62,9 @@ AndHashStage::AndHashStage(OperationContext* opCtx, WorkingSet* ws, const Collec
       _hashingChildren(true),
       _currentChild(0),
       _memUsage(0),
-      _maxMemUsage(kDefaultMaxMemUsageBytes) {}
+      _maxMemUsage(kDefaultMaxMemUsageBytes) {
+    incStageObj(STAGE_AND_HASH);
+}
 
 AndHashStage::AndHashStage(OperationContext* opCtx,
                            WorkingSet* ws,
@@ -73,7 +76,9 @@ AndHashStage::AndHashStage(OperationContext* opCtx,
       _hashingChildren(true),
       _currentChild(0),
       _memUsage(0),
-      _maxMemUsage(maxMemUsage) {}
+      _maxMemUsage(maxMemUsage) {
+    incStageObj(STAGE_AND_HASH);
+}
 
 void AndHashStage::addChild(PlanStage* child) {
     _children.emplace_back(child);
@@ -110,6 +115,11 @@ bool AndHashStage::isEOF() {
 PlanStage::StageState AndHashStage::doWork(WorkingSetID* out) {
     if (isEOF()) {
         return PlanStage::IS_EOF;
+    }
+
+    if (chkCachedMemOversize()) {
+        *out = chkMemFailureRet(_ws);
+        return PlanStage::FAILURE;
     }
 
     // Fast-path for one of our children being EOF immediately.  We work each child a few times.
@@ -223,6 +233,7 @@ PlanStage::StageState AndHashStage::doWork(WorkingSetID* out) {
         // Child's output was in every previous child.  Merge any key data in
         // the child's output and free the child's just-outputted WSM.
         WorkingSetID hashID = it->second;
+        decCachedMemory(_dataMapItemSize);
         _dataMap.erase(it);
 
         AndCommon::mergeFrom(_ws, hashID, *member);
@@ -273,6 +284,7 @@ PlanStage::StageState AndHashStage::readFirstChild(WorkingSetID* out) {
         // Update memory stats.
         _memUsage += member->getMemUsage();
 
+        incCachedMemory(_dataMapItemSize + member->getMemUsage());
         return PlanStage::NEED_TIME;
     } else if (PlanStage::IS_EOF == childStatus) {
         // Done reading child 0.
@@ -319,11 +331,13 @@ PlanStage::StageState AndHashStage::hashOtherChildren(WorkingSetID* out) {
         }
 
         verify(member->hasRecordId());
+        size_t cachedSize = 0;
         if (_dataMap.end() == _dataMap.find(member->recordId)) {
             // Ignore.  It's not in any previous child.
         } else {
             // We have a hit.  Copy data into the WSM we already have.
             _seenMap.insert(member->recordId);
+            cachedSize = sizeof(RecordId);
             WorkingSetID olderMemberID = _dataMap[member->recordId];
             WorkingSetMember* olderMember = _ws->get(olderMemberID);
             size_t memUsageBefore = olderMember->getMemUsage();
@@ -332,13 +346,16 @@ PlanStage::StageState AndHashStage::hashOtherChildren(WorkingSetID* out) {
 
             // Update memory stats.
             _memUsage += olderMember->getMemUsage() - memUsageBefore;
+            cachedSize += olderMember->getMemUsage();
+            incCachedMemory(cachedSize);
+            decCachedMemory(memUsageBefore);
         }
         _ws->free(id);
         return PlanStage::NEED_TIME;
     } else if (PlanStage::IS_EOF == childStatus) {
         // Finished with a child.
         ++_currentChild;
-
+        size_t releaseSize = 0;
         // Keep elements of _dataMap that are in _seenMap.
         DataMap::iterator it = _dataMap.begin();
         while (it != _dataMap.end()) {
@@ -349,8 +366,9 @@ PlanStage::StageState AndHashStage::hashOtherChildren(WorkingSetID* out) {
                 // Update memory stats.
                 WorkingSetMember* member = _ws->get(toErase->second);
                 _memUsage -= member->getMemUsage();
-
+                releaseSize += member->getMemUsage();
                 _ws->free(toErase->second);
+                releaseSize += _dataMapItemSize;
                 _dataMap.erase(toErase);
             } else {
                 ++it;
@@ -358,7 +376,8 @@ PlanStage::StageState AndHashStage::hashOtherChildren(WorkingSetID* out) {
         }
 
         _specificStats.mapAfterChild.push_back(_dataMap.size());
-
+        releaseSize += _seenMap.size() * sizeof(RecordId);
+        decCachedMemory(releaseSize);
         _seenMap.clear();
 
         // _dataMap is now the intersection of the first _currentChild nodes.
@@ -417,6 +436,7 @@ void AndHashStage::doInvalidate(OperationContext* opCtx,
     // If it's a mutation the predicates implied by the AND-ing may no longer be true.
     //
     // So, we flag and try to pick it up later.
+    size_t releaseSize = 0;
     DataMap::iterator it = _dataMap.find(dl);
     if (_dataMap.end() != it) {
         WorkingSetID id = it->second;
@@ -431,6 +451,7 @@ void AndHashStage::doInvalidate(OperationContext* opCtx,
 
         // Update memory stats.
         _memUsage -= member->getMemUsage();
+        releaseSize = member->getMemUsage();
 
         // The RecordId is about to be invalidated.  Fetch it and clear the RecordId.
         WorkingSetCommon::fetchAndInvalidateRecordId(opCtx, member, _collection);
@@ -440,6 +461,8 @@ void AndHashStage::doInvalidate(OperationContext* opCtx,
 
         // And don't return it from this stage.
         _dataMap.erase(it);
+        releaseSize += _dataMapItemSize;
+        decCachedMemory(releaseSize);
     }
 }
 

@@ -372,6 +372,7 @@ PlanStage* buildStages(OperationContext* opCtx,
         case STAGE_TEXT_OR:
         case STAGE_TEXT_MATCH:
         case STAGE_UNKNOWN:
+        case STAGE_INVALID:
         case STAGE_UPDATE: {
             mongoutils::str::stream ss;
             root->appendToString(&ss, 0);

@@ -80,4 +80,9 @@ Status setupBaseOptions(const std::vector<std::string>& args);
 */
 Status storeBaseOptions(const moe::Environment& params);
 
+bool parseAuditOpFilter(const std::string& filterStr, int& filter);
+
+bool parseAuditNsFilter(const std::map<std::string, std::string>& auditNsFilterMap);
+
+
 }  // namespace mongo

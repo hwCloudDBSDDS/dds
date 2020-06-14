@@ -936,5 +936,19 @@ assert = (function() {
         }
     };
 
+    assert.commandFailedWithNotCode = function(res, code, msg) {
+        if (assert._debug && msg)
+            print("in assert for: " + msg);
+
+        assert(!res.ok,
+               "Command result indicates success, but expected failure with code " + code + ": " +
+                   tojson(res) + " : " + msg);
+        assert.neq(res.code,
+                   code,
+                   "Expected failure code did not match actual in command result: " + tojson(res) +
+                       " : " + msg);
+        return res;
+    };
+
     return assert;
 })();

@@ -244,6 +244,26 @@ public:
         UASSERT_NOT_IMPLEMENTED;
     }
 
+    bool isAuthWithBuiltinUser() const override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    bool isAuthWithCustomerOrNoAuthUser() const override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    bool isAuthWithCustomer() const override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    bool isNoAuthUser() const override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    bool shouldAllowLocalhost() const override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
     Status checkCursorSessionPrivilege(OperationContext*,
                                        boost::optional<LogicalSessionId>) override {
         return Status::OK();

@@ -36,10 +36,12 @@
 #define SYSLOG_NAMES
 #include <syslog.h>
 #endif
+#include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <ios>
 #include <iostream>
+#include <regex>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/util/builder.h"
@@ -101,10 +103,12 @@ CODE facilitynames[] = {{"auth", LOG_AUTH},     {"cron", LOG_CRON},     {"daemon
 
 Status addBaseServerOptions(moe::OptionSection* options) {
     StringBuilder portInfoBuilder;
+    StringBuilder maxInternalConnInfoBuilder;
 
     portInfoBuilder << "specify port number - " << ServerGlobalParams::DefaultDBPort
                     << " by default";
-
+    maxInternalConnInfoBuilder << "max number of simultaneous internal connections - "
+                               << DEFAULT_MAX_INTERNAL_CONN << " by default";
     // The verbosity level can be set at startup in the following ways.  Note that if multiple
     // methods for setting the verbosity are specified simultaneously, the verbosity will be set
     // based on the whichever option specifies the highest level
@@ -168,6 +172,11 @@ Status addBaseServerOptions(moe::OptionSection* options) {
 
     options->addOptionChaining("net.port", "port", moe::Int, portInfoBuilder.str().c_str());
 
+    options->addOptionChaining("net.maxInternalIncomingConnections",
+                               "maxInternalConns",
+                               moe::Int,
+                               maxInternalConnInfoBuilder.str().c_str());
+
     options
         ->addOptionChaining(
             "logpath",
@@ -226,10 +235,46 @@ Status addBaseServerOptions(moe::OptionSection* options) {
                                "Desired format for timestamps in log messages. One of ctime, "
                                "iso8601-utc or iso8601-local");
 
+    options->addOptionChaining("security.readOnly", "readOnly", moe::Switch, "enable readOnly");
+
+    options
+        ->addOptionChaining("auditLog.path",
+                            "",
+                            moe::String,
+                            "audit log file to send writes to if logging to a file - has to be a "
+                            "file, not directory")
+        .setSources(moe::SourceYAMLConfig)
+        .hidden();
+
+    options
+        ->addOptionChaining(
+            "auditLog.format", "", moe::String, "Desired audit log format, JSON or HWDDS")
+        .setSources(moe::SourceYAMLConfig);
+
+    options
+        ->addOptionChaining("auditLog.opFilter",
+                            "",
+                            moe::String,
+                            "specify filter operation to audit, ',' sperated string format")
+        .setSources(moe::SourceYAMLConfig);
+
+    options
+        ->addOptionChaining(
+            "auditLog.authSuccess", "", moe::Bool, "enable audit authorization success")
+        .setSources(moe::SourceYAMLConfig);
+    options
+        ->addOptionChaining(
+            "auditLog.nsFilter", "", moe::StringMap, "specify namespace and operations to audit")
+        .setSources(moe::SourceYAMLConfig);
+
     options
         ->addOptionChaining(
             "setParameter", "setParameter", moe::StringMap, "Set a configurable parameter")
         .composing();
+    options->addOptionChaining("security.isImplicitCreateCol",
+                               "isImplicitCreateCol",
+                               moe::Switch,
+                               "is create collection implicited");
 
     /* support for -vv -vvvv etc. */
     for (string s = "vv"; s.length() <= 12; s.append("v")) {
@@ -238,6 +283,15 @@ Status addBaseServerOptions(moe::OptionSection* options) {
             .setSources(moe::SourceAllLegacy);
     }
 
+    options->addOptionChaining("security.whitelist.adminWhiteListPath",
+                               "adminWhiteListPath",
+                               moe::String,
+                               "Absolute file path which stores admin whitelist");
+
+    options->addOptionChaining("externalConfig.externalConfigPath",
+                               "externalConfigPath",
+                               moe::String,
+                               "Absolute file path which stores external config");
     options
         ->addOptionChaining("systemLog.traceAllExceptions",
                             "traceExceptions",
@@ -433,6 +487,14 @@ Status storeBaseOptions(const moe::Environment& params) {
         DBException::traceExceptions.store(params["systemLog.traceAllExceptions"].as<bool>());
     }
 
+    if (params.count("net.maxInternalIncomingConnections")) {
+        serverGlobalParams.maxInternalConns =
+            params["net.maxInternalIncomingConnections"].as<int>();
+        if (serverGlobalParams.maxInternalConns < 5) {
+            return Status(ErrorCodes::BadValue, "maxInternalConns has to be at least 5");
+        }
+    }
+
     if (params.count("systemLog.timeStampFormat")) {
         using logger::MessageEventDetailsEncoder;
         std::string formatterName = params["systemLog.timeStampFormat"].as<string>();
@@ -506,6 +568,10 @@ Status storeBaseOptions(const moe::Environment& params) {
         serverGlobalParams.logAppend = true;
     }
 
+    if (params.count("security.readOnly")) {
+        serverGlobalParams.readOnly = params["security.readOnly"].as<bool>();
+    }
+
     if (params.count("systemLog.logRotate")) {
         std::string logRotateParam = params["systemLog.logRotate"].as<string>();
         if (logRotateParam == "reopen") {
@@ -525,6 +591,22 @@ Status storeBaseOptions(const moe::Environment& params) {
 
     if (!serverGlobalParams.logpath.empty() && serverGlobalParams.logWithSyslog) {
         return Status(ErrorCodes::BadValue, "Cant use both a logpath and syslog ");
+    }
+
+    if (params.count("security.whitelist.adminWhiteListPath")) {
+        std::string path = params["security.whitelist.adminWhiteListPath"].as<string>();
+        std::string errmsg;
+        if (!serverGlobalParams.adminWhiteList.parseFromFile(path, errmsg)) {
+            return Status(ErrorCodes::BadValue, errmsg);
+        }
+    }
+
+    if (params.count("externalConfig.externalConfigPath")) {
+        std::string path = params["externalConfig.externalConfigPath"].as<string>();
+        std::string errmsg;
+        if (!serverGlobalParams.externalConfig.parseFromFile(path, errmsg)) {
+            return Status(ErrorCodes::BadValue, errmsg);
+        }
     }
 
     if (params.count("processManagement.pidFilePath")) {
@@ -566,6 +648,48 @@ Status storeBaseOptions(const moe::Environment& params) {
         }
     }
 
+    if (params.count("auditLog.path")) {
+        serverGlobalParams.auditLogpath = params["auditLog.path"].as<std::string>();
+    }
+
+    if (params.count("auditLog.format")) {
+        serverGlobalParams.auditLogFormat = params["auditLog.format"].as<std::string>();
+        if (serverGlobalParams.auditLogFormat != "JSON" &&
+            serverGlobalParams.auditLogFormat != "HWDDS") {
+            StringBuilder sb;
+            sb << "Value of auditLogFormat must be one of JSON "
+               << "or HWDDS; not \"" << serverGlobalParams.auditLogFormat << "\".";
+            return Status(ErrorCodes::BadValue, sb.str());
+        }
+    }
+
+    if (params.count("auditLog.opFilter")) {
+        serverGlobalParams.auditOpFilterStr = params["auditLog.opFilter"].as<std::string>();
+        if (!parseAuditOpFilter(serverGlobalParams.auditOpFilterStr,
+                                serverGlobalParams.auditOpFilter)) {
+            StringBuilder sb;
+            sb << "Value of opFilter must be one or combination of "
+                  "auth,admin,slow,insert,update,delete,command,query or"
+               << "all/off; not \"" << serverGlobalParams.auditOpFilterStr << "\".";
+            return Status(ErrorCodes::BadValue, sb.str());
+        }
+    }
+
+    if (params.count("auditLog.authSuccess")) {
+        serverGlobalParams.auditAuthSuccess = params["auditLog.authSuccess"].as<bool>();
+    }
+
+    if (params.count("auditLog.nsFilter")) {
+        serverGlobalParams.auditNsFilterMap =
+            params["auditLog.nsFilter"].as<std::map<std::string, std::string>>();
+        if (!parseAuditNsFilter(serverGlobalParams.auditNsFilterMap)) {
+            StringBuilder sb;
+            sb << "Value of nsFilter must be json format.";
+            return Status(ErrorCodes::BadValue, sb.str());
+        }
+    }
+
+
     if (params.count("operationProfiling.slowOpThresholdMs")) {
         serverGlobalParams.slowMS = params["operationProfiling.slowOpThresholdMs"].as<int>();
     }
@@ -575,6 +699,98 @@ Status storeBaseOptions(const moe::Environment& params) {
     }
 
     return Status::OK();
+}
+
+
+bool parseAuditOpFilter(const std::string& filterStr, int& filter) {
+    unsigned int newFilter = 0;
+    std::vector<std::string> strs;
+    splitStringDelim(filterStr, &strs, ',');
+    bool hasAll = false;
+    bool hasOff = false;
+    for (std::vector<std::string>::iterator it = strs.begin(); it != strs.end(); ++it) {
+        boost::trim(*it);
+        if (*it == "off") {
+            hasOff = true;
+            continue;
+        }
+        if (*it == "all") {
+            hasAll = true;
+            continue;
+        }
+        logger::AuditOp op = logger::auditOpFromString(*it);
+        if (op == logger::opInvalid) {
+            return false;
+        }
+        newFilter |= (unsigned int)op;
+    }
+    if (hasAll || hasOff) {
+        // "all" and "off" should be configured alone
+        if (newFilter != 0) {
+            return false;
+        }
+        if (hasAll && hasOff) {
+            return false;
+        }
+        if (hasAll) {
+            newFilter = 0xFFFFFFFF;
+        }
+    }
+    filter = newFilter;
+    return true;
+}
+
+void splitAuditNsStringDelimToSet(const std::string& inputStr, std::set<string>* res) {
+    if (inputStr.empty())
+        return;
+    std::string escapeStr = "\\$";
+    std::string delim = ",";
+
+    std::string tmpStr = inputStr;
+    // c++ do not support negative lookbehind regex
+    // considering the str will not be too long
+    // so use reverse and negative lookahead regex
+    std::string splitRegx = delim + "(?!" + escapeStr + ")";
+    std::regex rgx(splitRegx);
+    std::reverse(tmpStr.begin(), tmpStr.end());
+    std::sregex_token_iterator iter(tmpStr.begin(), tmpStr.end(), rgx, -1);
+    std::sregex_token_iterator end;
+    while (iter != end) {
+        std::string rawNs = *iter;
+        std::reverse(rawNs.begin(), rawNs.end());
+        rawNs = std::regex_replace(rawNs, std::regex(escapeStr + delim), delim);
+        res->insert(rawNs);
+        log() << "audit ns key: " << rawNs;
+        ++iter;
+    }
+}
+
+bool parseAuditNsFilter(const std::map<std::string, std::string>& auditNsFilterMap) {
+    std::set<std::string> tmpSet;
+    for (auto& nsFilterIt : auditNsFilterMap) {
+        if (std::find(logger::auditOpList.begin(), logger::auditOpList.end(), nsFilterIt.first) ==
+            logger::auditOpList.end()) {
+            return false;
+        }
+    }
+    for (auto& opType : logger::auditOpList) {
+        if (opType == "all") {
+            continue;
+        }
+        if (auditNsFilterMap.find("all") != auditNsFilterMap.end()) {
+            splitAuditNsStringDelimToSet(auditNsFilterMap.find("all")->second, &tmpSet);
+        }
+        if (auditNsFilterMap.find(opType) != auditNsFilterMap.end()) {
+            splitAuditNsStringDelimToSet(auditNsFilterMap.find(opType)->second, &tmpSet);
+        }
+        std::map<std::string, bool> nsIsDBMap;
+        for (auto& ns : tmpSet) {
+            nsIsDBMap.insert({ns, ns.find(".") == std::string::npos ? true : false});
+        }
+        serverGlobalParams.auditOpNsFilterMap.insert({opType, nsIsDBMap});
+        tmpSet.clear();
+    }
+    return true;
 }
 
 ExportedServerParameter<std::vector<std::string>, ServerParameterType::kStartupOnly>

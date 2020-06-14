@@ -67,6 +67,10 @@ structs:
                               with 'stmtId'."
                 type: array<int>
                 optional: true
+            usermanagerCmd:
+                description: ""
+                type: bool
+                default: false
 
     UpdateOpEntry:
         description: "Parser for the entries in the 'updates' array of an update command."

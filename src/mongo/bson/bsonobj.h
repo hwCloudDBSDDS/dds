@@ -254,6 +254,11 @@ public:
                            int pretty = 0,
                            bool isArray = false) const;
 
+    void jsonString(std::stringstream& s,
+                    JsonStringFormat format = Strict,
+                    int pretty = 0,
+                    bool isArray = false) const;
+
     /** note: addFields always adds _id even if not specified */
     int addFields(BSONObj& from, std::set<std::string>& fields); /* returns n added */
 
@@ -268,6 +273,11 @@ public:
         slowish as builds a full new object
      */
     BSONObj removeField(StringData name) const;
+
+    /** update specified field and return a new object with the new fields.
+        slowish as builds a full new object
+     */
+    BSONObj updateField(StringData name, StringData value) const;
 
     /** returns # of top level fields in the object
        note: iterates to count the fields

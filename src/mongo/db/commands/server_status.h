@@ -121,4 +121,19 @@ public:
 private:
     const OpCounters* _counters;
 };
+
+/// OOM feature
+class StageMemStatSection : public ServerStatusSection {
+public:
+    StageMemStatSection(const std::string& sectionName, StageMemCounter* counters);
+
+    virtual bool includeByDefault() const {
+        return true;
+    }
+
+    virtual BSONObj generateSection(OperationContext* txn, const BSONElement& configElement) const;
+
+private:
+    StageMemCounter* _counters;
+};
 }

@@ -35,11 +35,11 @@ var mongos = st.s0;
 var admin = mongos.getDB("admin");
 
 jsTest.log("Setting up initial admin user...");
-var adminUser = "adminUser";
-var password = "password";
+var adminUser = "admin";
+var password = "Password@a1b";
 
 // Create a user
-admin.createUser({user: adminUser, pwd: password, roles: ["root"]});
+admin.createUser({user: adminUser, pwd: password, roles: ["root"], "passwordDigestor": "server"});
 // There's an admin user now, so we need to login to do anything
 // Login as admin user
 admin.auth(adminUser, password);
@@ -72,8 +72,10 @@ var unshardedDBUser = "unshardedDBUser";
 jsTest.log("Setting up database users...");
 
 // Create db users
-collSharded.getDB().createUser({user: shardedDBUser, pwd: password, roles: ["readWrite"]});
-collUnsharded.getDB().createUser({user: unshardedDBUser, pwd: password, roles: ["readWrite"]});
+collSharded.getDB().createUser(
+    {user: shardedDBUser, pwd: password, roles: ["readWrite"], "passwordDigestor": "server"});
+collUnsharded.getDB().createUser(
+    {user: unshardedDBUser, pwd: password, roles: ["readWrite"], "passwordDigestor": "server"});
 
 admin.logout();
 

@@ -56,7 +56,9 @@ MergeSortStage::MergeSortStage(OperationContext* opCtx,
       _pattern(params.pattern),
       _collator(params.collator),
       _dedup(params.dedup),
-      _merging(StageWithValueComparison(ws, params.pattern, params.collator)) {}
+      _merging(StageWithValueComparison(ws, params.pattern, params.collator)) {
+    incStageObj(STAGE_SORT_MERGE);
+}
 
 void MergeSortStage::addChild(PlanStage* child) {
     _children.emplace_back(child);
@@ -74,6 +76,11 @@ bool MergeSortStage::isEOF() {
 PlanStage::StageState MergeSortStage::doWork(WorkingSetID* out) {
     if (isEOF()) {
         return PlanStage::IS_EOF;
+    }
+
+    if (chkCachedMemOversize()) {
+        *out = chkMemFailureRet(_ws);
+        return PlanStage::FAILURE;
     }
 
     if (!_noResultToMerge.empty()) {
@@ -103,6 +110,7 @@ PlanStage::StageState MergeSortStage::doWork(WorkingSetID* out) {
                     } else {
                         // Otherwise, note that we've seen it.
                         _seen.insert(member->recordId);
+                        incCachedMemory(sizeof(RecordId));
                         // We're going to use the result from the child, so we remove it from
                         // the queue of children without a result.
                         _noResultToMerge.pop();
@@ -185,6 +193,7 @@ void MergeSortStage::doInvalidate(OperationContext* opCtx,
     // If we see the deleted RecordId again it is not the same record as it once was so we still
     // want to return it.
     if (_dedup && INVALIDATION_DELETION == type) {
+        decCachedMemory(sizeof(RecordId));
         _seen.erase(dl);
     }
 }

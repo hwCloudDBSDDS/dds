@@ -45,7 +45,7 @@ void printShardingVersionInfo(bool out) {
     auto&& vii = VersionInfoInterface::instance();
     if (out) {
         setPlainConsoleLogger();
-        log() << mongosVersion(vii);
+        log() << innerMongosVersion(vii);
         vii.logBuildInfo();
     } else {
         log() << mongosVersion(vii);

@@ -21,18 +21,30 @@
             return config.system.sessions.aggregate(pipeline);
         }
 
-        admin.createUser({user: 'admin', pwd: 'pass', roles: jsTest.adminUserRoles});
-        assert(admin.auth('admin', 'pass'));
+        admin.createUser({
+            user: 'admin',
+            pwd: 'Password@a1b',
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        });
+        assert(admin.auth('admin', 'Password@a1b'));
 
-        admin.createUser({user: 'user1', pwd: 'pass', roles: jsTest.basicUserRoles});
-        admin.createUser({user: 'user2', pwd: 'pass', roles: jsTest.basicUserRoles});
+        admin.createUser({
+            user: 'user1',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
+        admin.createUser({
+            user: 'user2',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
         admin.logout();
 
         // Fail when not logged in.
         assertErrorCode(config.system.sessions, pipeline, ErrorCodes.Unauthorized);
 
         // Start a new session and capture its sessionId.
-        assert(admin.auth('user1', 'pass'));
+        assert(admin.auth('user1', 'Password@a1b'));
         const myid = assert.commandWorked(admin.runCommand({startSession: 1})).id.id;
         assert(myid !== undefined);
 
@@ -56,7 +68,7 @@
         assertErrorCode(admin.system.collections, pipeline, ErrorCodes.InvalidNamespace);
 
         // Ensure that changing users hides the session everwhere.
-        assert(admin.auth('user2', 'pass'));
+        assert(admin.auth('user2', 'Password@a1b'));
         assert.eq(listSessions().toArray().length, 0);
 
         // Ensure users can't view either other's sessions.

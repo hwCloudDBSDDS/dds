@@ -22,8 +22,8 @@
 
     destAdminDB.createUser({
         user: 'admin',
-        pwd: 'password',
-        roles: jsTest.adminUserRoles
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
     });  // Turns on access control enforcement
 
     jsTestLog("Running copydb that should fail");
@@ -32,7 +32,7 @@
     printjson(res);
     assert.commandFailed(res);
 
-    destAdminDB.auth('admin', 'password');
+    destAdminDB.auth('admin', 'Password@a1b');
     assert.eq(0, destTestDB.foo.count());  // Be extra sure the copydb didn't secretly succeed.
 
     jsTestLog("Running copydb that should succeed");

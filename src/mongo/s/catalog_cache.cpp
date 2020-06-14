@@ -46,8 +46,14 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/timer.h"
 
+#include "mongo/bson/util/bson_extract.h"
+#include "mongo/db/server_options.h"
+
 namespace mongo {
 namespace {
+
+using std::string;
+using std::vector;
 
 // How many times to try refreshing the routing info if the set of chunks loaded from the config
 // server is found to be inconsistent.
@@ -410,6 +416,74 @@ void CatalogCache::report(BSONObjBuilder* builder) const {
     cacheStatsBuilder.append("numCollectionEntries", static_cast<long long>(numCollectionEntries));
 
     _stats.report(&cacheStatsBuilder);
+}
+
+void CatalogCache::auditDatabaseCache(OperationContext* opCtx) {
+    if (serverGlobalParams.isImplicitCreateCol) {
+        LOG(1) << "implicitCreateCol is allowed";
+        return;
+    }
+    LOG(1) << "implicitCreateCol is  not allowed.";
+    try {
+        std::vector<BSONObj> dbs;
+        const auto catalogClient = Grid::get(opCtx)->catalogClient();
+        auto status = catalogClient->getDatabases(opCtx, &dbs);
+        if (!status.isOK()) {
+
+            LOG(0) << "get dbs info from config failed.";
+            return;
+        }
+        stdx::lock_guard<stdx::mutex> lg(_mutex);
+        for (auto iter = _databases.begin(); iter != _databases.end();) {
+            // if the dbt need fresh, do not need compare cachedDbName with configedDbName
+            if (iter->second->needsRefresh) {
+                iter++;
+                continue;
+            }
+            std::string cachedDbName = iter->first;
+            const ShardId& primaryId = iter->second->dbt->getPrimary();
+            LOG(1) << "get a db:" << cachedDbName << " to check";
+            if (cachedDbName == "admin" || cachedDbName == "config") {
+                LOG(1) << "dbName:" << cachedDbName << " do not need to clear.";
+                ++iter;
+                continue;
+            }
+            bool find = false;
+            for (const auto& dbObj : dbs) {
+                std::string dbName;
+                Status status = bsonExtractStringField(dbObj, "db", &dbName);
+                if (!status.isOK()) {
+                    LOG(0) << "Extract db failed:" << dbName;
+                    continue;
+                }
+                std::string shard;
+                Status shardStatus = bsonExtractStringField(dbObj, "primary", &shard);
+                if (!shardStatus.isOK()) {
+                    LOG(0) << "Extract shardid failed:" << dbName;
+                    continue;
+                }
+                if (dbName == cachedDbName) {
+                    find = true;
+                    if (ShardId(shard) == primaryId) {  // same shardid ,it it ok
+                        LOG(1) << "same shard " << primaryId.toString();
+                        iter++;
+                    } else {  // different  shardid ,it it wrong ,need to clear this
+                        _databases.erase(iter++);
+                        LOG(0) << "primary shard for db not same, get redundace db:" << dbName
+                               << "origin shard: " << shard;
+                    }
+                    break;
+                }
+            }
+            if (!find) {  // not found , or data is wrong
+                _databases.erase(iter++);
+                LOG(0) << "db not existed, get redundace db:" << cachedDbName;
+            }
+            LOG(1) << "dbName:" << cachedDbName << "both existed in cache and config.";
+        }
+    } catch (const std::exception& e) {
+        LOG(0) << "Caught exception while audit cache item: " << e.what();
+    }
 }
 
 void CatalogCache::_scheduleDatabaseRefresh(WithLock,

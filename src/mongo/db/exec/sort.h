@@ -37,6 +37,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/query/index_bounds.h"
 #include "mongo/db/record_id.h"
+#include "mongo/db/stats/counters.h"
 #include "mongo/stdx/unordered_map.h"
 
 namespace mongo {
@@ -122,8 +123,10 @@ private:
         // RecordId to break sortKey ties.
         // See sorta.js.
         RecordId recordId;
+        size_t getObjSize() const {
+            return recordId.memUsageForSorter() + sortKey.objsize() + sizeof(wsid);
+        };
     };
-
     // Comparison object for data buffers (vector and set). Items are compared on (sortKey, loc).
     // This is also how the items are ordered in the indices. Keys are compared using
     // BSONObj::woCompare() with RecordId as a tie-breaker.
@@ -173,6 +176,7 @@ private:
     // We buffer a lot of data and we want to look it up by RecordId quickly upon invalidation.
     typedef stdx::unordered_map<RecordId, WorkingSetID, RecordId::Hasher> DataMap;
     DataMap _wsidByRecordId;
+    static const size_t _dataMapItemSize;
 
     SortStats _specificStats;
 

@@ -29,7 +29,11 @@
 
 #pragma once
 
+#include "mongo/base/counter.h"
+#include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/query/query_knobs.h"
+#include "mongo/db/query/stage_types.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/basic.h"
 #include "mongo/rpc/message.h"
@@ -123,4 +127,35 @@ private:
 };
 
 extern NetworkCounter networkCounter;
+
+// Provide a memory usage limitation for the stage object.
+class StageMemCounter {
+public:
+    StageMemCounter() {}
+    ~StageMemCounter() {}
+
+    void incCachedMemSize(const StageType& type, const size_t& size);
+    void decCachedMemSize(const StageType& type, const size_t& size);
+
+    void incMemObj(const StageType& type);
+    void decMemObj(const StageType& type);
+
+    bool chkCachedMemOversize(const size_t& cachedMemSize) const;
+    int64_t getTotalMemSize() const {
+        return _totalMem.get();
+    };
+
+    BSONObj getObj() const;
+
+private:
+    Counter64 _totalMem;
+
+    struct StageTypeCounter {
+        Counter64 _objectCount;
+        Counter64 _memSize;
+    };
+    StageTypeCounter _stageMap[STAGE_INVALID];
+};
+
+extern StageMemCounter globalStageMemCounters;
 }

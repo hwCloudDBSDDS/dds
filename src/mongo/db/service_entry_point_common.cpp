@@ -35,9 +35,12 @@
 #include "mongo/base/checked_cast.h"
 #include "mongo/bson/mutable/document.h"
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/impersonation_session.h"
+#include "mongo/db/auth/role_name.h"
+#include "mongo/db/auth/user_name.h"
 #include "mongo/db/client.h"
 #include "mongo/db/command_can_run_here.h"
 #include "mongo/db/commands.h"
@@ -74,6 +77,7 @@
 #include "mongo/db/session_catalog.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/stats/top.h"
+#include "mongo/logger/logger.h"
 #include "mongo/rpc/factory.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/message.h"
@@ -99,6 +103,11 @@ MONGO_FAIL_POINT_DEFINE(failCommand);
 MONGO_FAIL_POINT_DEFINE(rsStopGetMore);
 MONGO_FAIL_POINT_DEFINE(respondWithNotPrimaryInCommandDispatch);
 MONGO_FAIL_POINT_DEFINE(skipCheckingForNotMasterInCommandDispatch);
+
+
+namespace {
+const std::string CUSTOM_USER = "rwuser@admin";
+}  // namespace
 
 namespace {
 using logger::LogComponent;
@@ -647,7 +656,9 @@ void execCommandDatabase(OperationContext* opCtx,
         // see SERVER-18515 for details.
         rpc::readRequestMetadata(opCtx, request.body, command->requiresAuth());
         rpc::TrackingMetadata::get(opCtx).initWithOperName(command->getName());
-
+        if (request.body.hasField("customerCmd")) {
+            opCtx->setCustomerTxn();
+        }
         auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
         sessionOptions = initializeOperationSessionInfo(
             opCtx,
@@ -1086,6 +1097,64 @@ DbResponse receivedQuery(OperationContext* opCtx,
         audit::logQueryAuthzCheck(client, nss, q.query, status.code());
         uassertStatusOK(status);
 
+        /*****modify mongodb code begin*****/
+        if (!AuthorizationSession::get(opCtx->getClient())->shouldAllowLocalhost() &&
+            (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+             opCtx->isCustomerTxn()) &&
+            (!opCtx->isInBuildinMode())) {
+            bool flag = false;
+            BSONObj filter;
+            if (nss == std::string("admin.system.users")) {
+                std::set<std::string> buildinUsers;
+                UserName::getBuildinUsers(buildinUsers);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::USER_DB_FIELD_NAME << NE << "admin");
+                filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+            if (nss == std::string("admin.system.roles")) {
+                std::set<std::string> buildinRoles;
+                RoleName::getBuildinRoles(buildinRoles);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+
+            if (flag) {
+                std::string queryName = "query";
+                BSONElement queryField = q.query[queryName];
+                if (!queryField.isABSONObj()) {
+                    queryName = "$query";
+                    queryField = q.query[queryName];
+                }
+
+
+                if (queryField.isABSONObj()) {
+                    BSONObj subQuery = queryField.embeddedObject();
+                    BSONObj newSubQuery = BSON("$and" << BSON_ARRAY(subQuery << filter));
+
+                    // rebuild new query object
+                    BSONObjBuilder nb(64);
+                    nb.append(queryName, newSubQuery);
+                    BSONForEach(e, q.query) {
+                        if (!str::equals(queryName.c_str(), e.fieldName())) {
+                            nb.append(e);
+                        }
+                    }
+                    q.query = nb.obj();
+                } else {
+                    BSONObj query = BSON("$and" << BSON_ARRAY(q.query << filter));
+                    q.query = query;
+                }
+            }
+        }
+        /*****modify mongodb code end*****/
+
         dbResponse.exhaustNS = runQuery(opCtx, q, nss, dbResponse.response);
     } catch (const AssertionException& e) {
         // If we got a stale config, wait in case the operation is stuck in a critical section
@@ -1141,6 +1210,43 @@ void receivedInsert(OperationContext* opCtx, const NamespaceString& nsString, co
         audit::logInsertAuthzCheck(opCtx->getClient(), nsString, obj, status.code());
         uassertStatusOK(status);
     }
+
+    if (!AuthorizationSession::get(opCtx->getClient())->shouldAllowLocalhost() &&
+        (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+         opCtx->isCustomerTxn())) {
+        if (nsString == std::string("admin.system.users")) {
+            for (const auto& obj : insertOp.getDocuments()) {
+                std::string userName;
+                std::string dbName;
+                Status status1 = bsonExtractStringField(obj, "user", &userName);
+                Status status2 = bsonExtractStringField(obj, "db", &dbName);
+                if (status1.isOK() && status2.isOK() &&
+                    UserName::isBuildinUser(userName + "@" + dbName)) {
+                    Status status(ErrorCodes::Unauthorized,
+                                  "userName: " + userName +
+                                      " conflicted with builtin users within admin db.");
+                    uassertStatusOK(status);
+                }
+            }
+        }
+
+        if (nsString == std::string("admin.system.roles")) {
+            for (const auto& obj : insertOp.getDocuments()) {
+                std::string roleName;
+                std::string dbName;
+                Status status1 = bsonExtractStringField(obj, "role", &roleName);
+                Status status2 = bsonExtractStringField(obj, "db", &dbName);
+                if (status1.isOK() && status2.isOK() &&
+                    RoleName::isBuildinRoles(roleName + "@" + dbName)) {
+                    Status status(ErrorCodes::Unauthorized,
+                                  "roleName: " + roleName +
+                                      " conflicted with builtin roles within admin db.");
+                    uassertStatusOK(status);
+                }
+            }
+        }
+    }
+
     performInserts(opCtx, insertOp);
 }
 
@@ -1155,6 +1261,7 @@ void receivedUpdate(OperationContext* opCtx, const NamespaceString& nsString, co
                                              singleUpdate.getQ(),
                                              singleUpdate.getU(),
                                              singleUpdate.getUpsert());
+    /*****modify mongodb code start*****/
     audit::logUpdateAuthzCheck(opCtx->getClient(),
                                nsString,
                                singleUpdate.getQ(),
@@ -1164,6 +1271,44 @@ void receivedUpdate(OperationContext* opCtx, const NamespaceString& nsString, co
                                status.code());
     uassertStatusOK(status);
 
+    if (!AuthorizationSession::get(opCtx->getClient())->shouldAllowLocalhost() &&
+        (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+         opCtx->isCustomerTxn())) {
+
+        if (nsString == std::string("admin.system.users")) {
+            std::set<std::string> buildinUsers;
+            UserName::getBuildinUsers(buildinUsers);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            std::vector<write_ops::UpdateOpEntry> NewUpdates;
+            for (auto& SingleUpdate : updateOp.getUpdates()) {
+                auto NewsingleUpdate = SingleUpdate;
+                BSONObj q = BSON("$and" << BSON_ARRAY(NewsingleUpdate.getQ() << filter));
+                NewsingleUpdate.setQ(q);
+                NewUpdates.emplace_back(NewsingleUpdate);
+            }
+            updateOp.setUpdates(NewUpdates);
+        }
+        if (nsString == std::string("admin.system.roles")) {
+            std::set<std::string> buildinRoles;
+            RoleName::getBuildinRoles(buildinRoles);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            std::vector<write_ops::UpdateOpEntry> NewUpdates;
+            for (auto& SingleUpdate : updateOp.getUpdates()) {
+                auto NewsingleUpdate = SingleUpdate;
+                BSONObj q = BSON("$and" << BSON_ARRAY(NewsingleUpdate.getQ() << filter));
+                NewsingleUpdate.setQ(q);
+                NewUpdates.emplace_back(NewsingleUpdate);
+            }
+            updateOp.setUpdates(NewUpdates);
+        }
+    }
+    /*****modify mongodb code end*****/
     performUpdates(opCtx, updateOp);
 }
 
@@ -1174,9 +1319,47 @@ void receivedDelete(OperationContext* opCtx, const NamespaceString& nsString, co
 
     Status status = AuthorizationSession::get(opCtx->getClient())
                         ->checkAuthForDelete(opCtx, nsString, singleDelete.getQ());
+    /*****modify mongodb code start*****/
     audit::logDeleteAuthzCheck(opCtx->getClient(), nsString, singleDelete.getQ(), status.code());
     uassertStatusOK(status);
 
+    if (!AuthorizationSession::get(opCtx->getClient())->shouldAllowLocalhost() &&
+        (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+         opCtx->isCustomerTxn())) {
+        if (nsString == std::string("admin.system.users")) {
+            std::set<std::string> buildinUsersAndRwuser;
+            UserName::getBuildinUsersAndRwuser(buildinUsersAndRwuser);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsersAndRwuser);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            std::vector<write_ops::DeleteOpEntry> Newdeletes;
+            for (auto& SingleDelete : deleteOp.getDeletes()) {
+                auto NewsingleDelete = SingleDelete;
+                BSONObj q = BSON("$and" << BSON_ARRAY(NewsingleDelete.getQ() << filter));
+                NewsingleDelete.setQ(q);
+                Newdeletes.emplace_back(NewsingleDelete);
+            }
+            deleteOp.setDeletes(Newdeletes);
+        }
+        if (nsString == std::string("admin.system.roles")) {
+            std::set<std::string> buildinRoles;
+            RoleName::getBuildinRoles(buildinRoles);
+            BSONObj filterUsername =
+                BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+            BSONObj filterdbname = BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+            BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+            std::vector<write_ops::DeleteOpEntry> Newdeletes;
+            for (auto& SingleDelete : deleteOp.getDeletes()) {
+                auto NewsingleDelete = SingleDelete;
+                BSONObj q = BSON("$and" << BSON_ARRAY(NewsingleDelete.getQ() << filter));
+                NewsingleDelete.setQ(q);
+                Newdeletes.emplace_back(NewsingleDelete);
+            }
+            deleteOp.setDeletes(Newdeletes);
+        }
+    }
+    /*****modify mongodb code end*****/
     performDeletes(opCtx, deleteOp);
 }
 

@@ -36,6 +36,7 @@
 #include "mongo/db/server_options.h"
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/type_mongos.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/exit.h"
@@ -117,6 +118,8 @@ void ShardingUptimeReporter::startPeriodicThread() {
                 if (!status.isOK()) {
                     warning() << "failed to refresh mongos settings" << causedBy(status);
                 }
+
+                Grid::get(opCtx.get())->catalogCache()->auditDatabaseCache(opCtx.get());
             }
 
             MONGO_IDLE_THREAD_BLOCK;

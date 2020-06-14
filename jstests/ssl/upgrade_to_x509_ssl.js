@@ -12,7 +12,7 @@
 
 function authAllNodes() {
     for (var n = 0; n < rst.nodes.length; n++) {
-        var status = rst.nodes[n].getDB("admin").auth("root", "pwd");
+        var status = rst.nodes[n].getDB("admin").auth("admin", "Password@a1b");
         assert.eq(status, 1);
     }
 }
@@ -56,8 +56,10 @@ rst.initiateWithAnyNodeAsPrimary(Object.extend(
 // Connect to master and do some basic operations
 var rstConn1 = rst.getPrimary();
 print("Performing basic operations on master.");
-rstConn1.getDB("admin").createUser({user: "root", pwd: "pwd", roles: ["root"]}, {w: NUM_NODES});
-rstConn1.getDB("admin").auth("root", "pwd");
+rstConn1.getDB("admin").createUser(
+    {user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"},
+    {w: NUM_NODES});
+rstConn1.getDB("admin").auth("admin", "Password@a1b");
 rstConn1.getDB("test").a.insert({a: 1, str: "TESTTESTTEST"});
 rstConn1.getDB("test").a.insert({a: 1, str: "WOOPWOOPWOOPWOOPWOOP"});
 assert.eq(2, rstConn1.getDB("test").a.count(), "Error interacting with replSet");
@@ -73,8 +75,8 @@ rst.upgradeSet({
     keyFile: KEYFILE,
     sslCAFile: CA_CERT
 },
-               "root",
-               "pwd");
+               "admin",
+               "Password@a1b");
 // The upgradeSet call restarts the nodes so we need to reauthenticate.
 authAllNodes();
 var rstConn3 = rst.getPrimary();
@@ -94,8 +96,8 @@ rst.upgradeSet({
     keyFile: KEYFILE,
     sslCAFile: CA_CERT
 },
-               "root",
-               "pwd");
+               "admin",
+               "Password@a1b");
 authAllNodes();
 var rstConn4 = rst.getPrimary();
 rstConn4.getDB("test").a.insert({a: 4, str: "TESTTESTTEST"});

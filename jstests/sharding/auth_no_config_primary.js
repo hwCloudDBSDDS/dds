@@ -18,8 +18,9 @@ TestData.skipCheckDBHashes = true;
     var st = new ShardingTest(
         {shards: 1, other: {keyFile: 'jstests/libs/key1', shardAsReplicaSet: false}});
 
-    st.s.getDB('admin').createUser({user: 'root', pwd: 'pass', roles: ['root']});
-    st.s.getDB('admin').auth('root', 'pass');
+    st.s.getDB('admin').createUser(
+        {user: 'admin', pwd: 'Password@a1b', roles: ['root'], "passwordDigestor": "server"});
+    st.s.getDB('admin').auth('admin', 'Password@a1b');
     var testDB = st.s.getDB('test');
     testDB.user.insert({hello: 'world'});
 
@@ -34,7 +35,7 @@ TestData.skipCheckDBHashes = true;
     assert.commandFailedWithCode(newConn.getDB('test').runCommand({find: 'user'}),
                                  ErrorCodes.Unauthorized);
 
-    newConn.getDB('admin').auth('root', 'pass');
+    newConn.getDB('admin').auth('admin', 'Password@a1b');
 
     var res = newConn.getDB('test').user.findOne();
     assert.neq(null, res);
@@ -47,7 +48,7 @@ TestData.skipCheckDBHashes = true;
     assert.commandFailedWithCode(otherMongos.getDB('test').runCommand({find: 'user'}),
                                  ErrorCodes.Unauthorized);
 
-    otherMongos.getDB('admin').auth('root', 'pass');
+    otherMongos.getDB('admin').auth('admin', 'Password@a1b');
 
     var res = otherMongos.getDB('test').user.findOne();
     assert.neq(null, res);

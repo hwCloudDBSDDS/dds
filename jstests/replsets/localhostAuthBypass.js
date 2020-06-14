@@ -6,13 +6,17 @@
 var replSetName = "replsets_server-6591";
 var keyfile = "jstests/libs/key1";
 var username = "foo";
-var password = "bar";
+var password = "Password@a1b";
 
 load("jstests/libs/host_ipaddr.js");
 
 var createUser = function(mongo) {
     print("============ adding a user.");
-    mongo.getDB("admin").createUser({user: username, pwd: password, roles: jsTest.adminUserRoles});
+    mongo.getDB("admin").createUser({
+        user: username,
+        pwd: password,
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
 };
 
 var assertCannotRunCommands = function(mongo, isPrimary) {
@@ -217,8 +221,11 @@ var runNonlocalTest = function(ipAddr) {
     });
 
     assert.throws(function() {
-        mongo.getDB("admin").createUser(
-            {user: username, pwd: password, roles: jsTest.adminUserRoles});
+        mongo.getDB("admin").createUser({
+            user: username,
+            pwd: password,
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        });
     });
 
     shutdown(rs);

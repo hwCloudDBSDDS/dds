@@ -822,7 +822,9 @@ void AuthorizationSessionImpl::_refreshUserInfoAsNeeded(OperationContext* opCtx)
             UserName name = user->getName();
             User* updatedUser;
 
-            Status status = authMan.acquireUser(opCtx, name, &updatedUser);
+            Status status =
+                authMan.acquireUserForConsiderToken(opCtx, name, user->getToken(), &updatedUser);
+
             switch (status.code()) {
                 case ErrorCodes::OK: {
 
@@ -969,6 +971,13 @@ bool AuthorizationSessionImpl::isAuthorizedForAnyActionOnResource(const Resource
 bool AuthorizationSessionImpl::_isAuthorizedForPrivilege(const Privilege& privilege) {
     const ResourcePattern& target(privilege.getResourcePattern());
 
+    if (cc().isCustomerConnection() && isAuthWithCustomerOrNoAuthUser()) {
+        if (target.isExactNamespacePattern() &&
+            AuthorizationManager::isReservedCollectionForCustomer(target.ns().ns())) {
+            return false;
+        }
+    }
+
     ResourcePattern resourceSearchList[resourceSearchListCapacity];
     const int resourceSearchListLength = buildResourceSearchList(target, resourceSearchList);
 
@@ -1078,6 +1087,39 @@ void AuthorizationSessionImpl::clearImpersonatedUserData() {
 
 bool AuthorizationSessionImpl::isImpersonating() const {
     return _impersonationFlag;
+}
+
+bool AuthorizationSessionImpl::isAuthWithBuiltinUser() const {
+    UserNameIterator it = _authenticatedUsers.getNames();
+    while (it.more()) {
+        const UserName& user = it.next();
+        if (user.isBuildinUser() || user == internalSecurity.user->getName()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AuthorizationSessionImpl::isAuthWithCustomerOrNoAuthUser() const {
+    if (isAuthWithBuiltinUser() || _authenticatedUsers.isEmpyt()) {
+        return false;
+    }
+    return true;
+}
+
+bool AuthorizationSessionImpl::isAuthWithCustomer() const {
+    if (_authenticatedUsers.isEmpyt()) {
+        return false;
+    }
+    return !isAuthWithBuiltinUser();
+}
+
+bool AuthorizationSessionImpl::isNoAuthUser() const {
+    return _authenticatedUsers.isEmpyt();
+}
+
+bool AuthorizationSessionImpl::shouldAllowLocalhost() const {
+    return _externalState->shouldAllowLocalhost();
 }
 
 auto AuthorizationSessionImpl::checkCursorSessionPrivilege(

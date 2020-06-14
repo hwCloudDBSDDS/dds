@@ -131,6 +131,11 @@ public:
                                       const BSONObj& cmdObj,
                                       BSONObjBuilder* result) override;
 
+    bool runUserManagementReadCommandWithCheckopCtx(OperationContext* opCtx,
+                                                    const std::string& dbname,
+                                                    const BSONObj& cmdObj,
+                                                    BSONObjBuilder* result) override;
+
     Status applyChunkOpsDeprecated(OperationContext* opCtx,
                                    const BSONArray& updateOps,
                                    const BSONArray& preCondition,
@@ -172,6 +177,7 @@ public:
         StringData purpose,
         const LogicalTime& newerThanThis,
         repl::ReadConcernLevel readConcernLevel) override;
+    Status getDatabases(OperationContext* opCtx, std::vector<BSONObj>* dbs) override;
 
 private:
     /**

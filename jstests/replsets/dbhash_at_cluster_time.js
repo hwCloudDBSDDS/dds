@@ -19,11 +19,15 @@
     const db = session.getDatabase("test");
     let txnNumber = 0;
 
+    var fpName = "WTPreserveSnapshotHistoryIndefinitely";
+    if (jsTest.options().storageEngine == "rocksdb") {
+        fpName = "RocksPreserveSnapshotHistoryIndefinitely";
+    }
     // We also prevent all nodes in the replica set from advancing oldest_timestamp. This ensures
     // that the snapshot associated with 'clusterTime' is retained for the duration of this test.
     rst.nodes.forEach(conn => {
         assert.commandWorked(conn.adminCommand({
-            configureFailPoint: "WTPreserveSnapshotHistoryIndefinitely",
+            configureFailPoint: fpName,
             mode: "alwaysOn",
         }));
     });

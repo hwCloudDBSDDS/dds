@@ -12,20 +12,21 @@ function setup_users(granter) {
     var admindb = granter.getSiblingDB("admin");
     admindb.runCommand({
         createUser: "admin",
-        pwd: "admin",
-        roles: [
-            "userAdminAnyDatabase",
-            "dbAdminAnyDatabase",
-            "clusterAdmin",
-            "readWriteAnyDatabase"
-        ]
+        pwd: "Password@a1b",
+        roles:
+            ["userAdminAnyDatabase", "dbAdminAnyDatabase", "clusterAdmin", "readWriteAnyDatabase"],
+        "digestPassword": true
     });
 
-    admindb.auth("admin", "admin");
+    admindb.auth("admin", "Password@a1b");
 
     printjson(admindb.runCommand({createRole: "test_role", privileges: [], roles: []}));
 
-    printjson(admindb.runCommand({createUser: "test_user", pwd: "password", roles: ["test_role"]}));
+    printjson(admindb.runCommand({
+        createUser: "test_user",
+        pwd: "Password@a1b",
+        roles: ["test_role"], "digestPassword": true
+    }));
 }
 
 function setup_dbs_and_cols(db) {
@@ -47,7 +48,7 @@ function setup_dbs_and_cols(db) {
 function grant_privileges(granter, privileges) {
     var admindb = granter.getSiblingDB("admin");
 
-    admindb.auth("admin", "admin");
+    admindb.auth("admin", "Password@a1b");
 
     var result = admindb.runCommand({
         grantPrivilegesToRole: "test_role",
@@ -63,7 +64,7 @@ function grant_privileges(granter, privileges) {
 function revoke_privileges(granter, privileges) {
     var admindb = granter.getSiblingDB("admin");
 
-    admindb.auth("admin", "admin");
+    admindb.auth("admin", "Password@a1b");
 
     var result = admindb.runCommand({
         revokePrivilegesFromRole: "test_role",
@@ -78,7 +79,7 @@ function revoke_privileges(granter, privileges) {
 
 function invalidateUserCache(verifier) {
     var admindb = verifier.getSiblingDB("admin");
-    admindb.auth('admin', 'admin');
+    admindb.auth('admin', 'Password@a1b');
     admindb.runCommand("invalidateUserCache");
     admindb.logout();
 }
@@ -89,7 +90,7 @@ function run_test(name, granter, verifier, privileges, collections) {
     grant_privileges(granter, privileges);
     invalidateUserCache(verifier);
 
-    verifier.getSiblingDB('admin').auth("test_user", "password");
+    verifier.getSiblingDB('admin').auth("test_user", "Password@a1b");
 
     for (var key in collections) {
         var parts = key.split(".");

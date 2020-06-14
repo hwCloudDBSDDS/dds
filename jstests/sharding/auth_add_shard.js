@@ -11,7 +11,7 @@
     }
 
     // admin user object
-    var adminUser = {db: "admin", username: "foo", password: "bar"};
+    var adminUser = {db: "admin", username: "admin", password: "Password@a1b"};
 
     // set up a 2 shard cluster with keyfile
     // TODO: Remove 'shardAsReplicaSet: false' when SERVER-32672 is fixed.
@@ -28,7 +28,7 @@
     mongos.getDB(adminUser.db).createUser({
         user: adminUser.username,
         pwd: adminUser.password,
-        roles: jsTest.adminUserRoles
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
     });
 
     // login as admin user

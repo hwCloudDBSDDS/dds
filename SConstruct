@@ -766,6 +766,10 @@ env_vars.Add('MONGO_VERSION',
     default=version_data['version'],
     validator=validate_mongo_version)
 
+env_vars.Add('INNER_MONGO_VERSION',
+    help='Sets the version string for MongoDB',
+    default=version_data['version'])
+
 env_vars.Add('MONGO_GIT_HASH',
     help='Sets the githash to store in the MongoDB version information',
     default=version_data['githash'])

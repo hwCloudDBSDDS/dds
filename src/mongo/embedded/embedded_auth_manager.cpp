@@ -105,6 +105,13 @@ public:
         UASSERT_NOT_IMPLEMENTED;
     }
 
+    Status acquireUserForConsiderToken(OperationContext* opCtx,
+                                       const UserName& userName,
+                                       int64_t userToken,
+                                       User** user) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
     void invalidateUserByName(const UserName& user) override {
         UASSERT_NOT_IMPLEMENTED;
     }

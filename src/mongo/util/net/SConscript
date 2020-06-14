@@ -12,9 +12,13 @@ env.Library(
         "cidr.cpp",
         "hostandport.cpp",
         "hostname_canonicalization.cpp",
+        "whitelist.cpp",
         "sockaddr.cpp",
         "socket_exception.cpp",
         "socket_utils.cpp",
+        "externalconfig.cpp",
+        "publicip_privateiprange.cpp",
+        "privateip_privateiprange.cpp",
         env.Idlc('hostandport.idl')[0],
     ],
     LIBDEPS=[

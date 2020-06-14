@@ -8,8 +8,9 @@ function testSSLTransition(oldMode, newMode, shouldSucceed) {
         MongoRunner.runMongod({sslMode: oldMode, sslPEMKeyFile: SERVER_CERT, sslCAFile: CA_CERT});
 
     var adminDB = conn.getDB("admin");
-    adminDB.createUser({user: "root", pwd: "pwd", roles: ['root']});
-    adminDB.auth("root", "pwd");
+    adminDB.createUser(
+        {user: "admin", pwd: "Password@a1b", roles: ['root'], "passwordDigestor": "server"});
+    adminDB.auth("admin", "Password@a1b");
     var res = adminDB.runCommand({"setParameter": 1, "sslMode": newMode});
 
     assert(res["ok"] == shouldSucceed, tojson(res));
@@ -38,8 +39,9 @@ function testAuthModeTransition(oldMode, newMode, sslMode, shouldSucceed) {
     });
 
     var adminDB = conn.getDB("admin");
-    adminDB.createUser({user: "root", pwd: "pwd", roles: ['root']});
-    adminDB.auth("root", "pwd");
+    adminDB.createUser(
+        {user: "admin", pwd: "Password@a1b", roles: ['root'], "passwordDigestor": "server"});
+    adminDB.auth("admin", "Password@a1b");
     var res = adminDB.runCommand({"setParameter": 1, "clusterAuthMode": newMode});
 
     assert(res["ok"] == shouldSucceed, tojson(res));

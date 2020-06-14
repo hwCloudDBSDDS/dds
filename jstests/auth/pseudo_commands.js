@@ -8,16 +8,18 @@
 function runTest(conn) {
     var authzErrorCode = 13;
 
-    conn.getDB('admin').createUser({user: 'admin', pwd: 'pwd', roles: ['root']});
+    conn.getDB('admin').createUser(
+        {user: 'normal_user', pwd: 'Password@a1b', roles: ['root'], "passwordDigestor": "server"});
 
     var adminConn = new Mongo(conn.host);
-    adminConn.getDB('admin').auth('admin', 'pwd');
+    adminConn.getDB('admin').auth('normal_user', 'Password@a1b');
     var admin = adminConn.getDB('admin');
     admin.createRole({role: 'myRole', roles: [], privileges: []});
-    admin.createUser({user: 'spencer', pwd: 'pwd', roles: ['myRole']});
+    admin.createUser(
+        {user: 'spencer', pwd: 'Password@a1b', roles: ['myRole'], "passwordDigestor": "server"});
 
     var db = conn.getDB('admin');
-    db.auth('spencer', 'pwd');
+    db.auth('spencer', 'Password@a1b');
 
     /**
      * Tests that a single operation has the proper authorization.  The operation is run by invoking

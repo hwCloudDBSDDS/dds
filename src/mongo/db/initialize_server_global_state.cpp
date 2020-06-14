@@ -53,12 +53,14 @@
 #include "mongo/db/auth/security_key.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
+#include "mongo/logger/audit_event_utf8_encoder.h"
 #include "mongo/logger/console_appender.h"
 #include "mongo/logger/logger.h"
 #include "mongo/logger/message_event.h"
 #include "mongo/logger/message_event_utf8_encoder.h"
 #include "mongo/logger/ramlog.h"
 #include "mongo/logger/rotatable_file_appender.h"
+#include "mongo/logger/rotatable_file_async_appender.h"
 #include "mongo/logger/rotatable_file_manager.h"
 #include "mongo/logger/rotatable_file_writer.h"
 #include "mongo/logger/syslog_appender.h"
@@ -223,6 +225,11 @@ MONGO_INITIALIZER_GENERAL(ServerLogRedirection,
     using logger::MessageLogDomain;
     using logger::RotatableFileAppender;
     using logger::StatusWithRotatableFileWriter;
+    using logger::AuditEventEphemeral;
+    using logger::AuditEventJSONEncoder;
+    using logger::AuditEventHWDDSEncoder;
+    using logger::AuditLogDomain;
+    using logger::RotatableFileAsyncAppender;
 
     // Hook up this global into our logging encoder
     MessageEventDetailsEncoder::setMaxLogSizeKBSource(maxLogSizeKB);
@@ -311,6 +318,48 @@ MONGO_INITIALIZER_GENERAL(ServerLogRedirection,
             Status status = logger::RotatableFileWriter::Use(writer.getValue()).status();
             if (!status.isOK())
                 return status;
+        }
+        if (serverGlobalParams.auditLogpath.empty()) {
+            boost::filesystem::path p(serverGlobalParams.logpath);
+            serverGlobalParams.auditLogpath =
+                p.parent_path().string() + "/audit_" + p.filename().string();
+        }
+        absoluteLogpath =
+            boost::filesystem::absolute(serverGlobalParams.auditLogpath, serverGlobalParams.cwd)
+                .string();
+
+        try {
+            exists = boost::filesystem::exists(absoluteLogpath);
+        } catch (boost::filesystem::filesystem_error& e) {
+            return Status(ErrorCodes::FileNotOpen,
+                          mongoutils::str::stream() << "Failed probe for \"" << absoluteLogpath
+                                                    << "\": "
+                                                    << e.code().message());
+        }
+
+        if (exists) {
+            if (boost::filesystem::is_directory(absoluteLogpath)) {
+                return Status(
+                    ErrorCodes::FileNotOpen,
+                    mongoutils::str::stream() << "auditLogpath \"" << absoluteLogpath
+                                              << "\" should name a file, not a directory.");
+            }
+        }
+        StatusWithRotatableFileWriter auditWriter =
+            logger::globalRotatableFileManager()->openFile(absoluteLogpath, true);
+        if (!auditWriter.isOK()) {
+            return auditWriter.getStatus();
+        }
+
+        manager->getGlobalAuditDomain()->clearAppenders();
+        if (serverGlobalParams.auditLogFormat == "JSON") {
+            manager->getGlobalAuditDomain()->attachAppender(
+                AuditLogDomain::AppenderAutoPtr(new RotatableFileAsyncAppender<AuditEventEphemeral>(
+                    new AuditEventJSONEncoder, auditWriter.getValue())));
+        } else {
+            manager->getGlobalAuditDomain()->attachAppender(
+                AuditLogDomain::AppenderAutoPtr(new RotatableFileAsyncAppender<AuditEventEphemeral>(
+                    new AuditEventHWDDSEncoder, auditWriter.getValue())));
         }
     } else {
         logger::globalLogManager()

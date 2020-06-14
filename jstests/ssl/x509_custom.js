@@ -33,8 +33,9 @@
             'C=US,ST=New York,L=New York City,O=MongoDB,OU=KernelUser,CN=client,1.2.3.56=RandoValue,1.2.3.45=Value\\,Rando';
 
         const admin = conn.getDB('admin');
-        admin.createUser({user: "admin", pwd: "admin", roles: ["root"]});
-        admin.auth('admin', 'admin');
+        admin.createUser(
+            {user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
+        admin.auth('admin', 'Password@a1b');
 
         const external = conn.getDB('$external');
         external.createUser({user: NAME, roles: [{'role': 'readWrite', 'db': 'test'}]});

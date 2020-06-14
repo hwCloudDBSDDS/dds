@@ -93,6 +93,11 @@ public:
                                       const BSONObj& cmdObj,
                                       BSONObjBuilder* result) override;
 
+    bool runUserManagementReadCommandWithCheckopCtx(OperationContext* opCtx,
+                                                    const std::string& dbname,
+                                                    const BSONObj& cmdObj,
+                                                    BSONObjBuilder* result) override;
+
     Status applyChunkOpsDeprecated(OperationContext* opCtx,
                                    const BSONArray& updateOps,
                                    const BSONArray& preCondition,

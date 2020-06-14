@@ -51,11 +51,23 @@ var roles = [
  *   on test failure.
  */
 function testProperAuthorization(conn, t, testcase, r) {
+    var adminDb = conn.getDB(adminDbName);
+    assert(adminDb.auth("admin", "Password@a1b"));
+    adminDb.dropUser("monitor") adminDb.createUser(
+        {user: "monitor", pwd: "Password@a1b", roles: [], "passwordDigestor": "server"});
+    if (r.dbname == "admin") {
+        adminDb.grantRolesToUser("monitor", [r.role])
+    } else {
+        adminDb.grantRolesToUser("monitor", [{"role": r.role, "db": r.dbname}])
+    }
+    adminDb.logout();
+
     var out = "";
 
     var runOnDb = conn.getDB(testcase.runOnDb);
     var state = authCommandsLib.setup(conn, t, runOnDb);
-    assert(r.db.auth("user|" + r.key, "password"));
+    adminDb = conn.getDB(adminDbName);
+    assert(adminDb.auth("monitor", "Password@a1b"));
     authCommandsLib.authenticatedSetup(t, runOnDb);
     var command = t.command;
     if (typeof(command) === "function") {
@@ -85,7 +97,8 @@ function testProperAuthorization(conn, t, testcase, r) {
         }
     }
 
-    r.db.logout();
+    // r.db.logout();
+    adminDb.logout();
     authCommandsLib.teardown(conn, t, runOnDb);
     return out;
 }
@@ -111,13 +124,14 @@ function runOneTest(conn, t) {
 
 function createUsers(conn) {
     var adminDb = conn.getDB(adminDbName);
-    adminDb.createUser({user: "admin", pwd: "password", roles: ["__system"]});
+    adminDb.createUser(
+        {user: "admin", pwd: "Password@a1b", roles: ["__system"], "passwordDigestor": "server"});
+    assert(adminDb.auth("admin", "Password@a1b"));
 
-    assert(adminDb.auth("admin", "password"));
     for (var i = 0; i < roles.length; i++) {
         r = roles[i];
         r.db = conn.getDB(r.dbname);
-        r.db.createUser({user: "user|" + r.key, pwd: "password", roles: [r.role]});
+        //       r.db.createUser({user: "user|" + r.key, pwd: "password", roles: [r.role]});
     }
     adminDb.logout();
 }

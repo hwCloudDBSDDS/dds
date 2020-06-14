@@ -204,6 +204,18 @@ BSONObj OpCounterServerStatusSection::generateSection(OperationContext* opCtx,
 
 OpCounterServerStatusSection globalOpCounterServerStatusSection("opcounters", &globalOpCounters);
 
+/// OOM feature
+StageMemStatSection::StageMemStatSection(const string& sectionName, StageMemCounter* counters)
+    : ServerStatusSection(sectionName), _counters(counters) {}
+
+BSONObj StageMemStatSection::generateSection(OperationContext* txn,
+                                             const BSONElement& configElement) const {
+    return _counters->getObj();
+}
+
+extern StageMemCounter globalStageMemCounters;
+
+StageMemStatSection globalStageMemStat("StageMemCounters", &globalStageMemCounters);
 
 namespace {
 

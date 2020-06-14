@@ -16,11 +16,18 @@ var dumpRestoreAuth3 = function(backup_role, restore_role) {
     var db = mongod.getDB("foo");
 
     jsTestLog("Creating Admin user & initial data");
-    admindb.createUser({user: 'root', pwd: 'pass', roles: ['root']});
-    admindb.createUser({user: 'backup', pwd: 'pass', roles: ['backup']});
-    admindb.createUser({user: 'restore', pwd: 'pass', roles: ['restore']});
+    admindb.createUser(
+        {user: 'root', pwd: 'Password@a1b', roles: ['root'], "passwordDigestor": "server"});
+    admindb.createUser(
+        {user: 'backup', pwd: 'Password@a1b', roles: ['backup'], "passwordDigestor": "server"});
+    admindb.createUser(
+        {user: 'restore', pwd: 'Password@a1b', roles: ['restore'], "passwordDigestor": "server"});
     admindb.createRole({role: "dummyRole", roles: [], privileges: []});
-    db.createUser({user: 'user', pwd: 'pass', roles: jsTest.basicUserRoles});
+    db.createUser({
+        user: 'user',
+        pwd: 'Password@a1b',
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+    });
     db.createRole({role: 'role', roles: [], privileges: []});
     var backupActions = ['find'];
     db.createRole({
@@ -28,7 +35,11 @@ var dumpRestoreAuth3 = function(backup_role, restore_role) {
         privileges: [{resource: {db: 'foo', collection: 'chester'}, actions: backupActions}],
         roles: []
     });
-    db.createUser({user: 'backupFooChester', pwd: 'pass', roles: ['backupFooChester']});
+    db.createUser({
+        user: 'backupFooChester',
+        pwd: 'Password@a1b',
+        roles: ['backupFooChester'], "passwordDigestor": "server"
+    });
 
     var userCount = db.getUsers().length;
     var rolesCount = db.getRoles().length;
@@ -76,7 +87,11 @@ var dumpRestoreAuth3 = function(backup_role, restore_role) {
     assert.eq(0, db.getRoles().length, "Restore created roles somehow");
 
     // Re-create user data
-    db.createUser({user: 'user', pwd: 'password', roles: jsTest.basicUserRoles});
+    db.createUser({
+        user: 'user',
+        pwd: 'Password@a1b',
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+    });
     db.createRole({role: 'role', roles: [], privileges: []});
     userCount = 1;
     rolesCount = 1;
@@ -130,7 +145,11 @@ var dumpRestoreAuth3 = function(backup_role, restore_role) {
 
     jsTestLog("Make modifications to user data that should be overridden by the restore");
     db.dropUser('user');
-    db.createUser({user: 'user2', pwd: 'password2', roles: jsTest.basicUserRoles});
+    db.createUser({
+        user: 'user2',
+        pwd: 'Password@a1b5',
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+    });
     db.dropRole('role');
     db.createRole({role: 'role2', roles: [], privileges: []});
 
@@ -162,15 +181,18 @@ var dumpRestoreAuth3 = function(backup_role, restore_role) {
 
     jsTestLog("Dump just the admin database.  User data should be dumped by default");
     // Make a user in another database to make sure it is properly captured
-    db.getSiblingDB('bar').createUser({user: "user", pwd: 'pwd', roles: []});
-    db.getSiblingDB('admin').createUser({user: "user", pwd: 'pwd', roles: []});
+    db.getSiblingDB('bar').createUser(
+        {user: "user", pwd: 'Password@a1b', roles: [], "passwordDigestor": "server"});
+    db.getSiblingDB('admin').createUser(
+        {user: "user", pwd: 'Password@a1b', roles: [], "passwordDigestor": "server"});
     adminUsersCount += 1;
     runTool("mongodump", mongod, {out: dumpDir, db: "admin"});
     db = mongod.getDB('foo');
 
     // Change user data a bit.
     db.dropAllUsers();
-    db.getSiblingDB('bar').createUser({user: "user2", pwd: 'pwd', roles: []});
+    db.getSiblingDB('bar').createUser(
+        {user: "user2", pwd: 'Password@a1b', roles: [], "passwordDigestor": "server"});
     db.getSiblingDB('admin').dropAllUsers();
 
     jsTestLog("Restore just the admin database. User data should be restored by default");

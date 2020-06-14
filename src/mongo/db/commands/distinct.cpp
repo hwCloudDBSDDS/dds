@@ -36,7 +36,11 @@
 #include <vector>
 
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/role_name.h"
+#include "mongo/db/auth/user_name.h"
 #include "mongo/db/bson/dotted_path_support.h"
+#include "mongo/db/client.h"
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"

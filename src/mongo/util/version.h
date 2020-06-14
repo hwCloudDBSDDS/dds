@@ -160,6 +160,11 @@ public:
      */
     void logBuildInfo() const;
 
+    /**
+     * Returns a string representation of INNER_MONGO_VERSION.
+     */
+    virtual StringData innerVersion() const noexcept = 0;
+
 protected:
     constexpr VersionInfoInterface() = default;
 };
@@ -178,6 +183,16 @@ std::string mongosVersion(const VersionInfoInterface& provider);
  * Returns a pretty string describing the current mongod version.
  */
 std::string mongodVersion(const VersionInfoInterface& provider);
+
+/**
+ * Returns a pretty string describing the current mongod inner version.
+ */
+std::string innerMongodVersion(const VersionInfoInterface& provider);
+
+/**
+ * Returns a pretty string describing the current mongos inner version.
+ */
+std::string innerMongosVersion(const VersionInfoInterface& provider);
 
 }  // namespace mongo
 

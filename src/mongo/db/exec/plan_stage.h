@@ -33,7 +33,9 @@
 
 #include "mongo/db/exec/plan_stats.h"
 #include "mongo/db/exec/working_set.h"
+#include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/invalidation_type.h"
+#include "mongo/db/stats/counters.h"
 
 namespace mongo {
 
@@ -106,7 +108,7 @@ class RecordId;
 class PlanStage {
 public:
     PlanStage(const char* typeName, OperationContext* opCtx)
-        : _commonStats(typeName), _opCtx(opCtx) {}
+        : _cachedMemSize(0), _commonStats(typeName), _opCtx(opCtx) {}
 
     virtual ~PlanStage() {}
 
@@ -340,6 +342,26 @@ public:
      * use the getStats(...) method above.
      */
     virtual const SpecificStats* getSpecificStats() const = 0;
+
+    /**
+     * Check the stage obj memory exceed the threshold .
+     * By default it return false.
+     * Return true only for certain stages which member variables memory usage related to the total
+     * record number.
+     */
+    virtual bool chkCachedMemOversize() const;
+    WorkingSetID chkMemFailureRet(WorkingSet* ws) const;
+
+    void incCachedMemory(const size_t& memSize);
+    void decCachedMemory(const size_t& memSize);
+
+    void incStageObj(const StageType& type);
+    void decStageObjAndMem(const StageType& type);
+
+    /**
+     *The memory size that reported to the globalStageMemCounters, release it the dtor.
+     */
+    size_t _cachedMemSize;
 
 protected:
     /**

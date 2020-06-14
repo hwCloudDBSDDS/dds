@@ -17,9 +17,10 @@
         price: 25,
         items: [{sku: "mmm", qty: 5, price: 2.5}, {sku: "nnn", qty: 5, price: 2.5}]
     }));
-
+    col.createIndex({"_id": 1});
     var mapFunction = "function() {emit(this._id, this.price);}";
     var reduceFunction = "function(keyCustId, valuesPrices) {return Array.sum(valuesPrices);}";
+    db.map_reduce_example.createIndex({"_id": 1});
     assert.commandWorked(col.mapReduce(mapFunction, reduceFunction, {out: "map_reduce_example"}));
 
     // Provided strings may end with semicolons and/or whitespace

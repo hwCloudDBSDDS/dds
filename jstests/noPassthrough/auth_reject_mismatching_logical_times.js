@@ -39,8 +39,12 @@
     });
 
     // Create admin user and authenticate as them.
-    st.s.getDB("admin").createUser({user: "foo", pwd: "bar", roles: jsTest.adminUserRoles});
-    st.s.getDB("admin").auth("foo", "bar");
+    st.s.getDB("admin").createUser({
+        user: "admin",
+        pwd: "Password@a1b",
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
+    st.s.getDB("admin").auth("admin", "Password@a1b");
 
     // Add shard with auth enabled.
     const rst = new ReplSetTest({nodes: 2});

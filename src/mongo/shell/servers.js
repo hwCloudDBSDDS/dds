@@ -663,7 +663,9 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             opts.replSet = null;
         if (opts.arbiter)
             opts.oplogSize = 1;
-
+        if (MongoRunner.laterThan(opts.binVersion, "3.2.18.1") && !opts.adminWhiteListPath) {
+            opts.adminWhiteListPath = "/tmp/adminWhiteList";
+        }
         return opts;
     };
 
@@ -710,6 +712,10 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             opts.binVersion = MongoRunner.getBinVersionFor(testOptions.mongosBinVersion);
         }
 
+        // should be 3.2.18.1 later or 3.4.14.1 later
+        if (MongoRunner.laterThan(opts.binVersion, "3.2.18.1") && !opts.adminWhiteListPath) {
+            opts.adminWhiteListPath = "/tmp/adminWhiteList";
+        }
         // If the mongos is being restarted with a newer version, make sure we remove any options
         // that no longer exist in the newer version.
         if (opts.restart && MongoRunner.areBinVersionsTheSame('latest', opts.binVersion)) {
@@ -1019,6 +1025,35 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         return false;
     };
 
+    MongoRunner.laterThan = function(version1, version2) {
+        if (!version1) {
+            return true;
+        }
+        if (version1 === "latest" || version1 === "") {
+            return true;
+        }
+        var versionArray1 = version1.split('.') var versionArray2 = version2.split('.') var i = 0;
+
+        for (i = versionArray1.length; i < 4; i++) {
+            versionArray1.push(0);
+        }
+        for (i = versionArray2.length; i < 4; i++) {
+            versionArray2.push(0);
+        }
+
+        for (i = 0; i < 4; i++) {
+            if (versionArray1[i] > versionArray2[i]) {
+                return true;
+            }
+            if (versionArray1[i] < versionArray2[i]) {
+                return false;
+            }
+        }
+
+        return true;
+
+    };
+
     // Given a test name figures out a directory for that test to use for dump files and makes sure
     // that directory exists and is empty.
     MongoRunner.getAndPrepareDumpDirectory = function(testName) {
@@ -1259,6 +1294,66 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         }, "unable to connect to mongo program on port " + port, 600 * 1000);
 
         return conn;
+    };
+
+    /**
+     *
+     * @param {mongod, mongos} processName
+     * @param {The process configuration file} configurationFile
+     * @param {mongoDaemonPort}
+     * @param {[num, ip1:port1, ip2:port2...]} mongoConnectionOpt
+     * For example 1:
+     *              MongoRunner.startMongoProcess("mongod","/config/mongod.yaml", 12017,
+     * [1,127.0.0.1:8635])
+     *              Meangs, start a mongod with configuration is /config/mongod.yaml
+     *              and return a mongo connection which url is 127.0.0.1:8635
+     * For example 2:
+     *              MongoRunner.startMongoProcess("mongod", "/config/mongod.yaml", 12017, [2,
+     * 172.18.0.2:8635, 172.19.0.2:8635])
+     *              Meangs, start a mongod with configuration is /config/mongod.yaml
+     *              and return two mongo connections which url are 127.0.0.1:8635 and
+     * 172.19.0.2:8635
+     */
+    MongoRunner.startMongoProcess = function(
+        processName, configurationFile, mongoDaemonPort, mongoConnectionOpt) {
+        var argArray = [processName, "-f", configurationFile, "--NotSavePort", mongoDaemonPort];
+        _startMongoProgram.apply(null, argArray);
+        return MongoRunner.mongoConnect(mongoConnectionOpt);
+    };
+
+    /**
+     *
+     * @param {[num, ip1:port1, ip2:port2...]} mongoConnectionOpt
+     * For example 1:
+     *              MongoRunner.mongoConnect([1,127.0.0.1:8635])
+     *              return a mongo connection which url is 127.0.0.1:8635
+     * For example 2:
+     *              MongoRunner.mongoConnect([2, 172.18.0.2:8635, 172.19.0.2:8635])
+     *              return two mongo connections which url are 127.0.0.1:8635 and 172.19.0.2:8635
+     */
+    MongoRunner.mongoConnect = function(mongoConnectionOpt) {
+        var mongoContions = new Array();
+        if (mongoConnectionOpt[0] > 0) {
+            // go through this array start with 1, the index 0 is the mongos cnt.
+            for (var i = 1; i < mongoConnectionOpt.length; i++) {
+                assert.soon(
+                    function() {
+                        try {
+                            mongoContions[i - 1] = new Mongo(mongoConnectionOpt[i]);
+                            return true;
+                        } catch (e) {
+                            print("Could not start mongo program at " + mongoConnectionOpt[i] +
+                                  ", process ended");
+                            // Break out
+                            return true;
+                        }
+                        return false;
+                    },
+                    "unable to connect to mongo program on port " + mongoConnectionOpt[i],
+                    600 * 1000);
+            }
+        }
+        return mongoContions;
     };
 
     /**

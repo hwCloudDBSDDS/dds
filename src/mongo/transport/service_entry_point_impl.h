@@ -69,6 +69,24 @@ public:
         return _currentConnections.load();
     }
 
+    Status setMaxNumConnections(int numCon) {
+        _maxNumConnections = numCon;
+        return Status::OK();
+    }
+
+    int getMaxNumConnections() {
+        return _maxNumConnections;
+    }
+
+    Status setMaxNumInternalConnections(int numCon) {
+        _maxInternalConnections = numCon;
+        return Status::OK();
+    }
+
+    int getMaxNumInternalConnections() {
+        return _maxInternalConnections;
+    }
+
 private:
     using SSMList = stdx::list<std::shared_ptr<ServiceStateMachine>>;
     using SSMListIterator = SSMList::iterator;
@@ -81,6 +99,8 @@ private:
     SSMList _sessions;
 
     size_t _maxNumConnections{DEFAULT_MAX_CONN};
+    size_t _maxInternalConnections{DEFAULT_MAX_INTERNAL_CONN};
+    AtomicWord<size_t> _currentInternalConnections{0};
     AtomicWord<size_t> _currentConnections{0};
     AtomicWord<size_t> _createdConnections{0};
 };

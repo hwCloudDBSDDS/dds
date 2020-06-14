@@ -8,20 +8,25 @@
     const conn = MongoRunner.runMongod({auth: ''});
     const adminDB = conn.getDB('admin');
 
-    adminDB.createUser({user: 'user1', pwd: 'pass', roles: jsTest.adminUserRoles});
-    assert(adminDB.auth({user: 'user1', pwd: 'pass'}));
+    adminDB.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
+    assert(adminDB.auth({user: 'admin', pwd: 'Password@a1b'}));
 
-    var userDoc = getUserDoc(adminDB, 'user1');
+    var userDoc = getUserDoc(adminDB, 'admin');
     assert.eq(10000, userDoc.credentials['SCRAM-SHA-1'].iterationCount);
 
     // Changing iterationCount should not affect existing users.
     assert.commandWorked(adminDB.runCommand({setParameter: 1, scramIterationCount: 5000}));
-    userDoc = getUserDoc(adminDB, 'user1');
+    userDoc = getUserDoc(adminDB, 'admin');
     assert.eq(10000, userDoc.credentials['SCRAM-SHA-1'].iterationCount);
 
     // But it should take effect when the user's password is changed.
-    adminDB.updateUser('user1', {pwd: 'pass', roles: jsTest.adminUserRoles});
-    userDoc = getUserDoc(adminDB, 'user1');
+    adminDB.updateUser(
+        'admin', {pwd: 'Password@a1b', roles: jsTest.adminUserRoles, "passwordDigestor": "server"});
+    userDoc = getUserDoc(adminDB, 'admin');
     assert.eq(5000, userDoc.credentials['SCRAM-SHA-1'].iterationCount);
 
     // Test (in)valid values for scramIterationCount. 5000 is the minimum value.

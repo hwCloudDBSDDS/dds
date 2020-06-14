@@ -103,6 +103,14 @@ public:
     explicit User(const UserName& name);
     ~User();
 
+    int64_t getToken() const {
+        return _token;
+    }
+
+    void setToken(int64_t token) {
+        _token = token;
+    }
+
     /**
      * Returns the user name for this user.
      */
@@ -248,6 +256,7 @@ public:
      * This method should *only* be called by the AuthorizationManager.
      */
     void decrementRefCount();
+    bool isBuildInUser() const;
 
 private:
     UserName _name;
@@ -275,6 +284,9 @@ private:
     // meaningfully read by the AuthorizationManager, as _refCount is guarded by the AM's _lock
     uint32_t _refCount;
     AtomicUInt32 _isValid;  // Using as a boolean
+    // used to identify two users with the same name(when del/create new users with same name)
+    // 0 for existing users.
+    int64_t _token;
 };
 
 }  // namespace mongo

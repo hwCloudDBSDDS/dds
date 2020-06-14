@@ -69,6 +69,232 @@ const WriteConcernOptions kMajorityWriteConcern(
     // supported by the mongod.
     WriteConcernOptions::SyncMode::UNSET,
     Seconds(60));
+}  // namespace
+
+/*****modify mongodb code start*****/
+
+namespace {
+const std::string CUSTOM_USER = "rwuser@admin";
+}  // namespace
+
+/*check if allow commands against admin/config database*/
+static bool _checkIfAllowedCommands(const std::string& cmdname) {
+
+    static std::string allowedCommands =
+        "\
+,isMaster\
+,listCollections\
+,getLastError\
+,resetError\
+,logout\
+,updateUser\
+,authenticate\
+,saslStart\
+,saslContinue\
+,buildInfo\
+,serverStatus\
+,listDatabases\
+,ping\
+,";
+
+    if (allowedCommands.find("," + cmdname + ",") != std::string::npos) {
+        return true;
+    }
+    return false;
+}
+
+std::set<std::string> Command::globleDisableCommands{"authSchemaUpgrade",
+                                                     "replSetElect",
+                                                     "replSetUpdatePosition",
+                                                     "appendOplogNote",
+                                                     "replSetFreeze",
+                                                     "replSetInitiate",
+                                                     "replSetMaintenance",
+                                                     "replSetReconfig",
+                                                     "replSetStepDown",
+                                                     "replSetSyncFrom",
+                                                     "replSetRequestVotes",
+                                                     "resync",
+                                                     "applyOps",
+                                                     "replSetGetConfig",
+                                                     "flushRouterConfig",
+                                                     "flushrouterconfig",
+                                                     "addShard",
+                                                     "addshard",
+                                                     "cleanupOrphaned",
+                                                     "checkShardingIndex",
+                                                     "listShards",
+                                                     "listshards",
+                                                     "removeShard",
+                                                     "removeshard",
+                                                     "getShardMap",
+                                                     "setShardVersion",
+                                                     "shardingState",
+                                                     "unsetSharding",
+                                                     "copydb",
+                                                     "clone",
+                                                     "clean",
+                                                     "connPoolSync",
+                                                     "compact",
+                                                     "setParameter",
+                                                     "repairDatabase",
+                                                     "repairCursor",
+                                                     "shutdown",
+                                                     "logRotate",
+                                                     "connPoolStats",
+                                                     "dbHash",
+                                                     "dbhash",
+                                                     "diagLogging",
+                                                     "driverOIDTest",
+                                                     "getCmdLineOpts",
+                                                     "getLog",
+                                                     "hostInfo",
+                                                     "_isSelf",
+                                                     "netstat",
+                                                     "shardConnPoolStats",
+                                                     "validate",
+                                                     "handshake",
+                                                     "_recvChunkAbort",
+                                                     "_recvChunkCommit",
+                                                     "_recvChunkStart",
+                                                     "_recvChunkStatus",
+                                                     "replSetFresh",
+                                                     "mapreduce.shardedfinish",
+                                                     "_transferMods",
+                                                     "replSetHeartbeat",
+                                                     "replSetGetRBID",
+                                                     "_migrateClone",
+                                                     "writeBacksQueued",
+                                                     "_getUserCacheGeneration",
+                                                     "replSetResizeOplog"};
+
+bool Command::checkIfDisableCommands(const std::string& cmdname) {
+    // below cmds is hw contains, the
+    // applyOps, flushRouterConfig, flushrouterconfig, addShard, addshard, cleanupOrphaned
+    // checkShardingIndex, listShards, listshards, removeShard, removeshard, getShardMap
+    // setShardVersion, shardingState, unsetSharding, dbHash, dbhash
+    //
+    // below cmds is hw do not contains
+    // setReadOnly
+    if (Command::globleDisableCommands.find(cmdname) != Command::globleDisableCommands.end() &&
+        find(serverGlobalParams.allowCommands.begin(),
+             serverGlobalParams.allowCommands.end(),
+             cmdname) == serverGlobalParams.allowCommands.end()) {
+        return true;
+    }
+    return false;
+}
+
+std::set<std::string> adminDisableCommand{"dropDatabase",
+                                          "createIndexes",
+                                          "dropIndexes",
+                                          "deleteIndexes",
+                                          "convertToCapped",
+                                          "insert",
+                                          "update",
+                                          "delete",
+                                          "create",
+                                          "drop",
+                                          "findAndModify",
+                                          "findandmodify",
+                                          "reIndex"};
+
+static bool _isDisabledCommandsAndPameterForCustomer(const Command* c,
+                                                     const std::string& cmdname,
+                                                     const std::string& dbname,
+                                                     const BSONObj& cmdObj) {
+
+    std::string fullNs = "";
+    if (cmdname == "findAndModify" || cmdname == "findandmodify" || cmdname == "group" ||
+        cmdname == "mapreduce" || cmdname == "mapReduce" || cmdname == "aggregate") {
+        fullNs = c->parseNs(dbname, cmdObj);
+        if (fullNs == "admin.system.users" || fullNs == "admin.system.roles") {
+            return true;
+        }
+    }
+
+    if (dbname == "admin" || dbname == "config") {
+        if (fullNs == "") {
+            fullNs = c->parseNs(dbname, cmdObj);
+        }
+        // for replica and single mode
+        if (fullNs != "admin.system.users" && fullNs != "admin.system.roles" &&
+            fullNs != "admin.system.version") {
+            if (adminDisableCommand.find(cmdname) != adminDisableCommand.end()) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+static Status _checkAuthForUser(const Command* c,
+                                Client* client,
+                                const std::string& dbname,
+                                const BSONObj& cmdObj) {
+
+    // because user may connect with inner network because some case in our clould instance,
+    // add temp fix that : when user is auth, do not check the connection way.
+    // TODO: when our cloud instance is fix, need fix this back.
+    if (AuthorizationSession::get(client)->isAuthWithCustomer() ||
+        (client->isCustomerConnection() &&
+         AuthorizationSession::get(client)
+             ->isAuthWithCustomerOrNoAuthUser())) {  // check if consumer
+
+        std::string cmdname = c->getName();
+        LOG(4) << "Mongodb consumer run command " << dbname << ".$cmd" << ' ' << cmdname;
+
+        if (Command::checkIfDisableCommands(cmdname)) {
+            return Status(ErrorCodes::CommandNotFound, "no this command " + cmdname);
+        }
+
+        if (_checkIfAllowedCommands(cmdname)) {  // check if allowed commands
+            LOG(4) << "Allow Mongodb consumer run command " << cmdname << "against the " << dbname
+                   << " database.";
+        } else if (_isDisabledCommandsAndPameterForCustomer(c, cmdname, dbname, cmdObj)) {
+            return Status(ErrorCodes::Unauthorized, "unauthorized");
+        }
+    }
+
+    return Status::OK();
+}
+
+std::set<std::string> globalReadComand{"find",
+                                       "getMore",
+                                       "authenticate",
+                                       "collStats",
+                                       "collMod",
+                                       "connectionStatus",
+                                       "count",
+                                       "dbStats",
+                                       "explain",
+                                       "filemd5",
+                                       "geoNear",
+                                       "getLastError",
+                                       "getParameter",
+                                       "isMaster",
+                                       "killOp",
+                                       "listCollections",
+                                       "listCommands",
+                                       "listDatabases",
+                                       "listIndexes",
+                                       "logout",
+                                       "saslStart",
+                                       "saslContinue",
+                                       "usersInfo",
+                                       "rolesInfo",
+                                       "serverStatus",
+                                       "buildInfo",
+                                       "distinct",
+                                       "isMaster",
+                                       "isdbgrid",
+                                       "planCacheListFilters",
+                                       "planCacheListPlans",
+                                       "planCacheListQueryShapes",
+                                       "dropDatabase",
+                                       "drop"};
+/*****modify mongodb code end*****/
 
 // Returns true if found to be authorized, false if undecided. Throws if unauthorized.
 bool checkAuthorizationImplPreParse(OperationContext* opCtx,
@@ -92,6 +318,7 @@ bool checkAuthorizationImplPreParse(OperationContext* opCtx,
                     client->getIsLocalHostConnection());
         return true;  // Blanket authorization: don't need to check anything else.
     }
+
     if (authzSession->isUsingLocalhostBypass())
         return false;  // Still can't decide on auth because of the localhost bypass.
     uassert(ErrorCodes::Unauthorized,
@@ -99,9 +326,6 @@ bool checkAuthorizationImplPreParse(OperationContext* opCtx,
             !command->requiresAuth() || authzSession->isAuthenticated());
     return false;
 }
-
-}  // namespace
-
 
 //////////////////////////////////////////////////////////////
 // CommandHelpers
@@ -148,6 +372,14 @@ void CommandHelpers::auditLogAuthEvent(OperationContext* opCtx,
 
         bool redactArgs() const override {
             return !_invocation;
+        }
+
+        const Command* getCommand() const override {
+            if (_invocation) {
+                return _invocation->definition();
+            } else {
+                return nullptr;
+            }
         }
 
     private:
@@ -370,7 +602,16 @@ bool CommandHelpers::uassertShouldAttemptParse(OperationContext* opCtx,
                                                const Command* command,
                                                const OpMsgRequest& request) {
     try {
-        return checkAuthorizationImplPreParse(opCtx, command, request);
+        bool result = checkAuthorizationImplPreParse(opCtx, command, request);
+        // add hw exter check
+        if (false == result) {
+            auto dbname = request.getDatabase().toString();
+            uassert(ErrorCodes::Unauthorized,
+                    str::stream() << command->getName() << " No storage space to execute: "
+                                  << command->getName(),
+                    command->_checkWriteAllow(opCtx, dbname));
+        }
+        return result;
     } catch (const ExceptionFor<ErrorCodes::Unauthorized>& e) {
         CommandHelpers::auditLogAuthEvent(opCtx, nullptr, request, e.code());
         throw;
@@ -422,12 +663,40 @@ void CommandInvocation::checkAuthorization(OperationContext* opCtx,
                           str::stream() << "not authorized on " << dbname << " to execute command "
                                         << redact(cmdToLog.getObject()));
             }
+            // add hw exter check
+            auto client = opCtx->getClient();
+            auto dbname = request.getDatabase().toString();
+            auto cmdObj = request.body;
+            const Command* command = definition();
+            uassert(ErrorCodes::Unauthorized,
+                    str::stream() << command->getName() << " No storage space to execute: "
+                                  << command->getName(),
+                    command->_checkWriteAllow(opCtx, dbname));
+
+            Status status = _checkAuthForUser(command, client, dbname, cmdObj);
+            if (!status.isOK()) {
+                namespace mmb = mutablebson;
+                mmb::Document cmdToLog(cmdObj, mutablebson::Document::kInPlaceDisabled);
+                command->redactForLogging(&cmdToLog);
+
+                if (status == ErrorCodes::CommandNotFound) {
+                    uasserted(ErrorCodes::Unauthorized,
+                              str::stream() << "no this command" << cmdToLog.toString());
+                } else {
+                    uasserted(ErrorCodes::Unauthorized,
+                              str::stream() << "not  authorized on " << dbname
+                                            << " to execute command "
+                                            << cmdToLog.toString());
+                }
+            }
         }
+
     } catch (const DBException& e) {
         log(LogComponent::kAccessControl) << e.toStatus();
         CommandHelpers::auditLogAuthEvent(opCtx, this, request, e.code());
         throw;
     }
+
     CommandHelpers::auditLogAuthEvent(opCtx, this, request, ErrorCodes::OK);
 }
 
@@ -536,6 +805,26 @@ void Command::generateHelpResponse(OperationContext* opCtx,
                        str::stream() << "help for: " << command.getName() << " " << command.help());
     replyBuilder->setCommandReply(helpBuilder.obj());
     replyBuilder->setMetadata(rpc::makeEmptyMetadata());
+}
+
+bool Command::_checkWriteAllow(OperationContext* txn, const std::string& dbname) const {
+    auto client = txn->getClient();
+    invariant(AuthorizationSession::get(client)->getAuthorizationManager().isAuthEnabled());
+
+    if (!serverGlobalParams.readOnly) {
+        return true;
+    }
+
+    if (AuthorizationSession::get(client)->isAuthWithCustomer() ||
+        (client->isCustomerConnection() &&
+         AuthorizationSession::get(client)
+             ->isAuthWithCustomerOrNoAuthUser())) {  // check if consumer
+        if (globalReadComand.find(_name) == globalReadComand.end()) {
+            log() << "No storage space commandName: " << _name;
+            return false;
+        }
+    }
+    return true;
 }
 
 bool ErrmsgCommandDeprecated::run(OperationContext* opCtx,

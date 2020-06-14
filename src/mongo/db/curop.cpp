@@ -627,7 +627,13 @@ void OpDebug::append(const CurOp& curop,
     NamespaceString nss = NamespaceString(curop.getNS());
     b.append("ns", nss.ns());
 
-    appendAsObjOrString("command", curop.opDescription(), maxElementSize, &b);
+    auto opDescription = curop.opDescription();
+    if (opDescription.hasField("pwd")) {
+        auto opDescriptionPwd = opDescription.updateField("pwd", "xxx");
+        appendAsObjOrString("command", opDescriptionPwd, maxElementSize, &b);
+    } else {
+        appendAsObjOrString("command", opDescription, maxElementSize, &b);
+    }
 
     auto originatingCommand = curop.originatingCommand();
     if (!originatingCommand.isEmpty()) {

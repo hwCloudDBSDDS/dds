@@ -22,8 +22,10 @@ function runTest(db) {
     db.dropDatabase();
     db.dropAllUsers();
 
-    db.createUser({user: "spencer", pwd: "password", roles: ['readWrite']});
-    db.createUser({user: "andy", pwd: "password", roles: ['readWrite']});
+    db.createUser(
+        {user: "spencer", pwd: "Password@a1b", roles: ['readWrite'], "passwordDigestor": "server"});
+    db.createUser(
+        {user: "andy", pwd: "Password@a1b", roles: ['readWrite'], "passwordDigestor": "server"});
 
     // Test getUser
     var userObj = db.getUser('spencer');
@@ -83,50 +85,68 @@ function runTest(db) {
 
     // Test password digestion
     assert.throws(function() {
-        db.createUser({user: 'user1', pwd: 'x', roles: [], digestPassword: true});
+        db.createUser({
+            user: 'user1',
+            pwd: 'Password@a1b',
+            roles: [],
+            digestPassword: true, "passwordDigestor": "server"
+        });
     });
     assert.throws(function() {
-        db.createUser({user: 'user1', pwd: 'x', roles: [], digestPassword: false});
+        db.createUser({
+            user: 'user1',
+            pwd: 'Password@a1b',
+            roles: [],
+            digestPassword: false, "passwordDigestor": "server"
+        });
     });
     assert.throws(function() {
-        db.createUser({user: 'user1', pwd: 'x', roles: [], passwordDigestor: 'foo'});
+        db.createUser({user: 'user1', pwd: 'Password@a1b', roles: [], "passwordDigestor": "foo"});
     });
-    db.createUser({user: 'user1', pwd: 'x', roles: [], passwordDigestor: "server"});
-
+    db.createUser({user: 'user1', pwd: 'Password@a1b', roles: [], passwordDigestor: "server"});
+    db.createUser({user: 'user2', pwd: 'Password@a1b', roles: [], passwordDigestor: "server"});
     // Note that as of SERVER-32974, client-side digestion is only permitted under the SCRAM-SHA-1
     // mechanism.
-    db.createUser({
-        user: 'user2',
-        pwd: 'x',
-        roles: [],
-        mechanisms: ['SCRAM-SHA-1'],
-        passwordDigestor: "client"
+    assert.throws(function() {
+        db.createUser({
+            user: 'user2',
+            pwd: 'x',
+            roles: [],
+            mechanisms: ['SCRAM-SHA-1'],
+            passwordDigestor: "client"
+        });
     });
-    assert(db.auth('user1', 'x'));
-    assert(db.auth('user2', 'x'));
+
+    assert(db.auth('user1', 'Password@a1b'));
+    assert(db.auth('user2', 'Password@a1b'));
 
     assert.throws(function() {
-        db.updateUser('user1', {pwd: 'y', digestPassword: true});
+        db.updateUser('user1', {pwd: 'aPassword@a1b', digestPassword: true});
     });
     assert.throws(function() {
-        db.updateUser('user1', {pwd: 'y', digestPassword: false});
+        db.updateUser('user1', {pwd: 'aPassword@a1b', digestPassword: false});
     });
     assert.throws(function() {
-        db.updateUser('user1', {pwd: 'y', passwordDigestor: 'foo'});
+        db.updateUser('user1', {pwd: 'aPassword@a1b', passwordDigestor: 'foo'});
     });
-    db.updateUser('user1', {pwd: 'y', passwordDigestor: 'server'});
-    db.updateUser('user2', {pwd: 'y', mechanisms: ['SCRAM-SHA-1'], passwordDigestor: 'client'});
-    assert(db.auth('user1', 'y'));
-    assert(db.auth('user2', 'y'));
+    db.updateUser('user1', {pwd: 'aPassword@a1b', passwordDigestor: 'server'});
+    db.updateUser('user2', {pwd: 'aPassword@a1b', passwordDigestor: 'server'});
+    assert(db.auth('user1', 'aPassword@a1b'));
+    assert(db.auth('user2', 'aPassword@a1b'));
 
     // Test createUser requires 'user' field
     assert.throws(function() {
-        db.createUser({pwd: 'x', roles: ['dbAdmin']});
+        db.createUser({pwd: 'Password@a1b', roles: ['dbAdmin'], passwordDigestor: "server"});
     });
 
     // Test createUser disallows 'createUser' field
     assert.throws(function() {
-        db.createUser({createUser: 'ben', pwd: 'x', roles: ['dbAdmin']});
+        db.createUser({
+            createUser: 'ben',
+            pwd: 'Password@a1b',
+            roles: ['dbAdmin'],
+            passwordDigestor: "server"
+        });
     });
 }
 

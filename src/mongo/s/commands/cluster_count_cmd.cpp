@@ -31,7 +31,10 @@
 #include <vector>
 
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/query/count_request.h"
 #include "mongo/db/query/view_response_formatter.h"
 #include "mongo/db/views/resolved_view.h"
@@ -81,6 +84,7 @@ public:
                 str::stream() << "Invalid namespace specified '" << nss.ns() << "'",
                 nss.isValid());
 
+        BSONObj NewCmdObj = cmdObj;
         long long skip = 0;
 
         if (cmdObj["skip"].isNumber()) {
@@ -97,29 +101,77 @@ public:
         BSONObjBuilder countCmdBuilder;
         countCmdBuilder.append("count", nss.coll());
 
+        if (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser()) {
+            bool flag = false;
+            BSONObj buildinfilter;
+            if (nss.ns() == "admin.system.users") {
+                std::set<std::string> buildinUsers;
+                UserName::getBuildinUsers(buildinUsers);
+
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+            if (nss.ns() == "admin.system.roles") {
+                std::set<std::string> buildinRoles;
+                RoleName::getBuildinRoles(buildinRoles);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+
+            if (flag) {
+                std::string filterName = "filter";
+                BSONElement filterField = cmdObj[filterName];
+                BSONObj newFilter;
+                if (filterField.isABSONObj()) {
+                    BSONObj filter = filterField.embeddedObject();
+                    newFilter = BSON("$and" << BSON_ARRAY(filter << buildinfilter));
+                } else {
+                    newFilter = buildinfilter;
+                }
+
+                BSONObjBuilder nb(64);
+                nb.append(filterName, newFilter);
+                BSONForEach(e, cmdObj) {
+                    if (!str::equals(filterName.c_str(), e.fieldName())) {
+                        nb.append(e);
+                    }
+                }
+                NewCmdObj = nb.obj();
+            }
+        }
+
+
         BSONObj filter;
-        if (cmdObj["query"].isABSONObj()) {
+        if (NewCmdObj["query"].isABSONObj()) {
             countCmdBuilder.append("query", cmdObj["query"].Obj());
-            filter = cmdObj["query"].Obj();
+            filter = NewCmdObj["query"].Obj();
         }
 
         BSONObj collation;
         BSONElement collationElement;
         auto status =
-            bsonExtractTypedField(cmdObj, "collation", BSONType::Object, &collationElement);
+            bsonExtractTypedField(NewCmdObj, "collation", BSONType::Object, &collationElement);
         if (status.isOK()) {
             collation = collationElement.Obj();
         } else if (status != ErrorCodes::NoSuchKey) {
             uassertStatusOK(status);
         }
 
-        if (cmdObj["limit"].isNumber()) {
-            long long limit = cmdObj["limit"].numberLong();
+        if (NewCmdObj["limit"].isNumber()) {
+            long long limit = NewCmdObj["limit"].numberLong();
 
             // We only need to factor in the skip value when sending to the shards if we
             // have a value for limit, otherwise, we apply it only once we have collected all
             // counts.
-            if (limit != 0 && cmdObj["skip"].isNumber()) {
+            if (limit != 0 && NewCmdObj["skip"].isNumber()) {
                 if (limit > 0)
                     limit += skip;
                 else
@@ -133,7 +185,7 @@ public:
             "$queryOptions", "collation", "hint", "readConcern", QueryRequest::cmdOptionMaxTimeMS,
         };
         for (auto name : passthroughFields) {
-            if (auto field = cmdObj[name]) {
+            if (auto field = NewCmdObj[name]) {
                 countCmdBuilder.append(field);
             }
         }
@@ -157,7 +209,7 @@ public:
         } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>& ex) {
             // Rewrite the count command as an aggregation.
 
-            auto countRequest = CountRequest::parseFromBSON(nss, cmdObj, false);
+            auto countRequest = CountRequest::parseFromBSON(nss, NewCmdObj, false);
             uassertStatusOK(countRequest.getStatus());
 
             auto aggCmdOnView = countRequest.getValue().asAggregationCommand();
@@ -206,7 +258,7 @@ public:
         }
 
         shardSubTotal.doneFast();
-        total = applySkipLimit(total, cmdObj);
+        total = applySkipLimit(total, NewCmdObj);
         result.appendNumber("n", total);
         return true;
     }

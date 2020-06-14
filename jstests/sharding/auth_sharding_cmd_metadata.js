@@ -9,17 +9,25 @@
     var st = new ShardingTest(
         {shards: 1, other: {keyFile: 'jstests/libs/key1', shardAsReplicaSet: false}});
 
-    var adminUser = {db: "admin", username: "foo", password: "bar"};
+    var adminUser = {db: "admin", username: "admin", password: "Password@a1b"};
 
-    st.s.getDB(adminUser.db).createUser({user: 'foo', pwd: 'bar', roles: jsTest.adminUserRoles});
+    st.s.getDB(adminUser.db).createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
 
-    st.s.getDB('admin').auth('foo', 'bar');
+    st.s.getDB('admin').auth('admin', 'Password@a1b');
 
     st.adminCommand({enableSharding: 'test'});
     st.adminCommand({shardCollection: 'test.user', key: {x: 1}});
 
-    st.d0.getDB('admin').createUser({user: 'user', pwd: 'pwd', roles: jsTest.adminUserRoles});
-    st.d0.getDB('admin').auth('user', 'pwd');
+    st.d0.getDB('admin').createUser({
+        user: 'omuser',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
+    st.d0.getDB('admin').auth('omuser', 'Password@a1b');
 
     var maxSecs = Math.pow(2, 32) - 1;
     var metadata = {$configServerState: {opTime: {ts: Timestamp(maxSecs, 0), t: maxSecs}}};
@@ -32,8 +40,9 @@
     assert.neq(null, status.sharding);
     assert.lt(status.sharding.lastSeenConfigServerOpTime.t, maxSecs);
 
-    st.d0.getDB('admin').createUser({user: 'internal', pwd: 'pwd', roles: ['__system']});
-    st.d0.getDB('admin').auth('internal', 'pwd');
+    st.d0.getDB('admin').createUser(
+        {user: 'internal', pwd: 'Password@a1b', roles: ['__system'], "passwordDigestor": "server"});
+    st.d0.getDB('admin').auth('internal', 'Password@a1b');
 
     res = st.d0.getDB('test').runCommandWithMetadata({ping: 1}, metadata);
     assert.commandWorked(res.commandReply);

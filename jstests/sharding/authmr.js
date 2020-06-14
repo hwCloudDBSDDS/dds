@@ -9,15 +9,17 @@
 
     var adminUser = {
         user: "admin",
-        pwd: "a",
+        pwd: "Password@a1b",
         roles:
-            ["readWriteAnyDatabase", "dbAdminAnyDatabase", "userAdminAnyDatabase", "clusterAdmin"]
+            ["readWriteAnyDatabase", "dbAdminAnyDatabase", "userAdminAnyDatabase", "clusterAdmin"],
+        "passwordDigestor": "server"
     };
 
     var test1User = {
         user: "test",
-        pwd: "a",
-        roles: [{role: 'readWrite', db: 'test1', hasRole: true, canDelegate: false}]
+        pwd: "Password@a1b",
+        roles: [{role: 'readWrite', db: 'test1', hasRole: true, canDelegate: false}],
+        "passwordDigestor": "server"
     };
 
     function assertRemove(collection, pattern) {

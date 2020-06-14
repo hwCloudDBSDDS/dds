@@ -19,16 +19,24 @@
             return config.system.sessions.aggregate(pipeline);
         }
 
-        admin.createUser({user: 'admin', pwd: 'pass', roles: jsTest.adminUserRoles});
-        assert(admin.auth('admin', 'pass'));
-        admin.createUser({user: 'user1', pwd: 'pass', roles: jsTest.basicUserRoles});
+        admin.createUser({
+            user: 'admin',
+            pwd: 'Password@a1b',
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        });
+        assert(admin.auth('admin', 'Password@a1b'));
+        admin.createUser({
+            user: 'user1',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
         admin.logout();
 
         // Fail if we're not logged in.
         assertErrorCode(config.system.sessions, pipeline, ErrorCodes.Unauthorized);
 
         // Start a new session and capture its sessionId.
-        assert(admin.auth('user1', 'pass'));
+        assert(admin.auth('user1', 'Password@a1b'));
         const myid = assert.commandWorked(admin.runCommand({startSession: 1})).id.id;
         assert(myid !== undefined);
         assert.commandWorked(admin.runCommand({refreshLogicalSessionCacheNow: 1}));
@@ -41,7 +49,7 @@
         assertErrorCode(config.system.sessions, viewAdminPipeline, ErrorCodes.Unauthorized);
 
         // Ensure that the cache now contains the session and is visible by admin
-        assert(admin.auth('admin', 'pass'));
+        assert(admin.auth('admin', 'Password@a1b'));
         const resultArray = listSessions().toArray();
         assert.eq(resultArray.length, 1);
         const cacheid = resultArray[0]._id.id;

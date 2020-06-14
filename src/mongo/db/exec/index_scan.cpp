@@ -88,6 +88,11 @@ IndexScan::IndexScan(OperationContext* opCtx,
     _specificStats.isSparse = _params.descriptor->isSparse();
     _specificStats.isPartial = _params.descriptor->isPartial();
     _specificStats.indexVersion = static_cast<int>(_params.descriptor->version());
+    incStageObj(STAGE_IXSCAN);
+}
+
+IndexScan::~IndexScan() {
+    decStageObjAndMem(STAGE_IXSCAN);
 }
 
 boost::optional<IndexKeyEntry> IndexScan::initIndexScan() {
@@ -207,7 +212,13 @@ PlanStage::StageState IndexScan::doWork(WorkingSetID* out) {
             // We've seen this RecordId before. Skip it this time.
             ++_specificStats.dupsDropped;
             return PlanStage::NEED_TIME;
+        } else {
+            incCachedMemory(kv->loc.memUsageForSorter());
         }
+    }
+    if (chkCachedMemOversize()) {
+        *out = chkMemFailureRet(_workingSet);
+        return PlanStage::FAILURE;
     }
 
     if (_filter) {
@@ -279,6 +290,7 @@ void IndexScan::doInvalidate(OperationContext* opCtx, const RecordId& dl, Invali
     stdx::unordered_set<RecordId, RecordId::Hasher>::iterator it = _returned.find(dl);
     if (it != _returned.end()) {
         ++_specificStats.seenInvalidated;
+        decCachedMemory(sizeof(RecordId));
         _returned.erase(it);
     }
 }

@@ -124,6 +124,15 @@ bool ShardingCatalogClientMock::runUserManagementWriteCommand(OperationContext* 
     return true;
 }
 
+bool ShardingCatalogClientMock::runUserManagementReadCommandWithCheckopCtx(
+    OperationContext* opCtx,
+    const string& commandName,
+    const string& dbname,
+    const BSONObj& cmdObj,
+    BSONObjBuilder* result) {
+    return true;
+}
+
 bool ShardingCatalogClientMock::runUserManagementReadCommand(OperationContext* opCtx,
                                                              const string& dbname,
                                                              const BSONObj& cmdObj,

@@ -52,6 +52,7 @@ using stdx::make_unique;
 using fts::FTSSpec;
 
 const char* TextOrStage::kStageType = "TEXT_OR";
+const size_t TextOrStage::_scoresItemSize = sizeof(RecordId) + sizeof(TextOrStage::TextRecordData);
 
 TextOrStage::TextOrStage(OperationContext* opCtx,
                          const FTSSpec& ftsSpec,
@@ -64,10 +65,12 @@ TextOrStage::TextOrStage(OperationContext* opCtx,
       _scoreIterator(_scores.end()),
       _filter(filter),
       _idRetrying(WorkingSet::INVALID_ID),
-      _index(index) {}
-
-TextOrStage::~TextOrStage() {}
-
+      _index(index) {
+    incStageObj(STAGE_TEXT_OR);
+}
+TextOrStage::~TextOrStage() {
+    decStageObjAndMem(STAGE_TEXT_OR);
+}
 void TextOrStage::addChild(unique_ptr<PlanStage> child) {
     _children.push_back(std::move(child));
 }
@@ -111,6 +114,7 @@ void TextOrStage::doInvalidate(OperationContext* opCtx, const RecordId& dl, Inva
         if (scoreIt == _scoreIterator) {
             _scoreIterator++;
         }
+        decCachedMemory(_scoresItemSize);
         _scores.erase(scoreIt);
     }
 }
@@ -141,6 +145,11 @@ const SpecificStats* TextOrStage::getSpecificStats() const {
 PlanStage::StageState TextOrStage::doWork(WorkingSetID* out) {
     if (isEOF()) {
         return PlanStage::IS_EOF;
+    }
+
+    if (chkCachedMemOversize()) {
+        *out = chkMemFailureRet(_ws);
+        return PlanStage::FAILURE;
     }
 
     PlanStage::StageState stageState = PlanStage::IS_EOF;
@@ -261,6 +270,11 @@ PlanStage::StageState TextOrStage::addTerm(WorkingSetID wsid, WorkingSetID* out)
     invariant(wsm->getState() == WorkingSetMember::RID_AND_IDX);
     invariant(1 == wsm->keyData.size());
     const IndexKeyDatum newKeyData = wsm->keyData.back();  // copy to keep it around.
+
+    if (_scores.find(wsm->recordId) == _scores.end()) {
+        incCachedMemory(_scoresItemSize);
+    }
+
     TextRecordData* textRecordData = &_scores[wsm->recordId];
 
     if (textRecordData->score < 0) {

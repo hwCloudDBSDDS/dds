@@ -67,6 +67,10 @@
     const kForeverSeconds = 1e9;
     const dbNames = new Set();
 
+    var fpName = "WTPreserveSnapshotHistoryIndefinitely";
+    if (jsTest.options().storageEngine == "rocksdb") {
+        fpName = "RocksPreserveSnapshotHistoryIndefinitely";
+    }
     // We enable the "WTPreserveSnapshotHistoryIndefinitely" failpoint and extend the
     // "transactionLifetimeLimitSeconds" server parameter to ensure that
     //
@@ -78,13 +82,13 @@
         const db = session.getDatabase('admin');
 
         assert.commandWorked(db.runCommand({
-            configureFailPoint: 'WTPreserveSnapshotHistoryIndefinitely',
+            configureFailPoint: fpName,
             mode: 'alwaysOn',
         }));
 
         resetFns.push(() => {
             assert.commandWorked(db.runCommand({
-                configureFailPoint: 'WTPreserveSnapshotHistoryIndefinitely',
+                configureFailPoint: fpName,
                 mode: 'off',
             }));
         });

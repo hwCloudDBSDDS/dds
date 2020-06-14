@@ -30,9 +30,9 @@
 
 #include <iosfwd>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
-
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/string_data.h"
@@ -84,6 +84,33 @@ public:
     const std::string& toString() const {
         return getFullName();
     }
+    // begin dds
+    static void getBuildinRoles(std::set<std::string>& buildInRoles) {
+        buildInRoles.insert("backupuser");
+        buildInRoles.insert("omuser");
+        buildInRoles.insert("readonlyuser");
+    }
+
+    static bool isBuildinRoles(const std::string rolename) {
+        if (rolename == "backupuser@admin" || rolename == "omuser@admin" ||
+            rolename == "readonlyuser@admin") {
+
+            return true;
+        }
+        return false;
+    }
+
+    bool isBuildinRoles() const {
+        return isBuildinRoles(_fullName);
+    }
+
+    bool isCustomer() const {
+        return !isBuildinRoles();
+    }
+    bool isReadonlyRole() const {
+        return (_fullName == "readonlyuser@admin");
+    }
+    // end dds
 
 private:
     std::string _fullName;  // The full name, stored as a string.  "role@db".

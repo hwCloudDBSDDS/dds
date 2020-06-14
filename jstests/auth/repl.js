@@ -22,8 +22,9 @@ var AuthReplTest = function(spec) {
     secondaryConn = spec.secondaryConn;
 
     adminPri = primaryConn.getDB("admin");
-    adminPri.createUser({user: "super", pwd: "super", roles: ["__system"]});
-    assert(adminPri.auth("super", "super"), "could not authenticate as superuser");
+    adminPri.createUser(
+        {user: "super", pwd: "Password@a1b", roles: ["__system"], "passwordDigestor": "server"});
+    assert(adminPri.auth("super", "Password@a1b"), "could not authenticate as superuser");
 
     if (secondaryConn != null) {
         secondaryConn.setSlaveOk(true);
@@ -33,7 +34,7 @@ var AuthReplTest = function(spec) {
     /* --- private functions --- */
 
     var authOnSecondary = function() {
-        assert(adminSec.auth(testUser, testUser), "could not authenticate as test user");
+        assert(adminSec.auth(testUser, Password @a1b), "could not authenticate as test user");
     };
 
     /**
@@ -140,7 +141,7 @@ var AuthReplTest = function(spec) {
 
         var res = adminPri.runCommand({
             createUser: testUser,
-            pwd: testUser,
+            pwd: "Password@a1b",
             roles: [testRole],
             writeConcern: {w: numNodes, wtimeout: 15000}
         });

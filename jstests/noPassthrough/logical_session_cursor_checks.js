@@ -9,13 +9,25 @@
         var admin = conn.getDB("admin");
         var data = conn.getDB("data_storage");
 
-        admin.createUser({user: 'admin', pwd: 'admin', roles: jsTest.adminUserRoles});
-        admin.auth("admin", "admin");
-        data.createUser({user: 'admin', pwd: 'admin', roles: jsTest.basicUserRoles});
-        data.createUser({user: 'user0', pwd: 'password', roles: jsTest.basicUserRoles});
+        admin.createUser({
+            user: 'admin',
+            pwd: 'Password@a1b',
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        });
+        admin.auth("admin", "Password@a1b");
+        data.createUser({
+            user: 'admin',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
+        data.createUser({
+            user: 'user0',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
         admin.logout();
 
-        data.auth("user0", "password");
+        data.auth("user0", "Password@a1b");
         assert.writeOK(data.test.insert({name: "first", data: 1}));
         assert.writeOK(data.test.insert({name: "second", data: 2}));
 

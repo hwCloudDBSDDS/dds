@@ -7,8 +7,9 @@ function testTransition(newSSLMode, newClusterAuthMode) {
     // If no parameters are given sslMode defaults to disabled
     var conn = MongoRunner.runMongod({clusterAuthMode: "keyFile"});
     var adminDB = conn.getDB("admin");
-    adminDB.createUser({user: "root", pwd: "pwd", roles: ["root"]});
-    adminDB.auth("root", "pwd");
+    adminDB.createUser(
+        {user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
+    adminDB.auth("admin", "Password@a1b");
     var res = adminDB.runCommand({"setParameter": 1, "sslMode": newSSLMode});
     assert.commandFailedWithCode(res, ErrorCodes.BadValue);
 

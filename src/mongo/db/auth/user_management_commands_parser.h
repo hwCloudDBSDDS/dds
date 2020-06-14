@@ -47,6 +47,8 @@ namespace auth {
 
 struct CreateOrUpdateUserArgs {
     UserName userName;
+    bool hasHashedPassword;
+    std::string hashedPassword;
     bool hasPassword;
     std::string password;
     bool hasCustomData;
@@ -71,6 +73,22 @@ Status parseCreateOrUpdateUserCommands(const BSONObj& cmdObj,
                                        const std::string& dbname,
                                        CreateOrUpdateUserArgs* parsedArgs);
 
+// begin dds
+/**
+ * *Check if the password is a weak password.
+ * */
+bool isInWeakPasswordDict(std::string password);
+
+/**
+ * *Check whether the complexity of the password to meet the requirements.
+ * */
+bool checkPasswordStrength(std::string password);
+
+/**
+ * *Check whether the password is same with username or username's reverse.
+ * */
+bool checkPasswordSameOrReverseWithUsername(std::string password, std::string username);
+// end dds
 /**
  * Takes a command object describing an invocation of one of "grantRolesToUser",
  * "revokeRolesFromUser", "grantDelegateRolesToUser", "revokeDelegateRolesFromUser",

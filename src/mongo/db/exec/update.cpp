@@ -185,6 +185,7 @@ UpdateStage::UpdateStage(OperationContext* opCtx,
     // Before we even start executing, we know whether or not this is a replacement
     // style or $mod style update.
     _specificStats.isDocReplacement = params.driver->isDocReplacement();
+    incStageObj(STAGE_UPDATE);
 }
 
 BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, RecordId& recordId) {
@@ -352,6 +353,7 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
         // This must be done after the wunit commits so we are sure we won't be rolling back.
         if (_updatedRecordIds && (newRecordId != recordId || driver->modsAffectIndices())) {
             _updatedRecordIds->insert(newRecordId);
+            incCachedMemory(sizeof(RecordId));
         }
     }
 
@@ -551,6 +553,11 @@ PlanStage::StageState UpdateStage::doWork(WorkingSetID* out) {
         *out = _idReturning;
         _idReturning = WorkingSet::INVALID_ID;
         return PlanStage::ADVANCED;
+    }
+
+    if (chkCachedMemOversize()) {
+        *out = chkMemFailureRet(_ws);
+        return PlanStage::FAILURE;
     }
 
     // Either retry the last WSM we worked on or get a new one from our child.

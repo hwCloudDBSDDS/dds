@@ -31,9 +31,13 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
     var adminDB = mongos.getDB('admin');
     var db = mongos.getDB('test');
 
-    adminDB.createUser({user: 'admin', pwd: 'password', roles: jsTest.adminUserRoles});
+    adminDB.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
 
-    adminDB.auth('admin', 'password');
+    adminDB.auth('admin', 'Password@a1b');
 
     adminDB.runCommand({enableSharding: "test"});
     st.ensurePrimaryShard('test', 'shard0001');

@@ -34,8 +34,8 @@
 
     // test that we can run startSession authenticated when the server is running without --auth
 
-    admin.createUser({user: 'user0', pwd: 'password', roles: []});
-    admin.auth("user0", "password");
+    admin.createUser({user: 'user0', pwd: 'Password@a1b', roles: [], "passwordDigestor": "server"});
+    admin.auth("user0", "Password@a1b");
 
     result = admin.runCommand(request);
     assert.commandWorked(
@@ -63,16 +63,28 @@
 
     //
 
-    admin.createUser({user: 'admin', pwd: 'admin', roles: jsTest.adminUserRoles});
-    admin.auth("admin", "admin");
-    admin.createUser({user: 'user0', pwd: 'password', roles: jsTest.basicUserRoles});
-    foo.createUser({user: 'user1', pwd: 'password', roles: jsTest.basicUserRoles});
-    admin.createUser({user: 'user2', pwd: 'password', roles: []});
+    admin.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
+    admin.auth("admin", "Password@a1b");
+    admin.createUser({
+        user: 'user0',
+        pwd: 'Password@a1b',
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+    });
+    foo.createUser({
+        user: 'user1',
+        pwd: 'Password@a1b',
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+    });
+    admin.createUser({user: 'user2', pwd: 'Password@a1b', roles: [], "passwordDigestor": "server"});
     admin.logout();
 
     // test that we can run startSession authenticated as one user with proper permissions
 
-    admin.auth("user0", "password");
+    admin.auth("user0", "Password@a1b");
     result = admin.runCommand(request);
     assert.commandWorked(
         result,
@@ -83,7 +95,7 @@
 
     // test that we cant run startSession authenticated as two users with proper permissions
 
-    foo.auth("user1", "password");
+    foo.auth("user1", "Password@a1b");
     assert.commandFailed(
         admin.runCommand(request),
         "failed test that we cant run startSession authenticated as two users with proper permissions");
@@ -91,7 +103,7 @@
     // test that we cant run startSession authenticated as one user without proper permissions
 
     admin.logout();
-    admin.auth("user2", "password");
+    admin.auth("user2", "Password@a1b");
     assert.commandFailed(
         admin.runCommand(request),
         "failed test that we cant run startSession authenticated as one user without proper permissions");

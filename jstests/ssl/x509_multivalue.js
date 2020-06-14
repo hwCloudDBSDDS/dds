@@ -32,8 +32,9 @@
         const NAME = 'L=New York City+ST=New York+C=US,OU=KernelUser+O=MongoDB+CN=client';
 
         const admin = conn.getDB('admin');
-        admin.createUser({user: "admin", pwd: "admin", roles: ["root"]});
-        admin.auth('admin', 'admin');
+        admin.createUser(
+            {user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
+        admin.auth('admin', 'Password@a1b');
 
         const external = conn.getDB('$external');
         external.createUser({user: NAME, roles: [{'role': 'readWrite', 'db': 'test'}]});

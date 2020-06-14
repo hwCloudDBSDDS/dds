@@ -23,9 +23,12 @@
     assert.commandWorked(result, "could not run refreshSessions unauthenticated without --auth");
 
     // Test that we can run refreshSessions authenticated if --auth is off.
-    admin.createUser(
-        {user: 'admin', pwd: 'admin', roles: ['readAnyDatabase', 'userAdminAnyDatabase']});
-    admin.auth("admin", "admin");
+    admin.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: ['readAnyDatabase', 'userAdminAnyDatabase'], "passwordDigestor": "server"
+    });
+    admin.auth("admin", "Password@a1b");
     result = admin.runCommand(startSession);
     var lsid2 = result.id;
     result = admin.runCommand({refreshSessions: [lsid2]});
@@ -36,9 +39,12 @@
     conn = MongoRunner.runMongod({auth: "", nojournal: "", setParameter: {maxSessions: 3}});
     admin = conn.getDB("admin");
 
-    admin.createUser(
-        {user: 'admin', pwd: 'admin', roles: ['readAnyDatabase', 'userAdminAnyDatabase']});
-    admin.auth("admin", "admin");
+    admin.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: ['readAnyDatabase', 'userAdminAnyDatabase'], "passwordDigestor": "server"
+    });
+    admin.auth("admin", "Password@a1b");
 
     result = admin.runCommand({
         createRole: 'readSessionsCollection',
@@ -47,8 +53,11 @@
     });
     assert.commandWorked(result, "couldn't make readSessionsCollection role");
 
-    admin.createUser(
-        {user: 'readSessionsCollection', pwd: 'pwd', roles: ['readSessionsCollection']});
+    admin.createUser({
+        user: 'readSessionsCollection',
+        pwd: 'Password@a1b',
+        roles: ['readSessionsCollection'], "passwordDigestor": "server"
+    });
     admin.logout();
 
     // Test that we cannot run refreshSessions unauthenticated if --auth is on.
@@ -56,7 +65,7 @@
     assert.commandFailed(result, "able to run refreshSessions without authenticating");
 
     // Test that we can run refreshSessions on our own sessions authenticated if --auth is on.
-    admin.auth("admin", "admin");
+    admin.auth("admin", "Password@a1b");
     result = admin.runCommand(startSession);
     var lsid3 = result.id;
     result = admin.runCommand({refreshSessions: [lsid3]});
@@ -85,7 +94,7 @@
 
     // Test that once we force a refresh, all of these sessions are in the sessions collection.
     admin.logout();
-    admin.auth("readSessionsCollection", "pwd");
+    admin.auth("readSessionsCollection", "Password@a1b");
     result = admin.runCommand({refreshLogicalSessionCacheNow: 1});
     assert.commandWorked(result, "could not force refresh");
 

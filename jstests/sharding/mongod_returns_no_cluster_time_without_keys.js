@@ -18,8 +18,8 @@
     // TODO SERVER-32672: remove this flag.
     TestData.skipGossipingClusterTime = true;
     const keyFile = 'jstests/libs/key1';
-    const adminUser = {db: "admin", username: "foo", password: "bar"};
-    const rUser = {db: "test", username: "r", password: "bar"};
+    const adminUser = {db: "admin", username: "foo", password: "Password@a1b"};
+    const rUser = {db: "admin", username: "admin", password: "Password@a1b"};
 
     function assertContainsValidLogicalTime(res) {
         assert.hasFields(res, ["$clusterTime"]);
@@ -39,13 +39,18 @@
     jsTestLog("Started ShardingTest");
 
     var adminDB = st.s.getDB("admin");
-    adminDB.createUser({user: adminUser.username, pwd: adminUser.password, roles: ["__system"]});
+    adminDB.createUser({
+        user: adminUser.username,
+        pwd: adminUser.password,
+        roles: ["__system"], "passwordDigestor": "server"
+    });
 
     adminDB.auth(adminUser.username, adminUser.password);
     assert(st.s.getDB("admin").system.keys.count() >= 2);
 
     let priRSConn = st.rs0.getPrimary().getDB("admin");
-    priRSConn.createUser({user: rUser.username, pwd: rUser.password, roles: ["root"]});
+    priRSConn.createUser(
+        {user: rUser.username, pwd: rUser.password, roles: ["root"], "passwordDigestor": "server"});
 
     priRSConn.auth(rUser.username, rUser.password);
     const resWithKeys = priRSConn.runCommand({isMaster: 1});

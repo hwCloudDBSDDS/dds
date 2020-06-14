@@ -194,6 +194,12 @@ public:
 
     bool isImpersonating() const override;
 
+    bool isAuthWithBuiltinUser() const override;
+    bool isAuthWithCustomerOrNoAuthUser() const override;
+    bool isAuthWithCustomer() const override;
+    bool isNoAuthUser() const override;
+    bool shouldAllowLocalhost() const override;
+
     Status checkCursorSessionPrivilege(OperationContext* const opCtx,
                                        boost::optional<LogicalSessionId> cursorSessionId) override;
 

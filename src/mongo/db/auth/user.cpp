@@ -52,7 +52,7 @@ SHA256Block computeDigest(const UserName& name) {
 }  // namespace
 
 User::User(const UserName& name)
-    : _name(name), _digest(computeDigest(_name)), _refCount(0), _isValid(1) {}
+    : _name(name), _digest(computeDigest(_name)), _refCount(0), _isValid(1), _token(0) {}
 
 User::~User() {
     dassert(_refCount == 0);
@@ -181,5 +181,9 @@ void User::incrementRefCount() {
 void User::decrementRefCount() {
     dassert(_refCount > 0);
     --_refCount;
+}
+
+bool User::isBuildInUser() const {
+    return _name.isBuildinUser();
 }
 }  // namespace mongo

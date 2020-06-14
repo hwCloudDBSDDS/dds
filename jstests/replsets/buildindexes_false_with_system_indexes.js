@@ -35,7 +35,11 @@
     rst.awaitReplication();
 
     jsTestLog("Creating a user in the admin database");
-    adminDb.createUser({user: 'test_user', pwd: 'test', roles: [{role: 'test_role', db: 'admin'}]});
+    adminDb.createUser({
+        user: 'test_user',
+        pwd: 'Password@a1b',
+        roles: [{role: 'test_role', db: 'admin'}], "passwordDigestor": "server"
+    });
     rst.awaitReplication();
 
     // Make sure the indexes we expect are present on all nodes.  The buildIndexes: false node

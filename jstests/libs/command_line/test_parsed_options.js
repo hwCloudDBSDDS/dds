@@ -88,8 +88,9 @@ function testGetCmdLineOptsMongod(mongoRunnerConfig, expectedResult) {
     // such as repl_options.js for example.
     var ex;
     try {
-        mongod.getDB("admin").createUser({user: "root", pwd: "pass", roles: ["root"]});
-        mongod.getDB("admin").auth("root", "pass");
+        mongod.getDB("admin").createUser(
+            {user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
+        mongod.getDB("admin").auth("admin", "Password@a1b");
     } catch (ex) {
     }
 

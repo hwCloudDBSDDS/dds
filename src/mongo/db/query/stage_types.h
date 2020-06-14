@@ -108,6 +108,10 @@ enum StageType {
     STAGE_UNKNOWN,
 
     STAGE_UPDATE,
+
+    /// Add new stage here if necessary.
+    /// STAGE_NEW,
+    STAGE_INVALID,
 };
 
 }  // namespace mongo

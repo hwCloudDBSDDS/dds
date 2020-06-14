@@ -5,7 +5,11 @@ var baseName = "jstests_show_log_auth";
 var m = MongoRunner.runMongod({auth: "", bind_ip: "127.0.0.1", smallfiles: ""});
 var db = m.getDB("admin");
 
-db.createUser({user: "admin", pwd: "pass", roles: jsTest.adminUserRoles});
+db.createUser({
+    user: "admin",
+    pwd: "Password@a1b",
+    roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+});
 
 function assertStartsWith(s, prefix) {
     assert.eq(s.substr(0, prefix.length), prefix);
@@ -25,6 +29,6 @@ assertStartsWith(print
                      .output[0],
                  'Error while trying to show ' + baseName + ' log');
 
-db.auth("admin", "pass");
+db.auth("admin", "Password@a1b");
 db.shutdownServer();
 waitProgram(m.pid);

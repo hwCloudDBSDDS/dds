@@ -7,8 +7,8 @@
         const conn = MongoRunner.runMongod({auth: '', setParameter: params});
         const adminDB = conn.getDB('admin');
 
-        adminDB.createUser({user: 'user1', pwd: 'pass', roles: jsTest.adminUserRoles});
-        assert(adminDB.auth({user: 'user1', pwd: 'pass'}));
+        adminDB.createUser({user: 'user1', pwd: 'Password@a1b', roles: jsTest.adminUserRoles});
+        assert(adminDB.auth({user: 'user1', pwd: 'Password@a1b'}));
 
         const response = assert.commandWorked(adminDB.runCommand(
             {getParameter: 1, scramIterationCount: 1, scramSHA256IterationCount: 1}));

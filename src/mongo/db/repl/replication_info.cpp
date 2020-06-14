@@ -80,6 +80,63 @@ void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int 
     if (replCoord->getSettings().usingReplSets()) {
         IsMasterResponse isMasterResponse;
         replCoord->fillIsMasterForReplSet(&isMasterResponse);
+
+        bool isFromIpv6 = opCtx->getClient()->isFromIpv6();
+
+        if (opCtx->getClient()->isFromPrivateIp1()) {
+            PrivateIpPrivateIpRange& range =
+                serverGlobalParams.externalConfig.getPrivateIpPrivateIpRange();
+
+            if (isMasterResponse.hasHosts()) {
+                std::vector<HostAndPort> tmpVector;
+                for (auto& hp : isMasterResponse.getHosts()) {
+                    tmpVector.push_back(
+                        HostAndPort(range.getMapIp(hp.host(), isFromIpv6), hp.port()));
+                }
+                isMasterResponse.setHosts(tmpVector);
+            }
+
+            if (isMasterResponse.hasMe()) {
+                auto meHpOld = isMasterResponse.getMe();
+                auto meHpNew =
+                    HostAndPort(range.getMapIp(meHpOld.host(), isFromIpv6), meHpOld.port());
+                isMasterResponse.setMe(meHpNew);
+            }
+
+            if (isMasterResponse.hasPrimary()) {
+                auto primaryHpOld = isMasterResponse.getPrimary();
+                auto primaryHpNew = HostAndPort(range.getMapIp(primaryHpOld.host(), isFromIpv6),
+                                                primaryHpOld.port());
+                isMasterResponse.setPrimary(primaryHpNew);
+            }
+        } else if (opCtx->getClient()->isFromPublicIp()) {
+            PublicIpPrivateIpRange& range =
+                serverGlobalParams.externalConfig.getPublicIpPrivateIpRange();
+
+            if (isMasterResponse.hasHosts()) {
+                std::vector<HostAndPort> tmpVector;
+                for (auto& hp : isMasterResponse.getHosts()) {
+                    tmpVector.push_back(
+                        HostAndPort(range.getPublicIp(hp.host(), isFromIpv6), hp.port()));
+                }
+                isMasterResponse.setHosts(tmpVector);
+            }
+
+            if (isMasterResponse.hasMe()) {
+                auto meHpOld = isMasterResponse.getMe();
+                auto meHpNew =
+                    HostAndPort(range.getPublicIp(meHpOld.host(), isFromIpv6), meHpOld.port());
+                isMasterResponse.setMe(meHpNew);
+            }
+
+            if (isMasterResponse.hasPrimary()) {
+                auto primaryHpOld = isMasterResponse.getPrimary();
+                auto primaryHpNew = HostAndPort(range.getPublicIp(primaryHpOld.host(), isFromIpv6),
+                                                primaryHpOld.port());
+                isMasterResponse.setPrimary(primaryHpNew);
+            }
+        }
+
         result.appendElements(isMasterResponse.toBSON());
         if (level) {
             replCoord->appendSlaveInfoData(&result);

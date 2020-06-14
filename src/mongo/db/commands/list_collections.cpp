@@ -41,6 +41,7 @@
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/list_collections_filter.h"
@@ -305,6 +306,17 @@ public:
                         }
 
                         Collection* collection = db->getCollection(opCtx, nss);
+                        // because user may connect with inner network because some case in our
+                        // clould instance,
+                        // add temp fix that : when user is auth, do not check the connection way.
+                        // TODO: when our cloud instance is fix, need fix this back.
+                        if ((AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomer() ||
+                             (opCtx->getClient()->isCustomerConnection() &&
+                              AuthorizationSession::get(opCtx->getClient())
+                                  ->isAuthWithCustomerOrNoAuthUser())) &&
+                            AuthorizationManager::isReservedCollectionForCustomer(nss.toString())) {
+                            continue;
+                        }
                         BSONObj collBson =
                             buildCollectionBson(opCtx, collection, includePendingDrops, nameOnly);
                         if (!collBson.isEmpty()) {
@@ -314,11 +326,26 @@ public:
                     }
                 } else {
                     for (auto&& collection : *db) {
+                        // because user may connect with inner network because some case in our
+                        // clould instance,
+                        // add temp fix that : when user is auth, do not check the connection way.
+                        // TODO: when our cloud instance is fix, need fix this back.
                         if (authorizedCollections &&
                             (collection->ns().coll().startsWith("system.") ||
                              !as->isAuthorizedForAnyActionOnResource(
                                  ResourcePattern::forExactNamespace(collection->ns())))) {
                             continue;
+                        }
+                        if (collection) {
+                            if ((AuthorizationSession::get(opCtx->getClient())
+                                     ->isAuthWithCustomer() ||
+                                 (opCtx->getClient()->isCustomerConnection() &&
+                                  AuthorizationSession::get(opCtx->getClient())
+                                      ->isAuthWithCustomerOrNoAuthUser())) &&
+                                AuthorizationManager::isReservedCollectionForCustomer(
+                                    collection->ns().toString())) {
+                                continue;
+                            }
                         }
                         BSONObj collBson =
                             buildCollectionBson(opCtx, collection, includePendingDrops, nameOnly);

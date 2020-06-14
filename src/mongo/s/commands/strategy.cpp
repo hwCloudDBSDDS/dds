@@ -81,6 +81,29 @@
 
 namespace mongo {
 namespace {
+const std::string CUSTOM_USER = "rwuser@admin";
+}  // namespace
+
+static Status _checkQueryOPAuthForUser(Client* client, const NamespaceString& ns) {
+    if (AuthorizationSession::get(client)->getAuthorizationManager().isAuthEnabled()) {
+        std::string username;
+        UserNameIterator nameIter = AuthorizationSession::get(client)->getAuthenticatedUserNames();
+        if (nameIter.more()) {
+            username = nameIter->getFullName();
+        }
+        if (username == CUSTOM_USER) {  // check if consumer
+            LOG(4) << "Mongodb consumer run command " << ns.getCommandNS() << " query";
+            /*forbid consumer run command upon admin/config database*/
+            if (NamespaceString::internalDb(ns.db())) {
+                return Status(ErrorCodes::Unauthorized,
+                              str::stream() << "not authorized for query on " << ns.ns());
+            }
+        }
+    }
+    return Status::OK();
+}
+
+namespace {
 
 const auto kOperationTime = "operationTime"_sd;
 

@@ -81,4 +81,11 @@ MONGO_EXPORT_SERVER_PARAMETER(internalQueryPlannerGenerateCoveredWholeIndexScans
 MONGO_EXPORT_SERVER_PARAMETER(internalQueryIgnoreUnknownJSONSchemaKeywords, bool, false);
 
 MONGO_EXPORT_SERVER_PARAMETER(internalQueryProhibitBlockingMergeOnMongoS, bool, false);
+
+MONGO_EXPORT_SERVER_PARAMETER(internalQueryStageMemUsageSwitch, bool, false);
+
+MONGO_EXPORT_SERVER_PARAMETER(internalQueryStageMemUsageMAX, long long, 0x7ffffffff);
+
+MONGO_EXPORT_SERVER_PARAMETER(internalQueryStageMemUsageMIN, long long, 3 * 1024);
+
 }  // namespace mongo

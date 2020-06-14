@@ -140,6 +140,34 @@ string BSONObj::jsonString(JsonStringFormat format, int pretty, bool isArray) co
     return s.str();
 }
 
+void BSONObj::jsonString(stringstream& s, JsonStringFormat format, int pretty, bool isArray) const {
+    if (isEmpty()) {
+        s << (isArray ? "[]" : "{}");
+        return;
+    }
+
+    s << (isArray ? "[ " : "{ ");
+    BSONObjIterator i(*this);
+    BSONElement e = i.next();
+    if (!e.eoo())
+        while (1) {
+            e.jsonString(s, format, !isArray, pretty ? pretty + 1 : 0);
+            e = i.next();
+            if (e.eoo())
+                break;
+            s << ",";
+            if (pretty) {
+                s << '\n';
+                for (int x = 0; x < pretty; x++)
+                    s << "  ";
+            } else {
+                s << " ";
+            }
+        }
+    s << (isArray ? " ]" : " }");
+}
+
+
 bool BSONObj::valid(BSONVersion version) const {
     return validateBSON(objdata(), objsize(), version).isOK();
 }
@@ -538,6 +566,25 @@ BSONObj BSONObj::removeField(StringData name) const {
         const char* fname = e.fieldName();
         if (name != fname)
             b.append(e);
+    }
+    return b.obj();
+}
+
+BSONObj BSONObj::updateField(StringData name, StringData value) const {
+    BSONObjBuilder b;
+    BSONObjIterator i(*this);
+    while (i.more()) {
+        BSONElement e = i.next();
+        const char* fname = e.fieldName();
+        if (name == fname) {
+            BSONObjBuilder tmp;
+            tmp.append(name, value);
+            BSONObj tmpObj = tmp.obj();
+            BSONElement n = tmpObj[name];
+            b.append(n);
+        } else {
+            b.append(e);
+        }
     }
     return b.obj();
 }

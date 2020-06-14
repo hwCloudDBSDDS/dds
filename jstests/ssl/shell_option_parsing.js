@@ -27,11 +27,13 @@
     const usernameNotTest = "userNotTest";
     const usernameX509 = "C=US,ST=New York,L=New York City,O=MongoDB,OU=KernelUser,CN=client";
 
-    const password = username;
-    const passwordNotTest = usernameNotTest;
+    const password = "Password_123r";
+    const passwordNotTest = "Password_123r";
 
-    mongod.getDB("test").createUser({user: username, pwd: username, roles: []});
-    mongod.getDB("notTest").createUser({user: usernameNotTest, pwd: usernameNotTest, roles: []});
+    mongod.getDB("test").createUser(
+        {user: username, pwd: password, roles: [], "passwordDigestor": "server"});
+    mongod.getDB("notTest").createUser(
+        {user: usernameNotTest, pwd: passwordNotTest, roles: [], "passwordDigestor": "server"});
     mongod.getDB("$external").createUser({user: usernameX509, roles: []});
 
     var i = 0;

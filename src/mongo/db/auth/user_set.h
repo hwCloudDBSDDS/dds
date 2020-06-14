@@ -50,8 +50,9 @@ class UserSet {
 public:
     typedef std::vector<User*>::const_iterator iterator;
 
-    UserSet();
-    ~UserSet();
+    //  UserSet();
+    UserSet() : _users(), _usersEnd(_users.end()) {}
+    ~UserSet() {}
 
     /**
      * Adds a User to the UserSet.
@@ -109,6 +110,12 @@ public:
         return _usersEnd;
     }
 
+    // begin dds
+    bool isEmpyt() const {
+        return (begin() == end());
+    }
+    // end dds
+
 private:
     typedef std::vector<User*>::iterator mutable_iterator;
 
@@ -124,5 +131,4 @@ private:
     std::vector<User*> _users;
     std::vector<User*>::iterator _usersEnd;
 };
-
 }  // namespace mongo

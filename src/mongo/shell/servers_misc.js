@@ -23,6 +23,12 @@ ToolTest.prototype.startDB = function(coll) {
     };
 
     Object.extend(options, this.options);
+    if ((!options.binVersion) ||
+        (MongoRunner.laterThan(options.binVersion, "3.2.18.1")) && !options.adminWhiteListPath) {
+        if (!options.adminWhiteListPath) {
+            options.adminWhiteListPath = "/tmp/adminWhiteList";
+        }
+    }
 
     this.m = startMongoProgram.apply(null, MongoRunner.arrOptions("mongod", options));
     this.db = this.m.getDB(this.baseName);

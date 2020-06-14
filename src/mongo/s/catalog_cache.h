@@ -123,6 +123,7 @@ public:
     CatalogCache(CatalogCacheLoader& cacheLoader);
     ~CatalogCache();
 
+    void auditDatabaseCache(OperationContext* opCtx);
     /**
      * Blocking method that ensures the specified database is in the cache, loading it if necessary,
      * and returns it. If the database was not in cache, all the sharded collections will be in the

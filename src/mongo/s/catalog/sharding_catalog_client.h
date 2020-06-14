@@ -208,6 +208,7 @@ public:
      */
     virtual StatusWith<std::vector<TagsType>> getTagsForCollection(OperationContext* opCtx,
                                                                    const NamespaceString& nss) = 0;
+    virtual Status getDatabases(OperationContext* opCtx, std::vector<BSONObj>* dbs) = 0;
 
     /**
      * Retrieves all shards in this sharded cluster.
@@ -239,6 +240,16 @@ public:
                                               const std::string& dbname,
                                               const BSONObj& cmdObj,
                                               BSONObjBuilder* result) = 0;
+
+    /**
+      * This is function main function like above, only add a check txn function
+      * if txn is own by customer, then send the cmd to mongod with customer info
+      * if not, just like above function
+      */
+    virtual bool runUserManagementReadCommandWithCheckopCtx(OperationContext* opCtx,
+                                                            const std::string& dbname,
+                                                            const BSONObj& cmdObj,
+                                                            BSONObjBuilder* result) = 0;
 
     /**
      * Applies oplog entries to the config servers.

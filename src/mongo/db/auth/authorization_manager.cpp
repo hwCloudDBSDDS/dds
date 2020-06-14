@@ -69,6 +69,7 @@ mongo::AuthInfo mongo::internalSecurity;
 namespace mongo {
 
 const std::string AuthorizationManager::USER_NAME_FIELD_NAME = "user";
+const std::string AuthorizationManager::USER_TOKEN_FIELD_NAME = "token";
 const std::string AuthorizationManager::USER_DB_FIELD_NAME = "db";
 const std::string AuthorizationManager::ROLE_NAME_FIELD_NAME = "role";
 const std::string AuthorizationManager::ROLE_DB_FIELD_NAME = "db";
@@ -100,5 +101,21 @@ const int AuthorizationManager::schemaVersion26Final;
 const int AuthorizationManager::schemaVersion28SCRAM;
 
 MONGO_DEFINE_SHIM(AuthorizationManager::create);
+
+bool AuthorizationManager::isReservedCollectionForCustomer(std::string collectionName) {
+    static std::string reservedCollections =
+        "\
+,local.replset.minvalid\
+,local.startup_log\
+,local.system.replset\
+,local.replset.election\
+,local.me\
+,";
+
+    if (reservedCollections.find("," + collectionName + ",") != std::string::npos) {
+        return true;
+    }
+    return false;
+}
 
 }  // namespace mongo

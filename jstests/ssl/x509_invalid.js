@@ -36,8 +36,8 @@
 
     function runTest(conn) {
         const admin = conn.getDB('admin');
-        admin.createUser({user: "admin", pwd: "admin", roles: ["root"]});
-        admin.auth('admin', 'admin');
+        admin.createUser({user: "admin", pwd: "Password@a1b", roles: ["root"]});
+        admin.auth('admin', 'Password@a1b');
 
         const external = conn.getDB('$external');
         external.createUser({user: CLIENT_NAME, roles: [{'role': 'readWrite', 'db': 'test'}]});

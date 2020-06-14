@@ -13,7 +13,7 @@
     db.evalprep.drop();
 
     // The db.auth method call getMongo().auth but catches the exception.
-    assert.eq(0, db.eval('db.auth("reader", "reader")'));
+    assert.eq(0, db.eval('db.auth("reader", "Password@a1b")'));
 
     // Call the native implementation auth function and verify it does not exist under the db.eval
     // javascript context.

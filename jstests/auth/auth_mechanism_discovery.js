@@ -7,12 +7,12 @@
         const admin = conn.getDB("admin");
         const test = conn.getDB("test");
 
-        admin.createUser({user: 'admin', pwd: 'pass', roles: jsTest.adminUserRoles});
-        assert(admin.auth('admin', 'pass'));
+        admin.createUser({user: 'admin', pwd: 'Huawe@12', roles: jsTest.adminUserRoles});
+        assert(admin.auth('admin', 'Huawe@12'));
 
         // Verify user mechanism discovery.
         function checkUser(username, mechanism) {
-            var createUser = {createUser: username, pwd: 'pwd', roles: []};
+            var createUser = {createUser: username, pwd: 'Huawe@12', roles: []};
             if (mechanism !== undefined) {
                 createUser.mechanisms = [mechanism];
             } else {
@@ -21,7 +21,7 @@
             }
             assert.commandWorked(test.runCommand(createUser));
             assert.eq(test._getDefaultAuthenticationMechanism(username, test.getName()), mechanism);
-            assert(test.auth(username, 'pwd'));
+            assert(test.auth(username, 'Huawe@12'));
             test.logout();
         }
         checkUser('userSha1', 'SCRAM-SHA-1');

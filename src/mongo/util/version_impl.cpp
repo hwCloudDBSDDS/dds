@@ -96,6 +96,10 @@ public:
         return version::kBuildEnvironment;
     }
 
+    StringData innerVersion() const noexcept final {
+        return version::kInnerVersion;
+    }
+
 } kInterpolatedVersionInfo{};
 
 MONGO_INITIALIZER_GENERAL(EnableVersionInfo,

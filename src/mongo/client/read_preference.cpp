@@ -47,6 +47,7 @@ namespace {
 const char kModeFieldName[] = "mode";
 const char kTagsFieldName[] = "tags";
 const char kMaxStalenessSecondsFieldName[] = "maxStalenessSeconds";
+const char kcustomerMetaName[] = "customerMeta";
 
 const char kPrimaryOnly[] = "primary";
 const char kPrimaryPreferred[] = "primaryPreferred";
@@ -141,13 +142,26 @@ ReadPreferenceSetting::ReadPreferenceSetting(ReadPreference pref,
                                              Seconds maxStalenessSeconds)
     : pref(std::move(pref)),
       tags(std::move(tags)),
-      maxStalenessSeconds(std::move(maxStalenessSeconds)) {}
+      maxStalenessSeconds(std::move(maxStalenessSeconds)),
+      customerMeta(false) {}
+
+ReadPreferenceSetting::ReadPreferenceSetting(ReadPreference pref,
+                                             TagSet tags,
+                                             Seconds maxStalenessSeconds,
+                                             bool customerMeta)
+    : pref(std::move(pref)),
+      tags(std::move(tags)),
+      maxStalenessSeconds(std::move(maxStalenessSeconds)),
+      customerMeta(customerMeta) {}
 
 ReadPreferenceSetting::ReadPreferenceSetting(ReadPreference pref, Seconds maxStalenessSeconds)
     : ReadPreferenceSetting(pref, defaultTagSetForMode(pref), maxStalenessSeconds) {}
 
 ReadPreferenceSetting::ReadPreferenceSetting(ReadPreference pref, TagSet tags)
-    : pref(std::move(pref)), tags(std::move(tags)) {}
+    : pref(std::move(pref)), tags(std::move(tags)), customerMeta(false) {}
+
+ReadPreferenceSetting::ReadPreferenceSetting(ReadPreference pref, TagSet tags, bool customerMeta)
+    : pref(std::move(pref)), tags(std::move(tags)), customerMeta(customerMeta) {}
 
 ReadPreferenceSetting::ReadPreferenceSetting(ReadPreference pref)
     : ReadPreferenceSetting(pref, defaultTagSetForMode(pref)) {}
@@ -228,7 +242,17 @@ StatusWith<ReadPreferenceSetting> ReadPreferenceSetting::fromInnerBSON(const BSO
                                     << " can not be set for the primary mode");
     }
 
-    return ReadPreferenceSetting(mode, tags, Seconds(maxStalenessSecondsValue));
+    bool customerMeta = false;
+    bsonExtractBooleanFieldWithDefault(readPrefObj, kcustomerMetaName, false, &customerMeta);
+
+    StatusWith<ReadPreferenceSetting> ret =
+        ReadPreferenceSetting(mode, tags, Seconds(maxStalenessSecondsValue));
+
+    if (ret.isOK()) {
+        ret.getValue().customerMeta = customerMeta;
+    }
+
+    return ret;
 }
 
 StatusWith<ReadPreferenceSetting> ReadPreferenceSetting::fromInnerBSON(const BSONElement& elem) {
@@ -257,6 +281,9 @@ void ReadPreferenceSetting::toInnerBSON(BSONObjBuilder* bob) const {
     }
     if (maxStalenessSeconds.count() > 0) {
         bob->append(kMaxStalenessSecondsFieldName, maxStalenessSeconds.count());
+    }
+    if (customerMeta != false) {
+        bob->append(kcustomerMetaName, customerMeta);
     }
 }
 

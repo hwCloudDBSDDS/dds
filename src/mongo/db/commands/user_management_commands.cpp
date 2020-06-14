@@ -66,6 +66,7 @@
 #include "mongo/db/ops/write_ops.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/service_context.h"
+#include "mongo/platform/random.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/functional.h"
@@ -78,6 +79,7 @@
 #include "mongo/util/password_digest.h"
 #include "mongo/util/sequence_util.h"
 #include "mongo/util/time_support.h"
+
 
 namespace mongo {
 
@@ -321,6 +323,7 @@ Status updateAuthzDocuments(OperationContext* opCtx,
                                   entry.setUpsert(upsert);
                                   return entry;
                               }()});
+                              updateOp.getWriteCommandBase().setUsermanagerCmd(true);
                               return updateOp.toBSON({});
                           }(),
                           res);
@@ -392,6 +395,7 @@ Status removeAuthzDocuments(OperationContext* opCtx,
                                   entry.setMulti(true);
                                   return entry;
                               }()});
+                              deleteOp.getWriteCommandBase().setUsermanagerCmd(true);
                               return deleteOp.toBSON({});
                           }(),
                           res);
@@ -568,6 +572,31 @@ Status writeAuthSchemaVersionIfNeeded(OperationContext* opCtx,
 
 /**
  * Returns Status::OK() if the current Auth schema version is at least the auth schema version
+ * for the MongoDB 2.6 and 3.0 MongoDB-CR/SCRAM mixed auth mode.
+ * Returns an error otherwise.
+ */
+Status requireAuthSchemaVersion26Final(OperationContext* opCtx,
+                                       AuthorizationManager* authzManager) {
+    int foundSchemaVersion;
+    Status status = authzManager->getAuthorizationVersion(opCtx, &foundSchemaVersion);
+    if (!status.isOK()) {
+        return status;
+    }
+
+    if (foundSchemaVersion < AuthorizationManager::schemaVersion26Final) {
+        return Status(ErrorCodes::AuthSchemaIncompatible,
+                      str::stream()
+                          << "User and role management commands require auth data to have "
+                          << "at least schema version "
+                          << AuthorizationManager::schemaVersion26Final
+                          << " but found "
+                          << foundSchemaVersion);
+    }
+    return writeAuthSchemaVersionIfNeeded(opCtx, authzManager, foundSchemaVersion);
+}
+
+/**
+ * Returns Status::OK() if the current Auth schema version is at least the auth schema version
  * for the MongoDB 3.0 SCRAM auth mode.
  * Returns an error otherwise.
  */
@@ -737,12 +766,34 @@ Status trimCredentials(OperationContext* opCtx,
     return Status::OK();
 }
 
+/**
+ * Return true if find the readonlyuser role (for rds feature).
+ * Return false otherwise.
+ */
+template <typename T>
+bool hasReadonlyRole(const T& roles) {
+    for (auto role : roles) {
+        if (role.isReadonlyRole()) {
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * Return false if the cmd is from customer which can not manage readonlyuser.
+ * Return true when the cmd is from admin.
+ */
+bool checkOkayToManageReadonlyUser(OperationContext* opCtx) {
+    return !(AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser() ||
+             opCtx->isCustomerTxn());
+}
+
 }  // namespace
 
 
 class CmdCreateUser : public BasicCommand {
 public:
-    CmdCreateUser() : BasicCommand("createUser") {}
+    CmdCreateUser() : BasicCommand("createUser"), _random(SecureRandom::create()) {}
 
     bool isUserManagementCommand() const override {
         return true;
@@ -794,6 +845,10 @@ public:
             uasserted(ErrorCodes::BadValue, "\"createUser\" command requires a \"roles\" array");
         }
 
+        if (hasReadonlyRole(args.roles) && (!checkOkayToManageReadonlyUser(opCtx))) {
+            uasserted(ErrorCodes::Unauthorized, "unauthorized to create readonly user.");
+        }
+
 #ifdef MONGO_CONFIG_SSL
         if (args.userName.getDB() == "$external" && getSSLManager() &&
             getSSLManager()->getSSLConfiguration().isClusterMember(args.userName.getUser())) {
@@ -807,6 +862,8 @@ public:
         BSONObjBuilder userObjBuilder;
         userObjBuilder.append(
             "_id", str::stream() << args.userName.getDB() << "." << args.userName.getUser());
+        auto token = nextInt64();
+        userObjBuilder.append(AuthorizationManager::USER_TOKEN_FIELD_NAME, token);
         userObjBuilder.append(AuthorizationManager::USER_NAME_FIELD_NAME, args.userName.getUser());
         userObjBuilder.append(AuthorizationManager::USER_DB_FIELD_NAME, args.userName.getDB());
 
@@ -864,6 +921,14 @@ public:
         auth::redactPasswordData(cmdObj->root());
     }
 
+private:
+    int64_t nextInt64() {
+        stdx::lock_guard<SimpleMutex> lk(_randMutex);
+        return _random->nextInt64();
+    }
+    SimpleMutex _randMutex;  // Synchronizes accesses to _random.
+    std::unique_ptr<SecureRandom> _random;
+
 } cmdCreateUser;
 
 class CmdUpdateUser : public BasicCommand {
@@ -900,10 +965,23 @@ public:
         Status status = auth::parseCreateOrUpdateUserCommands(cmdObj, "updateUser", dbname, &args);
         uassertStatusOK(status);
 
+        if (args.userName.isRwUser() && args.hasRoles &&
+            (AuthorizationSession::get((opCtx->getClient()))->isAuthWithCustomerOrNoAuthUser() ||
+             opCtx->isCustomerTxn())) {
+
+            return CommandHelpers::appendCommandStatusNoThrow(
+                result,
+                Status(ErrorCodes::Unauthorized, "unauthorized. Cannot update rwuser roles"));
+        }
+
         if (!args.hasPassword && !args.hasCustomData && !args.hasRoles &&
             !args.authenticationRestrictions && args.mechanisms.empty()) {
             uasserted(ErrorCodes::BadValue,
                       "Must specify at least one field to update in updateUser");
+        }
+
+        if (hasReadonlyRole(args.roles) && !checkOkayToManageReadonlyUser(opCtx)) {
+            uasserted(ErrorCodes::Unauthorized, "unauthorized. Cannot update readonly user.");
         }
 
         if (args.hasPassword && args.userName.getDB() == "$external") {
@@ -965,6 +1043,12 @@ public:
         AuthorizationManager* authzManager = AuthorizationManager::get(serviceContext);
         status = requireWritableAuthSchema28SCRAM(opCtx, authzManager);
         uassertStatusOK(status);
+
+        stdx::unordered_set<RoleName> userRoles;
+        status = getCurrentUserRoles(opCtx, authzManager, args.userName, &userRoles);
+        if (status.isOK() && hasReadonlyRole(userRoles) && !checkOkayToManageReadonlyUser(opCtx)) {
+            uasserted(ErrorCodes::Unauthorized, "unauthorized. Cannot update readonly user.");
+        }
 
         // Role existence has to be checked after acquiring the update lock
         if (args.hasRoles) {
@@ -1030,11 +1114,25 @@ public:
         Status status = auth::parseAndValidateDropUserCommand(cmdObj, dbname, &userName);
         uassertStatusOK(status);
 
+        if (userName.isRwUser() &&
+            (AuthorizationSession::get((opCtx->getClient()))->isAuthWithCustomerOrNoAuthUser() ||
+             opCtx->isCustomerTxn())) {
+            return CommandHelpers::appendCommandStatusNoThrow(
+                result,
+                Status(ErrorCodes::Unauthorized, "unauthorized. Cannot remove rwuser account"));
+        }
+
         ServiceContext* serviceContext = opCtx->getClient()->getServiceContext();
         stdx::lock_guard<stdx::mutex> lk(getAuthzDataMutex(serviceContext));
         AuthorizationManager* authzManager = AuthorizationManager::get(serviceContext);
         status = requireWritableAuthSchema28SCRAM(opCtx, authzManager);
         uassertStatusOK(status);
+
+        stdx::unordered_set<RoleName> userRoles;
+        status = getCurrentUserRoles(opCtx, authzManager, userName, &userRoles);
+        if (status.isOK() && hasReadonlyRole(userRoles) && !checkOkayToManageReadonlyUser(opCtx)) {
+            uasserted(ErrorCodes::Unauthorized, "unauthorized. Cannot drop user of readonly user.");
+        }
 
         audit::logDropUser(Client::getCurrent(), userName);
 
@@ -1157,6 +1255,14 @@ public:
         uassertStatusOK(status);
 
         UserName userName(userNameString, dbname);
+        if (userName.isRwUser() &&
+            (AuthorizationSession::get((opCtx->getClient()))->isAuthWithCustomerOrNoAuthUser() ||
+             opCtx->isCustomerTxn())) {
+
+            return CommandHelpers::appendCommandStatusNoThrow(
+                result,
+                Status(ErrorCodes::Unauthorized, "unauthorized. Cannot grantRolesToUser rwuser"));
+        }
         stdx::unordered_set<RoleName> userRoles;
         status = getCurrentUserRoles(opCtx, authzManager, userName, &userRoles);
         uassertStatusOK(status);
@@ -1168,6 +1274,11 @@ public:
             uassertStatusOK(status);
 
             userRoles.insert(roleName);
+        }
+
+        if (hasReadonlyRole(userRoles) && !checkOkayToManageReadonlyUser(opCtx)) {
+            uasserted(ErrorCodes::Unauthorized,
+                      "unauthorized. Cannot grantRolesToUser readonly user");
         }
 
         audit::logGrantRolesToUser(Client::getCurrent(), userName, roles);
@@ -1226,9 +1337,23 @@ public:
         uassertStatusOK(status);
 
         UserName userName(userNameString, dbname);
+        if (userName.isRwUser() &&
+            (AuthorizationSession::get((opCtx->getClient()))->isAuthWithCustomerOrNoAuthUser() ||
+             opCtx->isCustomerTxn())) {
+
+            return CommandHelpers::appendCommandStatusNoThrow(
+                result,
+                Status(ErrorCodes::Unauthorized,
+                       "unauthorized. Cannot revokeRolesFromUser rwuser"));
+        }
         stdx::unordered_set<RoleName> userRoles;
         status = getCurrentUserRoles(opCtx, authzManager, userName, &userRoles);
         uassertStatusOK(status);
+
+        if (hasReadonlyRole(userRoles) && !checkOkayToManageReadonlyUser(opCtx)) {
+            uasserted(ErrorCodes::Unauthorized,
+                      "unauthorized. Cannot revokeRolesFromUser readonly user");
+        }
 
         for (vector<RoleName>::iterator it = roles.begin(); it != roles.end(); ++it) {
             RoleName& roleName = *it;
@@ -1299,6 +1424,12 @@ public:
             // If you want privileges or restrictions you need to call getUserDescription on each
             // user.
             for (size_t i = 0; i < args.userNames.size(); ++i) {
+                if (args.userNames[i].isBuildinUser() &&
+                    (AuthorizationSession::get((opCtx->getClient()))
+                         ->isAuthWithCustomerOrNoAuthUser() ||
+                     opCtx->isCustomerTxn())) {
+                    continue;
+                }
                 BSONObj userDetails;
                 status = getGlobalAuthorizationManager()->getUserDescription(
                     opCtx, args.userNames[i], &userDetails);
@@ -1341,15 +1472,40 @@ public:
             if (args.target == auth::UsersInfoArgs::Target::kGlobal) {
                 // Leave the pipeline unconstrained, we want to return every user.
             } else if (args.target == auth::UsersInfoArgs::Target::kDB) {
-                pipeline.push_back(
-                    BSON("$match" << BSON(AuthorizationManager::USER_DB_FIELD_NAME << dbname)));
+                if (AuthorizationSession::get((opCtx->getClient()))
+                        ->isAuthWithCustomerOrNoAuthUser() ||
+                    opCtx->isCustomerTxn()) {
+                    BSONObj filter;
+                    std::set<std::string> buildinUsers;
+                    UserName::getBuildinUsers(buildinUsers);
+                    BSONObj filterUsername =
+                        BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                    BSONObj filterdbname = BSON(AuthorizationManager::USER_DB_FIELD_NAME << dbname);
+                    filter = BSON("$and" << BSON_ARRAY(filterUsername << filterdbname));
+                    pipeline.push_back(BSON("$match" << filter));
+                } else {
+                    pipeline.push_back(
+                        BSON("$match" << BSON(AuthorizationManager::USER_DB_FIELD_NAME << dbname)));
+                }
             } else {
                 BSONArrayBuilder usersMatchArray;
+                bool all_buildin_user = true;
                 for (size_t i = 0; i < args.userNames.size(); ++i) {
+                    if (args.userNames[i].isBuildinUser() &&
+                        (AuthorizationSession::get((opCtx->getClient()))
+                             ->isAuthWithCustomerOrNoAuthUser() ||
+                         opCtx->isCustomerTxn())) {
+                        continue;
+                    }
+                    all_buildin_user = false;
                     usersMatchArray.append(BSON(AuthorizationManager::USER_NAME_FIELD_NAME
                                                 << args.userNames[i].getUser()
                                                 << AuthorizationManager::USER_DB_FIELD_NAME
                                                 << args.userNames[i].getDB()));
+                }
+                if (all_buildin_user) {
+                    result.append("users", usersArrayBuilder.arr());
+                    return true;
                 }
                 pipeline.push_back(BSON("$match" << BSON("$or" << usersMatchArray.arr())));
             }

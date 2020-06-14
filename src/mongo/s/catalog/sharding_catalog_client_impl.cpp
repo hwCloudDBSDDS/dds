@@ -39,6 +39,8 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/read_preference.h"
 #include "mongo/client/remote_command_targeter.h"
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/client.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/namespace_string.h"
@@ -89,6 +91,9 @@ namespace {
 const ReadPreferenceSetting kConfigReadSelector(ReadPreference::Nearest, TagSet{});
 const ReadPreferenceSetting kConfigPrimaryPreferredSelector(ReadPreference::PrimaryPreferred,
                                                             TagSet{});
+const ReadPreferenceSetting kCustomerConfigPrimaryPreferredSelector(
+    ReadPreference::PrimaryPreferred, TagSet{}, true);
+
 const int kMaxReadRetry = 3;
 const int kMaxWriteRetry = 3;
 
@@ -294,6 +299,40 @@ StatusWith<repl::OpTimeWith<std::vector<DatabaseType>>> ShardingCatalogClientImp
 
     return repl::OpTimeWith<std::vector<DatabaseType>>{std::move(databases),
                                                        findStatus.getValue().opTime};
+}
+
+Status ShardingCatalogClientImpl::getDatabases(OperationContext* txn, vector<BSONObj>* dbs) {
+    auto findStatus = _exhaustiveFindOnConfig(txn,
+                                              kConfigReadSelector,
+                                              repl::ReadConcernLevel::kMajorityReadConcern,
+                                              NamespaceString(DatabaseType::ConfigNS),
+                                              BSONObj(),
+                                              BSONObj(),
+                                              boost::none);  // no limit
+    if (!findStatus.isOK()) {
+        return findStatus.getStatus();
+    }
+    BSONObjBuilder builder;
+    for (const BSONObj& obj : findStatus.getValue().value) {
+        BSONObjBuilder builder;
+        string dbName;
+        Status status = bsonExtractStringField(obj, DatabaseType::name(), &dbName);
+        if (!status.isOK()) {
+            dbs->clear();
+            return status;
+        }
+        builder.append("db", dbName);
+        string primaryShard;
+        Status shardIdStatus = bsonExtractStringField(obj, DatabaseType::primary(), &primaryShard);
+        if (!status.isOK()) {
+            dbs->clear();
+            return status;
+        }
+        builder.append("primary", primaryShard);
+        dbs->push_back(builder.obj());
+    }
+
+    return Status::OK();
 }
 
 StatusWith<repl::OpTimeWith<DatabaseType>> ShardingCatalogClientImpl::_fetchDatabaseMetadata(
@@ -676,11 +715,14 @@ bool ShardingCatalogClientImpl::runUserManagementWriteCommand(OperationContext* 
         modifiedCmd.append(WriteConcernOptions::kWriteConcernField, writeConcern.toBSON());
         cmdToRun = modifiedCmd.obj();
     }
-
+    auto readPreferenceSetting = ReadPreferenceSetting{ReadPreference::PrimaryOnly};
+    if (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser()) {
+        readPreferenceSetting.customerMeta = true;
+    }
     auto response =
         Grid::get(opCtx)->shardRegistry()->getConfigShard()->runCommandWithFixedRetryAttempts(
             opCtx,
-            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+            readPreferenceSetting,
             dbname,
             cmdToRun,
             Shard::kDefaultConfigCommandTimeout,
@@ -720,6 +762,30 @@ bool ShardingCatalogClientImpl::runUserManagementReadCommand(OperationContext* o
     }
 
     return CommandHelpers::appendCommandStatusNoThrow(*result, resultStatus.getStatus());  // XXX
+}
+
+bool ShardingCatalogClientImpl::runUserManagementReadCommandWithCheckopCtx(
+    OperationContext* opCtx,
+    const std::string& dbname,
+    const BSONObj& cmdObj,
+    BSONObjBuilder* result) {
+    bool isCustomerCmd =
+        AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser();
+    auto resultStatus =
+        Grid::get(opCtx)->shardRegistry()->getConfigShard()->runCommandWithFixedRetryAttempts(
+            opCtx,
+            isCustomerCmd ? kCustomerConfigPrimaryPreferredSelector
+                          : kConfigPrimaryPreferredSelector,
+            dbname,
+            cmdObj,
+            Shard::kDefaultConfigCommandTimeout,
+            Shard::RetryPolicy::kIdempotent);
+    if (resultStatus.isOK()) {
+        CommandHelpers::filterCommandReplyForPassthrough(resultStatus.getValue().response, result);
+        return resultStatus.getValue().commandStatus.isOK();
+    }
+
+    return CommandHelpers::appendCommandStatusNoThrow(*result, resultStatus.getStatus());
 }
 
 Status ShardingCatalogClientImpl::applyChunkOpsDeprecated(OperationContext* opCtx,

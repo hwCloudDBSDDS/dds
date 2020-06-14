@@ -70,6 +70,9 @@ namespace {
 // response.
 const BSONObj kReplMetadata(BSON(rpc::kReplSetMetadataFieldName << 1));
 
+const BSONObj kCustomerReplMetadata(BSON(rpc::kReplSetMetadataFieldName << 1 << "customerCmd"
+                                                                        << 1));
+
 constexpr bool internalProhibitShardOperationRetryByDefault = false;
 MONGO_EXPORT_SERVER_PARAMETER(internalProhibitShardOperationRetry,
                               bool,
@@ -179,8 +182,13 @@ BSONObj ShardRemote::_appendMetadataForCommand(OperationContext* opCtx,
 
     readPref.toContainingBSON(&builder);
 
-    if (isConfig())
-        builder.appendElements(kReplMetadata);
+    if (isConfig()) {
+        if (readPref.customerMeta == true) {
+            builder.appendElements(kCustomerReplMetadata);
+        } else {
+            builder.appendElements(kReplMetadata);
+        }
+    }
 
     return builder.obj();
 }

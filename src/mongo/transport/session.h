@@ -100,7 +100,6 @@ public:
      * eg due to some outside event.
      */
     virtual void end() = 0;
-
     /**
      * Source (receive) a new Message from the remote host for this Session.
      */
@@ -177,6 +176,42 @@ public:
 
     virtual TagMask getTags() const;
 
+    void setInAdminWhiteList() {
+        _inAdminWhiteList = true;
+    }
+
+    void setPublicIp() {
+        _fromPublicIp = true;
+    }
+
+    bool inAdminWhiteList() {
+        return _inAdminWhiteList;
+    }
+
+    bool isCustomerConnection() const {
+        return (!_inAdminWhiteList);
+    }
+
+    bool isFromPublicIp() const {
+        return _fromPublicIp;
+    }
+
+    bool isFromPrivateIp1() const {
+        return _fromPrivateIp;
+    }
+
+    void setPrivateIp1() {
+        _fromPrivateIp = true;
+    }
+
+    void setIpv6() {
+        _ipv6 = true;
+    }
+
+    bool isFromIpv6() const {
+        return _ipv6;
+    }
+
 protected:
     Session();
 
@@ -184,7 +219,11 @@ private:
     const Id _id;
 
     AtomicWord<TagMask> _tags;
+    bool _inAdminWhiteList{false};
+    bool _inUserWhiteList{false};
+    bool _fromPublicIp{false};
+    bool _fromPrivateIp{false};
+    bool _ipv6{false};
 };
-
 }  // namespace transport
 }  // namespace mongo

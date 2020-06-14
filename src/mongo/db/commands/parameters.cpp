@@ -30,6 +30,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include <boost/algorithm/string.hpp>
 #include <set>
 
 #include "mongo/bson/json.h"
@@ -41,9 +42,11 @@
 #include "mongo/db/command_generic_argument.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/server_parameters.h"
+#include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/logger/logger.h"
 #include "mongo/logger/parse_log_component_settings.h"
+#include "mongo/transport/service_entry_point.h"
 #include "mongo/util/mongoutils/str.h"
 
 using std::string;
@@ -428,6 +431,40 @@ private:
     }
 } logComponentVerbositySetting;
 
+class ReadOnlySetting : public ServerParameter {
+public:
+    ReadOnlySetting() : ServerParameter(ServerParameterSet::getGlobal(), "readOnly") {}
+
+    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+        b << name << serverGlobalParams.readOnly;
+    }
+
+    virtual Status set(const BSONElement& newValueElement) {
+        if (newValueElement.type() != BSONType::Bool) {
+            return Status(ErrorCodes::BadValue, str::stream() << "Invalid value type for readOnly");
+        }
+
+        serverGlobalParams.readOnly = newValueElement.Bool();
+        return Status::OK();
+    }
+
+    virtual Status setFromString(const std::string& str) {
+        bool newValue = true;
+        if (str == "true") {
+            newValue = true;
+        } else if (str == "false") {
+            newValue = false;
+        } else {
+            return Status(ErrorCodes::BadValue,
+                          str::stream() << "Invalid value type for readOnly: " << str);
+        }
+
+        serverGlobalParams.readOnly = newValue;
+        return Status::OK();
+    }
+} readOnlySetting;
+
+
 ExportedServerParameter<bool, ServerParameterType::kStartupAndRuntime> QuietSetting(
     ServerParameterSet::getGlobal(), "quiet", &serverGlobalParams.quiet);
 
@@ -478,6 +515,183 @@ private:
     stdx::mutex _mutex;
     std::string _value;
 } automationServiceDescriptor;
+
+//添加 isImplicitCreateCol
+class IsImplicitCreateColSetting : public ServerParameter {
+public:
+    IsImplicitCreateColSetting()
+        : ServerParameter(ServerParameterSet::getGlobal(), "isImplicitCreateCol") {}
+
+    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+        b << name << serverGlobalParams.isImplicitCreateCol;
+    }
+
+    virtual Status set(const BSONElement& newValueElement) {
+        if (newValueElement.type() != BSONType::Bool) {
+            return Status(ErrorCodes::BadValue,
+                          str::stream() << "Invalid value type for isImplicitCreateCol");
+        }
+
+        serverGlobalParams.isImplicitCreateCol = newValueElement.Bool();
+        return Status::OK();
+    }
+
+    virtual Status setFromString(const std::string& str) {
+        bool newValue = true;
+        if (str == "true") {
+            newValue = true;
+        } else if (str == "false") {
+            newValue = false;
+        } else {
+            return Status(ErrorCodes::BadValue,
+                          str::stream() << "Invalid value type for isImplicitCreateCol: " << str);
+        }
+
+        serverGlobalParams.isImplicitCreateCol = newValue;
+        return Status::OK();
+    }
+} isImplicitCreateCol;
+
+class MaxIncomingConnectionsSetting : public ServerParameter {
+public:
+    MaxIncomingConnectionsSetting()
+        : ServerParameter(ServerParameterSet::getGlobal(), "maxIncomingConnections") {}
+
+    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+        b << name << static_cast<int>(serverGlobalParams.maxConns);
+    }
+
+    virtual Status set(const BSONElement& newValueElement) {
+        int newValue = 0;
+        if (!newValueElement.coerce(&newValue) || newValue < 0)
+            return Status(
+                ErrorCodes::BadValue,
+                mongoutils::str::stream()
+                    << "Invalid value for maxIncomingConnections: "
+                    << newValueElement
+                    << " and now MaxConnection is "
+                    << getGlobalServiceContext()->getServiceEntryPoint()->getMaxNumConnections());
+        // invalid use of incomplete type 'class mongo::ServiceEntryPoint'
+        // return a serviceContext
+        Status status =
+            getGlobalServiceContext()->getServiceEntryPoint()->setMaxNumConnections(newValue);
+
+        if (!status.isOK())
+            return status;
+        serverGlobalParams.maxConns = newValue;
+        return Status::OK();
+    }
+
+
+    virtual Status setFromString(const std::string& str) {
+        int newValue = 0;
+        Status status = parseNumberFromString(str, &newValue);
+        if (!status.isOK())
+            return status;
+        if (newValue < 0)
+            return Status(
+                ErrorCodes::BadValue,
+                mongoutils::str::stream()
+                    << "Invalid value for maxIncomingConnections: "
+                    << newValue
+                    << " and now MaxConnection is "
+                    << getGlobalServiceContext()->getServiceEntryPoint()->getMaxNumConnections());
+
+        status = getGlobalServiceContext()->getServiceEntryPoint()->setMaxNumConnections(newValue);
+        if (!status.isOK())
+            return status;
+        serverGlobalParams.maxConns = newValue;
+        return Status::OK();
+    }
+} maxIncomingConnectionsSetting;
+
+class AllowCommandSetting : public ServerParameter {
+public:
+    AllowCommandSetting() : ServerParameter(ServerParameterSet::getGlobal(), "allowCommands") {}
+
+    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+        b << name << boost::algorithm::join(serverGlobalParams.allowCommands, ",");
+    }
+
+    virtual Status set(const BSONElement& newValueElement) {
+        try {
+            return setFromString(newValueElement.String());
+        } catch (const DBException& msg) {
+            return Status(ErrorCodes::BadValue,
+                          mongoutils::str::stream() << "Invalid parameter for allowCommands: "
+                                                    << newValueElement
+                                                    << ", exception: "
+                                                    << msg.what());
+        }
+    }
+
+    virtual Status setFromString(const std::string& str) {
+
+        auto allowcommands_temp = std::vector<std::string>();
+        boost::split(allowcommands_temp, str, boost::is_any_of(", "));
+        for (const auto command : allowcommands_temp) {
+            if (Command::globleDisableCommands.find(command) ==
+                Command::globleDisableCommands.end()) {
+                return Status(ErrorCodes::BadValue,
+                              mongoutils::str::stream() << command << " is not a disable command.");
+            }
+        }
+        serverGlobalParams.allowCommands = allowcommands_temp;  // set command override yaml config
+        return Status::OK();
+    }
+} allowCommandSetting;
+
+class MaxInternalIncomingConnectionsSetting : public ServerParameter {
+public:
+    MaxInternalIncomingConnectionsSetting()
+        : ServerParameter(ServerParameterSet::getGlobal(), "maxInternalIncomingConnections") {}
+
+    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+        b << name << serverGlobalParams.maxInternalConns;
+    }
+
+    virtual Status set(const BSONElement& newValueElement) {
+        int newValue = 0;
+        if (!newValueElement.coerce(&newValue) || newValue < 0)
+            return Status(ErrorCodes::BadValue,
+                          mongoutils::str::stream()
+                              << "Invalid value for maxInternalIncomingConnections: "
+                              << newValueElement
+                              << " and now MaxInternalConnection is "
+                              << getGlobalServiceContext()
+                                     ->getServiceEntryPoint()
+                                     ->getMaxNumInternalConnections());
+        Status status =
+            getGlobalServiceContext()->getServiceEntryPoint()->setMaxNumInternalConnections(
+                newValue);
+        if (!status.isOK())
+            return status;
+        serverGlobalParams.maxInternalConns = newValue;
+        return Status::OK();
+    }
+
+    virtual Status setFromString(const std::string& str) {
+        int newValue = 0;
+        Status status = parseNumberFromString(str, &newValue);
+        if (!status.isOK())
+            return status;
+        if (newValue < 0)
+            return Status(ErrorCodes::BadValue,
+                          mongoutils::str::stream()
+                              << "Invalid value for maxInternalIncomingConnections: "
+                              << newValue
+                              << " and now MaxInternalConnection is "
+                              << getGlobalServiceContext()
+                                     ->getServiceEntryPoint()
+                                     ->getMaxNumInternalConnections());
+        status = getGlobalServiceContext()->getServiceEntryPoint()->setMaxNumInternalConnections(
+            newValue);
+        if (!status.isOK())
+            return status;
+        serverGlobalParams.maxInternalConns = newValue;
+        return Status::OK();
+    }
+} maxInternalIncomingConnections;
 
 constexpr decltype(AutomationServiceDescriptor::kName) AutomationServiceDescriptor::kName;
 constexpr decltype(AutomationServiceDescriptor::kMaxSize) AutomationServiceDescriptor::kMaxSize;

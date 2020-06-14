@@ -105,6 +105,7 @@
         _recvChunkStatus: {skip: isAnInternalCommand},
         _shardsvrShardCollection: {skip: isAnInternalCommand},
         _transferMods: {skip: isAnInternalCommand},
+        reload: {skip: isAnInternalCommand},
         abortTransaction: {skip: isUnrelated},
         addShard: {skip: isUnrelated},
         addShardToZone: {skip: isUnrelated},
@@ -164,7 +165,8 @@
             }
         },
         createUser: {
-            command: {createUser: "testuser", pwd: "testpass", roles: []},
+            command:
+                {createUser: "testuser", pwd: "Password@a1b", roles: [], "digestPassword": true},
             setup: function(conn) {
                 assert.commandWorked(conn.runCommand({dropAllUsersFromDatabase: 1}));
             },

@@ -30,11 +30,14 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/process_id.h"
+#include "mongo/util/net/externalconfig.h"
+#include "mongo/util/net/whitelist.h"
 
 namespace mongo {
 
 const int DEFAULT_UNIX_PERMS = 0700;
 constexpr size_t DEFAULT_MAX_CONN = 1000000;
+constexpr size_t DEFAULT_MAX_INTERNAL_CONN = 1000000;
 
 enum class ClusterRole { None, ShardServer, ConfigServer };
 
@@ -66,6 +69,7 @@ struct ServerGlobalParams {
 
     int defaultProfile = 0;                // --profile
     int slowMS = 100;                      // --time in ms that is "slow"
+    int profileSizeMB = 1;                 // --the maxsize of system.profile collection
     double sampleRate = 1.0;               // --samplerate rate at which to sample slow queries
     int defaultLocalThresholdMillis = 15;  // --localThreshold in ms to consider a node local
     bool moveParanoia = false;             // for move chunk paranoia
@@ -79,6 +83,8 @@ struct ServerGlobalParams {
     std::string serviceExecutor;
 
     size_t maxConns = DEFAULT_MAX_CONN;  // Maximum number of simultaneous open connections.
+    int maxInternalConns =
+        DEFAULT_MAX_INTERNAL_CONN;  // Maximum number of simultaneous open internal connections.
 
     int unixSocketPermissions = DEFAULT_UNIX_PERMS;  // permissions for the UNIX domain socket
 
@@ -91,6 +97,23 @@ struct ServerGlobalParams {
     bool logRenameOnRotate = true;  // True if logging should rename log files on rotate
     bool logWithSyslog = false;     // True if logging to syslog; must not be set if logpath is set.
     int syslogFacility;             // Facility used when appending messages to the syslog.
+
+    bool isHttpInterfaceEnabled = false;  // True if the dbwebserver should be enabled.
+    bool limitVerifyTimes = true;
+    std::string auditLogpath;  // Path to audit log file, if logging to a file; otherwise, empty.
+    std::string auditLogFormat = "JSON";  // Format of audit log
+    std::string auditOpFilterStr;         // Filter ops that need to be audited, string format.
+    std::map<std::string, std::string>
+        auditNsFilterMap;  // Filter namespace and op that need to be audited, map format.
+    std::map<std::string, std::map<std::string, bool>> auditOpNsFilterMap;
+    int auditOpFilter =
+        0;  // Bitwise or result of ops that need to be audited, parsed from auditOpFilterStr.
+    bool auditAuthSuccess = true;      // True if audit authorization success requests.
+    bool isImplicitCreateCol = false;  // True , insert a item can create collection auto, False, a
+                                       // collection is created before inert
+    bool readOnly = false;                   // True if readonly mode.
+    std::vector<std::string> allowCommands;  // allow the disable command for special
+
 
 #ifndef _WIN32
     ProcessId parentProc;  // --fork pid of initial process
@@ -246,6 +269,10 @@ struct ServerGlobalParams {
     std::vector<std::string> disabledSecureAllocatorDomains;
 
     bool enableMajorityReadConcern = true;
+
+    WhiteList adminWhiteList;
+
+    ExternalConfig externalConfig;
 };
 
 extern ServerGlobalParams serverGlobalParams;

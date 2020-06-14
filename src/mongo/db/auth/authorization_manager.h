@@ -94,6 +94,7 @@ public:
 
     static MONGO_DECLARE_SHIM(()->std::unique_ptr<AuthorizationManager>) create;
 
+    static const std::string USER_TOKEN_FIELD_NAME;
     static const std::string USER_NAME_FIELD_NAME;
     static const std::string USER_DB_FIELD_NAME;
     static const std::string ROLE_NAME_FIELD_NAME;
@@ -265,6 +266,14 @@ public:
                                User** acquiredUser) = 0;
 
     /**
+    * Validate the token associated with a known user
+    */
+    virtual Status acquireUserForConsiderToken(OperationContext* opCtx,
+                                               const UserName& userName,
+                                               int64_t userToken,
+                                               User** acquiredUser) = 0;
+
+    /**
      * Decrements the refcount of the given User object.  If the refcount has gone to zero,
      * deletes the User.  Caller must stop using its pointer to "user" after calling this.
      */
@@ -309,6 +318,7 @@ public:
                        const NamespaceString& nss,
                        const BSONObj& obj,
                        const BSONObj* patt) = 0;
+    static bool isReservedCollectionForCustomer(std::string collectionName);
 };
 
 }  // namespace mongo

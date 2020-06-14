@@ -31,6 +31,7 @@
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/scoped_timer.h"
+#include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/stdx/memory.h"
 
@@ -93,12 +94,18 @@ CountScan::CountScan(OperationContext* opCtx, const CountScanParams& params, Wor
     dassert(_params.startKey.woCompare(_params.endKey,
                                        Ordering::make(params.descriptor->keyPattern()),
                                        /*compareFieldNames*/ false) <= 0);
+    incStageObj(STAGE_COUNT_SCAN);
 }
 
 
 PlanStage::StageState CountScan::doWork(WorkingSetID* out) {
     if (_commonStats.isEOF)
         return PlanStage::IS_EOF;
+
+    if (chkCachedMemOversize()) {
+        *out = chkMemFailureRet(_workingSet);
+        return PlanStage::FAILURE;
+    }
 
     boost::optional<IndexKeyEntry> entry;
     const bool needInit = !_cursor;
@@ -132,9 +139,13 @@ PlanStage::StageState CountScan::doWork(WorkingSetID* out) {
         return PlanStage::IS_EOF;
     }
 
-    if (_shouldDedup && !_returned.insert(entry->loc).second) {
-        // *loc was already in _returned.
-        return PlanStage::NEED_TIME;
+    if (_shouldDedup) {
+        if (!_returned.insert(entry->loc).second) {
+            // *loc was already in _returned.
+            return PlanStage::NEED_TIME;
+        } else {
+            incCachedMemory(sizeof(RecordId));
+        }
     }
 
     WorkingSetID id = _workingSet->allocate();
@@ -181,6 +192,7 @@ void CountScan::doInvalidate(OperationContext* opCtx, const RecordId& dl, Invali
     // to return it if we see it again.
     stdx::unordered_set<RecordId, RecordId::Hasher>::iterator it = _returned.find(dl);
     if (it != _returned.end()) {
+        decCachedMemory(sizeof(RecordId));
         _returned.erase(it);
     }
 }

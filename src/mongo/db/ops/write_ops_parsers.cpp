@@ -86,6 +86,12 @@ void validateInsertOp(const write_ops::Insert& insertOp) {
                 nss.db().compare(indexedNss.db()) == 0);
     }
 
+    //      need check if create role call insert command directly?
+    //      uassert(ErrorCodes::IllegalDatabase,
+    //              str::stream() << indexedNss.ns() << " Insert commands to system database are
+    //              limited " << nss.db(),
+    //              nss.isSystemDB());
+
     checkOpCountForCommand(insertOp, docs.size());
 }
 

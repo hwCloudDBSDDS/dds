@@ -32,8 +32,10 @@
 
 #include "mongo/client/read_preference.h"
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/views/resolved_view.h"
@@ -188,10 +190,61 @@ public:
         // We count find command as a query op.
         globalOpCounters.gotQuery();
 
+        // adjust cmdobj, so need a non-const var!
+        BSONObj NewCmdObj = cmdObj;
+        const std::string fullns = parseNs(dbname, cmdObj);
         const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
 
+        if (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser()) {
+            bool flag = false;
+            BSONObj buildinfilter;
+            if (fullns == "admin.system.users") {
+                std::set<std::string> buildinUsers;
+                UserName::getBuildinUsers(buildinUsers);
+
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+            if (fullns == "admin.system.roles") {
+                std::set<std::string> buildinRoles;
+                RoleName::getBuildinRoles(buildinRoles);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+
+            if (flag) {
+                std::string filterName = "filter";
+                BSONElement filterField = cmdObj[filterName];
+                BSONObj newFilter;
+                if (filterField.isABSONObj()) {
+                    BSONObj filter = filterField.embeddedObject();
+                    newFilter = BSON("$and" << BSON_ARRAY(filter << buildinfilter));
+                } else {
+                    newFilter = buildinfilter;
+                }
+
+                BSONObjBuilder nb(64);
+                // nb.append(filterName, newFilter);
+                BSONForEach(e, cmdObj) {
+                    if (!str::equals(filterName.c_str(), e.fieldName())) {
+                        nb.append(e);
+                    }
+                }
+                nb.append(filterName, newFilter);
+                NewCmdObj = nb.obj();
+            }
+        }
+
         const bool isExplain = false;
-        auto qr = QueryRequest::makeFromFindCommand(nss, cmdObj, isExplain);
+        auto qr = QueryRequest::makeFromFindCommand(nss, NewCmdObj, isExplain);
         uassertStatusOK(qr.getStatus());
 
         const boost::intrusive_ptr<ExpressionContext> expCtx;

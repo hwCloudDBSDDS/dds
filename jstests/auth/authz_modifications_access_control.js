@@ -6,21 +6,28 @@
 function runTest(conn) {
     var authzErrorCode = 13;
 
-    conn.getDB('admin').createUser(
-        {user: 'userAdmin', pwd: 'pwd', roles: ['userAdminAnyDatabase']});
+    conn.getDB('admin').createUser({
+        user: 'userAdmin',
+        pwd: 'Password@a1b',
+        roles: ['userAdminAnyDatabase'], "passwordDigestor": "server"
+    });
 
     var userAdminConn = new Mongo(conn.host);
-    userAdminConn.getDB('admin').auth('userAdmin', 'pwd');
+    userAdminConn.getDB('admin').auth('userAdmin', 'Password@a1b');
     var testUserAdmin = userAdminConn.getDB('test');
     var adminUserAdmin = userAdminConn.getDB('admin');
     testUserAdmin.createRole({role: 'testRole', roles: [], privileges: []});
     adminUserAdmin.createRole({role: 'adminRole', roles: [], privileges: []});
-    testUserAdmin.createUser(
-        {user: 'spencer', pwd: 'pwd', roles: ['testRole', {role: 'adminRole', db: 'admin'}]});
-    adminUserAdmin.createUser({user: 'otherUser', pwd: 'pwd', roles: []});
+    testUserAdmin.createUser({
+        user: 'spencer',
+        pwd: 'Password@a1b',
+        roles: ['testRole', {role: 'adminRole', db: 'admin'}], "passwordDigestor": "server"
+    });
+    adminUserAdmin.createUser(
+        {user: 'otherUser', pwd: 'Password@a1b', roles: [], "passwordDigestor": "server"});
 
     var db = conn.getDB('test');
-    db.auth('spencer', 'pwd');
+    db.auth('spencer', 'Password@a1b');
     var admindb = conn.getDB('admin');
 
     // "adminUserAdmin" and "testUserAdmin" are handles to the "admin" and "test" dbs, respectively.
@@ -33,15 +40,18 @@ function runTest(conn) {
     (function testCreateUser() {
         jsTestLog("Testing user creation");
 
-        var res = db.runCommand({createUser: 'andy', pwd: 'pwd', roles: []});
+        var res = db.runCommand(
+            {createUser: 'andy', pwd: 'Password@a1b', roles: [], "digestPassword": true});
         assert.commandFailedWithCode(res, authzErrorCode);
 
         testUserAdmin.grantPrivilegesToRole(
             'testRole', [{resource: {db: 'test', collection: ''}, actions: ['createUser']}]);
 
-        assert.commandWorked(db.runCommand({createUser: 'andy', pwd: 'pwd', roles: []}));
+        assert.commandWorked(db.runCommand(
+            {createUser: 'andy', pwd: 'Password@a1b', roles: [], "digestPassword": true}));
 
-        res = admindb.runCommand({createUser: 'andy', pwd: 'pwd', roles: []});
+        res = admindb.runCommand(
+            {createUser: 'andy', pwd: 'Password@a1b', roles: [], "digestPassword": true});
         assert.commandFailedWithCode(res, authzErrorCode);
     })();
 
@@ -136,7 +146,8 @@ function runTest(conn) {
     (function testGrantRole() {
         jsTestLog("Testing granting roles");
 
-        var res = db.runCommand({createUser: 'andy', pwd: 'pwd', roles: ['read']});
+        var res = db.runCommand(
+            {createUser: 'andy', pwd: 'Password@a1b', roles: ['read'], "digestPassword": true});
         assert.commandFailedWithCode(res, authzErrorCode);
 
         res = db.runCommand({grantRolesToUser: 'spencer', roles: ['read']});
@@ -152,7 +163,8 @@ function runTest(conn) {
         testUserAdmin.grantPrivilegesToRole(
             'testRole', [{resource: {db: 'test', collection: ''}, actions: ['grantRole']}]);
 
-        assert.commandWorked(db.runCommand({createUser: 'andy', pwd: 'pwd', roles: ['read']}));
+        assert.commandWorked(db.runCommand(
+            {createUser: 'andy', pwd: 'Password@a1b', roles: ['read'], "digestPassword": true}));
         assert.commandWorked(db.runCommand({grantRolesToUser: 'spencer', roles: ['read']}));
         assert.commandWorked(db.runCommand({grantRolesToRole: 'testRole', roles: ['read']}));
 

@@ -33,23 +33,32 @@ load('jstests/multiVersion/libs/auth_helpers.js');
     var commands = [];
 
     commands.push({
-        req: {createUser: 'username', pwd: 'password', roles: jsTest.basicUserRoles},
+        req: {
+            createUser: 'username',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "digestPassword": true
+        },
         setupFunc: function() {},
         confirmFunc: function() {
-            assert(db.auth("username", "password"), "auth failed");
-            assert(!db.auth("username", "passworda"), "auth should have failed");
+            assert(db.auth("username", "Password@a1b"), "auth failed");
+            assert(!db.auth("username", "Password@a1ba"), "auth should have failed");
         },
         admin: false
     });
 
     commands.push({
-        req: {updateUser: 'username', pwd: 'password2', roles: jsTest.basicUserRoles},
+        req: {
+            updateUser: 'username',
+            pwd: 'Password@a2b',
+            roles: jsTest.basicUserRoles, "digestPassword": true
+        },
         setupFunc: function() {
-            db.runCommand({createUser: 'username', pwd: 'password', roles: jsTest.basicUserRoles});
+            db.runCommand(
+                {createUser: 'username', pwd: 'Password@a1b', roles: jsTest.basicUserRoles});
         },
         confirmFunc: function() {
-            assert(db.auth("username", "password2"), "auth failed");
-            assert(!db.auth("username", "password"), "auth should have failed");
+            assert(db.auth("username", "Password@a2b"), "auth failed");
+            assert(!db.auth("username", "Password@a1b"), "auth should have failed");
         },
         admin: false
     });
@@ -57,11 +66,15 @@ load('jstests/multiVersion/libs/auth_helpers.js');
     commands.push({
         req: {dropUser: 'tempUser'},
         setupFunc: function() {
-            db.runCommand({createUser: 'tempUser', pwd: 'password', roles: jsTest.basicUserRoles});
-            assert(db.auth("tempUser", "password"), "auth failed");
+            db.runCommand({
+                createUser: 'tempUser',
+                pwd: 'Password@a1b',
+                roles: jsTest.basicUserRoles, "digestPassword": true
+            });
+            assert(db.auth("tempUser", "Password@a1b"), "auth failed");
         },
         confirmFunc: function() {
-            assert(!db.auth("tempUser", "password"), "auth should have failed");
+            assert(!db.auth("tempUser", "Password@a1b"), "auth should have failed");
         },
         admin: false
     });
@@ -77,7 +90,11 @@ load('jstests/multiVersion/libs/auth_helpers.js');
         setupFunc: function() {
             adminDB.system.users.remove({});
             adminDB.system.roles.remove({});
-            adminDB.createUser({user: 'lorax', pwd: 'pwd', roles: ['read']});
+            adminDB.createUser({
+                user: 'lorax',
+                pwd: 'Password@a1b',
+                roles: ['read'], "passwordDigestor": "server"
+            });
             adminDB.createRole({role: 'role1', roles: ['read'], privileges: []});
             adminDB.system.users.find().forEach(function(doc) {
                 adminDB.tempusers.insert(doc);
@@ -91,7 +108,11 @@ load('jstests/multiVersion/libs/auth_helpers.js');
             assert.eq(0, adminDB.system.users.find().itcount());
             assert.eq(0, adminDB.system.roles.find().itcount());
 
-            db.createUser({user: 'lorax2', pwd: 'pwd', roles: ['readWrite']});
+            db.createUser({
+                user: 'lorax2',
+                pwd: 'Password@a1b',
+                roles: ['readWrite'], "passwordDigestor": "server"
+            });
             db.createRole({role: 'role2', roles: ['readWrite'], privileges: []});
 
             assert.eq(1, adminDB.system.users.find().itcount());

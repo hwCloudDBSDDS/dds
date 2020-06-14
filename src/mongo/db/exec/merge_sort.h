@@ -37,6 +37,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/record_id.h"
 
+#include "mongo/db/stats/counters.h"
 namespace mongo {
 
 class CollatorInterface;
@@ -60,6 +61,9 @@ public:
                    const MergeSortStageParams& params,
                    WorkingSet* ws,
                    const Collection* collection);
+    ~MergeSortStage() {
+        decStageObjAndMem(STAGE_SORT_MERGE);
+    }
 
     void addChild(PlanStage* child);
 

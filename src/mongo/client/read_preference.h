@@ -137,14 +137,20 @@ struct ReadPreferenceSetting {
      *     position).
      */
     ReadPreferenceSetting(ReadPreference pref, TagSet tags, Seconds maxStalenessSeconds);
+    ReadPreferenceSetting(ReadPreference pref,
+                          TagSet tags,
+                          Seconds maxStalenessSeconds,
+                          bool customerMeta);
     ReadPreferenceSetting(ReadPreference pref, Seconds maxStalenessSeconds);
     ReadPreferenceSetting(ReadPreference pref, TagSet tags);
+    ReadPreferenceSetting(ReadPreference pref, TagSet tags, bool customerMeta);
     explicit ReadPreferenceSetting(ReadPreference pref);
     ReadPreferenceSetting() : ReadPreferenceSetting(ReadPreference::PrimaryOnly) {}
 
     inline bool equals(const ReadPreferenceSetting& other) const {
         return (pref == other.pref) && (tags == other.tags) &&
-            (maxStalenessSeconds == other.maxStalenessSeconds) && (minOpTime == other.minOpTime);
+            (maxStalenessSeconds == other.maxStalenessSeconds) && (minOpTime == other.minOpTime) &&
+            (customerMeta == other.customerMeta);
     }
 
     /**
@@ -208,6 +214,11 @@ struct ReadPreferenceSetting {
     TagSet tags;
     Seconds maxStalenessSeconds{};
     repl::OpTime minOpTime{};
+
+    // it is used to bring customer info from mongos to shard or config,
+    // when this vaule is true, the _appendMetadataForCommand will use another
+    // metadata into cmd.
+    bool customerMeta;
 };
 
 }  // namespace mongo

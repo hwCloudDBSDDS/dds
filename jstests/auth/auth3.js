@@ -7,7 +7,11 @@
     var admin = conn.getDB("admin");
     var errorCodeUnauthorized = 13;
 
-    admin.createUser({user: "foo", pwd: "bar", roles: jsTest.adminUserRoles});
+    admin.createUser({
+        user: "foo",
+        pwd: "Password@a1b",
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
 
     print("make sure curop, killop, and unlock fail");
 
@@ -23,7 +27,7 @@
     assert(x.errmsg != "fsyncUnlock called when not locked", tojson(x));
     assert.eq(x.code, errorCodeUnauthorized, tojson(x));
 
-    conn.getDB("admin").auth("foo", "bar");
+    conn.getDB("admin").auth("foo", "Password@a1b");
 
     assert("inprog" in admin.currentOp());
     assert("info" in admin.killOp(123));

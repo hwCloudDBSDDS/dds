@@ -24,7 +24,8 @@
 
         // Create a legacy user.
         assert.commandWorked(db.adminCommand({setFeatureCompatibilityVersion: "3.6"}));
-        assert.commandWorked(db.runCommand({createUser: "legacyUser", pwd: "pwd", roles: []}));
+        assert.commandWorked(
+            db.runCommand({createUser: "legacyUser", pwd: "Password@a1b", roles: []}));
         checkMechs("admin.legacyUser", ["SCRAM-SHA-1"]);
 
         // Enable SCRAM-SHA-256.
@@ -34,7 +35,7 @@
         checkMechs("admin.legacyUser", ["SCRAM-SHA-1"]);
 
         // Make users.
-        assert.commandWorked(db.runCommand({createUser: "user", pwd: "pwd", roles: []}));
+        assert.commandWorked(db.runCommand({createUser: "user", pwd: "Password@a1b", roles: []}));
         assert.commandWorked(externalDB.runCommand({createUser: "user", roles: []}));
 
         // Internal users should support scram methods.
@@ -48,17 +49,21 @@
         }
 
         // Users with explicit mechs should only support those mechanisms
-        assert.commandWorked(db.runCommand(
-            {createUser: "256Only", pwd: "pwd", roles: [], mechanisms: ["SCRAM-SHA-256"]}));
+        assert.commandWorked(db.runCommand({
+            createUser: "256Only",
+            pwd: "Password@a1b",
+            roles: [],
+            mechanisms: ["SCRAM-SHA-256"]
+        }));
         checkMechs("admin.256Only", ["SCRAM-SHA-256"]);
         assert.commandWorked(db.runCommand(
-            {createUser: "1Only", pwd: "pwd", roles: [], mechanisms: ["SCRAM-SHA-1"]}));
+            {createUser: "1Only", pwd: "Password@a1b", roles: [], mechanisms: ["SCRAM-SHA-1"]}));
         checkMechs("admin.1Only", ["SCRAM-SHA-1"]);
 
         // Users with normalized and unnormalized names do not conflict
-        assert.commandWorked(db.runCommand({createUser: "IX", pwd: "pwd", roles: []}));
+        assert.commandWorked(db.runCommand({createUser: "IX", pwd: "Password@a1b", roles: []}));
         checkMechs("admin.IX", ["SCRAM-SHA-1", "SCRAM-SHA-256"]);
-        assert.commandWorked(db.runCommand({createUser: "\u2168", pwd: "pwd", roles: []}));
+        assert.commandWorked(db.runCommand({createUser: "\u2168", pwd: "Password@a1b", roles: []}));
         checkMechs("admin.\u2168", ["SCRAM-SHA-1", "SCRAM-SHA-256"]);
     }
 

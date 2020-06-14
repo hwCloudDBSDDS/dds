@@ -89,6 +89,7 @@ public:
 
     virtual ~MessageEventDetailsEncoder();
     virtual std::ostream& encode(const MessageEventEphemeral& event, std::ostream& os);
+    virtual void encode(const MessageEventEphemeral& event, std::stringstream& s) {}
 
 private:
     /**
@@ -104,6 +105,7 @@ class MessageEventWithContextEncoder : public Encoder<MessageEventEphemeral> {
 public:
     virtual ~MessageEventWithContextEncoder();
     virtual std::ostream& encode(const MessageEventEphemeral& event, std::ostream& os);
+    virtual void encode(const MessageEventEphemeral& event, std::stringstream& s) {}
 };
 
 
@@ -114,6 +116,7 @@ class MessageEventUnadornedEncoder : public Encoder<MessageEventEphemeral> {
 public:
     virtual ~MessageEventUnadornedEncoder();
     virtual std::ostream& encode(const MessageEventEphemeral& event, std::ostream& os);
+    virtual void encode(const MessageEventEphemeral& event, std::stringstream& s) {}
 };
 
 }  // namespace logger

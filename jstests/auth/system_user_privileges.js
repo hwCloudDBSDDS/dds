@@ -36,18 +36,25 @@
     //
     // Preliminary set up.
     //
-    admin.createUser({user: 'admin', pwd: 'a', roles: jsTest.adminUserRoles});
-    admin.auth('admin', 'a');
+    admin.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
+    admin.auth('admin', 'Password@a1b');
 
     //
     // Add users named "__system" with no privileges on "test" and "admin", and make sure you can't
     // add one on "local"
     //
 
-    test.createUser({user: '__system', pwd: 'a', roles: []});
-    admin.createUser({user: '__system', pwd: 'a', roles: []});
+    test.createUser(
+        {user: '__system', pwd: 'Password@a1b', roles: [], "passwordDigestor": "server"});
+    admin.createUser(
+        {user: '__system', pwd: 'Password@a1b', roles: [], "passwordDigestor": "server"});
     assert.throws(function() {
-        local.createUser({user: '__system', pwd: 'a', roles: []});
+        local.createUser(
+            {user: '__system', pwd: 'Password@a1b', roles: [], "passwordDigestor": "server"});
     });
 
     //
@@ -67,7 +74,7 @@
     // Validate that you cannot even log in as __system@local with the supplied password; you _must_
     // use the password from the keyfile.
     //
-    assert(!local.auth('__system', 'a'));
+    assert(!local.auth('__system', 'Password@a1b'));
     assertCountUnauthorized(conn, "admin", "foo");
     assertCountUnauthorized(conn, "local", "foo");
     assertCountUnauthorized(conn, "test", "foo");
@@ -75,7 +82,7 @@
     //
     // Validate that __system@test is not shadowed by the keyfile __system user.
     //
-    test.auth('__system', 'a');
+    test.auth('__system', 'Password@a1b');
     assertCountUnauthorized(conn, "admin", "foo");
     assertCountUnauthorized(conn, "local", "foo");
     assertCountUnauthorized(conn, "test", "foo");
@@ -88,7 +95,7 @@
     //
     // Validate that __system@admin is not shadowed by the keyfile __system user.
     //
-    admin.auth('__system', 'a');
+    admin.auth('__system', 'Password@a1b');
     assertCountUnauthorized(conn, "admin", "foo");
     assertCountUnauthorized(conn, "local", "foo");
     assertCountUnauthorized(conn, "test", "foo");

@@ -35,6 +35,7 @@
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/query/index_bounds.h"
 #include "mongo/db/record_id.h"
+#include "mongo/db/stats/counters.h"
 #include "mongo/db/storage/index_entry_comparison.h"
 #include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/stdx/unordered_set.h"
@@ -94,6 +95,7 @@ public:
               const IndexScanParams& params,
               WorkingSet* workingSet,
               const MatchExpression* filter);
+    ~IndexScan();
 
     StageState doWork(WorkingSetID* out) final;
     bool isEOF() final;

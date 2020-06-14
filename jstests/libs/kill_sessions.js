@@ -24,12 +24,12 @@ var _kill_sessions_api_module = (function() {
     }
 
     Fixture.prototype.loginForExecute = function(cred) {
-        this._clientToExecuteVia.getDB("admin").auth(cred, "password");
+        this._clientToExecuteVia.getDB("admin").auth(cred, "Password@a1b");
         this._clientToExecuteViaCredentials = cred;
     };
 
     Fixture.prototype.loginForKill = function(cred) {
-        this._clientToKillVia.getDB("admin").auth(cred, "password");
+        this._clientToKillVia.getDB("admin").auth(cred, "Password@a1b");
         this._clientToKillViaCredentials = cred;
     };
 
@@ -86,7 +86,7 @@ var _kill_sessions_api_module = (function() {
             function(connstring, credentials, tag, isdbgrid) {
                 var client = new Mongo(connstring);
                 if (credentials) {
-                    client.getDB("admin").auth(credentials, "password");
+                    client.getDB("admin").auth(credentials, "Password@a1b");
                 }
                 var session = client.startSession();
                 var db = session.getDatabase("admin");
@@ -122,6 +122,7 @@ var _kill_sessions_api_module = (function() {
             admin.getMongo().setSlaveOk();
 
             assert.soon(function() {
+                admin.auth(admin, "Password@a1b");
                 let inProgressOps = admin.aggregate([{$currentOp: {'allUsers': true}}]);
                 while (inProgressOps.hasNext()) {
                     let op = inProgressOps.next();
@@ -722,8 +723,12 @@ var _kill_sessions_api_module = (function() {
 
     KillSessionsTestHelper.initializeAuth = function(client) {
         var admin = client.getDB("admin");
-        admin.createUser({user: 'super', pwd: 'password', roles: jsTest.adminUserRoles});
-        admin.auth("super", "password");
+        admin.createUser({
+            user: 'super',
+            pwd: 'Password@a1b',
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        });
+        admin.auth("super", "Password@a1b");
         admin.createRole({
             role: 'killAnySession',
             roles: [],
@@ -740,11 +745,26 @@ var _kill_sessions_api_module = (function() {
             privileges: [{resource: {cluster: true}, actions: ['impersonate']}]
         });
 
-        admin.createUser({user: 'simple', pwd: 'password', roles: ['forSimpleTest']});
-        admin.createUser({user: 'simple2', pwd: 'password', roles: ['forSimpleTest']});
-        admin.createUser({user: 'killAny', pwd: 'password', roles: ['killAnySession']});
-        admin.createUser(
-            {user: 'impersonate', pwd: 'password', roles: ['forImpersonate', 'killAnySession']});
+        admin.createUser({
+            user: 'simple',
+            pwd: 'Password@a1b',
+            roles: ['forSimpleTest'], "passwordDigestor": "server"
+        });
+        admin.createUser({
+            user: 'simple2',
+            pwd: 'Password@a1b',
+            roles: ['forSimpleTest'], "passwordDigestor": "server"
+        });
+        admin.createUser({
+            user: 'killAny',
+            pwd: 'Password@a1b',
+            roles: ['killAnySession'], "passwordDigestor": "server"
+        });
+        admin.createUser({
+            user: 'impersonate',
+            pwd: 'Password@a1b',
+            roles: ['forImpersonate', 'killAnySession'], "passwordDigestor": "server"
+        });
     };
 
     var module = {};

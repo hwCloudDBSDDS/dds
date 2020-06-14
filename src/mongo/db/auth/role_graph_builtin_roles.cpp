@@ -251,6 +251,7 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::listShards  // clusterMonitor gets this also
         << ActionType::flushRouterConfig  // hostManager gets this also
         << ActionType::cleanupOrphaned
+        << ActionType::reload
         << ActionType::setFeatureCompatibilityVersion
         << ActionType::setFreeMonitoring;
 

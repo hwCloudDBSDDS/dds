@@ -50,19 +50,31 @@
     // Setup the users to the input, output and admin databases
     var mongos = st.s;
     var adminDb = mongos.getDB("admin");
-    adminDb.createUser({user: "user", pwd: "pass", roles: jsTest.adminUserRoles});
+    adminDb.createUser({
+        user: "admin",
+        pwd: "Password@a1b",
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
 
     var authenticatedConn = new Mongo(mongos.host);
-    authenticatedConn.getDB('admin').auth("user", "pass");
+    authenticatedConn.getDB('admin').auth("admin", "Password@a1b");
     adminDb = authenticatedConn.getDB("admin");
 
     var configDb = authenticatedConn.getDB("config");
 
     var inputDb = authenticatedConn.getDB("input");
-    inputDb.createUser({user: "user", pwd: "pass", roles: jsTest.basicUserRoles});
+    inputDb.createUser({
+        user: "admin",
+        pwd: "Password@a1b",
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+    });
 
     var outputDb = authenticatedConn.getDB("output");
-    outputDb.createUser({user: "user", pwd: "pass", roles: jsTest.basicUserRoles});
+    outputDb.createUser({
+        user: "admin",
+        pwd: "Password@a1b",
+        roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+    });
 
     // Setup the input db
     inputDb.numbers.drop();
@@ -73,20 +85,20 @@
 
     // Setup a connection authenticated to both input and output db
     var inputOutputAuthConn = new Mongo(mongos.host);
-    inputOutputAuthConn.getDB('input').auth("user", "pass");
-    inputOutputAuthConn.getDB('output').auth("user", "pass");
+    inputOutputAuthConn.getDB('input').auth("admin", "Password@a1b");
+    inputOutputAuthConn.getDB('output').auth("admin", "Password@a1b");
     doMapReduce(inputOutputAuthConn, outputDb);
     assertSuccess(configDb, outputDb);
 
     // setup a connection authenticated to only input db
     var inputAuthConn = new Mongo(mongos.host);
-    inputAuthConn.getDB('input').auth("user", "pass");
+    inputAuthConn.getDB('input').auth("admin", "Password@a1b");
     doMapReduce(inputAuthConn, outputDb);
     assertFailure(configDb, outputDb);
 
     // setup a connection authenticated to only output db
     var outputAuthConn = new Mongo(mongos.host);
-    outputAuthConn.getDB('output').auth("user", "pass");
+    outputAuthConn.getDB('output').auth("admin", "Password@a1b");
     doMapReduce(outputAuthConn, outputDb);
     assertFailure(configDb, outputDb);
 

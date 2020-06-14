@@ -165,6 +165,36 @@ selector:
   - jstests/core/views/views_creation.js
   - jstests/core/views/views_drop.js
   - jstests/core/views/views_rename.js
+  # These 29 testcase will failed with ErrorCode: CommandNotFound (because of function: checkIfDisableCommands)
+  - jstests/core/automation_setparameter.js
+  - jstests/core/basic1.js
+  - jstests/core/basic2.js
+  - jstests/core/bulk_insert_capped.js
+  - jstests/core/capped1.js
+  - jstests/core/create_indexes.js
+  - jstests/core/find3.js
+  - jstests/core/getlog1.js
+  - jstests/core/hostinfo.js
+  - jstests/core/index1.js
+  - jstests/core/index2.js
+  - jstests/core/index3.js
+  - jstests/core/index4.js
+  - jstests/core/index_bigkeys.js
+  - jstests/core/index_partial_create_drop.js
+  - jstests/core/index_partial_validate.js
+  - jstests/core/index_partial_write_ops.js
+  - jstests/core/js1.js
+  - jstests/core/js2.js
+  - jstests/core/js4.js
+  - jstests/core/js8.js
+  - jstests/core/logprocessdetails.js
+  - jstests/core/remove.js
+  - jstests/core/remove2.js
+  - jstests/core/set_param1.js
+  - jstests/core/sort1.js
+  - jstests/core/sort2.js
+  - jstests/core/sort5.js
+  - jstests/core/sort_numeric.js
   exclude_with_any_tags:
   - assumes_against_mongod_not_mongos
   ##
@@ -199,7 +229,7 @@ executor:
         jsTest.authenticate(db.getMongo());
         (function() {
           const username = "misha";
-          const password = "pwd";
+          const password = "Password@a1b";
 
           const res = db.runCommand({
               createUser: username,

@@ -20,8 +20,9 @@
 
     let adminDB = st.s.getDB('admin');
 
-    assert.commandWorked(adminDB.runCommand({createUser: "admin", pwd: "admin", roles: ["root"]}));
-    assert.eq(1, adminDB.auth("admin", "admin"));
+    assert.commandWorked(adminDB.runCommand(
+        {createUser: "admin", pwd: "Password@a1b", roles: ["root"], "digestPassword": true}));
+    assert.eq(1, adminDB.auth("admin", "Password@a1b"));
 
     assert.commandWorked(adminDB.runCommand({
         createRole: "advanceClusterTimeRole",
@@ -31,14 +32,17 @@
 
     let testDB = adminDB.getSiblingDB("testDB");
 
-    assert.commandWorked(
-        testDB.runCommand({createUser: 'NotTrusted', pwd: 'pwd', roles: ['readWrite']}));
+    assert.commandWorked(testDB.runCommand({
+        createUser: 'NotTrusted',
+        pwd: 'Password@a1b',
+        roles: ['readWrite'], "digestPassword": true
+    }));
     assert.commandWorked(testDB.runCommand({
         createUser: 'Trusted',
-        pwd: 'pwd',
-        roles: [{role: 'advanceClusterTimeRole', db: 'admin'}, 'readWrite']
+        pwd: 'Password@a1b',
+        roles: [{role: 'advanceClusterTimeRole', db: 'admin'}, 'readWrite'], "digestPassword": true
     }));
-    assert.eq(1, testDB.auth("NotTrusted", "pwd"));
+    assert.eq(1, testDB.auth("NotTrusted", "Password@a1b"));
 
     let res = testDB.runCommand({insert: "foo", documents: [{_id: 0}]});
     assert.commandWorked(res);
@@ -52,7 +56,7 @@
     res = testDB.runCommand(cmdObj);
     assert.commandFailed(res, "Command request was: " + tojsononeline(cmdObj));
 
-    assert.eq(1, testDB.auth("Trusted", "pwd"));
+    assert.eq(1, testDB.auth("Trusted", "Password@a1b"));
     jsTestLog("running Trusted. command: " + tojson(cmdObj));
     res = testDB.runCommand(cmdObj);
     assert.commandWorked(res, "Command request was: " + tojsononeline(cmdObj));

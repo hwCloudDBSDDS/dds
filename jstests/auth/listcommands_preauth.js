@@ -12,7 +12,7 @@
         assert.commandWorked(admin.runCommand({listCommands: 1}),
                              "listCommands should work pre-auth");
 
-        admin.createUser({user: 'admin', pwd: 'pass', roles: jsTest.adminUserRoles});
+        admin.createUser({user: 'admin', pwd: 'Password@a1b', roles: jsTest.adminUserRoles});
 
         // listDatabases should now fail, because auth bypass is no longer valid.
         assert.commandFailed(admin.runCommand({listDatabases: 1}),

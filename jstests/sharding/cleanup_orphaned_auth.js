@@ -30,17 +30,23 @@
     });
 
     var shardAdmin = st.shard0.getDB('admin');
-    shardAdmin.createUser(
-        {user: 'admin', pwd: 'x', roles: ['clusterAdmin', 'userAdminAnyDatabase']});
-    shardAdmin.auth('admin', 'x');
+    shardAdmin.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: ['clusterAdmin', 'userAdminAnyDatabase'], "passwordDigestor": "server"
+    });
+    shardAdmin.auth('admin', 'Password@a1b');
 
     var mongos = st.s0;
     var mongosAdmin = mongos.getDB('admin');
     var coll = mongos.getCollection('foo.bar');
 
-    mongosAdmin.createUser(
-        {user: 'admin', pwd: 'x', roles: ['clusterAdmin', 'userAdminAnyDatabase']});
-    mongosAdmin.auth('admin', 'x');
+    mongosAdmin.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: ['clusterAdmin', 'userAdminAnyDatabase'], "passwordDigestor": "server"
+    });
+    mongosAdmin.auth('admin', 'Password@a1b');
 
     assert.commandWorked(mongosAdmin.runCommand({enableSharding: coll.getDB().getName()}));
 
@@ -52,10 +58,14 @@
     assertUnauthorized(shardAdmin.runCommand({cleanupOrphaned: 'foo.bar'}));
 
     var fooDB = st.shard0.getDB('foo');
-    shardAdmin.auth('admin', 'x');
-    fooDB.createUser({user: 'user', pwd: 'x', roles: ['readWrite', 'dbAdmin']});
+    shardAdmin.auth('admin', 'Password@a1b');
+    fooDB.createUser({
+        user: 'user',
+        pwd: 'Password@a1b',
+        roles: ['readWrite', 'dbAdmin'], "passwordDigestor": "server"
+    });
     shardAdmin.logout();
-    fooDB.auth('user', 'x');
+    fooDB.auth('user', 'Password@a1b');
     assertUnauthorized(shardAdmin.runCommand({cleanupOrphaned: 'foo.bar'}));
 
     st.stop();

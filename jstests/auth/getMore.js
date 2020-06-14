@@ -13,9 +13,9 @@
         const isMongos = (isMaster.msg === "isdbgrid");
 
         // Create the admin user.
-        assert.commandWorked(
-            adminDB.runCommand({createUser: "admin", pwd: "admin", roles: ["root"]}));
-        assert.eq(1, adminDB.auth("admin", "admin"));
+        assert.commandWorked(adminDB.runCommand(
+            {createUser: "admin", pwd: "Password@a1b", roles: ["root"], "digestPassword": true}));
+        assert.eq(1, adminDB.auth("admin", "Password@a1b"));
 
         let ismmap = false;
         if (!isMongos) {
@@ -35,18 +35,24 @@
         //
 
         // Create two users, "Alice" and "Mallory".
-        assert.commandWorked(
-            testDB.runCommand({createUser: "Alice", pwd: "pwd", roles: ["readWrite"]}));
-        assert.commandWorked(
-            testDB.runCommand({createUser: "Mallory", pwd: "pwd", roles: ["readWrite"]}));
+        assert.commandWorked(testDB.runCommand({
+            createUser: "Alice",
+            pwd: "Password@a1b",
+            roles: ["readWrite"], "digestPassword": true
+        }));
+        assert.commandWorked(testDB.runCommand({
+            createUser: "Mallory",
+            pwd: "Password@a1b",
+            roles: ["readWrite"], "digestPassword": true
+        }));
         adminDB.logout();
 
         // Test that "Mallory" cannot use a find cursor created by "Alice".
-        assert.eq(1, testDB.auth("Alice", "pwd"));
+        assert.eq(1, testDB.auth("Alice", "Password@a1b"));
         let res = assert.commandWorked(testDB.runCommand({find: "foo", batchSize: 0}));
         let cursorId = res.cursor.id;
         testDB.logout();
-        assert.eq(1, testDB.auth("Mallory", "pwd"));
+        assert.eq(1, testDB.auth("Mallory", "Password@a1b"));
         assert.commandFailedWithCode(testDB.runCommand({getMore: cursorId, collection: "foo"}),
                                      ErrorCodes.Unauthorized,
                                      "read from another user's find cursor");
@@ -54,12 +60,12 @@
 
         // Test that "Mallory" cannot use a legacy find cursor created by "Alice".
         testDB.getMongo().forceReadMode("legacy");
-        assert.eq(1, testDB.auth("Alice", "pwd"));
+        assert.eq(1, testDB.auth("Alice", "Password@a1b"));
         let cursor = testDB.foo.find().batchSize(2);
         cursor.next();
         cursor.next();
         testDB.logout();
-        assert.eq(1, testDB.auth("Mallory", "pwd"));
+        assert.eq(1, testDB.auth("Mallory", "Password@a1b"));
         assert.throws(function() {
             cursor.next();
         }, [], "read from another user's legacy find cursor");
@@ -67,23 +73,23 @@
         testDB.getMongo().forceReadMode("commands");
 
         // Test that "Mallory" cannot use an aggregation cursor created by "Alice".
-        assert.eq(1, testDB.auth("Alice", "pwd"));
+        assert.eq(1, testDB.auth("Alice", "Password@a1b"));
         res = assert.commandWorked(
             testDB.runCommand({aggregate: "foo", pipeline: [], cursor: {batchSize: 0}}));
         cursorId = res.cursor.id;
         testDB.logout();
-        assert.eq(1, testDB.auth("Mallory", "pwd"));
+        assert.eq(1, testDB.auth("Mallory", "Password@a1b"));
         assert.commandFailedWithCode(testDB.runCommand({getMore: cursorId, collection: "foo"}),
                                      ErrorCodes.Unauthorized,
                                      "read from another user's aggregate cursor");
         testDB.logout();
 
         // Test that "Mallory" cannot use a listCollections cursor created by "Alice".
-        assert.eq(1, testDB.auth("Alice", "pwd"));
+        assert.eq(1, testDB.auth("Alice", "Password@a1b"));
         res = assert.commandWorked(testDB.runCommand({listCollections: 1, cursor: {batchSize: 0}}));
         cursorId = res.cursor.id;
         testDB.logout();
-        assert.eq(1, testDB.auth("Mallory", "pwd"));
+        assert.eq(1, testDB.auth("Mallory", "Password@a1b"));
         assert.commandFailedWithCode(
             testDB.runCommand({getMore: cursorId, collection: "$cmd.listCollections"}),
             ErrorCodes.Unauthorized,
@@ -91,11 +97,11 @@
         testDB.logout();
 
         // Test that "Mallory" cannot use a listIndexes cursor created by "Alice".
-        assert.eq(1, testDB.auth("Alice", "pwd"));
+        assert.eq(1, testDB.auth("Alice", "Password@a1b"));
         res = assert.commandWorked(testDB.runCommand({listIndexes: "foo", cursor: {batchSize: 0}}));
         cursorId = res.cursor.id;
         testDB.logout();
-        assert.eq(1, testDB.auth("Mallory", "pwd"));
+        assert.eq(1, testDB.auth("Mallory", "Password@a1b"));
         assert.commandFailedWithCode(
             testDB.runCommand({getMore: cursorId, collection: "$cmd.listIndexes.foo"}),
             ErrorCodes.Unauthorized,
@@ -104,13 +110,13 @@
 
         // Test that "Mallory" cannot use a parallelCollectionScan cursor created by "Alice".
         if (!isMongos) {
-            assert.eq(1, testDB.auth("Alice", "pwd"));
+            assert.eq(1, testDB.auth("Alice", "Password@a1b"));
             res = assert.commandWorked(
                 testDB.runCommand({parallelCollectionScan: "foo", numCursors: 1}));
             assert.eq(res.cursors.length, 1, tojson(res));
             cursorId = res.cursors[0].cursor.id;
             testDB.logout();
-            assert.eq(1, testDB.auth("Mallory", "pwd"));
+            assert.eq(1, testDB.auth("Mallory", "Password@a1b"));
             assert.commandFailedWithCode(testDB.runCommand({getMore: cursorId, collection: "foo"}),
                                          ErrorCodes.Unauthorized,
                                          "read from another user's parallelCollectionScan cursor");
@@ -119,11 +125,11 @@
 
         // Test that "Mallory" cannot use a repairCursor cursor created by "Alice".
         if (!isMongos && ismmap) {
-            assert.eq(1, testDB.auth("Alice", "pwd"));
+            assert.eq(1, testDB.auth("Alice", "Password@a1b"));
             res = assert.commandWorked(testDB.runCommand({repairCursor: "foo"}));
             cursorId = res.cursor.id;
             testDB.logout();
-            assert.eq(1, testDB.auth("Mallory", "pwd"));
+            assert.eq(1, testDB.auth("Mallory", "Password@a1b"));
             assert.commandFailedWithCode(testDB.runCommand({getMore: cursorId, collection: "foo"}),
                                          ErrorCodes.Unauthorized,
                                          "read from another user's repairCursor cursor");
@@ -135,28 +141,31 @@
         // indexStats privilege has been revoked in the meantime.
         //
 
-        assert.eq(1, adminDB.auth("admin", "admin"));
+        assert.eq(1, adminDB.auth("admin", "Password@a1b"));
         assert.commandWorked(testDB.runCommand({
             createRole: "indexStatsOnly",
             privileges: [{resource: {db: testDBName, collection: "foo"}, actions: ["indexStats"]}],
             roles: []
         }));
-        assert.commandWorked(
-            testDB.runCommand({createUser: "Bob", pwd: "pwd", roles: ["indexStatsOnly"]}));
+        assert.commandWorked(testDB.runCommand({
+            createUser: "Bob",
+            pwd: "Password@a1b",
+            roles: ["indexStatsOnly"], "digestPassword": true
+        }));
         adminDB.logout();
 
-        assert.eq(1, testDB.auth("Bob", "pwd"));
+        assert.eq(1, testDB.auth("Bob", "Password@a1b"));
         res = assert.commandWorked(testDB.runCommand(
             {aggregate: "foo", pipeline: [{$indexStats: {}}], cursor: {batchSize: 0}}));
         cursorId = res.cursor.id;
         testDB.logout();
 
-        assert.eq(1, adminDB.auth("admin", "admin"));
+        assert.eq(1, adminDB.auth("admin", "Password@a1b"));
         assert.commandWorked(
             testDB.runCommand({revokeRolesFromUser: "Bob", roles: ["indexStatsOnly"]}));
         adminDB.logout();
 
-        assert.eq(1, testDB.auth("Bob", "pwd"));
+        assert.eq(1, testDB.auth("Bob", "Password@a1b"));
         assert.commandWorked(testDB.runCommand({getMore: cursorId, collection: "foo"}));
         testDB.logout();
 
@@ -165,7 +174,7 @@
         // privileges required for the pipeline have been revoked in the meantime.
         //
 
-        assert.eq(1, testDB.auth("Alice", "pwd"));
+        assert.eq(1, testDB.auth("Alice", "Password@a1b"));
         res = assert.commandWorked(testDB.runCommand({
             aggregate: "foo",
             pipeline: [{$match: {_id: 0}}, {$out: "out"}],
@@ -173,11 +182,11 @@
         }));
         cursorId = res.cursor.id;
         testDB.logout();
-        assert.eq(1, adminDB.auth("admin", "admin"));
+        assert.eq(1, adminDB.auth("admin", "Password@a1b"));
         testDB.revokeRolesFromUser("Alice", ["readWrite"]);
         testDB.grantRolesToUser("Alice", ["read"]);
         adminDB.logout();
-        assert.eq(1, testDB.auth("Alice", "pwd"));
+        assert.eq(1, testDB.auth("Alice", "Password@a1b"));
         assert.commandFailedWithCode(
             testDB.runCommand(
                 {aggregate: "foo", pipeline: [{$match: {_id: 0}}, {$out: "out"}], cursor: {}}),
@@ -191,7 +200,7 @@
         // least one of them must be authenticated in order to run getMore on the cursor.
         //
 
-        assert.eq(1, adminDB.auth("admin", "admin"));
+        assert.eq(1, adminDB.auth("admin", "Password@a1b"));
         assert.writeOK(testDB.bar.insert({_id: 0}));
 
         // Create a user "fooUser" on the test database that can read the "foo" collection.
@@ -200,8 +209,11 @@
             privileges: [{resource: {db: testDBName, collection: "foo"}, actions: ["find"]}],
             roles: []
         }));
-        assert.commandWorked(
-            testDB.runCommand({createUser: "fooUser", pwd: "pwd", roles: ["readFoo"]}));
+        assert.commandWorked(testDB.runCommand({
+            createUser: "fooUser",
+            pwd: "Password@a1b",
+            roles: ["readFoo"], "digestPassword": true
+        }));
 
         // Create a user "fooBarUser" on the admin database that can read the "foo" and "bar"
         // collections.
@@ -213,14 +225,14 @@
             ],
             roles: []
         }));
-        assert.commandWorked(
-            adminDB.runCommand({createUser: "fooBarUser", pwd: "pwd", roles: ["readFooBar"]}));
+        assert.commandWorked(adminDB.runCommand(
+            {createUser: "fooBarUser", pwd: "Password@a1b", roles: ["readFooBar"]}));
 
         adminDB.logout();
 
         // Test that a cursor created by "fooUser" and "fooBarUser" can be used by "fooUser".
-        assert.eq(1, testDB.auth("fooUser", "pwd"));
-        assert.eq(1, adminDB.auth("fooBarUser", "pwd"));
+        assert.eq(1, testDB.auth("fooUser", "Password@a1b"));
+        assert.eq(1, adminDB.auth("fooBarUser", "Password@a1b"));
         res = assert.commandWorked(testDB.runCommand({find: "foo", batchSize: 0}));
         cursorId = res.cursor.id;
         adminDB.logout();
@@ -229,8 +241,8 @@
 
         // Test that a cursor created by "fooUser" and "fooBarUser" can be used by "fooUser" even if
         // "fooUser" does not have the privilege to read the collection.
-        assert.eq(1, testDB.auth("fooUser", "pwd"));
-        assert.eq(1, adminDB.auth("fooBarUser", "pwd"));
+        assert.eq(1, testDB.auth("fooUser", "Password@a1b"));
+        assert.eq(1, adminDB.auth("fooBarUser", "Password@a1b"));
         res = assert.commandWorked(testDB.runCommand({find: "bar", batchSize: 0}));
         cursorId = res.cursor.id;
         adminDB.logout();
@@ -241,8 +253,8 @@
         // "fooUser", even if "fooUser" does not have all privileges required by the pipeline. This
         // is not desirable behavior, but it will be resolved when we require that only one user be
         // authenticated at a time.
-        assert.eq(1, testDB.auth("fooUser", "pwd"));
-        assert.eq(1, adminDB.auth("fooBarUser", "pwd"));
+        assert.eq(1, testDB.auth("fooUser", "Password@a1b"));
+        assert.eq(1, adminDB.auth("fooBarUser", "Password@a1b"));
         res = assert.commandWorked(testDB.runCommand({
             aggregate: "foo",
             pipeline: [

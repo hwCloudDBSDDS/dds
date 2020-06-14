@@ -10,8 +10,9 @@
     const adminDB = rst.getPrimary().getDB("admin");
 
     // Create the admin user.
-    assert.commandWorked(adminDB.runCommand({createUser: "admin", pwd: "admin", roles: ["root"]}));
-    assert.eq(1, adminDB.auth("admin", "admin"));
+    assert.commandWorked(
+        adminDB.runCommand({createUser: "admin", pwd: "Password@a1b", roles: ["root"]}));
+    assert.eq(1, adminDB.auth("admin", "Password@a1b"));
 
     // Set up the test database.
     const dbName = "test";
@@ -22,13 +23,13 @@
 
     // Create two users, "Alice" and "Mallory".
     assert.commandWorked(
-        testDB.runCommand({createUser: "Alice", pwd: "pwd", roles: ["readWrite"]}));
+        testDB.runCommand({createUser: "Alice", pwd: "Password@a1b", roles: ["readWrite"]}));
     assert.commandWorked(
-        testDB.runCommand({createUser: "Mallory", pwd: "pwd", roles: ["readWrite"]}));
+        testDB.runCommand({createUser: "Mallory", pwd: "Password@a1b", roles: ["readWrite"]}));
     adminDB.logout();
 
     // Alice starts a transaction.
-    assert.eq(1, testDB.auth("Alice", "pwd"));
+    assert.eq(1, testDB.auth("Alice", "Password@a1b"));
     const lsid = assert.commandWorked(testDB.runCommand({startSession: 1})).id;
     assert.commandWorked(testDB.runCommand({
         insert: collName,
@@ -43,7 +44,7 @@
 
     // Mallory cannot continue the transaction. Using the same lsid for two different users creates
     // two distinct sessions on the server. Mallory's session does not have an open transaction.
-    assert.eq(1, testDB.auth("Mallory", "pwd"));
+    assert.eq(1, testDB.auth("Mallory", "Password@a1b"));
     assert.commandFailedWithCode(testDB.runCommand({
         insert: collName,
         documents: [{_id: "mallory"}],
@@ -111,7 +112,7 @@
                                  ErrorCodes.Unauthorized);
 
     // Alice can continue the transaction.
-    assert.eq(1, testDB.auth("Alice", "pwd"));
+    assert.eq(1, testDB.auth("Alice", "Password@a1b"));
     assert.commandWorked(testDB.runCommand({
         insert: collName,
         documents: [{_id: "alice-2"}],

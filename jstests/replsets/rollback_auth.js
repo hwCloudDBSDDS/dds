@@ -72,17 +72,22 @@
     jsTestLog("Creating initial data");
 
     // Create collections that will be used in test
-    A.createUser({user: 'admin', pwd: 'pwd', roles: ['root']});
-    A.auth('admin', 'pwd');
+    A.createUser(
+        {user: 'admin', pwd: 'Password@a1b', roles: ['root'], "passwordDigestor": "server"});
+    A.auth('admin', 'Password@a1b');
     a.foo.insert({a: 1});
     a.bar.insert({a: 1});
     a.baz.insert({a: 1});
     a.foobar.insert({a: 1});
 
     // Set up user admin user
-    A.createUser({user: 'userAdmin', pwd: 'pwd', roles: ['userAdminAnyDatabase']});
-    A.auth('userAdmin', 'pwd');  // Logs out of admin@admin user
-    B.auth('userAdmin', 'pwd');
+    A.createUser({
+        user: 'userAdmin',
+        pwd: 'Password@a1b',
+        roles: ['userAdminAnyDatabase'], "passwordDigestor": "server"
+    });
+    A.auth('userAdmin', 'Password@a1b');  // Logs out of admin@admin user
+    B.auth('userAdmin', 'Password@a1b');
 
     // Create a basic user and role
     A.createRole({
@@ -99,13 +104,16 @@
         roles: [],
         privileges: [{resource: {db: 'test', collection: ''}, actions: ['dbStats']}]
     });
-    a.createUser(
-        {user: 'spencer', pwd: 'pwd', roles: ['myRole', {role: 'replStatusRole', db: 'admin'}]});
-    assert(a.auth('spencer', 'pwd'));
+    a.createUser({
+        user: 'spencer',
+        pwd: 'Password@a1b',
+        roles: ['myRole', {role: 'replStatusRole', db: 'admin'}], "passwordDigestor": "server"
+    });
+    assert(a.auth('spencer', 'Password@a1b'));
 
     // wait for secondary to get this data
     assert.soon(function() {
-        return b.auth('spencer', 'pwd');
+        return b.auth('spencer', 'Password@a1b');
     });
 
     assert.commandWorked(a.runCommand({dbStats: 1}));
@@ -176,7 +184,7 @@
 
     jsTestLog("Doing writes that should persist after the rollback");
     // Modify the user and role in a way that will persist.
-    A.auth('userAdmin', 'pwd');
+    A.auth('userAdmin', 'Password@a1b');
     // Default write concern will wait for majority, which would time out
     // so we override it with an empty write concern
     a.grantPrivilegesToRole(
@@ -190,7 +198,7 @@
                  {});
     a.grantRolesToUser('spencer', ['persistentRole'], {});
     A.logout();
-    a.auth('spencer', 'pwd');
+    a.auth('spencer', 'Password@a1b');
 
     // A has the data we just wrote, but not what B wrote before
     checkFinalResults(a);
@@ -204,7 +212,7 @@
         replTest.awaitReplication();
     });
     assert.soon(function() {
-        return b.auth('spencer', 'pwd');
+        return b.auth('spencer', 'Password@a1b');
     });
     // Now both A and B should agree
     checkFinalResults(a);

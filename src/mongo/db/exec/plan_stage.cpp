@@ -109,4 +109,35 @@ ClockSource* PlanStage::getClock() const {
     return _opCtx->getServiceContext()->getFastClockSource();
 }
 
+bool PlanStage::chkCachedMemOversize() const {
+    return globalStageMemCounters.chkCachedMemOversize(_cachedMemSize);
+}
+
+WorkingSetID PlanStage::chkMemFailureRet(WorkingSet* ws) const {
+    mongoutils::str::stream ss;
+    ss << "All stage objects used " << globalStageMemCounters.getTotalMemSize()
+       << " bytes of RAM that more than the maximum (" << internalQueryStageMemUsageMAX.load()
+       << ") bytes of RAM. This " << _commonStats.stageTypeStr << " object use " << _cachedMemSize
+       << " bytes of RAM. OperationFailed to avoid OOM.";
+    Status status(ErrorCodes::OperationFailed, ss);
+    return WorkingSetCommon::allocateStatusMember(ws, status);
+}
+
+void PlanStage::incCachedMemory(const size_t& memSize) {
+    globalStageMemCounters.incCachedMemSize(stageType(), memSize);
+    _cachedMemSize += memSize;
+}
+
+void PlanStage::decCachedMemory(const size_t& memSize) {
+    globalStageMemCounters.decCachedMemSize(stageType(), memSize);
+    _cachedMemSize -= memSize;
+}
+
+void PlanStage::incStageObj(const StageType& type) {
+    globalStageMemCounters.incMemObj(type);
+}
+void PlanStage::decStageObjAndMem(const StageType& type) {
+    decCachedMemory(_cachedMemSize);
+    globalStageMemCounters.decMemObj(type);
+}
 }  // namespace mongo

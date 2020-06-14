@@ -222,6 +222,9 @@ public:
     bool isAdminDB() const {
         return db() == kAdminDb;
     }
+    //    bool isSystemDB() const {
+    //        return db() == kAdminDb || db() == kLocalDb || db() == kConfigDb;
+    //    }
     bool isLocal() const {
         return db() == kLocalDb;
     }
@@ -240,6 +243,7 @@ public:
     bool isConfigDB() const {
         return db() == kConfigDb;
     }
+
     bool isCommand() const {
         return coll() == "$cmd";
     }
@@ -271,6 +275,19 @@ public:
      */
     bool isVirtualized() const {
         return virtualized(_ns);
+    }
+
+    /**
+     ** Returns true for DBs with special meaning to mongodb.
+     */
+    static bool internalDb(StringData db) {
+        if (db == "admin")
+            return true;
+        if (db == "local")
+            return true;
+        if (db == "config")
+            return true;
+        return false;
     }
 
     /**
@@ -449,6 +466,13 @@ public:
     }
     friend bool operator>=(const NamespaceString& a, const NamespaceString& b) {
         return a.ns() >= b.ns();
+    }
+
+    bool operator==(const std::string& nsIn) const {
+        return nsIn == _ns;
+    }
+    bool operator==(StringData nsIn) const {
+        return nsIn == _ns;
     }
 
 private:

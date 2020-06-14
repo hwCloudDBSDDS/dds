@@ -18,8 +18,10 @@ function runTest(conn) {
     var admin = conn.getDB('admin');
 
     jsTestLog("Creating users and roles in temp collections");
-    db.createUser({user: 'spencer', pwd: 'pwd', roles: ['read']});
-    admin.createUser({user: 'andreas', pwd: 'pwd', roles: ['read']});
+    db.createUser(
+        {user: 'spencer', pwd: 'Password@a1b', roles: ['read'], "passwordDigestor": "server"});
+    admin.createUser(
+        {user: 'andreas', pwd: 'Password@a1b', roles: ['read'], "passwordDigestor": "server"});
     db.createRole({role: 'role1', roles: ['read'], privileges: []});
     admin.createRole({role: 'adminRole1', roles: ['read'], privileges: []});
 
@@ -36,9 +38,12 @@ function runTest(conn) {
     admin.system.roles.remove({});
 
     jsTestLog("Creating users and roles that should be overriden by _mergeAuthzCollections");
-    db.createUser({user: 'spencer', pwd: 'pwd', roles: ['readWrite']});
-    db.createUser({user: 'andy', pwd: 'pwd', roles: ['readWrite']});
-    admin.createUser({user: 'andreas', pwd: 'pwd', roles: ['readWrite']});
+    db.createUser(
+        {user: 'spencer', pwd: 'Password@a1b', roles: ['readWrite'], "passwordDigestor": "server"});
+    db.createUser(
+        {user: 'andy', pwd: 'Password@a1b', roles: ['readWrite'], "passwordDigestor": "server"});
+    admin.createUser(
+        {user: 'andreas', pwd: 'Password@a1b', roles: ['readWrite'], "passwordDigestor": "server"});
     db.createRole({role: 'role1', roles: ['readWrite'], privileges: []});
     db.createRole({role: 'role2', roles: ['readWrite'], privileges: []});
     admin.createRole({role: 'adminRole1', roles: ['readWrite'], privileges: []});
@@ -64,8 +69,10 @@ function runTest(conn) {
     admin.system.roles.remove({});
 
     jsTestLog("Creating users and roles that should be persist after _mergeAuthzCollections");
-    db.createUser({user: 'bob', pwd: 'pwd', roles: ['read']});
-    admin.createUser({user: 'george', pwd: 'pwd', roles: ['read']});
+    db.createUser(
+        {user: 'bob', pwd: 'Password@a1b', roles: ['read'], "passwordDigestor": "server"});
+    admin.createUser(
+        {user: 'george', pwd: 'Password@a1b', roles: ['read'], "passwordDigestor": "server"});
     db.createRole({role: 'role3', roles: ['read'], privileges: []});
     admin.createRole({role: 'adminRole2', roles: ['read'], privileges: []});
 
@@ -92,8 +99,10 @@ function runTest(conn) {
     admin.system.roles.remove({});
 
     // Create users/roles with the same names as those in the dump but different roles
-    db.createUser({user: 'spencer', pwd: 'pwd', roles: ['readWrite']});
-    admin.createUser({user: 'andreas', pwd: 'pwd', roles: ['readWrite']});
+    db.createUser(
+        {user: 'spencer', pwd: 'Password@a1b', roles: ['readWrite'], "passwordDigestor": "server"});
+    admin.createUser(
+        {user: 'andreas', pwd: 'Password@a1b', roles: ['readWrite'], "passwordDigestor": "server"});
     db.createRole({role: 'role1', roles: ['readWrite'], privileges: []});
     admin.createRole({role: 'adminRole1', roles: ['readWrite'], privileges: []});
 

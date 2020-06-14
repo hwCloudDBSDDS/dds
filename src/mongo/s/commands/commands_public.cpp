@@ -36,9 +36,12 @@
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
+#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/copydb.h"
 #include "mongo/db/commands/rename_collection.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/server_options_helpers.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/commands/cluster_commands_helpers.h"
@@ -46,9 +49,14 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/query/store_possible_cursor.h"
 #include "mongo/util/log.h"
+#include "mongo/util/stringutils.h"
 #include "mongo/util/timer.h"
 
 namespace mongo {
+
+using std::string;
+using std::stringstream;
+
 namespace {
 
 bool cursorCommandPassthrough(OperationContext* opCtx,
@@ -680,6 +688,152 @@ public:
     }
 
 } cmdListIndexes;
+
+class ReloadCommand : public ErrmsgCommandDeprecated {
+public:
+    ReloadCommand() : ErrmsgCommandDeprecated("reload") {}
+    virtual bool isWriteCommandForConfigServer() const {
+        return false;
+    }
+    virtual bool slaveOk() const {
+        return true;
+    }
+    virtual bool adminOnly() const {
+        return true;
+    }
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
+    }
+    virtual std::string help() const {
+        return "Reload resource.\n"
+               "Example: {reload: 'adminWhiteListPath', param: '/var/admin_whitelist'}\n"
+               "         {reload: 'auditOpFilter', param: "
+               "'auth,admin,slow,insert,update,delete,command,query,all,off'}\n"
+               "         {reload: 'auditAuthSuccess', param: 'true|false'}\n"
+               "         {reload: 'nsFilter', param: {'query': 'testdb', insert': "
+               "'testdb1,testdb2.testColl,testdb3'}}\n";
+    }
+
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {
+        ActionSet actions;
+        actions.addAction(ActionType::reload);
+        out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
+    }
+
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
+    }
+
+    bool errmsgRun(OperationContext* txn,
+                   const std::string& dbname,
+                   const BSONObj& cmdObj,
+                   std::string& errmsg,
+                   BSONObjBuilder& result) {
+        BSONElement k = cmdObj["reload"];
+        if (k.type() != String) {
+            errmsg = "reload: key must be 'String' type";
+            return false;
+        }
+
+        BSONElement v = cmdObj["param"];
+        if (v.eoo()) {
+            errmsg = "reload: must have 'param' field";
+            return false;
+        }
+
+        std::string key = k.String();
+
+        HostAndPort remote = txn->getClient()->getRemote();
+        log() << "CMD reload: reload: " << key << " param: " << v << " from " << remote.host()
+              << ":" << remote.port() << std::endl;
+
+        if (!serverGlobalParams.adminWhiteList.include(remote.host())) {
+            errmsg = "reload: authentication fail";
+            return false;
+        }
+
+        if (key == "adminWhiteListPath") {
+            if (v.type() != String) {
+                errmsg = "reload: " + key + " 's param must be 'String' type";
+                return false;
+            }
+
+            std::string value = v.String();
+            std::string oldPath = serverGlobalParams.adminWhiteList.path();
+            if (!serverGlobalParams.adminWhiteList.parseFromFile(value, errmsg)) {
+                return false;
+            }
+            result.append("adminWhiteListPath_old", oldPath);
+            result.append("adminWhiteListPath_new", serverGlobalParams.adminWhiteList.path());
+            log() << "security.whitelist.adminWhiteListPath: " << value << std::endl;
+            log() << "adminWhiteList: " << serverGlobalParams.adminWhiteList.toString()
+                  << std::endl;
+        } else if (key == "auditOpFilter") {
+            if (v.type() != String) {
+                errmsg = "reload: " + key + " 's param must be 'String' type";
+                return false;
+            }
+
+            std::string value = v.String();
+            if (!parseAuditOpFilter(value, serverGlobalParams.auditOpFilter)) {
+                errmsg = "reload: invalid value " + value;
+                return false;
+            }
+            log() << "auditLog.opFilter from: " << serverGlobalParams.auditOpFilterStr
+                  << " change to: " << value << std::endl;
+            serverGlobalParams.auditOpFilterStr = value;
+        } else if (key == "auditAuthSuccess") {
+            if (v.type() != Bool) {
+                errmsg = "reload: " + key + " 's param must be 'Bool' type";
+                return false;
+            }
+
+            log() << "auditLog.authSuccess from: " << serverGlobalParams.auditAuthSuccess
+                  << " change to: " << v.Bool() << std::endl;
+            serverGlobalParams.auditAuthSuccess = v.Bool();
+        } else if (key == "nsFilter") {
+            if (v.type() != Object) {
+                errmsg = "reload: " + key + " 's param must be 'Object' type";
+                return false;
+            }
+            BSONObj value = v.Obj();
+            std::map<std::string, std::string> auditNsFilterMap;
+            for (auto op : logger::auditOpList) {
+                auditNsFilterMap.insert({op, value.getStringField(op)});
+            }
+            std::string oldValue = "";
+            if (!serverGlobalParams.auditNsFilterMap.empty()) {
+                for (auto& nsFilterIt : serverGlobalParams.auditNsFilterMap) {
+                    if (!nsFilterIt.second.empty()) {
+                        oldValue.append(nsFilterIt.first);
+                        oldValue.append(": ");
+                        oldValue.append(nsFilterIt.second);
+                        oldValue.append(",");
+                        oldValue.pop_back();
+                    }
+                }
+            }
+            serverGlobalParams.auditOpNsFilterMap.clear();
+            if (!parseAuditNsFilter(auditNsFilterMap)) {
+                serverGlobalParams.auditOpNsFilterMap.clear();
+                parseAuditNsFilter(serverGlobalParams.auditNsFilterMap);
+                errmsg = "reload: invalid value " + value.toString();
+                return false;
+            }
+            log() << "auditLog.nsFilter from: " << oldValue << " change to: " << value.toString()
+                  << std::endl;
+            serverGlobalParams.auditNsFilterMap = auditNsFilterMap;
+        } else {
+            errmsg = "reload: invalid key " + key;
+            return false;
+        }
+
+        return true;
+    }
+} reloadCmd;
+
 
 }  // namespace
 }  // namespace mongo

@@ -11,24 +11,31 @@ function runTest(conn) {
         assert.eq(authzErrorCode, result.code);
     };
 
-    conn.getDB('admin').createUser({user: 'admin', pwd: 'pwd', roles: ['root']});
-    conn.getDB('admin').auth('admin', 'pwd');
     conn.getDB('admin').createUser(
-        {user: 'userAdmin', pwd: 'pwd', roles: ['userAdminAnyDatabase']});
+        {user: 'admin', pwd: 'Password@a1b', roles: ['root'], "passwordDigestor": "server"});
+    conn.getDB('admin').auth('admin', 'Password@a1b');
+    conn.getDB('admin').createUser({
+        user: 'userAdmin',
+        pwd: 'Password@a1b',
+        roles: ['userAdminAnyDatabase'], "passwordDigestor": "server"
+    });
     conn.getDB('admin').logout();
 
     var userAdminConn = new Mongo(conn.host);
     var adminUserAdmin = userAdminConn.getDB('admin');
-    adminUserAdmin.auth('userAdmin', 'pwd');
+    adminUserAdmin.auth('userAdmin', 'Password@a1b');
     adminUserAdmin.createRole({role: 'adminRole', privileges: [], roles: []});
     var testUserAdmin = userAdminConn.getDB('test');
     testUserAdmin.createRole({role: 'testRole1', privileges: [], roles: []});
     testUserAdmin.createRole({role: 'testRole2', privileges: [], roles: ['testRole1']});
-    testUserAdmin.createUser(
-        {user: 'testUser', pwd: 'pwd', roles: ['testRole2', {role: 'adminRole', db: 'admin'}]});
+    testUserAdmin.createUser({
+        user: 'testUser',
+        pwd: 'Password@a1b',
+        roles: ['testRole2', {role: 'adminRole', db: 'admin'}], "passwordDigestor": "server"
+    });
 
     var testDB = conn.getDB('test');
-    assert(testDB.auth('testUser', 'pwd'));
+    assert(testDB.auth('testUser', 'Password@a1b'));
 
     // At this point there are 3 db handles in use.  testUserAdmin and adminUserAdmin are handles to
     // the "test" and "admin" dbs respectively.  Both testUserAdmin and adminUserAdmin are on the
@@ -94,7 +101,7 @@ function runTest(conn) {
 
     // Test changeOwnPassword/changeOwnCustomData
     assert.throws(function() {
-        testDB.changeUserPassword('testUser', 'password');
+        testDB.updateUser('testUser', {pwd: 'Password@a1b7', passwordDigestor: 'server'});
     });
     assert.throws(function() {
         testDB.updateUser('testUser', {customData: {zipCode: 10036}});
@@ -105,15 +112,15 @@ function runTest(conn) {
                                            resource: {db: 'test', collection: ''},
                                            actions: ['changeOwnPassword', 'changeOwnCustomData']
                                         }]);
-    testDB.changeUserPassword('testUser', 'password');
-    assert(!testDB.auth('testUser', 'pwd'));
-    assert(testDB.auth('testUser', 'password'));
+    testDB.updateUser('testUser', {pwd: 'Password@a1b7', passwordDigestor: 'server'});
+    assert(!testDB.auth('testUser', 'Password@a1b'));
+    assert(testDB.auth('testUser', 'Password@a1b7'));
     testDB.updateUser('testUser', {customData: {zipCode: 10036}});
     assert.eq(10036, testDB.getUser('testUser').customData.zipCode);
 
     testUserAdmin.revokeRolesFromRole('testRole2', ['testRole1']);
     assert.throws(function() {
-        testDB.changeUserPassword('testUser', 'pwd');
+        testDB.updateUser('testUser', {pwd: 'Password@a1b', passwordDigestor: 'server'});
     });
     assert.throws(function() {
         testDB.foo.findOne();
@@ -127,9 +134,9 @@ function runTest(conn) {
     testUserAdmin.grantPrivilegesToRole('testRole2', [
         {resource: {db: 'test', collection: ''}, actions: ['changePassword', 'changeCustomData']}
     ]);
-    testDB.changeUserPassword('testUser', 'pwd');
-    assert(!testDB.auth('testUser', 'password'));
-    assert(testDB.auth('testUser', 'pwd'));
+    testDB.updateUser('testUser', {pwd: 'Password@a1b', passwordDigestor: 'server'});
+    assert(!testDB.auth('testUser', 'Password@a1b7'));
+    assert(testDB.auth('testUser', 'Password@a1b'));
     testDB.updateUser('testUser', {customData: {zipCode: 10028}});
     assert.eq(10028, testDB.getUser('testUser').customData.zipCode);
 

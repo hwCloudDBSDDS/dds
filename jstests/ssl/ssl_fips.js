@@ -28,8 +28,9 @@ if (mongo != 0) {
            mongoOutput.match(/FIPS_mode_set:fips mode not supported/));
 } else {
     // verify that auth works, SERVER-18051
-    md.getDB("admin").createUser({user: "root", pwd: "root", roles: ["root"]});
-    assert(md.getDB("admin").auth("root", "root"), "auth failed");
+    md.getDB("admin").createUser(
+        {user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
+    assert(md.getDB("admin").auth("admin", "Password@a1b"), "auth failed");
 
     // kill mongod
     MongoRunner.stopMongod(md);

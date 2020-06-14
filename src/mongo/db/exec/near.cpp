@@ -41,6 +41,7 @@ using std::unique_ptr;
 using std::vector;
 using stdx::make_unique;
 
+const size_t NearStage::_seenDocItemSize = sizeof(RecordId) + sizeof(WorkingSetID);
 NearStage::NearStage(OperationContext* opCtx,
                      const char* typeName,
                      StageType type,
@@ -52,9 +53,13 @@ NearStage::NearStage(OperationContext* opCtx,
       _searchState(SearchState_Initializing),
       _nextIntervalStats(nullptr),
       _stageType(type),
-      _nextInterval(nullptr) {}
+      _nextInterval(nullptr) {
+    incStageObj(type);
+}
 
-NearStage::~NearStage() {}
+NearStage::~NearStage() {
+    decStageObjAndMem(_stageType);
+}
 
 NearStage::CoveredInterval::CoveredInterval(PlanStage* covering,
                                             bool dedupCovering,
@@ -85,6 +90,11 @@ PlanStage::StageState NearStage::doWork(WorkingSetID* out) {
     WorkingSetID toReturn = WorkingSet::INVALID_ID;
     Status error = Status::OK();
     PlanStage::StageState nextState = PlanStage::NEED_TIME;
+
+    if (chkCachedMemOversize()) {
+        *out = chkMemFailureRet(_workingSet);
+        return PlanStage::FAILURE;
+    }
 
     //
     // Work the search
@@ -211,11 +221,13 @@ PlanStage::StageState NearStage::bufferNext(WorkingSetID* toReturn, Status* erro
     // Ensure that the BSONObj underlying the WorkingSetMember is owned in case we yield.
     nextMember->makeObjOwnedIfNeeded();
     _resultBuffer.push(SearchResult(nextMemberID, memberDistance));
-
+    size_t cachedSize = sizeof(SearchResult);
     // Store the member's RecordId, if available, for quick invalidation
     if (nextMember->hasRecordId()) {
         _seenDocuments.insert(std::make_pair(nextMember->recordId, nextMemberID));
+        cachedSize += _seenDocItemSize;
     }
+    incCachedMemory(cachedSize);
 
     return PlanStage::NEED_TIME;
 }
@@ -225,6 +237,7 @@ PlanStage::StageState NearStage::advanceNext(WorkingSetID* toReturn) {
     // If the document does not fall in the current interval, it will be buffered so that
     // it might be returned in a following interval.
 
+    size_t releaseSize = 0;
     // Check if the next member is in the search interval and that the buffer isn't empty
     WorkingSetID resultID = WorkingSet::INVALID_ID;
     // memberDistance is initialized to produce an error if used before its value is changed
@@ -238,9 +251,12 @@ PlanStage::StageState NearStage::advanceNext(WorkingSetID* toReturn) {
             WorkingSetMember* member = _workingSet->get(result.resultID);
             if (member->hasRecordId()) {
                 _seenDocuments.erase(member->recordId);
+                releaseSize = _seenDocItemSize;
             }
             _resultBuffer.pop();
+            releaseSize += sizeof(SearchResult);
             _workingSet->free(result.resultID);
+            decCachedMemory(releaseSize);
             return PlanStage::NEED_TIME;
         }
 
@@ -265,6 +281,7 @@ PlanStage::StageState NearStage::advanceNext(WorkingSetID* toReturn) {
 
     // The next document in _resultBuffer is in the search interval, so we can return it.
     _resultBuffer.pop();
+    releaseSize = sizeof(SearchResult);
 
     // If we're returning something, take it out of our RecordId -> WSID map so that future
     // calls to invalidate don't cause us to take action for a RecordId we're done with.
@@ -272,7 +289,9 @@ PlanStage::StageState NearStage::advanceNext(WorkingSetID* toReturn) {
     WorkingSetMember* member = _workingSet->get(*toReturn);
     if (member->hasRecordId()) {
         _seenDocuments.erase(member->recordId);
+        releaseSize += _seenDocItemSize;
     }
+    decCachedMemory(releaseSize);
 
     // This value is used by nextInterval() to determine the size of the next interval.
     ++_nextIntervalStats->numResultsReturned;
@@ -298,6 +317,7 @@ void NearStage::doInvalidate(OperationContext* opCtx, const RecordId& dl, Invali
 
         // Don't keep it around in the seen map since there's no valid RecordId anymore
         _seenDocuments.erase(seenIt);
+        decCachedMemory(_seenDocItemSize);
     }
 }
 

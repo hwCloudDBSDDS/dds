@@ -36,6 +36,7 @@
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/record_id.h"
+#include "mongo/db/stats/counters.h"
 
 namespace mongo {
 
@@ -149,6 +150,7 @@ private:
     typedef stdx::unordered_map<RecordId, TextRecordData, RecordId::Hasher> ScoreMap;
     ScoreMap _scores;
     ScoreMap::const_iterator _scoreIterator;
+    static const size_t _scoresItemSize;
 
     TextOrStats _specificStats;
 

@@ -299,6 +299,7 @@ env.Library(
         "oplog_application_checks.cpp",
         "oplog_note.cpp",
         "parallel_collection_scan.cpp",
+        "reload_cmd.cpp",
         "resize_oplog.cpp",
         "restart_catalog_command.cpp",
         "set_feature_compatibility_version_command.cpp",

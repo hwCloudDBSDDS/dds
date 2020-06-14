@@ -118,8 +118,9 @@ function mixedShardTest(options1, options2, shouldSucceed) {
         });
 
         // Create admin user in case the options include auth
-        st.admin.createUser({user: 'admin', pwd: 'pwd', roles: ['root']});
-        st.admin.auth('admin', 'pwd');
+        st.admin.createUser(
+            {user: 'admin', pwd: 'Password@a1b', roles: ['root'], "passwordDigestor": "server"});
+        st.admin.auth('admin', 'Password@a1b');
 
         authSucceeded = true;
 
@@ -166,7 +167,7 @@ function mixedShardTest(options1, options2, shouldSucceed) {
         // Authenticate csrs so ReplSetTest.stopSet() can do db hash check.
         if (authSucceeded && st.configRS) {
             st.configRS.nodes.forEach((node) => {
-                node.getDB('admin').auth('admin', 'pwd');
+                node.getDB('admin').auth('admin', 'Password@a1b');
             });
         }
         // This has to be done in order for failure

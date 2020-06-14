@@ -105,6 +105,7 @@ int versionCmp(const StringData rhs, const StringData lhs);
  * goes to "\\t". If `escape_slash` is true, then "/" goes to "\\/".
  */
 std::string escape(StringData s, bool escape_slash = false);
+void escape(std::stringstream& os, const char* s, size_t len, bool escape_slash = false);
 
 /**
  * Converts 'integer' from a base-10 string to a size_t value or returns boost::none if 'integer'

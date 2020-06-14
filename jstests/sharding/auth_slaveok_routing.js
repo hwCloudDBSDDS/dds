@@ -55,11 +55,19 @@
      * is no admin user.
      */
     var adminDB = mongos.getDB('admin');
-    adminDB.createUser({user: 'user', pwd: 'password', roles: jsTest.adminUserRoles});
-    adminDB.auth('user', 'password');
+    adminDB.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
+    adminDB.auth('admin', 'Password@a1b');
     var priAdminDB = replTest.getPrimary().getDB('admin');
     replTest.getPrimary().waitForClusterTime(60);
-    priAdminDB.createUser({user: 'user', pwd: 'password', roles: jsTest.adminUserRoles},
+    priAdminDB.createUser({
+        user: 'admin',
+        pwd: 'Password@a1b',
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    },
                           {w: 3, wtimeout: 30000});
 
     coll.drop();
@@ -86,7 +94,7 @@
     assert(doesRouteToSec(coll, {v: vToFind++}));
 
     var SIG_TERM = 15;
-    replTest.stopSet(SIG_TERM, true, {auth: {user: 'user', pwd: 'password'}});
+    replTest.stopSet(SIG_TERM, true, {auth: {user: 'admin', pwd: 'Password@a1b'}});
 
     for (var n = 0; n < nodeCount; n++) {
         replTest.restart(n, rsOpts);
@@ -113,8 +121,8 @@
 
     // Cleanup auth so Windows will be able to shutdown gracefully
     priAdminDB = replTest.getPrimary().getDB('admin');
-    priAdminDB.auth('user', 'password');
-    priAdminDB.dropUser('user');
+    priAdminDB.auth('admin', 'Password@a1b');
+    priAdminDB.dropUser('admin');
 
     st.stop();
 })();

@@ -394,6 +394,7 @@
         refreshLogicalSessionCacheNow: {skip: "goes through the cluster write path"},
         refreshSessions: {skip: "executes locally on mongos (not sent to any remote node)"},
         refreshSessionsInternal: {skip: "executes locally on mongos (not sent to any remote node)"},
+        reload: {skip: "always targets the config server"},
         removeShard: {skip: "not on a user database"},
         removeShardFromZone: {skip: "not on a user database"},
         renameCollection: {

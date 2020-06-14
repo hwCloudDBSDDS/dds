@@ -603,6 +603,8 @@ ExitCode _initAndListen(int listenPort) {
 
     startClientCursorMonitor();
 
+    startAuditLogFlusher();
+
     PeriodicTask::startRunningPeriodicTasks();
 
     // Set up the periodic runner for background job execution

@@ -141,6 +141,17 @@ public:
                       "with --configsvr");
         }
 
+        // because user may connect with inner network because some case in our clould instance,
+        // add temp fix that : when user is auth, do not check the connection way.
+        // TODO: when our cloud instance is fix, need fix this back.
+        if (dbname == "admin" &&
+            (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomer() ||
+             (opCtx->getClient()->isCustomerConnection() &&
+              AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser()))) {
+            return CommandHelpers::appendCommandStatusNoThrow(
+                result, Status(ErrorCodes::IllegalOperation, "Cannot drop 'admin' database"));
+        }
+
         if ((repl::ReplicationCoordinator::get(opCtx)->getReplicationMode() !=
              repl::ReplicationCoordinator::modeNone) &&
             (dbname == NamespaceString::kLocalDb)) {

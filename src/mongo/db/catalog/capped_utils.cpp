@@ -118,6 +118,12 @@ mongo::Status mongo::cloneCollectionAsCapped(OperationContext* opCtx,
     NamespaceString fromNss(db->name(), shortFrom);
     NamespaceString toNss(db->name(), shortTo);
 
+    if (fromNss.ns() == "admin.system.users" || fromNss.ns() == "admin.system.roles") {
+        return Status(ErrorCodes::Unauthorized,
+                      str::stream() << "source collection " << fromNss.ns()
+                                    << " does not allow to cloneCollectionAsCapped");
+    }
+
     Collection* fromCollection = db->getCollection(opCtx, fromNss);
     if (!fromCollection) {
         if (db->getViewCatalog()->lookup(opCtx, fromNss.ns())) {

@@ -19,7 +19,7 @@
         function tryKill(db, authUsers, killUsers, shouldWork) {
             function loginAll(users) {
                 users.forEach(function(u) {
-                    assert(u[1].auth(u[0], 'pass'));
+                    assert(u[1].auth(u[0], 'Password@a1b'));
                 });
             }
 
@@ -74,18 +74,38 @@
         const admin = mongod.getDB('admin');
 
         // Setup users
-        admin.createUser({user: 'admin', pwd: 'pass', roles: jsTest.adminUserRoles});
-        assert(admin.auth('admin', 'pass'));
+        admin.createUser({
+            user: 'admin',
+            pwd: 'Password@a1b',
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        });
+        assert(admin.auth('admin', 'Password@a1b'));
 
-        testA.createUser({user: 'user1', pwd: 'pass', roles: jsTest.basicUserRoles});
-        testA.createUser({user: 'user2', pwd: 'pass', roles: jsTest.basicUserRoles});
-        testB.createUser({user: 'user3', pwd: 'pass', roles: jsTest.basicUserRoles});
-        testB.createUser({user: 'user4', pwd: 'pass', roles: jsTest.basicUserRoles});
+        testA.createUser({
+            user: 'user1',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
+        testA.createUser({
+            user: 'user2',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
+        testB.createUser({
+            user: 'user3',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
+        testB.createUser({
+            user: 'user4',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
         admin.logout();
 
         // Create a collection with batchable data
-        assert(testA.auth('user1', 'pass'));
-        assert(testB.auth('user3', 'pass'));
+        assert(testA.auth('user1', 'Password@a1b'));
+        assert(testB.auth('user3', 'Password@a1b'));
         for (var i = 0; i < 101; ++i) {
             assert.writeOK(testA.coll.insert({_id: i}));
             assert.writeOK(testB.coll.insert({_id: i}));

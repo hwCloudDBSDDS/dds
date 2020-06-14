@@ -10,9 +10,10 @@ assert.throws(function() {
 });
 
 // Should succeed due to localhost exception.
-conn1.getDB("admin").createUser({user: "root", pwd: "pass", roles: ["root"]});
+conn1.getDB("admin").createUser(
+    {user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
 
-conn1.getDB("admin").auth("root", "pass");
+conn1.getDB("admin").auth("admin", "Password@a1b");
 conn1.getDB("test").foo.insert({a: 1});
 
 conn1.getDB("admin").dropAllUsers();
@@ -24,9 +25,10 @@ assert.throws(function() {
 
 // Should fail since localhost exception is disabled
 assert.throws(function() {
-    conn2.getDB("admin").createUser({user: "root", pwd: "pass", roles: ["root"]});
+    conn2.getDB("admin").createUser(
+        {user: "admin", pwd: "Password@a1b", roles: ["root"], "passwordDigestor": "server"});
 });
 
 print("SUCCESS Completed disable_localhost_bypass.js");
-MongoRunner.stopMongod(conn1, null, {user: "root", pwd: "pass"});
-MongoRunner.stopMongod(conn2, null, {user: "root", pwd: "pass"});
+MongoRunner.stopMongod(conn1, null, {user: "admin", pwd: "Password@a1b"});
+MongoRunner.stopMongod(conn2, null, {user: "admin", pwd: "Password@a1b"});

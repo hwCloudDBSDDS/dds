@@ -13,7 +13,7 @@
         return;
     }
     rst.initiate();
-    const password = "test_password";
+    const password = "Password@a1btest_password";
     rst.getPrimary().getDB("admin").createUser(
         {user: "userAdmin", pwd: password, roles: [{db: "admin", role: "userAdminAnyDatabase"}]});
     rst.restart(0, {auth: ''});

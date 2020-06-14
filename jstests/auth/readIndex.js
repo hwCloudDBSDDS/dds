@@ -5,13 +5,15 @@ var adminDB = conn.getDB("admin");
 var testDB = conn.getDB("testdb");
 var indexName = 'idx_a';
 
-adminDB.createUser({user: 'root', pwd: 'password', roles: ['root']});
-adminDB.auth('root', 'password');
+adminDB.createUser(
+    {user: 'admin', pwd: 'Password@a1b', roles: ['root'], "passwordDigestor": "server"});
+adminDB.auth('admin', 'Password@a1b');
 testDB.foo.insert({a: 1});
-testDB.createUser({user: 'dbAdmin', pwd: 'password', roles: ['dbAdmin']});
+testDB.createUser(
+    {user: 'dbAdmin', pwd: 'Password@a1b', roles: ['dbAdmin'], "passwordDigestor": "server"});
 adminDB.logout();
 
-testDB.auth('dbAdmin', 'password');
+testDB.auth('dbAdmin', 'Password@a1b');
 testDB.foo.ensureIndex({a: 1}, {name: indexName});
 assert.eq(2, testDB.foo.getIndexes().length);  // index on 'a' plus default _id index
 var indexList = testDB.foo.getIndexes().filter(function(idx) {
@@ -19,4 +21,4 @@ var indexList = testDB.foo.getIndexes().filter(function(idx) {
 });
 assert.eq(1, indexList.length, tojson(indexList));
 assert.docEq(indexList[0].key, {a: 1}, tojson(indexList));
-MongoRunner.stopMongod(conn, null, {user: 'root', pwd: 'password'});
+MongoRunner.stopMongod(conn, null, {user: 'admin', pwd: 'password'});

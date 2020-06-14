@@ -30,6 +30,7 @@
 #include <string>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/logger/audit_log_domain.h"
 #include "mongo/logger/component_message_log_domain.h"
 #include "mongo/logger/rotatable_file_writer.h"
 #include "mongo/stdx/unordered_map.h"
@@ -55,6 +56,13 @@ public:
      */
     ComponentMessageLogDomain* getGlobalDomain() {
         return &_globalDomain;
+    }
+
+    /**
+     * Gets the global audit domain for this manager.  It has no name.
+     */
+    AuditLogDomain* getGlobalAuditDomain() {
+        return &_globalAuditDomain;
     }
 
     /**
@@ -87,6 +95,7 @@ private:
     DomainsByNameMap _domains;
     ComponentMessageLogDomain _globalDomain;
     ComponentMessageLogDomain::AppenderHandle _defaultAppender;
+    AuditLogDomain _globalAuditDomain;
 };
 
 }  // namespace logger

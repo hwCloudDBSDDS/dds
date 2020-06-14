@@ -25,7 +25,8 @@ if (cmdOut.ok) {
         roles: [
             {'role': 'userAdminAnyDatabase', 'db': 'admin'},
             {'role': 'readWriteAnyDatabase', 'db': 'admin'}
-        ]
+        ],
+        "passwordDigestor": "server"
     });
 
     // Localhost exception should not be in place anymore

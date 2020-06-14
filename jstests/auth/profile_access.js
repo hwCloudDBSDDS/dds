@@ -6,37 +6,43 @@ var testDb = conn.getDB("testdb");
 
 adminDb.createUser({
     user: 'admin',
-    pwd: 'password',
-    roles: ['userAdminAnyDatabase', 'dbAdminAnyDatabase', 'readWriteAnyDatabase']
+    pwd: 'Password@a1b',
+    roles: ['userAdminAnyDatabase', 'dbAdminAnyDatabase', 'readWriteAnyDatabase'],
+    "passwordDigestor": "server"
 });
 
-adminDb.auth('admin', 'password');
-testDb.createUser({user: 'readUser', pwd: 'password', roles: ['read']});
-testDb.createUser({user: 'dbAdminUser', pwd: 'password', roles: ['dbAdmin']});
-testDb.createUser({
-    user: 'dbAdminAnyDBUser',
-    pwd: 'password',
-    roles: [{role: 'dbAdminAnyDatabase', db: 'admin'}]
+adminDb.auth('admin', 'Password@a1b');
+testDb.createUser(
+    {user: 'readUser', pwd: 'Password@a1b', roles: ['read'], "passwordDigestor": "server"});
+adminDb.createUser({
+    user: 'monitor',
+    pwd: 'Password@a1b',
+    roles: [{'role': 'dbAdmin', 'db': 'testdb'}], "passwordDigestor": "server"
+});
+adminDb.getSiblingDB('admin').createUser({
+    user: 'backupuser',
+    pwd: 'Password@a1b',
+    roles: [{role: 'dbAdminAnyDatabase', db: 'admin'}], "passwordDigestor": "server"
 });
 testDb.setProfilingLevel(2);
 testDb.foo.findOne();
 adminDb.logout();
-testDb.auth('readUser', 'password');
+testDb.auth('readUser', 'Password@a1b');
 assert.throws(function() {
     testDb.system.profile.findOne();
 });
 testDb.logout();
 
 // SERVER-14355
-testDb.auth('dbAdminUser', 'password');
+testDb.getSiblingDB('admin').auth('monitor', 'Password@a1b');
 testDb.setProfilingLevel(0);
 testDb.system.profile.drop();
 assert.commandWorked(testDb.createCollection("system.profile", {capped: true, size: 1024}));
 testDb.logout();
 
 // SERVER-16944
-testDb.auth('dbAdminAnyDBUser', 'password');
+testDb.getSiblingDB('admin').auth('backupuser', 'Password@a1b');
 testDb.setProfilingLevel(0);
 testDb.system.profile.drop();
 assert.commandWorked(testDb.createCollection("system.profile", {capped: true, size: 1024}));
-MongoRunner.stopMongod(conn, null, {user: 'admin', pwd: 'password'});
+MongoRunner.stopMongod(conn, null, {user: 'admin', pwd: 'Password@a1b'});

@@ -350,6 +350,12 @@ public:
     // called.
     virtual bool isImpersonating() const = 0;
 
+    virtual bool isAuthWithBuiltinUser() const = 0;
+    virtual bool isAuthWithCustomerOrNoAuthUser() const = 0;
+    virtual bool isAuthWithCustomer() const = 0;
+    virtual bool isNoAuthUser() const = 0;
+    virtual bool shouldAllowLocalhost() const = 0;
+
     // Returns a status encoding whether the current session in the specified `opCtx` has privilege
     // to access a cursor in the specified `cursorSessionId` parameter.  Returns `Status::OK()`,
     // when the session is accessible.  Returns a `mongo::Status` with information regarding the

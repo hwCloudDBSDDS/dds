@@ -58,8 +58,12 @@ conn = MongoRunner.runMongod({auth: "", nojournal: "", bind_ip: "127.0.0.1"});
 
 // admin user
 var admin = conn.getDB("admin");
-admin.createUser({user: "admin", pwd: "admin", roles: jsTest.adminUserRoles});
-admin.auth("admin", "admin");
+admin.createUser({
+    user: "admin",
+    pwd: "Password@a1b",
+    roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+});
+admin.auth("admin", "Password@a1b");
 
 var foo = conn.getDB("foo");
 
@@ -89,7 +93,7 @@ exitCode = MongoRunner.runMongoTool("mongorestore", {
     db: "foo",
     authenticationDatabase: "admin",
     username: "admin",
-    password: "admin",
+    password: "Password@a1b",
     dir: dumpdir + "foo/",
     verbose: 5,
 });
@@ -106,14 +110,18 @@ assert.eq(foo.baz.count(), 4);
 
 foo.dropDatabase();
 
-foo.createUser({user: 'user', pwd: 'password', roles: jsTest.basicUserRoles});
+foo.createUser({
+    user: 'user',
+    pwd: 'Password@a1b',
+    roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+});
 
 // now try to restore dump with foo database credentials
 exitCode = MongoRunner.runMongoTool("mongorestore", {
     host: "127.0.0.1:" + conn.port,
     db: "foo",
     username: "user",
-    password: "password",
+    password: "Password@a1b",
     dir: dumpdir + "foo/",
     verbose: 5,
 });

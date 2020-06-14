@@ -56,6 +56,10 @@
 #include "mongo/util/sequence_util.h"
 #include "mongo/util/stringutils.h"
 
+#include "mongo/util/time_support.h"
+#include <mutex>
+#include <time.h>
+
 namespace mongo {
 namespace {
 
@@ -63,6 +67,97 @@ using std::stringstream;
 
 const bool autoAuthorizeDefault = true;
 
+// need remove ::
+using ::std::mutex;
+using ::std::lock_guard;
+using ::std::make_pair;
+using ::std::pair;
+
+// begin dds for "limit verifytimes"
+// Todo: need format this code
+class LimitVerifyTimes {
+public:
+    LimitVerifyTimes(){};
+    ~LimitVerifyTimes(){};
+
+    struct VerifiedInfo {
+        time_t recoredTime;
+        int failedTimes;
+
+        VerifiedInfo() {
+            failedTimes = 1;
+            recoredTime = time(NULL);
+        }
+    };
+    bool upsertVerifiedInfo(const std::string key) {
+        stdx::lock_guard<stdx::mutex> lk(m);
+        VerifyFailedMap::iterator it = _verifyMap.find(key);
+        if (it == _verifyMap.end()) {
+            VerifiedInfo initInfo;
+            _verifyMap.insert(make_pair(key, initInfo));
+            return true;
+        }
+        it->second.failedTimes++;
+        it->second.recoredTime = time(NULL);
+        return true;
+    }
+    bool canPassVerify(const std::string& key) {
+        stdx::lock_guard<stdx::mutex> lk(m);
+
+        VerifyFailedMap::iterator it = _verifyMap.find(key);
+        if (it == _verifyMap.end())
+            return true;
+
+        if (it->second.failedTimes < FAILEDTIMES) {
+            return true;
+        }
+
+        time_t now = time(NULL);
+        int diff = now - it->second.recoredTime;
+        if (diff < DURATION) {
+            log() << "canPassVerify fail"
+                  << "key:" << it->first << ",recoredTime:" << it->second.recoredTime
+                  << ",failedTimes:" << it->second.failedTimes << std::endl;
+            return false;
+        }
+
+        _verifyMap.erase(it);
+        return true;
+    }
+
+    void cleanVerifiedInfo(const std::string key) {
+        stdx::lock_guard<stdx::mutex> lk(m);
+        VerifyFailedMap::iterator it = _verifyMap.find(key);
+        if (it == _verifyMap.end()) {
+            return;
+        }
+        _verifyMap.erase(it);
+    }
+
+    std::string generateVerifiedKey(const Client* client, AuthenticationSession* session) {
+        verify(client != NULL);
+        verify(session != NULL);
+
+        auto& mechanism = session->getMechanism();
+        std::string userName = mechanism.getPrincipalName().toString();
+        std::string key = client->getRemote().host() + "_" + userName;
+        return key;
+    }
+
+    inline std::string getSaslAdminAuthUserName() {
+        return "admin";
+    }
+
+private:
+    typedef std::map<std::string, VerifiedInfo> VerifyFailedMap;
+    const int FAILEDTIMES = 5;
+    const int DURATION = 10;
+    stdx::mutex m;
+    VerifyFailedMap _verifyMap;
+};
+
+LimitVerifyTimes limitVerifyInfo;
+// end dds for
 class CmdSaslStart : public BasicCommand {
 public:
     CmdSaslStart();
@@ -167,12 +262,28 @@ Status doSaslStep(OperationContext* opCtx,
                   BSONObjBuilder* result) {
     std::string payload;
     BSONType type = EOO;
+    Client* client = Client::getCurrent();
+
     Status status = saslExtractPayload(cmdObj, &payload, &type);
     if (!status.isOK()) {
         return status;
     }
 
     auto& mechanism = session->getMechanism();
+    if (serverGlobalParams.limitVerifyTimes) {
+        if (mechanism.getPrincipalName().toString() == limitVerifyInfo.getSaslAdminAuthUserName()) {
+            std::string key = limitVerifyInfo.generateVerifiedKey(client, session);
+            bool pass = limitVerifyInfo.canPassVerify(key);
+            if (!pass) {
+                log() << "doSaslStep:"
+                      << "canPassVerify fail " << std::endl;
+                // Todo: use seconds replace second
+                return Status(
+                    ErrorCodes::Unauthorized,
+                    "Password error 5 times ,account locked, please try after 10 seconds");
+            }
+        }
+    }
 
     // Passing in a payload and extracting a responsePayload
     StatusWith<std::string> swResponse = mechanism.step(opCtx, payload);
@@ -195,10 +306,24 @@ Status doSaslStep(OperationContext* opCtx,
 
     if (mechanism.isDone()) {
         UserName userName(mechanism.getPrincipalName(), mechanism.getAuthenticationDatabase());
+
+        if (userName.isBuildinUser() && opCtx->getClient()->isCustomerConnection()) {
+            return Status(ErrorCodes::AuthenticationFailed,
+                          "builtin user cannot connect with data nic");
+        }
+
         status =
             AuthorizationSession::get(opCtx->getClient())->addAndAuthorizeUser(opCtx, userName);
         if (!status.isOK()) {
             return status;
+        }
+
+        if (serverGlobalParams.limitVerifyTimes) {
+            if (mechanism.getPrincipalName().toString() ==
+                limitVerifyInfo.getSaslAdminAuthUserName()) {
+                std::string key = limitVerifyInfo.generateVerifiedKey(client, session);
+                limitVerifyInfo.cleanVerifiedInfo(key);
+            }
         }
 
         if (!serverGlobalParams.quiet.load()) {

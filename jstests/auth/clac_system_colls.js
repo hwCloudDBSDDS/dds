@@ -7,8 +7,12 @@
 function runTest(admindb) {
     var authzErrorCode = 13;
 
-    admindb.createUser({user: "admin", pwd: "pwd", roles: ["userAdminAnyDatabase"]});
-    assert.eq(1, admindb.auth("admin", "pwd"));
+    admindb.createUser({
+        user: "admin",
+        pwd: "Password@a1b",
+        roles: ["userAdminAnyDatabase"], "passwordDigestor": "server"
+    });
+    assert.eq(1, admindb.auth("admin", "Password@a1b"));
 
     var sysCollections = [
         "system.indexes",
@@ -29,11 +33,16 @@ function runTest(admindb) {
     admindb.createRole({role: "FindInDB", roles: [], privileges: [findPriv]});
     admindb.createRole({role: "FindOnSysRes", roles: [], privileges: sysPrivs});
 
-    admindb.createUser({user: "sysUser", pwd: "pwd", roles: ["FindOnSysRes"]});
-    admindb.createUser({user: "user", pwd: "pwd", roles: ["FindInDB"]});
+    admindb.createUser({
+        user: "sysUser",
+        pwd: "Password@a1b",
+        roles: ["FindOnSysRes"], "passwordDigestor": "server"
+    });
+    admindb.createUser(
+        {user: "user", pwd: "Password@a1b", roles: ["FindInDB"], "passwordDigestor": "server"});
 
     // Verify the find on all collections exludes system collections
-    assert.eq(1, admindb.auth("user", "pwd"));
+    assert.eq(1, admindb.auth("user", "Password@a1b"));
 
     assert.doesNotThrow(function() {
         admindb.foo.findOne();
@@ -43,7 +52,7 @@ function runTest(admindb) {
     }
 
     // Verify that find on system collections gives find permissions
-    assert.eq(1, admindb.auth("sysUser", "pwd"));
+    assert.eq(1, admindb.auth("sysUser", "Password@a1b"));
 
     assert.throws(function() {
         admindb.foo.findOne();

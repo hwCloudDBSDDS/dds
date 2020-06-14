@@ -70,21 +70,21 @@
         }
     }
 
-    admin.createUser({user: 'admin', pwd: 'pass', roles: jsTest.adminUserRoles});
-    assert(admin.auth('admin', 'pass'));
+    admin.createUser({user: 'admin', pwd: 'Password@a1b', roles: jsTest.adminUserRoles});
+    assert(admin.auth('admin', 'Password@a1b'));
 
     // Test FCV 3.6 mode first.
     assert.commandWorked(admin.runCommand({setFeatureCompatibilityVersion: "3.6"}));
 
     // By default, only create SHA-1 in 3.6 FCV mode.
-    test.createUser({user: 'sha1default', pwd: 'pass', roles: jsTest.basicUserRoles});
-    checkUser('sha1default', 'pass', true, false);
+    test.createUser({user: 'sha1default', pwd: 'Password@a1b', roles: jsTest.basicUserRoles});
+    checkUser('sha1default', 'Password@a1b', true, false);
 
     // SCRAM-SHA-256 not available.
     assert.throws(function() {
         test.createUser({
             user: 'sha256failure',
-            pwd: 'pass',
+            pwd: 'Password@a1b',
             roles: jsTest.basicUserRoles,
             mechanisms: ['SCRAM-SHA-256']
         });
@@ -94,7 +94,7 @@
     assert.throws(function() {
         test.createUser({
             user: 'shalala',
-            pwd: 'pass',
+            pwd: 'Password@a1b',
             roles: jsTest.basicUserRoles,
             mechanisms: ['SCRAM-SHA-1', 'SCRAM-SHA-LA-LA'],
         });
@@ -104,27 +104,35 @@
     assert.commandWorked(admin.runCommand({setFeatureCompatibilityVersion: "4.0"}));
 
     // By default, users are created with both SCRAM variants.
-    test.createUser({user: 'user', pwd: 'pass', roles: jsTest.basicUserRoles});
-    checkUser('user', 'pass', true, true);
+    test.createUser({user: 'user', pwd: 'Password@a1b', roles: jsTest.basicUserRoles});
+    checkUser('user', 'Password@a1b', true, true);
 
     // Request SHA1 only.
-    test.createUser(
-        {user: 'sha1user', pwd: 'pass', roles: jsTest.basicUserRoles, mechanisms: ['SCRAM-SHA-1']});
-    checkUser('sha1user', 'pass', true, false);
+    test.createUser({
+        user: 'sha1user',
+        pwd: 'Password@a1b',
+        roles: jsTest.basicUserRoles,
+        mechanisms: ['SCRAM-SHA-1']
+    });
+    checkUser('sha1user', 'Password@a1b', true, false);
 
     // Request SHA256 only.
     test.createUser({
         user: 'sha256user',
-        pwd: 'pass',
+        pwd: 'Password@a1b',
         roles: jsTest.basicUserRoles,
         mechanisms: ['SCRAM-SHA-256']
     });
-    checkUser('sha256user', 'pass', false, true);
+    checkUser('sha256user', 'Password@a1b', false, true);
 
     // Fail passing an empty mechanisms field.
     assert.throws(function() {
-        test.createUser(
-            {user: 'userNoMech', pwd: 'pass', roles: jsTest.basicUserRoles, mechanisms: []});
+        test.createUser({
+            user: 'userNoMech',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles,
+            mechanisms: []
+        });
     });
 
     // Repeat above, but request client-side digesting.
@@ -133,7 +141,7 @@
     assert.throws(function() {
         test.createUser({
             user: 'user2',
-            pwd: 'pass',
+            pwd: 'Password@a1b',
             roles: jsTest.basicUserRoles,
             passwordDisgestor: 'client'
         });
@@ -141,17 +149,17 @@
 
     test.createUser({
         user: 'sha1user2',
-        pwd: 'pass',
+        pwd: 'Password@a1b',
         roles: jsTest.basicUserRoles,
         mechanisms: ['SCRAM-SHA-1'],
-        passwordDigestor: 'client'
+        passwordDigestor: 'server'
     });
-    checkUser('sha1user2', 'pass', true, false);
+    checkUser('sha1user2', 'Password@a1b', true, false);
 
     assert.throws(function() {
         test.createUser({
             user: 'sha256user2',
-            pwd: 'pass',
+            pwd: 'Password@a1b',
             roles: jsTest.basicUserRoles,
             mechanisms: ['SCRAM-SHA-256'],
             passwordDigestor: 'client'
@@ -159,20 +167,20 @@
     });
 
     // Update original 1/256 user to just sha-1.
-    test.updateUser('user', {pwd: 'pass1', mechanisms: ['SCRAM-SHA-1']});
-    checkUser('user', 'pass1', true, false);
+    test.updateUser('user', {pwd: 'Password@a1b', mechanisms: ['SCRAM-SHA-1']});
+    checkUser('user', 'Password@a1b', true, false);
 
     // Then flip to 256-only
-    test.updateUser('user', {pwd: 'pass256', mechanisms: ['SCRAM-SHA-256']});
-    checkUser('user', 'pass256', false, true);
+    test.updateUser('user', {pwd: 'Password@a1b', mechanisms: ['SCRAM-SHA-256']});
+    checkUser('user', 'Password@a1b', false, true);
 
     // And back to (default) all.
-    test.updateUser('user', {pwd: 'passAll'});
-    checkUser('user', 'passAll', true, true);
+    test.updateUser('user', {pwd: 'Password@a1b'});
+    checkUser('user', 'Password@a1b', true, true);
 
     // Trim out mechanisms without changing password.
     test.updateUser('user', {mechanisms: ['SCRAM-SHA-256']});
-    checkUser('user', 'passAll', false, true);
+    checkUser('user', 'Password@a1b', false, true);
 
     // Fail when mechanisms is not a subset of the current user.
     assert.throws(function() {
@@ -181,13 +189,17 @@
 
     // Fail when passing an empty mechanisms field.
     assert.throws(function() {
-        test.updateUser('user', {pwd: 'passEmpty', mechanisms: []});
+        test.updateUser('user', {pwd: 'Password@a1b', mechanisms: []});
     });
 
     // Succeed if we're using SHA-1 only.
-    test.createUser(
-        {user: "\u2168", pwd: 'pass', roles: jsTest.basicUserRoles, mechanisms: ['SCRAM-SHA-1']});
-    checkUser("\u2168", 'pass', true, false);
+    test.createUser({
+        user: "\u2168",
+        pwd: 'Password@a1b',
+        roles: jsTest.basicUserRoles,
+        mechanisms: ['SCRAM-SHA-1']
+    });
+    checkUser("\u2168", 'Password@a1b', true, false);
 
     // Demonstrate that usersInfo returns all users with mechanisms lists
     const allUsersInfo = assert.commandWorked(test.runCommand({usersInfo: 1}));
@@ -232,8 +244,8 @@
         restart: mongod,
         noCleanData: true
     });
-    assert(mongod.getDB("test").auth("sha1user", "pass"));
-    assert(!mongod.getDB("test").auth("sha256user", "pass"));
+    assert(mongod.getDB("test").auth("sha1user", "Password@a1b"));
+    assert(!mongod.getDB("test").auth("sha256user", "Password@a1b"));
     MongoRunner.stopMongod(mongod);
     mongod = MongoRunner.runMongod({
         auth: "",
@@ -241,8 +253,8 @@
         restart: mongod,
         noCleanData: true
     });
-    assert(!mongod.getDB("test").auth("sha1user", "pass"));
-    assert(mongod.getDB("test").auth("sha256user", "pass"));
+    assert(!mongod.getDB("test").auth("sha1user", "Password@a1b"));
+    assert(mongod.getDB("test").auth("sha256user", "Password@a1b"));
     MongoRunner.stopMongod(mongod);
 
 })();

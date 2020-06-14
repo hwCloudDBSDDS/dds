@@ -85,6 +85,8 @@ env.Library(
         'bson/simple_bsonobj_comparator.cpp',
         'bson/timestamp.cpp',
         'logger/component_message_log_domain.cpp',
+        'logger/audit_event_utf8_encoder.cpp',
+        'logger/audit_log_domain.cpp',
         'logger/console.cpp',
         'logger/log_component.cpp',
         'logger/log_component_settings.cpp',
@@ -223,6 +225,7 @@ generatedVersionFile = env.Substfile(
         ('@buildinfo_allocator@', env['MONGO_ALLOCATOR']),
         ('@buildinfo_modules@', module_list),
         ('@buildinfo_environment_data@', buildInfoInitializer),
+        ('@inner_mongo_version@', env['INNER_MONGO_VERSION']),
     ])
 env.Alias('generated-sources', generatedVersionFile)
 
@@ -236,6 +239,7 @@ if env.TargetOSIs('windows'):
             ('@mongo_version_minor@', version_parts[1]),
             ('@mongo_version_patch@', version_parts[2]),
             ('@mongo_git_hash@', env['MONGO_GIT_HASH']),
+            ('@inner_mongo_version@', env['INNER_MONGO_VERSION']),
         ])
     env.Alias('generated-sources', generatedResourceConstantFile)
 
@@ -470,6 +474,7 @@ if not has_option('noshell') and usemozjs:
                     'db/mongohasher',
                     'db/query/command_request_response',
                     'db/query/query_request',
+                    'db/query/query_knobs',
                     'db/server_options_core',
                     'linenoise_utf8',
                     'rpc/protocol',

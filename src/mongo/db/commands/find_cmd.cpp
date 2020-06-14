@@ -31,6 +31,8 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/role_name.h"
+#include "mongo/db/auth/user_name.h"
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
@@ -223,13 +225,64 @@ public:
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         // Although it is a command, a find command gets counted as a query.
+        BSONObj NewCmdObj = cmdObj;
+        const std::string fullns = parseNs(dbname, cmdObj);
+        // const NamespaceString nss(fullns);
+        if (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser()) {
+            bool flag = false;
+            BSONObj buildinfilter;
+            if (fullns == "admin.system.users") {
+                std::set<std::string> buildinUsers;
+                UserName::getBuildinUsers(buildinUsers);
+
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+            if (fullns == "admin.system.roles") {
+                std::set<std::string> buildinRoles;
+                RoleName::getBuildinRoles(buildinRoles);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                buildinfilter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                flag = true;
+            }
+
+            if (flag) {
+                std::string filterName = "filter";
+                BSONElement filterField = cmdObj[filterName];
+                BSONObj newFilter;
+                if (filterField.isABSONObj()) {
+                    BSONObj filter = filterField.embeddedObject();
+                    newFilter = BSON("$and" << BSON_ARRAY(filter << buildinfilter));
+                } else {
+                    newFilter = buildinfilter;
+                }
+
+                BSONObjBuilder nb(64);
+                // nb.append(filterName, newFilter);
+                BSONForEach(e, cmdObj) {
+                    if (!str::equals(filterName.c_str(), e.fieldName())) {
+                        nb.append(e);
+                    }
+                }
+                nb.append(filterName, newFilter);
+                NewCmdObj = nb.obj();
+            }
+        }
+
         globalOpCounters.gotQuery();
 
         // Parse the command BSON to a QueryRequest.
         const bool isExplain = false;
         // Pass parseNs to makeFromFindCommand in case cmdObj does not have a UUID.
         auto qrStatus = QueryRequest::makeFromFindCommand(
-            NamespaceString(parseNs(dbname, cmdObj)), cmdObj, isExplain);
+            NamespaceString(parseNs(dbname, NewCmdObj)), NewCmdObj, isExplain);
         uassertStatusOK(qrStatus.getStatus());
 
         auto replCoord = repl::ReplicationCoordinator::get(opCtx);
@@ -250,7 +303,7 @@ public:
         // request into an aggregation command.
         boost::optional<AutoGetCollectionForReadCommand> ctx;
         ctx.emplace(opCtx,
-                    CommandHelpers::parseNsOrUUID(dbname, cmdObj),
+                    CommandHelpers::parseNsOrUUID(dbname, NewCmdObj),
                     AutoGetCollection::ViewMode::kViewsPermitted);
         const auto& nss = ctx->getNss();
 
@@ -267,7 +320,7 @@ public:
         // find command parameters, so these fields are redundant.
         const int ntoreturn = -1;
         const int ntoskip = -1;
-        beginQueryOp(opCtx, nss, cmdObj, ntoreturn, ntoskip);
+        beginQueryOp(opCtx, nss, NewCmdObj, ntoreturn, ntoskip);
 
         // Finish the parsing step by using the QueryRequest to create a CanonicalQuery.
         const ExtensionsCallbackReal extensionsCallback(opCtx, &nss);
@@ -376,7 +429,7 @@ public:
                  nss,
                  AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
                  repl::ReadConcernArgs::get(opCtx).getLevel(),
-                 cmdObj});
+                 NewCmdObj});
             cursorId = pinnedCursor.getCursor()->cursorid();
 
             invariant(!exec);

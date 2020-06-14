@@ -27,8 +27,9 @@ var authzErrorCode = 13;
 // set up user/pwd on admin db with clusterAdmin role (for serverStatus)
 var conn = new Mongo(mongos.host);
 var db = conn.getDB('admin');
-db.createUser({user: 'user', pwd: 'pwd', roles: ['clusterAdmin']});
-db.auth('user', 'pwd');
+db.createUser(
+    {user: 'user', pwd: 'Password@a1b', roles: ['clusterAdmin'], "passwordDigestor": "server"});
+db.auth('user', 'Password@a1b');
 
 // open a new connection to mongos (unauthorized)
 var conn = new Mongo(mongos.host);
@@ -38,7 +39,7 @@ db = conn.getDB('admin');
 assert.commandFailedWithCode(db.adminCommand('serverStatus'), authzErrorCode);
 
 // authorize and repeat command, works
-db.auth('user', 'pwd');
+db.auth('user', 'Password@a1b');
 assert.commandWorked(db.adminCommand('serverStatus'));
 
 jsTest.log('repeat without config server');

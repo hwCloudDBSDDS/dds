@@ -18,18 +18,30 @@
             return admin.aggregate(pipeline);
         }
 
-        admin.createUser({user: 'admin', pwd: 'pass', roles: jsTest.adminUserRoles});
-        assert(admin.auth('admin', 'pass'));
+        admin.createUser({
+            user: 'admin',
+            pwd: 'Password@a1b',
+            roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+        });
+        assert(admin.auth('admin', 'Password@a1b'));
 
-        db.createUser({user: 'user1', pwd: 'pass', roles: jsTest.basicUserRoles});
-        db.createUser({user: 'user2', pwd: 'pass', roles: jsTest.basicUserRoles});
+        db.createUser({
+            user: 'user1',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
+        db.createUser({
+            user: 'user2',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
         admin.logout();
 
         // Shouldn't be able to listLocalSessions when not logged in.
         assertErrorCode(admin, pipeline, ErrorCodes.Unauthorized);
 
         // Start a new session and capture its sessionId.
-        assert(db.auth('user1', 'pass'));
+        assert(db.auth('user1', 'Password@a1b'));
         const myid = assert.commandWorked(db.runCommand({startSession: 1})).id.id;
         assert(myid !== undefined);
 
@@ -50,7 +62,7 @@
         assert.eq(bsonWoCompare(resultArray, resultArrayMine), 0);
 
         // Ensure that changing users hides the session.
-        assert(db.auth('user2', 'pass'));
+        assert(db.auth('user2', 'Password@a1b'));
         const otherArray = assert.doesNotThrow(listLocalSessions).toArray();
         assert.eq(otherArray.length, 0);
 

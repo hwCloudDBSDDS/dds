@@ -56,17 +56,17 @@ print("------ Start mongod with logpath set to new file");
 var m = MongoRunner.runMongod({port: port[0], dbpath: dbdir, logpath: logdir + logs[0]});
 
 // log should now exist (and no rotations should exist)
-assert.eq(logCount(logs[0], true), 1);
+assert.eq(logCount(logs[0], true), 2);
 MongoRunner.stopMongod(m /*port[0]*/);
 
 print("------ Start mongod with logpath set to existing file");
 m = MongoRunner.runMongod({port: port[1], dbpath: dbdir, logpath: logdir + logs[0]});
 
 // log should continue to exist
-assert.eq(logCount(logs[0]), 1);
+assert.eq(logCount(logs[0]), 2);
 
 // but now there should be a rotation file
-assert.eq(logCount(logs[0], true), 2);
+assert.eq(logCount(logs[0], true), 3);
 cleanupFiles();
 
 MongoRunner.stopMongod(m /*port[1]*/);
@@ -84,7 +84,7 @@ if (false) {
             {port: port[2], dbpath: dbdir, logpath: logdir + logs[1], fork: true});
 
         // log should now exist (and no rotations should exist)
-        assert.eq(logCount(logs[1], true), 1);
+        assert.eq(logCount(logs[1], true), 2);
         MongoRunner.stopMongod(m /*port[2]*/);
 
         print("------ Start mongod with logpath set to existing file, fork");
@@ -92,10 +92,10 @@ if (false) {
             {port: port[3], dbpath: dbdir, logpath: logdir + logs[1], fork: true});
 
         // log should continue to exist
-        assert.eq(logCount(logs[1]), 1);
+        assert.eq(logCount(logs[1]), 2);
 
         // but now there should be a rotation file
-        assert.eq(logCount(logs[1], true), 2);
+        assert.eq(logCount(logs[1], true), 4);
         cleanupFiles();
 
         MongoRunner.stopMongod(m /*port[3]*/);

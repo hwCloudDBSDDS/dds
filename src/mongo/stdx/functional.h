@@ -33,9 +33,11 @@
 namespace mongo {
 namespace stdx {
 
-using ::std::cref;      // NOLINT
-using ::std::function;  // NOLINT
-using ::std::ref;       // NOLINT
+using ::std::bind;                             // NOLINT
+using ::std::cref;                             // NOLINT
+using ::std::function;                         // NOLINT
+using ::std::ref;                              // NOLINT
+namespace placeholders = ::std::placeholders;  // NOLINT
 
 }  // namespace stdx
 }  // namespace mongo

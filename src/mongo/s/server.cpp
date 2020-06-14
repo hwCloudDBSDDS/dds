@@ -338,6 +338,8 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
 
     initWireSpec();
 
+    startAuditLogFlusher();
+
     serviceContext->setServiceEntryPoint(
         stdx::make_unique<ServiceEntryPointMongos>(serviceContext));
 

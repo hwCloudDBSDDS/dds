@@ -709,6 +709,8 @@ private:
 #endif
 
     TransportLayerASIO* const _tl;
+
+
     bool _isIngressSession;
 };
 

@@ -13,9 +13,9 @@
 
     jsTest.authenticate(st.shard0);
 
-    const adminUser = {db: "admin", username: "foo", password: "bar"};
-    const userA = {db: "test", username: "a", password: "pwd"};
-    const userB = {db: "test", username: "b", password: "pwd"};
+    const adminUser = {db: "admin", username: "foo", password: "Password@a1b"};
+    const userA = {db: "test", username: "a", password: "Password@a1b"};
+    const userB = {db: "test", username: "b", password: "Password@a1b"};
 
     function login(userObj) {
         st.s.getDB(userObj.db).auth(userObj.username, userObj.password);
@@ -25,8 +25,11 @@
         st.s.getDB(userObj.db).runCommand({logout: 1});
     }
 
-    adminDB.createUser(
-        {user: adminUser.username, pwd: adminUser.password, roles: jsTest.adminUserRoles});
+    adminDB.createUser({
+        user: adminUser.username,
+        pwd: adminUser.password,
+        roles: jsTest.adminUserRoles, "passwordDigestor": "server"
+    });
 
     login(adminUser);
 
@@ -42,7 +45,7 @@
         testDB.createUser({
             user: user.username,
             pwd: user.password,
-            roles: [{role: "readWriteAnyDatabase", db: "admin"}]
+            roles: [{role: "readWriteAnyDatabase", db: "admin"}], "passwordDigestor": "server"
         });
     }
     logout(adminUser);

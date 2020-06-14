@@ -364,7 +364,7 @@ public:
              const string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
-        return Grid::get(opCtx)->catalogClient()->runUserManagementReadCommand(
+        return Grid::get(opCtx)->catalogClient()->runUserManagementReadCommandWithCheckopCtx(
             opCtx, dbname, CommandHelpers::filterCommandRequestForPassthrough(cmdObj), &result);
     }
 
@@ -735,7 +735,7 @@ public:
              const string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
-        return Grid::get(opCtx)->catalogClient()->runUserManagementReadCommand(
+        return Grid::get(opCtx)->catalogClient()->runUserManagementReadCommandWithCheckopCtx(
             opCtx, dbname, CommandHelpers::filterCommandRequestForPassthrough(cmdObj), &result);
     }
 

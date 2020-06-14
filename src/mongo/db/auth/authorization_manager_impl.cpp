@@ -359,6 +359,10 @@ Status AuthorizationManagerImpl::_initializeUserFromPrivilegeDocument(User* user
     if (!status.isOK()) {
         return status;
     }
+    status = parser.initializeUserTokenFromUserDocument(privDoc, user);
+    if (!status.isOK()) {
+        return status;
+    }
     status = parser.initializeUserRolesFromUserDocument(privDoc, user);
     if (!status.isOK()) {
         return status;
@@ -500,6 +504,26 @@ Status AuthorizationManagerImpl::acquireUser(OperationContext* opCtx,
         user->invalidate();
     }
     *acquiredUser = user.release();
+
+    return Status::OK();
+}
+
+Status AuthorizationManagerImpl::acquireUserForConsiderToken(OperationContext* opCtx,
+                                                             const UserName& userName,
+                                                             int64_t userToken,
+                                                             User** user) {
+    auto status = acquireUser(opCtx, userName, user);
+    if (!status.isOK()) {
+        return status;
+    }
+    if (userToken != (*user)->getToken()) {
+        LOG(0) << "User token " << userToken << " from privilege document '" << userName.toString()
+               << "' does not match user token in session " << (*user)->getToken();
+        *user = nullptr;
+        return {ErrorCodes::UserNotFound,
+                str::stream() << "User token from privilege document '" << userName.toString()
+                              << "' does not match user token in session."};
+    }
 
     return Status::OK();
 }

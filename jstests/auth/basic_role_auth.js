@@ -14,25 +14,26 @@
  */
 var AUTH_INFO = {
     admin: {
-        root: {pwd: 'root', roles: ['root']},
-        cluster: {pwd: 'cluster', roles: ['clusterAdmin']},
-        anone: {pwd: 'none', roles: []},
-        aro: {pwd: 'ro', roles: ['read']},
-        arw: {pwd: 'rw', roles: ['readWrite']},
-        aadmin: {pwd: 'admin', roles: ['dbAdmin']},
-        auadmin: {pwd: 'uadmin', roles: ['userAdmin']},
-        any_ro: {pwd: 'ro', roles: ['readAnyDatabase']},
-        any_rw: {pwd: 'rw', roles: ['readWriteAnyDatabase']},
-        any_admin: {pwd: 'admin', roles: ['dbAdminAnyDatabase']},
-        any_uadmin: {pwd: 'uadmin', roles: ['userAdminAnyDatabase']}
+        admin: {pwd: 'Password@a1bRoot', roles: ['root']},
+        monitor: {pwd: 'Password@a1bRoot', roles: ['root']},
+        cluster: {pwd: 'Password@a1bcluster', roles: ['clusterAdmin']},
+        anone: {pwd: 'Password@a1bnone', roles: []},
+        aro: {pwd: 'Password@a1bro', roles: ['read']},
+        backupuser: {pwd: 'Password@a1brw', roles: ['readWrite']},
+        aadmin: {pwd: 'Password@a1badmin', roles: ['dbAdmin']},
+        auadmin: {pwd: 'Password@a1buadmin', roles: ['userAdmin']},
+        any_ro: {pwd: 'Password@a1bro', roles: ['readAnyDatabase']},
+        any_rw: {pwd: 'Password@a1brw', roles: ['readWriteAnyDatabase']},
+        any_admin: {pwd: 'Password@a1badmin', roles: ['dbAdminAnyDatabase']},
+        any_uadmin: {pwd: 'Password@a1buadmin', roles: ['userAdminAnyDatabase']}
     },
     test: {
-        none: {pwd: 'none', roles: []},
-        ro: {pwd: 'ro', roles: ['read']},
-        rw: {pwd: 'rw', roles: ['readWrite']},
-        roadmin: {pwd: 'roadmin', roles: ['read', 'dbAdmin']},
-        admin: {pwd: 'admin', roles: ['dbAdmin']},
-        uadmin: {pwd: 'uadmin', roles: ['userAdmin']}
+        none: {pwd: 'Password@a1bnone', roles: []},
+        ro: {pwd: 'Password@a1bro', roles: ['read']},
+        rw: {pwd: 'Password@a1brw', roles: ['readWrite']},
+        roadmin: {pwd: 'Password@a1broadmin', roles: ['read', 'dbAdmin']},
+        admin: {pwd: 'Password@a1badmin', roles: ['dbAdmin']},
+        uadmin: {pwd: 'Password@a1buadmin', roles: ['userAdmin']}
     }
 };
 
@@ -149,7 +150,11 @@ var testOps = function(db, allowedActions) {
     });
 
     checkErr(allowedActions.hasOwnProperty('user_w'), function() {
-        db.createUser({user: 'a', pwd: 'a', roles: jsTest.basicUserRoles});
+        db.createUser({
+            user: 'a',
+            pwd: 'Password@a1b',
+            roles: jsTest.basicUserRoles, "passwordDigestor": "server"
+        });
         assert(db.dropUser('a'));
     });
 
@@ -299,16 +304,30 @@ var TESTS = [
       name: 'Test cluster user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('cluster', AUTH_INFO.admin.cluster.pwd));
+          print("eharry: Test cluster user1");
+          var newDB = new Mongo(conn.host).getDB('admin');
+          print("eharry: Test cluster user2");
 
-          testOps(conn.getDB('test'), CLUSTER_PERM);
+          assert.eq(1, newDB.auth('admin', AUTH_INFO.admin.admin.pwd));
+          print("eharry: Test cluster user3");
+          res = newDB.updateUser('monitor', {roles: AUTH_INFO.admin.cluster.roles});
+          print("eharry res is " + tojson(res));
+          print("eharry: Test cluster user4");
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
+
+          print("eharry: Test cluster user") testOps(conn.getDB('test'), CLUSTER_PERM);
       }
     },
     {
       name: 'Test admin user with no role',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('anone', AUTH_INFO.admin.anone.pwd));
+          var newConn = new Mongo(conn.host);
+          assert.eq(1, newConn.getDB('admin').auth('admin', AUTH_INFO.admin.admin.pwd));
+          newConn.getDB('admin').updateUser('monitor', {roles: AUTH_INFO.admin.anone.roles});
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
           testOps(adminDB, {});
           testOps(conn.getDB('test'), {});
@@ -318,7 +337,11 @@ var TESTS = [
       name: 'Test read only admin user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('aro', AUTH_INFO.admin.aro.pwd));
+          var newConn = new Mongo(conn.host);
+          assert.eq(1, newConn.getDB('admin').auth('admin', AUTH_INFO.admin.admin.pwd));
+          newConn.getDB('admin').updateUser('monitor', {roles: AUTH_INFO.admin.aro.roles});
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
           testOps(adminDB, READ_PERM);
           testOps(conn.getDB('test'), {});
@@ -328,7 +351,11 @@ var TESTS = [
       name: 'Test read/write admin user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('arw', AUTH_INFO.admin.arw.pwd));
+          var newConn = new Mongo(conn.host);
+          assert.eq(1, newConn.getDB('admin').auth('admin', AUTH_INFO.admin.admin.pwd));
+          newConn.getDB('admin').updateUser('monitor', {roles: AUTH_INFO.admin.backupuser.roles});
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
           testOps(adminDB, READ_WRITE_PERM);
           testOps(conn.getDB('test'), {});
@@ -338,7 +365,11 @@ var TESTS = [
       name: 'Test dbAdmin admin user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('aadmin', AUTH_INFO.admin.aadmin.pwd));
+          var newConn = new Mongo(conn.host);
+          assert.eq(1, newConn.getDB('admin').auth('admin', AUTH_INFO.admin.admin.pwd));
+          newConn.getDB('admin').updateUser('monitor', {roles: AUTH_INFO.admin.aadmin.roles});
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
           testOps(adminDB, ADMIN_PERM);
           testOps(conn.getDB('test'), {});
@@ -348,7 +379,11 @@ var TESTS = [
       name: 'Test userAdmin admin user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('auadmin', AUTH_INFO.admin.auadmin.pwd));
+          var newConn = new Mongo(conn.host);
+          assert.eq(1, newConn.getDB('admin').auth('admin', AUTH_INFO.admin.admin.pwd));
+          newConn.getDB('admin').updateUser('monitor', {roles: AUTH_INFO.admin.auadmin.roles});
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
           testOps(adminDB, UADMIN_PERM);
           testOps(conn.getDB('test'), {});
@@ -358,7 +393,11 @@ var TESTS = [
       name: 'Test read only any db user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('any_ro', AUTH_INFO.admin.any_ro.pwd));
+          var newConn = new Mongo(conn.host);
+          assert.eq(1, newConn.getDB('admin').auth('admin', AUTH_INFO.admin.admin.pwd));
+          newConn.getDB('admin').updateUser('monitor', {roles: AUTH_INFO.admin.any_ro.roles});
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
           testOps(adminDB, READ_PERM);
           testOps(conn.getDB('test'), READ_PERM);
@@ -368,7 +407,11 @@ var TESTS = [
       name: 'Test read/write any db user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('any_rw', AUTH_INFO.admin.any_rw.pwd));
+          var newConn = new Mongo(conn.host);
+          assert.eq(1, newConn.getDB('admin').auth('admin', AUTH_INFO.admin.admin.pwd));
+          newConn.getDB('admin').updateUser('monitor', {roles: AUTH_INFO.admin.any_rw.roles});
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
           testOps(adminDB, READ_WRITE_PERM);
           testOps(conn.getDB('test'), READ_WRITE_PERM);
@@ -378,7 +421,11 @@ var TESTS = [
       name: 'Test dbAdmin any db user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('any_admin', AUTH_INFO.admin.any_admin.pwd));
+          var newConn = new Mongo(conn.host);
+          assert.eq(1, newConn.getDB('admin').auth('admin', AUTH_INFO.admin.admin.pwd));
+          newConn.getDB('admin').updateUser('monitor', {roles: AUTH_INFO.admin.any_admin.roles});
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
           testOps(adminDB, ADMIN_PERM);
           testOps(conn.getDB('test'), ADMIN_PERM);
@@ -388,7 +435,11 @@ var TESTS = [
       name: 'Test userAdmin any db user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          assert.eq(1, adminDB.auth('any_uadmin', AUTH_INFO.admin.any_uadmin.pwd));
+          var newConn = new Mongo(conn.host);
+          assert.eq(1, newConn.getDB('admin').auth('admin', AUTH_INFO.admin.admin.pwd));
+          newConn.getDB('admin').updateUser('monitor', {roles: AUTH_INFO.admin.any_uadmin.roles});
+
+          assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
           testOps(adminDB, UADMIN_PERM);
           testOps(conn.getDB('test'), UADMIN_PERM);
@@ -449,9 +500,12 @@ var runTests = function(conn) {
         var testDB = conn.getDB('test');
         var adminDB = conn.getDB('admin');
 
-        adminDB.createUser(
-            {user: 'root', pwd: AUTH_INFO.admin.root.pwd, roles: AUTH_INFO.admin.root.roles});
-        adminDB.auth('root', AUTH_INFO.admin.root.pwd);
+        adminDB.createUser({
+            user: 'admin',
+            pwd: AUTH_INFO.admin.admin.pwd,
+            roles: AUTH_INFO.admin.admin.roles, "passwordDigestor": "server"
+        });
+        adminDB.auth('admin', AUTH_INFO.admin.admin.pwd);
 
         for (var x = 0; x < 10; x++) {
             testDB.kill_cursor.insert({x: x});
@@ -462,13 +516,17 @@ var runTests = function(conn) {
             var dbObj = AUTH_INFO[dbName];
 
             for (var userName in dbObj) {
-                if (dbName == 'admin' && userName == 'root') {
+                if (dbName == 'admin' && userName == 'admin') {
                     // We already registered this user.
                     continue;
                 }
 
                 var info = dbObj[userName];
-                conn.getDB(dbName).createUser({user: userName, pwd: info.pwd, roles: info.roles});
+                conn.getDB(dbName).createUser({
+                    user: userName,
+                    pwd: info.pwd,
+                    roles: info.roles, "passwordDigestor": "server"
+                });
             }
         }
 
@@ -477,7 +535,7 @@ var runTests = function(conn) {
 
     var teardown = function() {
         var adminDB = conn.getDB('admin');
-        adminDB.auth('root', AUTH_INFO.admin.root.pwd);
+        adminDB.auth('admin', AUTH_INFO.admin.admin.pwd);
         conn.getDB('test').dropDatabase();
         adminDB.dropDatabase();
     };
@@ -494,6 +552,7 @@ var runTests = function(conn) {
         } catch (x) {
             failures.push(testFunc.name);
             jsTestLog(tojson(x));
+            assert(false, testFunc.name)
         }
     });
 

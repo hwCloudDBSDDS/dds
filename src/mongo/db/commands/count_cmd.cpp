@@ -31,6 +31,9 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/role_name.h"
+#include "mongo/db/auth/user_name.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/run_aggregate.h"
@@ -179,6 +182,32 @@ public:
         const bool isExplain = false;
         auto request = CountRequest::parseFromBSON(nss, cmdObj, isExplain);
         uassertStatusOK(request.getStatus());
+
+        if (AuthorizationSession::get(opCtx->getClient())->isAuthWithCustomerOrNoAuthUser()) {
+
+            if (request.getValue().getNs().ns() == "admin.system.users") {
+                std::set<std::string> buildinUsers;
+                UserName::getBuildinUsers(buildinUsers);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::USER_NAME_FIELD_NAME << NIN << buildinUsers);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                BSONObj query = BSON("$and" << BSON_ARRAY(request.getValue().getQuery() << filter));
+                request.getValue().setQuery(query);
+            }
+            if (request.getValue().getNs().ns() == "admin.system.roles") {
+                std::set<std::string> buildinRoles;
+                RoleName::getBuildinRoles(buildinRoles);
+                BSONObj filterUsername =
+                    BSON(AuthorizationManager::ROLE_NAME_FIELD_NAME << NIN << buildinRoles);
+                BSONObj filterdbname =
+                    BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << NE << "admin");
+                BSONObj filter = BSON("$or" << BSON_ARRAY(filterUsername << filterdbname));
+                BSONObj query = BSON("$and" << BSON_ARRAY(request.getValue().getQuery() << filter));
+                request.getValue().setQuery(query);
+            }
+        }
 
         // Check whether we are allowed to read from this node after acquiring our locks.
         auto replCoord = repl::ReplicationCoordinator::get(opCtx);

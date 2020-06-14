@@ -100,6 +100,31 @@ public:
      */
     virtual DbResponse handleRequest(OperationContext* opCtx, const Message& request) = 0;
 
+    /**
+     * set max Conection
+     */
+    virtual Status setMaxNumConnections(int numCon) {
+        std::stringstream ss;
+        ss << "son class set Max can not be used";
+        std::string errmsg = ss.str();
+        return Status(ErrorCodes::BadValue, errmsg);
+    }
+
+    virtual Status setMaxNumInternalConnections(int numCon) {
+        std::stringstream ss;
+        ss << "son class set Max can not be used";
+        std::string errmsg = ss.str();
+        return Status(ErrorCodes::BadValue, errmsg);
+    }
+
+    virtual int getMaxNumConnections() {
+        return 0;
+    }
+
+    virtual int getMaxNumInternalConnections() {
+        return 0;
+    }
+
 protected:
     ServiceEntryPoint() = default;
 };
