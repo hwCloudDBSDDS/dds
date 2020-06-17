@@ -14,19 +14,18 @@ auditLog:
   opFilter: off|all|...
   path: /path/to/your/audit_log
 ```
-For the details of configuring auditing parameters, please see [Audit Configuration]()
+For the details of configuring auditing parameters, please see [Audit Configuration](https://github.com/hwCloudDBSDDS/dds/wiki/Audit-Configuration)
 
 ## QueryStage Memory Limit
 Although MongoDB limited the memory used for wiredTiger/rocksDB engine. It sometimes may still OOM, that's because MongoDB's QueryStage does not
 have the global memory limit. Let's take an example, one user can use at most [32MB](https://docs.mongodb.com/manual/reference/limits/#Sort-Operations) RAM.
 However, if 100 queries run the sort in parallel, that should be 3.2GB. Until Mongo4.0, there is no global limit for this.
-We added a suite of parameters to limit query stage memory usage in total. please see [Query Memory limit Params]() for more details.
+We added a suite of parameters to limit query stage memory usage in total. please see [Query Memory limit Params](https://github.com/hwCloudDBSDDS/dds/wiki/QueryStage-Memory-Limit) for more details.
 
-## InternalPort/ExternalPort
-### TODO(cuixin)
 
 ## Default admin/rwuser/readonly user and the privilleges
-### TODO(gaoqiang)
+https://github.com/hwCloudDBSDDS/dds/wiki/Builtin-Users-Roles
 
 ## Mongos Auto Flush Router
-### TODO(danglifei)
+When a database is dropped and re-created again without flushing all mongos routing, data may be inconsistent, this
+is a legacy problem of MongoDB, we handled this by [Mongos-Automatic-Flush-Routing-Cache](https://github.com/hwCloudDBSDDS/dds/wiki/Mongos-Automatic-Flush-Routing-Cache)
