@@ -48,6 +48,7 @@ baseEnv.Library('base_fts', [
         'fts_language.cpp',
         'fts_basic_phrase_matcher.cpp',
         'fts_basic_tokenizer.cpp',
+        'fts_chinese_tokenizer.cpp',
         'fts_unicode_phrase_matcher.cpp',
         'fts_unicode_tokenizer.cpp',
         'fts_util.cpp',

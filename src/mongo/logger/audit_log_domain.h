@@ -32,8 +32,8 @@
 #include <string>
 #include <vector>
 
-#include "mongo/logger/log_domain.h"
 #include "mongo/logger/audit_event.h"
+#include "mongo/logger/log_domain.h"
 
 namespace mongo {
 namespace logger {

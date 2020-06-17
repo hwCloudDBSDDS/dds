@@ -301,6 +301,9 @@ Status addMongodOptions(moe::OptionSection* options) {
         .addOptionChaining("notablescan", "notablescan", moe::Switch, "do not allow table scans")
         .setSources(moe::SourceAllLegacy);
 
+    general_options.addOptionChaining("fts.dictDir", "ftsDictDir", moe::String, "fts dict dir")
+        .setSources(moe::SourceAllConfig);
+
     // Journaling Options
 
     // Way to enable or disable journaling on command line and in Legacy config file
@@ -1012,7 +1015,9 @@ Status storeMongodOptions(const moe::Environment& params) {
     if (params.count("notablescan")) {
         storageGlobalParams.noTableScan.store(params["notablescan"].as<bool>());
     }
-
+    if (params.count("fts.dictDir")) {
+        serverGlobalParams.ftsDictDir = params["fts.dictDir"].as<std::string>();
+    }
     repl::ReplSettings replSettings;
     if (params.count("replication.replSetName")) {
         replSettings.setReplSetString(params["replication.replSetName"].as<std::string>().c_str());

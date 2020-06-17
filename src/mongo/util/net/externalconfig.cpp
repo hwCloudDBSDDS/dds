@@ -28,74 +28,74 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
 
+#include <fstream>
+#include <map>
 #include <stdio.h>
 #include <string>
-#include <map>
-#include <fstream>
 
-#include <boost/algorithm/string.hpp>
-#include "mongo/util/text.h"
 #include "mongo/util/log.h"
+#include "mongo/util/text.h"
+#include <boost/algorithm/string.hpp>
 // #include "mongo/util/concurrency/rwlock.h"
 #include "mongo/util/net/externalconfig.h"
 
 
 namespace mongo {
 
-    bool ExternalConfig::parseFromFile(const std::string& path, std::string& errmsg) {
-        if (path.empty() || path[0] != '/') {
-            errmsg = "must be absolute path";
-            return false;
-        }
+bool ExternalConfig::parseFromFile(const std::string& path, std::string& errmsg) {
+    if (path.empty() || path[0] != '/') {
+        errmsg = "must be absolute path";
+        return false;
+    }
 
-        _path = path;
+    _path = path;
 
-        bool hasReloadPublicIpPrivateIpRange = false;
-        bool hasReloadPrivateIpPrivateIpRange = false;
+    bool hasReloadPublicIpPrivateIpRange = false;
+    bool hasReloadPrivateIpPrivateIpRange = false;
 
-        std::ifstream f(path.c_str(), std::ifstream::in);
-        if (f.is_open()) {
-            int readCnt=0;
-            std::string line;
-            while(std::getline(f, line) && (readCnt<1000)) {
-                boost::trim(line);
-                const std::string separator = line.find(":") < line.find(";") ? ":" : ";";
-                std::vector<std::string> keys = StringSplitter::split(line, separator);
+    std::ifstream f(path.c_str(), std::ifstream::in);
+    if (f.is_open()) {
+        int readCnt = 0;
+        std::string line;
+        while (std::getline(f, line) && (readCnt < 1000)) {
+            boost::trim(line);
+            const std::string separator = line.find(":") < line.find(";") ? ":" : ";";
+            std::vector<std::string> keys = StringSplitter::split(line, separator);
 
-                if(!keys.empty()) {
-                    if(keys[0] == "publicIpPrivateRange") {
-                        hasReloadPublicIpPrivateIpRange = true;
-                        publicIpPrivateIpRange.parseFromString(keys);
-                    } else if(keys[0] == "privateIpPrivateRange") {
-                        hasReloadPrivateIpPrivateIpRange = true;
-                        privateIpPrivateIpRange.parseFromString(keys);
-                    }
+            if (!keys.empty()) {
+                if (keys[0] == "publicIpPrivateRange") {
+                    hasReloadPublicIpPrivateIpRange = true;
+                    publicIpPrivateIpRange.parseFromString(keys);
+                } else if (keys[0] == "privateIpPrivateRange") {
+                    hasReloadPrivateIpPrivateIpRange = true;
+                    privateIpPrivateIpRange.parseFromString(keys);
                 }
-                readCnt++;
             }
+            readCnt++;
         }
-
-        if(!hasReloadPublicIpPrivateIpRange) {
-            // do not reload means no configuration for publicIpPrivateRange, need reset it.
-            publicIpPrivateIpRange.reset();
-        }
-
-        if(!hasReloadPrivateIpPrivateIpRange) {
-            // do not reload means no configuration for privateIpPrivateRange, need reset it.
-            privateIpPrivateIpRange.reset();
-        }
-
-        log() << "parseFromFile is done." << std::endl;
-        log() << "publicIpPrivateIpRange is " << publicIpPrivateIpRange.toString() << std::endl;
-        log() << "privateIpPrivateIpRange is " << privateIpPrivateIpRange.toString() << std::endl;
-
-        return true;
     }
 
-    std::string ExternalConfig::toString() {
-        std::stringstream ss;
-        ss << publicIpPrivateIpRange.toString();
-        ss << privateIpPrivateIpRange.toString();
-        return ss.str();
+    if (!hasReloadPublicIpPrivateIpRange) {
+        // do not reload means no configuration for publicIpPrivateRange, need reset it.
+        publicIpPrivateIpRange.reset();
     }
+
+    if (!hasReloadPrivateIpPrivateIpRange) {
+        // do not reload means no configuration for privateIpPrivateRange, need reset it.
+        privateIpPrivateIpRange.reset();
+    }
+
+    log() << "parseFromFile is done." << std::endl;
+    log() << "publicIpPrivateIpRange is " << publicIpPrivateIpRange.toString() << std::endl;
+    log() << "privateIpPrivateIpRange is " << privateIpPrivateIpRange.toString() << std::endl;
+
+    return true;
+}
+
+std::string ExternalConfig::toString() {
+    std::stringstream ss;
+    ss << publicIpPrivateIpRange.toString();
+    ss << privateIpPrivateIpRange.toString();
+    return ss.str();
+}
 }

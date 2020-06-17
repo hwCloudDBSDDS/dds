@@ -1,5 +1,3 @@
-// fts_language.cpp
-
 /**
  *    Copyright (C) 2013 MongoDB Inc.
  *
@@ -28,20 +26,27 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
+
 #include "mongo/db/fts/fts_language.h"
+#include "mongo/db/fts/jieba/Jieba.hpp"
+#include "mongo/db/server_options.h"
 
 #include <string>
+#include <boost/filesystem/operations.hpp>
 
 #include "mongo/base/init.h"
 #include "mongo/db/fts/fts_basic_phrase_matcher.h"
 #include "mongo/db/fts/fts_basic_tokenizer.h"
 #include "mongo/db/fts/fts_unicode_phrase_matcher.h"
 #include "mongo/db/fts/fts_unicode_tokenizer.h"
+#include "mongo/db/fts/fts_chinese_tokenizer.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/string_map.h"
 #include "mongo/util/stringutils.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -84,6 +89,8 @@ LanguageMap languageMapV2;
 // Case-sensitive by lookup key.
 typedef std::map<StringData, const FTSLanguage*> LanguageMapLegacy;
 LanguageMapLegacy languageMapV1;
+
+std::unique_ptr<cppjieba::Jieba> cnSegmenter;
 }
 
 MONGO_INITIALIZER_GROUP(FTSAllLanguagesRegistered, MONGO_NO_PREREQUISITES, MONGO_NO_DEPENDENTS);
@@ -110,8 +117,8 @@ MONGO_INITIALIZER_GROUP(FTSAllLanguagesRegistered, MONGO_NO_PREREQUISITES, MONGO
     MONGO_FTS_LANGUAGE_DECL(Russian, "russian", "ru")       \
     MONGO_FTS_LANGUAGE_DECL(Spanish, "spanish", "es")       \
     MONGO_FTS_LANGUAGE_DECL(Swedish, "swedish", "sv")       \
-    MONGO_FTS_LANGUAGE_DECL(Turkish, "turkish", "tr")
-
+    MONGO_FTS_LANGUAGE_DECL(Turkish, "turkish", "tr")       \
+    MONGO_FTS_LANGUAGE_DECL(Chinese, "chinese", "chinese")
 
 // Declare compilation unit local language object.
 // Must be declared statically as global language map only keeps a pointer to the language
@@ -134,6 +141,29 @@ MONGO_FTS_LANGUAGE_LIST(LANGUAGE_DECLV3);
 
 #define LANGUAGE_INITV3(id, name, alias) \
     FTSLanguage::registerLanguage(name, TEXT_INDEX_VERSION_3, &language##id##V3);
+
+MONGO_INITIALIZER_GENERAL(FTSChineseLoad,
+		          ("EndStartupOptionStorage"),
+			  MONGO_NO_DEPENDENTS)
+(::mongo::InitializerContext* context) {
+    static const std::string dictPath = serverGlobalParams.ftsDictDir + "/jieba.dict.utf8";
+    static const std::string hmmPath = serverGlobalParams.ftsDictDir + "/hmm_model.utf8";
+    static const std::string userDictPath = serverGlobalParams.ftsDictDir + "/user.dict.utf8";
+    static const std::string idfPath = serverGlobalParams.ftsDictDir + "/idf.utf8";
+    static const std::string stopWordsPath = serverGlobalParams.ftsDictDir + "/stop_words.utf8";
+    bool supportChinese = true;
+    std::vector<std::string> paths = {dictPath, hmmPath, userDictPath, idfPath, stopWordsPath};
+    for (const auto& p : paths) {
+        if (!boost::filesystem::exists(p)) {
+            supportChinese = false;
+        }
+    }
+    if (supportChinese) {
+        cnSegmenter = stdx::make_unique<cppjieba::Jieba>(dictPath, hmmPath, userDictPath, idfPath, stopWordsPath);
+    }
+    LOG(0) << "fts chinese supported:" << (supportChinese ? "yes" : "no");
+    return Status::OK();
+}
 
 /**
  * Registers each language in the language map.
@@ -301,6 +331,12 @@ StatusWithFTSLanguage FTSLanguage::make(StringData langName, TextIndexVersion te
 }
 
 std::unique_ptr<FTSTokenizer> BasicFTSLanguage::createTokenizer() const {
+    if (str() == "chinese") {
+        if (!cnSegmenter) {
+            return nullptr;
+        }
+	return stdx::make_unique<ChineseFTSTokenizer>(this, cnSegmenter.get());
+    }
     return stdx::make_unique<BasicFTSTokenizer>(this);
 }
 

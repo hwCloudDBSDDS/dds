@@ -32,67 +32,66 @@
 
 namespace mongo {
 
-    struct IpRange {
-        __uint128_t min;
-        __uint128_t max;
-        static constexpr __uint128_t maxNum = ~0;
+struct IpRange {
+    __uint128_t min;
+    __uint128_t max;
+    static constexpr __uint128_t maxNum = ~0;
 
-        IpRange():min(0), max(0) {}
+    IpRange() : min(0), max(0) {}
 
-        bool include(const __uint128_t& ip) const {
-            return ip >= min && ip <= max;
-        }
+    bool include(const __uint128_t& ip) const {
+        return ip >= min && ip <= max;
+    }
 
-        void reset() {
-            min = 0;
-            max = 0;
-        }
+    void reset() {
+        min = 0;
+        max = 0;
+    }
 
-        bool invalid() {
-            return min == 0 && max == 0;
-        }
+    bool invalid() {
+        return min == 0 && max == 0;
+    }
 
-        static bool addrToUint(const std::string& addr, __uint128_t& ipval);
-    
-        static void uintToAddr(const __uint128_t& ipval, std::string& addr);
-        
-        // ret value: 0: ipv4, 1: ipv6, -1: ip is unkonw
-        static int ipType(const std::string& ipstr);
-        static bool parseItem(const std::string& raw, IpRange& range);
+    static bool addrToUint(const std::string& addr, __uint128_t& ipval);
 
-        void toString(std::stringstream& ss);
-    };
+    static void uintToAddr(const __uint128_t& ipval, std::string& addr);
 
-    /* 
-     * WhiteList is a comma separated string
-     * suppoted format
-     * 1. single ip, 192.168.1.100
-     * 2. netmask, 192.168.1.100/24
-     * 3. net range, 192.168.1.100-192.168.1.200
-     */
-    class WhiteList {
-    public:
-        //WhiteList():_lock("whitelistMutex") {  }
-        bool parseFromFile(const std::string& path, std::string& errmsg);
-        bool parseFromString(const std::string& line);
-        bool include(const __uint128_t& ip);
-        bool include(const std::string& ipstr);
-        int rangeSize();
-        std::string toString();
+    // ret value: 0: ipv4, 1: ipv6, -1: ip is unkonw
+    static int ipType(const std::string& ipstr);
+    static bool parseItem(const std::string& raw, IpRange& range);
 
-        void setMatchAll();
-        bool isMatchAll();
-        void setMatchNone();
-        bool isMatchNone();
+    void toString(std::stringstream& ss);
+};
 
-        std::string path() {
-            return _path;
-        }
+/*
+ * WhiteList is a comma separated string
+ * suppoted format
+ * 1. single ip, 192.168.1.100
+ * 2. netmask, 192.168.1.100/24
+ * 3. net range, 192.168.1.100-192.168.1.200
+ */
+class WhiteList {
+public:
+    // WhiteList():_lock("whitelistMutex") {  }
+    bool parseFromFile(const std::string& path, std::string& errmsg);
+    bool parseFromString(const std::string& line);
+    bool include(const __uint128_t& ip);
+    bool include(const std::string& ipstr);
+    int rangeSize();
+    std::string toString();
 
-    private:
-        std::map<__uint128_t, IpRange> _whiteList;
-        std::string _path;
-        // RWLock _lock;
-    };
+    void setMatchAll();
+    bool isMatchAll();
+    void setMatchNone();
+    bool isMatchNone();
 
+    std::string path() {
+        return _path;
+    }
+
+private:
+    std::map<__uint128_t, IpRange> _whiteList;
+    std::string _path;
+    // RWLock _lock;
+};
 }

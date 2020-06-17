@@ -29,33 +29,32 @@
 #pragma once
 
 // #include "mongo/util/concurrency/rwlock.h"
-#include "mongo/util/net/whitelist.h"
-#include "mongo/util/net/publicip_privateiprange.h"
 #include "mongo/util/net/privateip_privateiprange.h"
+#include "mongo/util/net/publicip_privateiprange.h"
+#include "mongo/util/net/whitelist.h"
 
 namespace mongo {
 
-    class ExternalConfig {
-    public:
-        ExternalConfig():_path("") {}
-        bool parseFromFile(const std::string& path, std::string& errmsg);
-        std::string toString();
-        std::string path() {
-            return _path;
-        }
+class ExternalConfig {
+public:
+    ExternalConfig() : _path("") {}
+    bool parseFromFile(const std::string& path, std::string& errmsg);
+    std::string toString();
+    std::string path() {
+        return _path;
+    }
 
-        PublicIpPrivateIpRange & getPublicIpPrivateIpRange() {
-            return publicIpPrivateIpRange;
-        }
+    PublicIpPrivateIpRange& getPublicIpPrivateIpRange() {
+        return publicIpPrivateIpRange;
+    }
 
-        PrivateIpPrivateIpRange & getPrivateIpPrivateIpRange() {
-            return privateIpPrivateIpRange;
-        }
+    PrivateIpPrivateIpRange& getPrivateIpPrivateIpRange() {
+        return privateIpPrivateIpRange;
+    }
 
-    private:
-        std::string _path;
-        PublicIpPrivateIpRange publicIpPrivateIpRange;
-        PrivateIpPrivateIpRange privateIpPrivateIpRange;
-    };
-
+private:
+    std::string _path;
+    PublicIpPrivateIpRange publicIpPrivateIpRange;
+    PrivateIpPrivateIpRange privateIpPrivateIpRange;
+};
 }

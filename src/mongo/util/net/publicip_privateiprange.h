@@ -35,60 +35,59 @@
 #include "mongo/util/net/whitelist.h"
 
 namespace mongo {
-    
-    /* 
-     * PublicIpPrivateIpRange is a comma separated string
-     * suppoted format
-     * 1. single ip, 192.168.1.100
-     * 2. netmask, 192.168.1.100/24
-     * 3. net range, 192.168.1.100-192.168.1.200
-     */
-    class PublicIpPrivateIpRange {
-    public:
-        bool parseFromString(const std::string& line);
-        bool parseFromString(std::vector<std::string>& keys);
-        bool parseFromString001(std::vector<std::string>& keys);
-        
-        bool isInPrivateIpRange(const __uint128_t& ip);
-        bool isInPrivateIpRange(const std::string& ipstr);
-        bool isPublicIp(const std::string& ipstr);
-        void parsePublicIp(std::string publicIp, std::map<std::string, std::vector<std::string>>& tmpPublicIpMap);
-        bool parsePrivateIpRange(std::string& range, std::map<__uint128_t, IpRange>& tmpRangeMap);
 
-        std::string getPublicIp(const std::string& privateIp, bool isFromIpv6) {
-            stdx::lock_guard<stdx::mutex> lock(_mutex);    
-            auto it = publicIpMap.find(privateIp);
-            if(it != publicIpMap.end()) {
-                std::string& ret = isFromIpv6 ? it->second[1] : it->second[0];
-                return ret == "" ? privateIp : ret;
-            } else {
-                return privateIp;
-            }
+/*
+ * PublicIpPrivateIpRange is a comma separated string
+ * suppoted format
+ * 1. single ip, 192.168.1.100
+ * 2. netmask, 192.168.1.100/24
+ * 3. net range, 192.168.1.100-192.168.1.200
+ */
+class PublicIpPrivateIpRange {
+public:
+    bool parseFromString(const std::string& line);
+    bool parseFromString(std::vector<std::string>& keys);
+    bool parseFromString001(std::vector<std::string>& keys);
+
+    bool isInPrivateIpRange(const __uint128_t& ip);
+    bool isInPrivateIpRange(const std::string& ipstr);
+    bool isPublicIp(const std::string& ipstr);
+    void parsePublicIp(std::string publicIp,
+                       std::map<std::string, std::vector<std::string>>& tmpPublicIpMap);
+    bool parsePrivateIpRange(std::string& range, std::map<__uint128_t, IpRange>& tmpRangeMap);
+
+    std::string getPublicIp(const std::string& privateIp, bool isFromIpv6) {
+        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        auto it = publicIpMap.find(privateIp);
+        if (it != publicIpMap.end()) {
+            std::string& ret = isFromIpv6 ? it->second[1] : it->second[0];
+            return ret == "" ? privateIp : ret;
+        } else {
+            return privateIp;
         }
+    }
 
 
-        std::map<std::string, std::vector<std::string>> getPublicIpMap() {
-            stdx::lock_guard<stdx::mutex> lock(_mutex);    
-            return publicIpMap;
-        }
-        bool isPublicIpUsed() {
-            return (!getPublicIpMap().empty());
-        }
-        void reset() {
-            stdx::lock_guard<stdx::mutex> lock(_mutex);
-            publicIpMap.clear();
-            privateIpRangeMap.clear();
-        }
-        int rangeSize();
-        std::string toString();
+    std::map<std::string, std::vector<std::string>> getPublicIpMap() {
+        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        return publicIpMap;
+    }
+    bool isPublicIpUsed() {
+        return (!getPublicIpMap().empty());
+    }
+    void reset() {
+        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        publicIpMap.clear();
+        privateIpRangeMap.clear();
+    }
+    int rangeSize();
+    std::string toString();
 
-    private:
-        // key is private ip and value is publicip float ipv4 and ipv6 which user can access.
-        // because we support dual ipv4 and ipv6 in same network card, so we need save ipv4 and ipv6 ip.
-        std::map<std::string, std::vector<std::string>> publicIpMap;
-        std::map<__uint128_t, IpRange> privateIpRangeMap;
-        stdx::mutex _mutex;
-
-    };
-
+private:
+    // key is private ip and value is publicip float ipv4 and ipv6 which user can access.
+    // because we support dual ipv4 and ipv6 in same network card, so we need save ipv4 and ipv6 ip.
+    std::map<std::string, std::vector<std::string>> publicIpMap;
+    std::map<__uint128_t, IpRange> privateIpRangeMap;
+    stdx::mutex _mutex;
+};
 }

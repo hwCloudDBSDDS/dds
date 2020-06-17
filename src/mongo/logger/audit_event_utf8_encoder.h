@@ -30,8 +30,8 @@
 
 #include <iosfwd>
 
-#include "mongo/logger/encoder.h"
 #include "mongo/logger/audit_event.h"
+#include "mongo/logger/encoder.h"
 
 namespace mongo {
 namespace logger {

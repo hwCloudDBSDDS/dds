@@ -33,8 +33,8 @@
 
 #include "mongo/base/error_codes.h"
 #include "mongo/base/string_data.h"
-#include "mongo/stdx/thread.h"
 #include "mongo/logger/log_severity.h"
+#include "mongo/stdx/thread.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -145,7 +145,8 @@ enum AuditOp {
     opQuery = 1 << 7,
 };
 
-static std::vector<std::string> auditOpList = {"all", "auth", "admin", "insert", "update", "delete", "command", "query"};
+static std::vector<std::string> auditOpList = {
+    "all", "auth", "admin", "insert", "update", "delete", "command", "query"};
 
 static inline AuditOp auditOpFromString(const std::string& auditOp) {
     if (auditOp == "auth") {
@@ -155,17 +156,17 @@ static inline AuditOp auditOpFromString(const std::string& auditOp) {
     } else if (auditOp == "slow") {
         return opSlow;
     } else if (auditOp == "insert") {
-       return opInsert;
+        return opInsert;
     } else if (auditOp == "update") {
         return opUpdate;
     } else if (auditOp == "delete") {
-       return opDelete;
+        return opDelete;
     } else if (auditOp == "command") {
-       return opCommand;
+        return opCommand;
     } else if (auditOp == "query") {
-       return opQuery;
+        return opQuery;
     } else {
-       return opInvalid;
+        return opInvalid;
     }
 }
 

@@ -111,7 +111,7 @@ struct ServerGlobalParams {
     bool auditAuthSuccess = true;      // True if audit authorization success requests.
     bool isImplicitCreateCol = false;  // True , insert a item can create collection auto, False, a
                                        // collection is created before inert
-    bool readOnly = false;                   // True if readonly mode.
+    bool readOnly = false;             // True if readonly mode.
     std::vector<std::string> allowCommands;  // allow the disable command for special
 
 
@@ -273,6 +273,8 @@ struct ServerGlobalParams {
     WhiteList adminWhiteList;
 
     ExternalConfig externalConfig;
+
+    std::string ftsDictDir = "";
 };
 
 extern ServerGlobalParams serverGlobalParams;

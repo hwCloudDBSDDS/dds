@@ -34,7 +34,6 @@
 #include "mongo/logger/rotatable_file_writer.h"
 
 
-
 namespace mongo {
 namespace logger {
 

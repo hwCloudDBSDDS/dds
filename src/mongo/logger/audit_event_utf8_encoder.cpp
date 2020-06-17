@@ -34,8 +34,8 @@
 #include <vector>
 
 #include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/db/auth/user_name.h"
 #include "mongo/db/auth/role_name.h"
+#include "mongo/db/auth/user_name.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -50,9 +50,8 @@ BSONArray usersVectorToBSONArray(const std::vector<UserName>& users) {
     BSONArrayBuilder usersArrayBuilder;
     for (std::vector<UserName>::const_iterator it = users.begin(); it != users.end(); ++it) {
         const UserName& user = *it;
-        usersArrayBuilder.append(BSON(USER_NAME_FIELD_NAME
-                                      << user.getUser() << USER_DB_FIELD_NAME
-                                      << user.getDB()));
+        usersArrayBuilder.append(
+            BSON(USER_NAME_FIELD_NAME << user.getUser() << USER_DB_FIELD_NAME << user.getDB()));
     }
     return usersArrayBuilder.arr();
 }
@@ -64,17 +63,15 @@ BSONArray rolesVectorToBSONArray(const std::vector<RoleName>& roles) {
     BSONArrayBuilder rolesArrayBuilder;
     for (std::vector<RoleName>::const_iterator it = roles.begin(); it != roles.end(); ++it) {
         const RoleName& role = *it;
-        rolesArrayBuilder.append(BSON(ROLE_NAME_FIELD_NAME
-                                      << role.getRole() << ROLE_DB_FIELD_NAME
-                                      << role.getDB()));
+        rolesArrayBuilder.append(
+            BSON(ROLE_NAME_FIELD_NAME << role.getRole() << ROLE_DB_FIELD_NAME << role.getDB()));
     }
     return rolesArrayBuilder.arr();
 }
 
 AuditEventJSONEncoder::~AuditEventJSONEncoder() {}
 
-std::ostream& AuditEventJSONEncoder::encode(const AuditEventEphemeral& event,
-                                            std::ostream& os) {
+std::ostream& AuditEventJSONEncoder::encode(const AuditEventEphemeral& event, std::ostream& os) {
     BSONObjBuilder builder;
     builder.append("atype", event.getAtype());
     builder.append("ts", event.getTs());
@@ -98,8 +95,7 @@ std::ostream& AuditEventJSONEncoder::encode(const AuditEventEphemeral& event,
     return os;
 }
 
-void AuditEventJSONEncoder::encode(const AuditEventEphemeral& event,
-                                            std::stringstream& s) {
+void AuditEventJSONEncoder::encode(const AuditEventEphemeral& event, std::stringstream& s) {
     BSONObjBuilder builder;
     builder.append("atype", event.getAtype());
     builder.append("ts", event.getTs());
@@ -124,8 +120,7 @@ void AuditEventJSONEncoder::encode(const AuditEventEphemeral& event,
 
 
 AuditEventHWDDSEncoder::~AuditEventHWDDSEncoder() {}
-std::ostream& AuditEventHWDDSEncoder::encode(const AuditEventEphemeral& event,
-                                                  std::ostream& os) {
+std::ostream& AuditEventHWDDSEncoder::encode(const AuditEventEphemeral& event, std::ostream& os) {
     // tid
     os << event.getThreadId();
     os << '\t';
@@ -135,7 +130,9 @@ std::ostream& AuditEventHWDDSEncoder::encode(const AuditEventEphemeral& event,
     os << '\t';
 
     // user
-    for (std::vector<UserName>::const_iterator it = event.getUserNames()->begin(); it != event.getUserNames()->end(); ++it) {
+    for (std::vector<UserName>::const_iterator it = event.getUserNames()->begin();
+         it != event.getUserNames()->end();
+         ++it) {
         const UserName& user = *it;
         os << user.getUser();
         os << ';';
@@ -143,7 +140,9 @@ std::ostream& AuditEventHWDDSEncoder::encode(const AuditEventEphemeral& event,
     os << '\t';
 
     // db
-    for (std::vector<UserName>::const_iterator it = event.getUserNames()->begin(); it != event.getUserNames()->end(); ++it) {
+    for (std::vector<UserName>::const_iterator it = event.getUserNames()->begin();
+         it != event.getUserNames()->end();
+         ++it) {
         const UserName& user = *it;
         os << user.getDB();
         os << ';';
@@ -190,8 +189,7 @@ std::ostream& AuditEventHWDDSEncoder::encode(const AuditEventEphemeral& event,
 
     return os;
 }
-void AuditEventHWDDSEncoder::encode(const AuditEventEphemeral& event,
-                                         std::stringstream& s) {
+void AuditEventHWDDSEncoder::encode(const AuditEventEphemeral& event, std::stringstream& s) {
     // tid
     s << event.getThreadId();
     s << '\t';
@@ -201,7 +199,9 @@ void AuditEventHWDDSEncoder::encode(const AuditEventEphemeral& event,
     s << '\t';
 
     // user
-    for (std::vector<UserName>::const_iterator it = event.getUserNames()->begin(); it != event.getUserNames()->end(); ++it) {
+    for (std::vector<UserName>::const_iterator it = event.getUserNames()->begin();
+         it != event.getUserNames()->end();
+         ++it) {
         const UserName& user = *it;
         s << user.getUser();
         s << ';';
@@ -209,7 +209,9 @@ void AuditEventHWDDSEncoder::encode(const AuditEventEphemeral& event,
     s << '\t';
 
     // db
-    for (std::vector<UserName>::const_iterator it = event.getUserNames()->begin(); it != event.getUserNames()->end(); ++it) {
+    for (std::vector<UserName>::const_iterator it = event.getUserNames()->begin();
+         it != event.getUserNames()->end();
+         ++it) {
         const UserName& user = *it;
         s << user.getDB();
         s << ';';

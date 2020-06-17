@@ -28,230 +28,228 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
 
-#include <stdio.h>
-#include <string>
+#include <arpa/inet.h>
 #include <map>
 #include <netinet/in.h>
-#include <arpa/inet.h>
+#include <stdio.h>
+#include <string>
 
-#include <boost/algorithm/string.hpp>
-#include "mongo/util/text.h"
 #include "mongo/util/log.h"
+#include "mongo/util/text.h"
+#include <boost/algorithm/string.hpp>
 // #include "mongo/util/concurrency/rwlock.h"
 #include "mongo/util/net/privateip_privateiprange.h"
 
 namespace mongo {
 
-    // eg: 192.168.1.100,192.168.1.100/24
-    bool PrivateIpPrivateIpRange::parseFromString(const std::string& line) {
+// eg: 192.168.1.100,192.168.1.100/24
+bool PrivateIpPrivateIpRange::parseFromString(const std::string& line) {
 
-        std::vector<std::string> keys;
+    std::vector<std::string> keys;
 
-        // 001 version take : as separator and 001 version string should not contain the ;
-        // and 002 version take ; as separator
-        // so in normal case, the first separator is real separator, 
-        const std::string separator = line.find(":") < line.find(";") ? ":" : ";";
-        boost::split(keys, line, boost::is_any_of(separator));
+    // 001 version take : as separator and 001 version string should not contain the ;
+    // and 002 version take ; as separator
+    // so in normal case, the first separator is real separator,
+    const std::string separator = line.find(":") < line.find(";") ? ":" : ";";
+    boost::split(keys, line, boost::is_any_of(separator));
 
-        if(!keys.empty()) {
-            if(keys[0] == "privateIpPrivateRange") {
-                if(keys[1] == "001" && separator == ":") {
-                    return parseFromString001(keys);
-                } else if(keys[1] == "002" && separator == ";") {
-                    // 0001 and 002 use same parse function
-                    return parseFromString001(keys);
-                }
+    if (!keys.empty()) {
+        if (keys[0] == "privateIpPrivateRange") {
+            if (keys[1] == "001" && separator == ":") {
+                return parseFromString001(keys);
+            } else if (keys[1] == "002" && separator == ";") {
+                // 0001 and 002 use same parse function
+                return parseFromString001(keys);
             }
         }
+    }
 
+    return false;
+}
+
+bool PrivateIpPrivateIpRange::parseFromString(std::vector<std::string>& keys) {
+    if (!keys.empty()) {
+        if (keys[0] == "privateIpPrivateRange") {
+            if (keys[1] == "001" || keys[1] == "002") {
+                return parseFromString001(keys);
+            }
+        }
+    }
+
+    return false;
+}
+
+bool PrivateIpPrivateIpRange::parseFromString001(std::vector<std::string>& keys) {
+
+    if (keys.empty()) {
         return false;
     }
 
-    bool PrivateIpPrivateIpRange::parseFromString(std::vector<std::string>& keys) {
-        if(!keys.empty()) {
-            if(keys[0] == "privateIpPrivateRange") {
-                if(keys[1] == "001" || keys[1] == "002") {
-                    return parseFromString001(keys);
-                }
-            }
-        }
-
+    if (keys.size() < 3) {
         return false;
     }
 
-    bool PrivateIpPrivateIpRange::parseFromString001(std::vector<std::string>& keys) {
+    if (!(keys[0] == "privateIpPrivateRange" && (keys[1] == "001" || keys[1] == "002"))) {
+        return false;
+    }
 
-        if(keys.empty()) {
-            return false;
-        }
-
-        if(keys.size()<3) {
-            return false;
-        }
-
-        if(!(keys[0] == "privateIpPrivateRange" && (keys[1] == "001" || keys[1] == "002"))) {
-            return false;
-        }
-
-        if(keys.size()<4) {
-            reset();
-            return true;
-        }
-
-
-        if(keys[3] == "") {
-            reset();
-            return true;
-        }
-        std::map<std::string, std::vector<std::string>> tmpIpMap;
-        std::map<__uint128_t, IpRange> tmpRangeMap;
-
-        parsePrivateIp(keys[2], tmpIpMap);
-        parsePrivateIpRange(keys[3], tmpRangeMap);
-
-        // swap to update
-        // rwlock lk(_lock, true);
-        ipMap.swap(tmpIpMap);
-        privateIpRangeMap.swap(tmpRangeMap);
-
+    if (keys.size() < 4) {
+        reset();
         return true;
     }
 
-    bool PrivateIpPrivateIpRange::parsePrivateIpRange(std::string& range, std::map<__uint128_t, IpRange>& tmpRangeMap) {
-        // parse each item
-        std::multimap<__uint128_t, IpRange> tmpRangeMultiMap;
-        std::vector<std::string> items = StringSplitter::split(range, ",");
 
-        for (auto it = items.begin(); it != items.end(); it++ ) {
-            IpRange range;
-            if (!IpRange::parseItem(*it, range)) {
-                return false;
-            }
-            tmpRangeMultiMap.insert(std::make_pair(range.min, range));
+    if (keys[3] == "") {
+        reset();
+        return true;
+    }
+    std::map<std::string, std::vector<std::string>> tmpIpMap;
+    std::map<__uint128_t, IpRange> tmpRangeMap;
+
+    parsePrivateIp(keys[2], tmpIpMap);
+    parsePrivateIpRange(keys[3], tmpRangeMap);
+
+    // swap to update
+    // rwlock lk(_lock, true);
+    ipMap.swap(tmpIpMap);
+    privateIpRangeMap.swap(tmpRangeMap);
+
+    return true;
+}
+
+bool PrivateIpPrivateIpRange::parsePrivateIpRange(std::string& range,
+                                                  std::map<__uint128_t, IpRange>& tmpRangeMap) {
+    // parse each item
+    std::multimap<__uint128_t, IpRange> tmpRangeMultiMap;
+    std::vector<std::string> items = StringSplitter::split(range, ",");
+
+    for (auto it = items.begin(); it != items.end(); it++) {
+        IpRange range;
+        if (!IpRange::parseItem(*it, range)) {
+            return false;
         }
+        tmpRangeMultiMap.insert(std::make_pair(range.min, range));
+    }
 
 
-        // merge overlapped items
+    // merge overlapped items
 
-        IpRange last;
+    IpRange last;
 
-        for (auto mit = tmpRangeMultiMap.begin(); mit != tmpRangeMultiMap.end(); mit++ ) {
-            if (last.invalid()) {
-                last = mit->second;
+    for (auto mit = tmpRangeMultiMap.begin(); mit != tmpRangeMultiMap.end(); mit++) {
+        if (last.invalid()) {
+            last = mit->second;
+        } else {
+            if (last.max >= mit->second.min) {
+                last.max = std::max(last.max, mit->second.max);
             } else {
-                if (last.max >= mit->second.min) {
-                    last.max = std::max(last.max, mit->second.max);
-                } else {
-                    tmpRangeMap.insert(std::make_pair(last.min, last));
-                    last = mit->second;
-                }
+                tmpRangeMap.insert(std::make_pair(last.min, last));
+                last = mit->second;
             }
         }
-
-        if (!last.invalid()) {
-            tmpRangeMap.insert(std::make_pair(last.min, last));
-        }
-
-        return true;
     }
 
-    void PrivateIpPrivateIpRange::parsePrivateIp(std::string privateIp, std::map<std::string, std::vector<std::string>>& tmpPrivateIpMap) {
-
-        if(privateIp.empty()) {
-            tmpPrivateIpMap.clear();
-            return;
-        }
-
-        std::vector<std::string> items = StringSplitter::split(privateIp, ",");
-        for(auto & item : items) {
-            std::vector<std::string> key_value = StringSplitter::split(item, "=");
-            if(key_value.size() != 2) {
-                continue;
-            }
-            boost::trim(key_value[0]);
-            boost::trim(key_value[1]);
-
-            int type = IpRange::ipType(key_value[1]);
-            if(type == -1) {
-                continue;
-            }
-
-            auto& ips = tmpPrivateIpMap[(key_value[0])];
-            if(ips.size() < 2) {
-                ips.resize(2);
-            }
-            ips[type]=key_value[1];
-        }
-
-
-    }
-    bool PrivateIpPrivateIpRange::isInPrivateIpRange(const std::string& ipstr)
-    {
-        __uint128_t ipval = 0;
-        if (!IpRange::addrToUint(ipstr, ipval)) {
-            return false;
-        }
-        return isInPrivateIpRange(ipval);
+    if (!last.invalid()) {
+        tmpRangeMap.insert(std::make_pair(last.min, last));
     }
 
-    bool PrivateIpPrivateIpRange::isPrivateIp(const std::string& ipstr) {
+    return true;
+}
 
-        if(!isPrivateIpUsed()) {
-            return false;
-        }
+void PrivateIpPrivateIpRange::parsePrivateIp(
+    std::string privateIp, std::map<std::string, std::vector<std::string>>& tmpPrivateIpMap) {
 
-        __uint128_t ipval = 0;
-        if (!IpRange::addrToUint(ipstr, ipval)) {
-            return false;
-        }
-
-        return isInPrivateIpRange(ipval);
+    if (privateIp.empty()) {
+        tmpPrivateIpMap.clear();
+        return;
     }
 
-    int PrivateIpPrivateIpRange::rangeSize() {
-        // rwlock lk(_lock, false);
-        return privateIpRangeMap.size();
+    std::vector<std::string> items = StringSplitter::split(privateIp, ",");
+    for (auto& item : items) {
+        std::vector<std::string> key_value = StringSplitter::split(item, "=");
+        if (key_value.size() != 2) {
+            continue;
+        }
+        boost::trim(key_value[0]);
+        boost::trim(key_value[1]);
+
+        int type = IpRange::ipType(key_value[1]);
+        if (type == -1) {
+            continue;
+        }
+
+        auto& ips = tmpPrivateIpMap[(key_value[0])];
+        if (ips.size() < 2) {
+            ips.resize(2);
+        }
+        ips[type] = key_value[1];
     }
+}
+bool PrivateIpPrivateIpRange::isInPrivateIpRange(const std::string& ipstr) {
+    __uint128_t ipval = 0;
+    if (!IpRange::addrToUint(ipstr, ipval)) {
+        return false;
+    }
+    return isInPrivateIpRange(ipval);
+}
 
-    bool PrivateIpPrivateIpRange::isInPrivateIpRange(const __uint128_t& ip) {
-        // rwlock lk(_lock, false);
+bool PrivateIpPrivateIpRange::isPrivateIp(const std::string& ipstr) {
 
-        if (privateIpRangeMap.empty()) {
-            return false;
-        }
-
-        auto it = privateIpRangeMap.lower_bound(ip);
-        if (it != privateIpRangeMap.end() && it->second.include(ip)) {
-            return true;
-        }
-
-        if (it != privateIpRangeMap.begin()) {
-            it--;
-            if (it->second.include(ip)) {
-                return true;
-            }
-        }
-
+    if (!isPrivateIpUsed()) {
         return false;
     }
 
-    std::string PrivateIpPrivateIpRange::toString() {
-        std::stringstream ss;
-        // rwlock lk(_lock, false);
-        ss << " private Ip: [ ";
-        for (auto it = ipMap.begin(); it != ipMap.end(); it++ ) {
-            if(it->second[0] != "") {
-                ss << "ipv4: " << it->first << "=" << it->second[0] << " ";
-            }
-            if(it->second[1] != "") {
-                ss << "ipv6: " << it->first << "=" << it->second[1] << " ";
-            }
-        }
-        ss << "]. privateIpRange: size is " << privateIpRangeMap.size() << ". ";
-        for (auto it = privateIpRangeMap.begin(); it != privateIpRangeMap.end(); it++ ) {
-            it->second.toString(ss);
-        }
-        return ss.str();
+    __uint128_t ipval = 0;
+    if (!IpRange::addrToUint(ipstr, ipval)) {
+        return false;
     }
 
+    return isInPrivateIpRange(ipval);
+}
+
+int PrivateIpPrivateIpRange::rangeSize() {
+    // rwlock lk(_lock, false);
+    return privateIpRangeMap.size();
+}
+
+bool PrivateIpPrivateIpRange::isInPrivateIpRange(const __uint128_t& ip) {
+    // rwlock lk(_lock, false);
+
+    if (privateIpRangeMap.empty()) {
+        return false;
+    }
+
+    auto it = privateIpRangeMap.lower_bound(ip);
+    if (it != privateIpRangeMap.end() && it->second.include(ip)) {
+        return true;
+    }
+
+    if (it != privateIpRangeMap.begin()) {
+        it--;
+        if (it->second.include(ip)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string PrivateIpPrivateIpRange::toString() {
+    std::stringstream ss;
+    // rwlock lk(_lock, false);
+    ss << " private Ip: [ ";
+    for (auto it = ipMap.begin(); it != ipMap.end(); it++) {
+        if (it->second[0] != "") {
+            ss << "ipv4: " << it->first << "=" << it->second[0] << " ";
+        }
+        if (it->second[1] != "") {
+            ss << "ipv6: " << it->first << "=" << it->second[1] << " ";
+        }
+    }
+    ss << "]. privateIpRange: size is " << privateIpRangeMap.size() << ". ";
+    for (auto it = privateIpRangeMap.begin(); it != privateIpRangeMap.end(); it++) {
+        it->second.toString(ss);
+    }
+    return ss.str();
+}
 }
