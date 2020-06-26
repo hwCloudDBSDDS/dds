@@ -29,3 +29,6 @@ https://github.com/hwCloudDBSDDS/dds/wiki/Builtin-Users-Roles
 ## Mongos Auto Flush Router
 When a database is dropped and re-created again without flushing all mongos routing, data may be inconsistent, this
 is a legacy problem of MongoDB, we handled this by [Mongos-Automatic-Flush-Routing-Cache](https://github.com/hwCloudDBSDDS/dds/wiki/Mongos-Automatic-Flush-Routing-Cache)
+
+## Chinese full-text search
+https://github.com/hwCloudDBSDDS/dds/wiki/Chinese-Full-Text-Search
