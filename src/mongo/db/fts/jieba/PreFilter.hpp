@@ -7,48 +7,46 @@
 namespace cppjieba {
 
 class PreFilter {
- public:
-  //TODO use WordRange instead of Range
-  struct Range {
-    RuneStrArray::const_iterator begin;
-    RuneStrArray::const_iterator end;
-  }; // struct Range
+public:
+    // TODO use WordRange instead of Range
+    struct Range {
+        RuneStrArray::const_iterator begin;
+        RuneStrArray::const_iterator end;
+    };  // struct Range
 
-  PreFilter(const unordered_set<Rune>& symbols, 
-        const string& sentence)
-    : symbols_(symbols) {
-    if (!DecodeRunesInString(sentence, sentence_)) {
-      XLOG(ERROR) << "decode failed. "; 
-    }
-    cursor_ = sentence_.begin();
-  }
-  ~PreFilter() {
-  }
-  bool HasNext() const {
-    return cursor_ != sentence_.end();
-  }
-  Range Next() {
-    Range range;
-    range.begin = cursor_;
-    while (cursor_ != sentence_.end()) {
-      if (IsIn(symbols_, cursor_->rune)) {
-        if (range.begin == cursor_) {
-          cursor_ ++;
+    PreFilter(const unordered_set<Rune>& symbols, const string& sentence) : symbols_(symbols) {
+        if (!DecodeRunesInString(sentence, sentence_)) {
+            XLOG(ERROR) << "decode failed. ";
         }
-        range.end = cursor_;
-        return range;
-      }
-      cursor_ ++;
+        cursor_ = sentence_.begin();
     }
-    range.end = sentence_.end();
-    return range;
-  }
- private:
-  RuneStrArray::const_iterator cursor_;
-  RuneStrArray sentence_;
-  const unordered_set<Rune>& symbols_;
-}; // class PreFilter
+    ~PreFilter() {}
+    bool HasNext() const {
+        return cursor_ != sentence_.end();
+    }
+    Range Next() {
+        Range range;
+        range.begin = cursor_;
+        while (cursor_ != sentence_.end()) {
+            if (IsIn(symbols_, cursor_->rune)) {
+                if (range.begin == cursor_) {
+                    cursor_++;
+                }
+                range.end = cursor_;
+                return range;
+            }
+            cursor_++;
+        }
+        range.end = sentence_.end();
+        return range;
+    }
 
-} // namespace cppjieba
+private:
+    RuneStrArray::const_iterator cursor_;
+    RuneStrArray sentence_;
+    const unordered_set<Rune>& symbols_;
+};  // class PreFilter
 
-#endif // CPPJIEBA_PRE_FILTER_H
+}  // namespace cppjieba
+
+#endif  // CPPJIEBA_PRE_FILTER_H

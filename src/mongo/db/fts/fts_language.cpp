@@ -32,21 +32,21 @@
 #include "mongo/db/fts/jieba/Jieba.hpp"
 #include "mongo/db/server_options.h"
 
-#include <string>
 #include <boost/filesystem/operations.hpp>
+#include <string>
 
 #include "mongo/base/init.h"
 #include "mongo/db/fts/fts_basic_phrase_matcher.h"
 #include "mongo/db/fts/fts_basic_tokenizer.h"
+#include "mongo/db/fts/fts_chinese_tokenizer.h"
 #include "mongo/db/fts/fts_unicode_phrase_matcher.h"
 #include "mongo/db/fts/fts_unicode_tokenizer.h"
-#include "mongo/db/fts/fts_chinese_tokenizer.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/string_map.h"
 #include "mongo/util/stringutils.h"
-#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -142,9 +142,7 @@ MONGO_FTS_LANGUAGE_LIST(LANGUAGE_DECLV3);
 #define LANGUAGE_INITV3(id, name, alias) \
     FTSLanguage::registerLanguage(name, TEXT_INDEX_VERSION_3, &language##id##V3);
 
-MONGO_INITIALIZER_GENERAL(FTSChineseLoad,
-		          ("EndStartupOptionStorage"),
-			  MONGO_NO_DEPENDENTS)
+MONGO_INITIALIZER_GENERAL(FTSChineseLoad, ("EndStartupOptionStorage"), MONGO_NO_DEPENDENTS)
 (::mongo::InitializerContext* context) {
     static const std::string dictPath = serverGlobalParams.ftsDictDir + "/jieba.dict.utf8";
     static const std::string hmmPath = serverGlobalParams.ftsDictDir + "/hmm_model.utf8";
@@ -159,7 +157,8 @@ MONGO_INITIALIZER_GENERAL(FTSChineseLoad,
         }
     }
     if (supportChinese) {
-        cnSegmenter = stdx::make_unique<cppjieba::Jieba>(dictPath, hmmPath, userDictPath, idfPath, stopWordsPath);
+        cnSegmenter = stdx::make_unique<cppjieba::Jieba>(
+            dictPath, hmmPath, userDictPath, idfPath, stopWordsPath);
     }
     LOG(0) << "fts chinese supported:" << (supportChinese ? "yes" : "no");
     return Status::OK();
@@ -331,12 +330,6 @@ StatusWithFTSLanguage FTSLanguage::make(StringData langName, TextIndexVersion te
 }
 
 std::unique_ptr<FTSTokenizer> BasicFTSLanguage::createTokenizer() const {
-    if (str() == "chinese") {
-        if (!cnSegmenter) {
-            return nullptr;
-        }
-	return stdx::make_unique<ChineseFTSTokenizer>(this, cnSegmenter.get());
-    }
     return stdx::make_unique<BasicFTSTokenizer>(this);
 }
 
@@ -345,6 +338,12 @@ const FTSPhraseMatcher& BasicFTSLanguage::getPhraseMatcher() const {
 }
 
 std::unique_ptr<FTSTokenizer> UnicodeFTSLanguage::createTokenizer() const {
+    if (str() == "chinese") {
+        if (!cnSegmenter) {
+            return nullptr;
+        }
+        return stdx::make_unique<ChineseFTSTokenizer>(this, cnSegmenter.get());
+    }
     return stdx::make_unique<UnicodeFTSTokenizer>(this);
 }
 

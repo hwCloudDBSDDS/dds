@@ -1032,7 +1032,9 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         if (version1 === "latest" || version1 === "") {
             return true;
         }
-        var versionArray1 = version1.split('.') var versionArray2 = version2.split('.') var i = 0;
+        var versionArray1 = version1.split('.');
+        var versionArray2 = version2.split('.');
+        var i = 0;
 
         for (i = versionArray1.length; i < 4; i++) {
             versionArray1.push(0);
