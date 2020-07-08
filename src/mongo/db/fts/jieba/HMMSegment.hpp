@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory.h>
+#include "DictTrie.hpp"
 
 namespace cppjieba {
 class HMMSegment : public SegmentBase {
