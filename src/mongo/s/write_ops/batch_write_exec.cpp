@@ -38,9 +38,11 @@
 #include "mongo/bson/util/builder.h"
 #include "mongo/client/connection_string.h"
 #include "mongo/client/remote_command_targeter.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/s/async_requests_sender.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/commands/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/write_ops/batch_write_op.h"
 #include "mongo/s/write_ops/write_error_detail.h"
@@ -173,7 +175,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
                 stats->noteTargetedShard(targetShardId);
 
-                const auto request = [&] {
+                auto request = [&] {
                     const auto shardBatchRequest(batchOp.buildBatchRequest(*nextBatch));
 
                     BSONObjBuilder requestBuilder;
@@ -192,6 +194,11 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
                     return requestBuilder.obj();
                 }();
+
+                auto session = OperationContextSession::get(opCtx);
+                if (session) {
+                    request = session->appendTransactionInfo(opCtx, targetShardId, request);
+                }
 
                 LOG(4) << "Sending write batch to " << targetShardId << ": " << redact(request);
 

@@ -33,6 +33,7 @@
 #include "mongo/db/session.h"
 #include "mongo/db/session_killer.h"
 #include "mongo/stdx/condition_variable.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/unordered_map.h"
 
@@ -126,9 +127,13 @@ public:
                       const SessionKiller::Matcher& matcher,
                       stdx::function<void(OperationContext*, Session*)> workerFn);
 
+    int cleanTimeoutSessions(OperationContext* opCtx);
+
 private:
     struct SessionRuntimeInfo {
-        SessionRuntimeInfo(LogicalSessionId lsid) : txnState(std::move(lsid)) {}
+        SessionRuntimeInfo(LogicalSessionId lsid) {
+            txnState = Session::makeOwn(lsid);
+        }
 
         // Current check-out state of the session. If set to false, the session can be checked out.
         // If set to true, the session is in use by another operation and the caller must wait to
@@ -139,9 +144,13 @@ private:
         // the state transitions.
         stdx::condition_variable availableCondVar;
 
+
+        boost::optional<Date_t> expireDate;
+
         // Must only be accessed when the state is kInUse and only by the operation context, which
         // currently has it checked out
-        Session txnState;
+        // SessionMongoD inherit Session
+        std::unique_ptr<Session> txnState;
     };
 
     using SessionRuntimeInfoMap = stdx::unordered_map<LogicalSessionId,
@@ -176,7 +185,7 @@ public:
     }
 
     Session* get() const {
-        return &_sri->txnState;
+        return _sri->txnState.get();
     }
 
     Session* operator->() const {

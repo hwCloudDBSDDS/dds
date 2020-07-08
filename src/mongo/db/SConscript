@@ -616,6 +616,12 @@ env.Library(
 )
 
 env.Library(
+    target='session_d',
+    source=[
+        'session_mongod.cpp',
+    ],
+)
+env.Library(
     target='catalog_raii',
     source=[
         'catalog_raii.cpp',
@@ -1423,6 +1429,7 @@ envWithAsio.Library(
     target='logical_session_cache_factory_mongos',
     source=[
         'logical_session_cache_factory_mongos.cpp',
+        'transaction_reaper_s.cpp',
     ],
     LIBDEPS=[
         'logical_session_cache',

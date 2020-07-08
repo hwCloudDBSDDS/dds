@@ -100,9 +100,9 @@ Query makeQuery(Date_t now) {
  * have a lifetime associated with a single call to reap.
  */
 template <typename Handler>
-class TransactionReaperImpl final : public TransactionReaper {
+class TransactionReaperD final : public TransactionReaper {
 public:
-    TransactionReaperImpl(std::shared_ptr<SessionsCollection> collection)
+    TransactionReaperD(std::shared_ptr<SessionsCollection> collection)
         : _collection(std::move(collection)) {}
 
     int reap(OperationContext* opCtx) override {
@@ -279,13 +279,11 @@ std::unique_ptr<TransactionReaper> TransactionReaper::make(
     Type type, std::shared_ptr<SessionsCollection> collection) {
     switch (type) {
         case Type::kReplicaSet:
-            return stdx::make_unique<TransactionReaperImpl<ReplHandler>>(std::move(collection));
+            return stdx::make_unique<TransactionReaperD<ReplHandler>>(std::move(collection));
         case Type::kSharded:
-            return stdx::make_unique<TransactionReaperImpl<ShardedHandler>>(std::move(collection));
+            return stdx::make_unique<TransactionReaperD<ShardedHandler>>(std::move(collection));
     }
     MONGO_UNREACHABLE;
 }
-
-TransactionReaper::~TransactionReaper() = default;
 
 }  // namespace mongo

@@ -589,6 +589,25 @@ BSONObj BSONObj::updateField(StringData name, StringData value) const {
     return b.obj();
 }
 
+BSONObj BSONObj::updateField(StringData name, BSONObj& value) const {
+    BSONObjBuilder b;
+    BSONObjIterator i(*this);
+    while (i.more()) {
+        BSONElement e = i.next();
+        const char* fname = e.fieldName();
+        if (name == fname) {
+            BSONObjBuilder tmp;
+            tmp.append(name, value);
+            BSONObj tmpObj = tmp.obj();
+            BSONElement n = tmpObj[name];
+            b.append(n);
+        } else {
+            b.append(e);
+        }
+    }
+    return b.obj();
+}
+
 std::string BSONObj::hexDump() const {
     std::stringstream ss;
     const char* d = objdata();

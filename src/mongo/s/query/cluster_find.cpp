@@ -48,6 +48,7 @@
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/getmore_request.h"
 #include "mongo/db/query/query_planner_common.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/platform/overflow_arithmetic.h"
 #include "mongo/s/catalog_cache.h"
@@ -208,7 +209,13 @@ std::vector<std::pair<ShardId, BSONObj>> constructRequestsForShards(
             cmdBuilder.append(OperationSessionInfo::kTxnNumberFieldName, *opCtx->getTxnNumber());
         }
 
-        requests.emplace_back(shardId, cmdBuilder.obj());
+        auto session = OperationContextSession::get(opCtx);
+        if (session) {
+            requests.emplace_back(shardId,
+                                  session->appendTransactionInfo(opCtx, shardId, cmdBuilder.obj()));
+        } else {
+            requests.emplace_back(shardId, cmdBuilder.obj());
+        }
     }
 
     return requests;

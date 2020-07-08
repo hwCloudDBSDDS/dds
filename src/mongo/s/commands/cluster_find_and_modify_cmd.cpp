@@ -25,6 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -34,6 +35,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/find_and_modify_common.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/async_requests_sender.h"
@@ -46,6 +48,7 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/s/write_ops/cluster_write.h"
+#include "mongo/util/log.h"
 #include "mongo/util/timer.h"
 
 namespace mongo {
@@ -198,11 +201,15 @@ private:
                             const BSONObj& cmdObj,
                             BSONObjBuilder* result) {
         const auto response = [&] {
+            auto cmdVerisonObj = appendShardVersion(
+                CommandHelpers::filterCommandRequestForPassthrough(cmdObj), shardVersion);
+            auto session = OperationContextSession::get(opCtx);
+            if (session) {
+                cmdVerisonObj = session->appendTransactionInfo(opCtx, shardId, cmdVerisonObj);
+            }
             std::vector<AsyncRequestsSender::Request> requests;
-            requests.emplace_back(
-                shardId,
-                appendShardVersion(CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-                                   shardVersion));
+
+            requests.emplace_back(shardId, cmdVerisonObj);
 
             AsyncRequestsSender ars(opCtx,
                                     Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),

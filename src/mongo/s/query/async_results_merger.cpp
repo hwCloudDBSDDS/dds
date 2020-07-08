@@ -38,8 +38,11 @@
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/getmore_request.h"
 #include "mongo/db/query/killcursors_request.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/executor/remote_command_request.h"
 #include "mongo/executor/remote_command_response.h"
+#include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/grid.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 
@@ -368,7 +371,13 @@ Status AsyncResultsMerger::_askForNextBatch(WithLock, size_t remoteIndex) {
             newCmdBob.append(OperationSessionInfo::kTxnNumberFieldName, *_params.getTxnNumber());
         }
 
-        cmdObj = newCmdBob.obj();
+        ShardId shardId(_params.getRemotes()[remoteIndex].getShardId().toString());
+        auto session = OperationContextSession::get(_opCtx);
+        if (session) {
+            cmdObj = session->appendTransactionInfo(_opCtx, shardId, newCmdBob.obj());
+        } else {
+            cmdObj = newCmdBob.obj();
+        }
     }
 
     executor::RemoteCommandRequest request(

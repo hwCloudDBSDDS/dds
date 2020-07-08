@@ -78,7 +78,7 @@ public:
     }
 
     void unsetMaxLockTimeout() override {
-        MONGO_UNREACHABLE;
+        // let mongos can use this function, keep empty
     }
 
     virtual LockResult lockGlobal(OperationContext* opCtx, LockMode mode) {
@@ -122,7 +122,8 @@ public:
     virtual void endWriteUnitOfWork() {}
 
     virtual bool inAWriteUnitOfWork() const {
-        MONGO_UNREACHABLE;
+        // let mongos can use this function, keep false
+        return false;
     }
 
     virtual LockResult lock(OperationContext* opCtx,

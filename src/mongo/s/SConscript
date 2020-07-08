@@ -110,6 +110,15 @@ env.Library(
     ],
 )
 
+
+env.Library(
+    target='session_s',
+    source=[
+        'session_mongos.cpp',
+    ],
+
+)
+
 env.Library(
     target='common_s',
     source=[

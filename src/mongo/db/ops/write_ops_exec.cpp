@@ -66,6 +66,7 @@
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/session_catalog.h"
+#include "mongo/db/session_mongod.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/stats/top.h"
 #include "mongo/db/write_concern.h"
@@ -122,11 +123,11 @@ void finishCurOp(OperationContext* opCtx, CurOp* curOp) {
 
         auto session = OperationContextSession::get(opCtx);
         if (curOp->shouldDBProfile(shouldSample)) {
-            boost::optional<Session::TxnResources> txnResources;
+            boost::optional<SessionMongoD::TxnResources> txnResources;
             if (session && session->inMultiDocumentTransaction()) {
                 // Stash the current transaction so that writes to the profile collection are not
                 // done as part of the transaction.
-                txnResources = Session::TxnResources(opCtx);
+                txnResources = SessionMongoD::TxnResources(opCtx);
             }
             ON_BLOCK_EXIT([&] {
                 if (txnResources) {
