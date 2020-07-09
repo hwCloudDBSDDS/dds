@@ -32,6 +32,8 @@
 
 #include "mongo/s/commands/strategy.h"
 
+#include "mongo/db/session_catalog.h"
+
 #include "mongo/base/data_cursor.h"
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
@@ -106,6 +108,40 @@ static Status _checkQueryOPAuthForUser(Client* client, const NamespaceString& ns
 namespace {
 
 const auto kOperationTime = "operationTime"_sd;
+
+// The command names for which to check out a session. These are commands that support retryable
+// writes, readConcern snapshot, or multi-statement transactions. We additionally check out the
+// session for commands that can take a lock and then run another whitelisted command in
+// DBDirectClient. Otherwise, the nested command would try to check out a session under a lock,
+// which is not allowed.
+const StringMap<int> sessionCheckoutMongoSWhitelist = {{"abortTransaction", 1},
+                                                       {"aggregate", 1},
+                                                       {"applyOps", 1},
+                                                       {"commitTransaction", 1},
+                                                       {"count", 1},
+                                                       {"dbHash", 1},
+                                                       {"delete", 1},
+                                                       {"distinct", 1},
+                                                       {"doTxn", 1},
+                                                       {"eval", 1},
+                                                       {"$eval", 1},
+                                                       {"explain", 1},
+                                                       {"filemd5", 1},
+                                                       {"find", 1},
+                                                       {"findandmodify", 1},
+                                                       {"findAndModify", 1},
+                                                       {"geoNear", 1},
+                                                       {"geoSearch", 1},
+                                                       {"getMore", 1},
+                                                       {"group", 1},
+                                                       {"insert", 1},
+                                                       {"killCursors", 1},
+                                                       {"mapReduce", 1},
+                                                       {"parallelCollectionScan", 1},
+                                                       {"prepareTransaction", 1},
+                                                       {"refreshLogicalSessionCacheNow", 1},
+                                                       {"update", 1}};
+
 
 /**
  * Extract and process metadata from the command request body.
@@ -324,10 +360,6 @@ void runCommand(OperationContext* opCtx,
     }
 
     CommandHelpers::uassertShouldAttemptParse(opCtx, command, request);
-    // Transactions are disallowed in sharded clusters in MongoDB 4.0.
-    uassert(50841,
-            "Multi-document transactions cannot be run in a sharded cluster.",
-            !request.body.hasField("startTransaction") && !request.body.hasField("autocommit"));
 
     // Parse the 'maxTimeMS' command option, and use it to set a deadline for the operation on
     // the OperationContext. Be sure to do this as soon as possible so that further processing by
@@ -358,7 +390,41 @@ void runCommand(OperationContext* opCtx,
     // Fill out all currentOp details.
     CurOp::get(opCtx)->setGenericOpRequestDetails(opCtx, nss, command, request.body, opType);
 
-    initializeOperationSessionInfo(opCtx, request.body, command->requiresAuth(), true, true);
+    boost::optional<OperationSessionInfoFromClient> sessionOptions = boost::none;
+    sessionOptions =
+        initializeOperationSessionInfo(opCtx, request.body, command->requiresAuth(), true, true);
+
+    const auto dbname = request.getDatabase().toString();
+    uassert(ErrorCodes::InvalidNamespace,
+            str::stream() << "Invalid database name: '" << dbname << "'",
+            NamespaceString::validDBName(dbname, NamespaceString::DollarInDbNameBehavior::Allow));
+
+    const bool shouldCheckoutSession = static_cast<bool>(opCtx->getTxnNumber()) &&
+        sessionCheckoutMongoSWhitelist.find(command->getName()) !=
+            sessionCheckoutMongoSWhitelist.cend();
+
+    // Parse the arguments specific to multi-statement transactions.
+    boost::optional<bool> startMultiDocTxn = boost::none;
+    boost::optional<bool> autocommitVal = boost::none;
+    if (sessionOptions) {
+        startMultiDocTxn = sessionOptions->getStartTransaction();
+        autocommitVal = sessionOptions->getAutocommit();
+        if (command->getName() == "doTxn") {
+            // Autocommit and 'startMultiDocTxn' are overridden for 'doTxn' to get the oplog
+            // entry generation behavior used for multi-document transactions. The 'doTxn'
+            // command still logically behaves as a commit.
+            autocommitVal = false;
+            startMultiDocTxn = true;
+        }
+    }
+
+
+    // This constructor will check out the session and start a transaction, if necessary. It
+    // handles the appropriate state management for both multi-statement transactions and
+    // retryable writes.
+    OperationContextSession sessionTxnState(
+        opCtx, shouldCheckoutSession, autocommitVal, startMultiDocTxn, dbname, command->getName());
+
 
     auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
     auto readConcernParseStatus = readConcernArgs.initialize(request.body);

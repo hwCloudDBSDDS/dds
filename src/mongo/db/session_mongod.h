@@ -38,11 +38,11 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/read_concern_args.h"
+#include "mongo/db/session.h"
 #include "mongo/db/session_txn_record_gen.h"
 #include "mongo/db/single_transaction_stats.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/s/shard_id.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/concurrency/with_lock.h"
 
@@ -53,10 +53,6 @@ extern AtomicInt32 transactionLifetimeLimitSeconds;
 class OperationContext;
 class UpdateRequest;
 
-enum class SpeculativeTransactionOpTime {
-    kLastApplied,
-    kAllCommitted,
-};
 
 /**
  * A write through cache for the state of a particular session. All modifications to the underlying
@@ -66,19 +62,59 @@ enum class SpeculativeTransactionOpTime {
  * refresh' (in which case refreshFromStorageIfNeeded needs to be called in order to make it
  * up-to-date).
  */
-class Session {
+class SessionMongoD : public Session {
+    MONGO_DISALLOW_COPYING(SessionMongoD);
 
 public:
-    using CommittedStatementTimestampMap = stdx::unordered_map<StmtId, repl::OpTime>;
-    using CursorExistsFunction = std::function<bool(LogicalSessionId, TxnNumber)>;
+    /**
+     * Holds state for a snapshot read or multi-statement transaction in between network operations.
+     */
+    class TxnResources {
+    public:
+        /**
+         * Stashes transaction state from 'opCtx' in the newly constructed TxnResources.
+         * This ephemerally takes the Client lock associated with the opCtx.
+         * keepTicket: If true, do not release locker's throttling ticket.
+         *             Use only for short-term stashing.
+         */
+        TxnResources(OperationContext* opCtx, bool keepTicket = false);
 
-    static const BSONObj kDeadEndSentinel;
+        ~TxnResources();
 
-    virtual ~Session() {}
+        // Rule of 5: because we have a class-defined destructor, we need to explictly specify
+        // the move operator and move assignment operator.
+        TxnResources(TxnResources&&) = default;
+        TxnResources& operator=(TxnResources&&) = default;
 
-    const LogicalSessionId& getSessionId() const {
-        return _sessionId;
-    }
+        /**
+         * Returns a const pointer to the stashed lock state, or nullptr if no stashed locks exist.
+         */
+        const Locker* locker() const {
+            return _locker.get();
+        }
+
+        /**
+         * Releases stashed transaction state onto 'opCtx'. Must only be called once.
+         * This ephemerally takes the Client lock associated with the opCtx.
+         */
+        void release(OperationContext* opCtx);
+
+        /**
+         * Returns the read concern arguments.
+         */
+        repl::ReadConcernArgs getReadConcernArgs() const {
+            return _readConcernArgs;
+        }
+
+    private:
+        bool _released = false;
+        std::unique_ptr<Locker> _locker;
+        std::unique_ptr<RecoveryUnit> _recoveryUnit;
+        repl::ReadConcernArgs _readConcernArgs;
+        WriteUnitOfWork::RecoveryUnitState _ruState;
+    };
+
+    explicit SessionMongoD(LogicalSessionId sessionId);
 
     /**
      * Blocking method, which loads the transaction state from storage if it has been marked as
@@ -87,7 +123,7 @@ public:
      * In order to avoid the possibility of deadlock, this method must not be called while holding a
      * lock.
      */
-    virtual void refreshFromStorageIfNeeded(OperationContext* opCtx) = 0;
+    void refreshFromStorageIfNeeded(OperationContext* opCtx);
 
     /**
      * Starts a new transaction on the session, or continues an already active transaction. In this
@@ -111,23 +147,23 @@ public:
      * In order to avoid the possibility of deadlock, this method must not be called while holding a
      * lock. This method must also be called after refreshFromStorageIfNeeded has been called.
      */
-    virtual void beginOrContinueTxn(OperationContext* opCtx,
-                                    TxnNumber txnNumber,
-                                    boost::optional<bool> autocommit,
-                                    boost::optional<bool> startTransaction,
-                                    StringData dbName,
-                                    StringData cmdName) = 0;
+    void beginOrContinueTxn(OperationContext* opCtx,
+                            TxnNumber txnNumber,
+                            boost::optional<bool> autocommit,
+                            boost::optional<bool> startTransaction,
+                            StringData dbName,
+                            StringData cmdName);
     /**
      * Similar to beginOrContinueTxn except it is used specifically for shard migrations and does
      * not check or modify the autocommit parameter.
      */
-    virtual void beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber txnNumber) = 0;
+    void beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber txnNumber);
 
     /**
      * Called for speculative transactions to fix the optime of the snapshot to read from.
      */
-    virtual void setSpeculativeTransactionOpTime(OperationContext* opCtx,
-                                                 SpeculativeTransactionOpTime opTimeChoice) = 0;
+    void setSpeculativeTransactionOpTime(OperationContext* opCtx,
+                                         SpeculativeTransactionOpTime opTimeChoice);
 
     /**
      * Called after a write under the specified transaction completes while the node is a primary
@@ -139,20 +175,18 @@ public:
      *
      * Throws if the session has been invalidated or the active transaction number doesn't match.
      */
-    virtual void onWriteOpCompletedOnPrimary(OperationContext* opCtx,
-                                             TxnNumber txnNumber,
-                                             std::vector<StmtId> stmtIdsWritten,
-                                             const repl::OpTime& lastStmtIdWriteOpTime,
-                                             Date_t lastStmtIdWriteDate) = 0;
+    void onWriteOpCompletedOnPrimary(OperationContext* opCtx,
+                                     TxnNumber txnNumber,
+                                     std::vector<StmtId> stmtIdsWritten,
+                                     const repl::OpTime& lastStmtIdWriteOpTime,
+                                     Date_t lastStmtIdWriteDate);
 
     /**
      * Helper function to begin a migration on a primary node.
      *
      * Returns whether the specified statement should be migrated at all or skipped.
      */
-    virtual bool onMigrateBeginOnPrimary(OperationContext* opCtx,
-                                         TxnNumber txnNumber,
-                                         StmtId stmtId) = 0;
+    bool onMigrateBeginOnPrimary(OperationContext* opCtx, TxnNumber txnNumber, StmtId stmtId);
 
     /**
      * Called after an entry for the specified session and transaction has been written to the oplog
@@ -166,17 +200,17 @@ public:
      * Throws if the session has been invalidated or the active transaction number is newer than the
      * one specified.
      */
-    virtual void onMigrateCompletedOnPrimary(OperationContext* opCtx,
-                                             TxnNumber txnNumber,
-                                             std::vector<StmtId> stmtIdsWritten,
-                                             const repl::OpTime& lastStmtIdWriteOpTime,
-                                             Date_t oplogLastStmtIdWriteDate) = 0;
+    void onMigrateCompletedOnPrimary(OperationContext* opCtx,
+                                     TxnNumber txnNumber,
+                                     std::vector<StmtId> stmtIdsWritten,
+                                     const repl::OpTime& lastStmtIdWriteOpTime,
+                                     Date_t oplogLastStmtIdWriteDate);
 
     /**
      * Marks the session as requiring refresh. Used when the session state has been modified
      * externally, such as through a direct write to the transactions table.
      */
-    virtual void invalidate() = 0;
+    void invalidate();
 
     /**
      * Returns the op time of the last committed write for this session and transaction. If no write
@@ -184,7 +218,7 @@ public:
      *
      * Throws if the session has been invalidated or the active transaction number doesn't match.
      */
-    virtual repl::OpTime getLastWriteOpTime(TxnNumber txnNumber) const = 0;
+    repl::OpTime getLastWriteOpTime(TxnNumber txnNumber) const;
 
     /**
      * Checks whether the given statementId for the specified transaction has already executed and
@@ -195,9 +229,9 @@ public:
      *
      * Throws if the session has been invalidated or the active transaction number doesn't match.
      */
-    virtual boost::optional<repl::OplogEntry> checkStatementExecuted(OperationContext* opCtx,
-                                                                     TxnNumber txnNumber,
-                                                                     StmtId stmtId) const = 0;
+    boost::optional<repl::OplogEntry> checkStatementExecuted(OperationContext* opCtx,
+                                                             TxnNumber txnNumber,
+                                                             StmtId stmtId) const;
 
     /**
      * Checks whether the given statementId for the specified transaction has already executed
@@ -207,135 +241,161 @@ public:
      *
      * Throws if the session has been invalidated or the active transaction number doesn't match.
      */
-    virtual bool checkStatementExecutedNoOplogEntryFetch(TxnNumber txnNumber,
-                                                         StmtId stmtId) const = 0;
+    bool checkStatementExecutedNoOplogEntryFetch(TxnNumber txnNumber, StmtId stmtId) const;
 
     /**
      * Transfers management of transaction resources from the OperationContext to the Session.
      */
-    virtual void stashTransactionResources(OperationContext* opCtx) = 0;
+    void stashTransactionResources(OperationContext* opCtx);
 
     /**
      * Transfers management of transaction resources from the Session to the OperationContext.
      */
-    virtual void unstashTransactionResources(OperationContext* opCtx,
-                                             const std::string& cmdName) = 0;
+    void unstashTransactionResources(OperationContext* opCtx, const std::string& cmdName);
 
     /**
      * Commits the transaction, including committing the write unit of work and updating
      * transaction state.
      */
-    virtual void commitTransaction(OperationContext* opCtx) = 0;
+    void commitTransaction(OperationContext* opCtx);
 
     /**
      * Aborts the transaction outside the transaction, releasing transaction resources.
      */
-    virtual void abortArbitraryTransaction(OperationContext* opCtx) = 0;
+    void abortArbitraryTransaction(OperationContext* opCtx);
 
     /**
      * Same as abortArbitraryTransaction, except only executes if _transactionExpireDate indicates
      * that the transaction has expired.
      */
-    virtual void abortArbitraryTransactionIfExpired(OperationContext* opCtx) = 0;
+    void abortArbitraryTransactionIfExpired(OperationContext* opCtx);
 
     /*
      * Aborts the transaction inside the transaction, releasing transaction resources.
      * We're inside the transaction when we have the Session checked out and 'opCtx' owns the
      * transaction resources.
      */
-    virtual void abortActiveTransaction(OperationContext* opCtx) = 0;
+    void abortActiveTransaction(OperationContext* opCtx);
 
-    bool getAutocommit() const {
-        return _autocommit;
-    }
 
     /**
      * Returns whether we are in a multi-document transaction, which means we have an active
      * transaction which has autoCommit:false and has not been committed or aborted.
      */
-    virtual bool inMultiDocumentTransaction() const = 0;
+    bool inMultiDocumentTransaction() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _txnState == MultiDocumentTransactionState::kInProgress;
+    };
 
-    virtual bool transactionIsCommitted() const = 0;
+    bool transactionIsCommitted() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _txnState == MultiDocumentTransactionState::kCommitted;
+    }
 
-    virtual bool transactionIsAborted() const = 0;
+    bool transactionIsAborted() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _txnState == MultiDocumentTransactionState::kAborted;
+    }
 
     /**
      * Returns true if we are in an active multi-document transaction or if the transaction has
      * been aborted. This is used to cover the case where a transaction has been aborted, but the
      * OperationContext state has not been cleared yet.
      */
-    virtual bool inActiveOrKilledMultiDocumentTransaction() const = 0;
+    bool inActiveOrKilledMultiDocumentTransaction() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return (_txnState == MultiDocumentTransactionState::kInProgress ||
+                _txnState == MultiDocumentTransactionState::kAborted);
+    }
 
     /**
      * Adds a stored operation to the list of stored operations for the current multi-document
      * (non-autocommit) transaction.  It is illegal to add operations when no multi-document
      * transaction is in progress.
      */
-    virtual void addTransactionOperation(OperationContext* opCtx,
-                                         const repl::ReplOperation& operation) = 0;
+    void addTransactionOperation(OperationContext* opCtx, const repl::ReplOperation& operation);
 
     /**
      * Returns and clears the stored operations for an multi-document (non-autocommit) transaction,
      * and marks the transaction as closed.  It is illegal to attempt to add operations to the
      * transaction after this is called.
      */
-    virtual std::vector<repl::ReplOperation> endTransactionAndRetrieveOperations(
-        OperationContext* opCtx) = 0;
+    std::vector<repl::ReplOperation> endTransactionAndRetrieveOperations(OperationContext* opCtx);
 
-    virtual const std::vector<repl::ReplOperation>& transactionOperationsForTest() = 0;
+    const std::vector<repl::ReplOperation>& transactionOperationsForTest() {
+        return _transactionOperations;
+    }
 
-    virtual TxnNumber getActiveTxnNumberForTest() const = 0;
+    TxnNumber getActiveTxnNumberForTest() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _activeTxnNumber;
+    }
 
-    virtual boost::optional<SingleTransactionStats> getSingleTransactionStats() const = 0;
+    boost::optional<SingleTransactionStats> getSingleTransactionStats() const {
+        return _singleTransactionStats;
+    }
 
-    virtual repl::OpTime getSpeculativeTransactionReadOpTimeForTest() const = 0;
+    repl::OpTime getSpeculativeTransactionReadOpTimeForTest() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _speculativeTransactionReadOpTime;
+    }
 
-    virtual const Locker* getTxnResourceStashLockerForTest() const = 0;
+    const Locker* getTxnResourceStashLockerForTest() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        invariant(_txnResourceStash);
+        return _txnResourceStash->locker();
+    }
 
     /**
      * If this session is holding stashed locks in _txnResourceStash, reports the current state of
      * the session using the provided builder. Locks the session object's mutex while running.
      */
-    virtual void reportStashedState(BSONObjBuilder* builder) const = 0;
+    void reportStashedState(BSONObjBuilder* builder) const;
 
     /**
      * If this session is not holding stashed locks in _txnResourceStash (transaction is active),
      * reports the current state of the session using the provided builder. Locks the session
      * object's mutex while running.
      */
-    virtual void reportUnstashedState(repl::ReadConcernArgs readConcernArgs,
-                                      BSONObjBuilder* builder) const = 0;
+    void reportUnstashedState(repl::ReadConcernArgs readConcernArgs, BSONObjBuilder* builder) const;
 
     /**
      * Convenience method which creates and populates a BSONObj containing the stashed state.
      * Returns an empty BSONObj if this session has no stashed resources.
      */
-    virtual BSONObj reportStashedState() const = 0;
+    BSONObj reportStashedState() const;
 
-    virtual std::string transactionInfoForLogForTest(const SingleThreadedLockStats* lockStats,
-                                                     bool committed,
-                                                     repl::ReadConcernArgs readConcernArgs) = 0;
+    std::string transactionInfoForLogForTest(const SingleThreadedLockStats* lockStats,
+                                             bool committed,
+                                             repl::ReadConcernArgs readConcernArgs) {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        MultiDocumentTransactionState terminationCause = committed
+            ? MultiDocumentTransactionState::kCommitted
+            : MultiDocumentTransactionState::kAborted;
+        return _transactionInfoForLog(lockStats, terminationCause, readConcernArgs);
+    }
 
-    virtual void addMultikeyPathInfo(MultikeyPathInfo info) = 0;
+    void addMultikeyPathInfo(MultikeyPathInfo info) {
+        _multikeyPathInfo.push_back(std::move(info));
+    }
 
-    virtual const std::vector<MultikeyPathInfo>& getMultikeyPathInfo() const = 0;
+    const std::vector<MultikeyPathInfo>& getMultikeyPathInfo() const {
+        return _multikeyPathInfo;
+    }
 
     /**
       * Sets the current operation running on this Session.
       */
-    virtual void setCurrentOperation(OperationContext* currentOperation) = 0;
+    void setCurrentOperation(OperationContext* currentOperation);
 
     /**
      * Clears the current operation running on this Session.
      */
-    virtual void clearCurrentOperation() = 0;
+    void clearCurrentOperation();
 
-    /**
-     * Append TxnInfo into command on mongos
-     */
-    virtual BSONObj appendTransactionInfo(OperationContext* opCtx,
-                                          const ShardId& shardId,
-                                          BSONObj obj) = 0;
+    BSONObj appendTransactionInfo(OperationContext* opCtx, const ShardId& shardId, BSONObj obj) {
+        MONGO_UNREACHABLE;
+    }
 
     /**
      * Returns a new oplog entry if the given entry has transaction state embedded within in.
@@ -347,71 +407,51 @@ public:
     static boost::optional<repl::OplogEntry> createMatchingTransactionTableUpdate(
         const repl::OplogEntry& entry);
 
-    static std::unique_ptr<Session> makeOwn(LogicalSessionId lsid);
-
-    bool getStartTransaction() const {
-        return _startTransaction;
-    }
-
-    std::string shardId;  // only used for non shard collection transaction in cluster
-
-    // Set when a snapshot read / transaction begins. Alleviates cache pressure by limiting how long
-    // a snapshot will remain open and available. Checked in combination with _txnState to determine
-    // whether the transaction should be aborted.
-    // This is unset until a transaction begins on the session, and then reset only when new
-    // transactions begin.
-
 protected:
     // Holds function which determines whether the CursorManager has client cursor references for a
     // given transaction.
-    static CursorExistsFunction _cursorExistsFunction;
 
-    virtual void _beginOrContinueTxn(OperationContext* opCtx,
-                                     WithLock,
-                                     TxnNumber txnNumber,
-                                     boost::optional<bool> autocommit,
-                                     boost::optional<bool> startTransaction) = 0;
+    void _beginOrContinueTxn(OperationContext* opCtx,
+                             WithLock,
+                             TxnNumber txnNumber,
+                             boost::optional<bool> autocommit,
+                             boost::optional<bool> startTransaction);
 
-    virtual void _beginOrContinueTxnOnMigration(OperationContext* opCtx,
-                                                WithLock,
-                                                TxnNumber txnNumber) = 0;
+    void _beginOrContinueTxnOnMigration(OperationContext* opCtx, WithLock, TxnNumber txnNumber);
 
     // Checks if there is a conflicting operation on the current Session
-    virtual void _checkValid(WithLock) const = 0;
+    void _checkValid(WithLock) const;
 
     // Checks that a new txnNumber is higher than the activeTxnNumber so
     // we don't start a txn that is too old.
-    virtual void _checkTxnValid(WithLock, TxnNumber txnNumber) const = 0;
+    void _checkTxnValid(WithLock, TxnNumber txnNumber) const;
 
-    virtual void _setActiveTxn(OperationContext* opCtx, WithLock, TxnNumber txnNumber) = 0;
+    void _setActiveTxn(OperationContext* opCtx, WithLock, TxnNumber txnNumber);
 
-    virtual void _checkIsActiveTransaction(WithLock,
-                                           TxnNumber txnNumber,
-                                           bool checkAbort) const = 0;
+    void _checkIsActiveTransaction(WithLock, TxnNumber txnNumber, bool checkAbort) const;
 
-    virtual boost::optional<repl::OpTime> _checkStatementExecuted(WithLock,
-                                                                  TxnNumber txnNumber,
-                                                                  StmtId stmtId) const = 0;
-    ;
+    boost::optional<repl::OpTime> _checkStatementExecuted(WithLock,
+                                                          TxnNumber txnNumber,
+                                                          StmtId stmtId) const;
 
     // Returns the write date of the last committed write for this session and transaction. If no
     // write has completed yet, returns an empty date.
     //
     // Throws if the session has been invalidated or the active transaction number doesn't match.
-    virtual Date_t _getLastWriteDate(WithLock, TxnNumber txnNumber) const = 0;
+    Date_t _getLastWriteDate(WithLock, TxnNumber txnNumber) const;
 
-    virtual UpdateRequest _makeUpdateRequest(WithLock,
-                                             TxnNumber newTxnNumber,
-                                             const repl::OpTime& newLastWriteTs,
-                                             Date_t newLastWriteDate) const = 0;
+    UpdateRequest _makeUpdateRequest(WithLock,
+                                     TxnNumber newTxnNumber,
+                                     const repl::OpTime& newLastWriteTs,
+                                     Date_t newLastWriteDate) const;
 
-    virtual void _registerUpdateCacheOnCommit(OperationContext* opCtx,
-                                              TxnNumber newTxnNumber,
-                                              std::vector<StmtId> stmtIdsWritten,
-                                              const repl::OpTime& lastStmtIdWriteTs) = 0;
+    void _registerUpdateCacheOnCommit(OperationContext* opCtx,
+                                      TxnNumber newTxnNumber,
+                                      std::vector<StmtId> stmtIdsWritten,
+                                      const repl::OpTime& lastStmtIdWriteTs);
 
     // Releases stashed transaction resources to abort the transaction.
-    virtual void _abortTransaction(OperationContext* opCtx, WithLock) = 0;
+    void _abortTransaction(OperationContext* opCtx, WithLock);
 
     // Committing a transaction first changes its state to "Committing" and writes to the oplog,
     // then it changes the state to "Committed".
@@ -425,110 +465,41 @@ protected:
     // 2) killSession, stepdown, transaction timeout and any thread that aborts the transaction
     // outside of session checkout. They can safely skip the committing transactions.
     // 3) Migration. Should be able to skip committing transactions.
-    virtual void _commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationContext* opCtx) = 0;
+    void _commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationContext* opCtx);
 
-    bool _startTransaction{false};
-
-    LogicalSessionId _sessionId;
-
-    // Protects the member variables below.
-    mutable stdx::mutex _mutex;
-
-    // A pointer back to the currently running operation on this Session, or nullptr if there
-    // is no operation currently running for the Session.
-    OperationContext* _currentOperation{nullptr};
-
-    // Specifies whether the session information needs to be refreshed from storage
-    bool _isValid{false};
-
-    // Counter, incremented with each call to invalidate in order to discern invalidations, which
-    // happen during refresh
-    int _numInvalidations{0};
-
-    // Set to true if incomplete history is detected. For example, when the oplog to a write was
-    // truncated because it was too old.
-    bool _hasIncompleteHistory{false};
-
-    // Indicates the state of the current multi-document transaction or snapshot read, if any.  If
-    // the transaction is in any state but kInProgress, no more operations can be collected.
-    enum class MultiDocumentTransactionState {
-        kNone,
-        kInProgress,
-        kCommitting,
-        kCommitted,
-        kAborted
-    } _txnState = MultiDocumentTransactionState::kNone;
 
     // Logs the transaction information if it has run slower than the global parameter slowMS. The
     // transaction must be committed or aborted when this function is called.
-    virtual void _logSlowTransaction(WithLock wl,
-                                     const SingleThreadedLockStats* lockStats,
-                                     MultiDocumentTransactionState terminationCause,
-                                     repl::ReadConcernArgs readConcernArgs) = 0;
+    void _logSlowTransaction(WithLock wl,
+                             const SingleThreadedLockStats* lockStats,
+                             MultiDocumentTransactionState terminationCause,
+                             repl::ReadConcernArgs readConcernArgs);
 
+    // used for mongos
+    // Logs the transaction information if it has run slower than the global parameter slowMS. The
+    // transaction must be committed or aborted when this function is called.
+    void _logSlowTransaction(WithLock wl,
+                             const SingleThreadedLockStats* lockStats,
+                             MultiDocumentTransactionState terminationCause) {
+        MONGO_UNREACHABLE;
+    }
 
     // This method returns a string with information about a slow transaction. The format of the
     // logging string produced should match the format used for slow operation logging. A
     // transaction must be completed (committed or aborted) and a valid LockStats reference must be
     // passed in order for this method to be called.
-    virtual std::string _transactionInfoForLog(const SingleThreadedLockStats* lockStats,
-                                               MultiDocumentTransactionState terminationCause,
-                                               repl::ReadConcernArgs readConcernArgs) = 0;
+    std::string _transactionInfoForLog(const SingleThreadedLockStats* lockStats,
+                                       MultiDocumentTransactionState terminationCause,
+                                       repl::ReadConcernArgs readConcernArgs);
 
     // Reports transaction stats for both active and inactive transactions using the provided
     // builder.  The lock may be either a lock on _mutex or a lock on _statsMutex.
-    virtual void _reportTransactionStats(WithLock wl,
-                                         BSONObjBuilder* builder,
-                                         repl::ReadConcernArgs readConcernArgs) const = 0;
+    void _reportTransactionStats(WithLock wl,
+                                 BSONObjBuilder* builder,
+                                 repl::ReadConcernArgs readConcernArgs) const;
 
-    // Caches what is known to be the last written transaction record for the session
-    boost::optional<SessionTxnRecord> _lastWrittenSessionRecord;
-
-    // Tracks the last seen txn number for the session and is always >= to the transaction number in
-    // the last written txn record. When it is > than that in the last written txn record, this
-    // means a new transaction has begun on the session, but it hasn't yet performed any writes.
-    TxnNumber _activeTxnNumber{kUninitializedTxnNumber};
-
-
-    // Holds oplog data for operations which have been applied in the current multi-document
-    // transaction.  Not used for retryable writes.
-    std::vector<repl::ReplOperation> _transactionOperations;
-
-    // Total size in bytes of all operations within the _transactionOperations vector.
-    size_t _transactionOperationBytes = 0;
-
-    // For the active txn, tracks which statement ids have been committed and at which oplog
-    // opTime. Used for fast retryability check and retrieving the previous write's data without
-    // having to scan through the oplog.
-    CommittedStatementTimestampMap _activeTxnCommittedStatements;
-
-    // Set in _beginOrContinueTxn and applies to the activeTxn on the session.
-    bool _autocommit{true};
-
-    // Set when a snapshot read / transaction begins. Alleviates cache pressure by limiting how long
-    // a snapshot will remain open and available. Checked in combination with _txnState to determine
-    // whether the transaction should be aborted.
-    // This is unset until a transaction begins on the session, and then reset only when new
-    // transactions begin.
-    boost::optional<Date_t> _transactionExpireDate;
-
-    // The OpTime a speculative transaction is reading from and also the earliest opTime it
-    // should wait for write concern for on commit.
-    repl::OpTime _speculativeTransactionReadOpTime;
-
-    // This member is only applicable to operations running in a transaction. It is reset when a
-    // transaction state resets.
-    std::vector<MultikeyPathInfo> _multikeyPathInfo;
-
-    // Protects _singleTransactionStats.  The concurrency rules are that _singleTransactionStats
-    // may be read under either _mutex or _statsMutex, but to write both mutexes must be held,
-    // with _mutex being taken before _statsMutex.  No other locks, particularly including the
-    // Client lock, may be taken while holding _statsMutex.
-    mutable stdx::mutex _statsMutex;
-
-    // Tracks metrics for a single multi-document transaction.  Contains only txnNumber for
-    // retryable writes.
-    SingleTransactionStats _singleTransactionStats;
+    // Holds transaction resources between network operations.
+    boost::optional<TxnResources> _txnResourceStash;
 };
 
 }  // namespace mongo

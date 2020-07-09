@@ -278,6 +278,7 @@ public:
         slowish as builds a full new object
      */
     BSONObj updateField(StringData name, StringData value) const;
+    BSONObj updateField(StringData name, BSONObj& value) const;
 
     /** returns # of top level fields in the object
        note: iterates to count the fields

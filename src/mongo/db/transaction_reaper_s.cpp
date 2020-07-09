@@ -1,3 +1,4 @@
+
 /**
  * Copyright (C) 2017 MongoDB Inc.
  *
@@ -26,37 +27,19 @@
  * then also delete it in the license file.
  */
 
-#pragma once
+#include "mongo/platform/basic.h"
 
-#include <memory>
+#include "mongo/db/transaction_reaper_s.h"
+
+#include "mongo/db/session_catalog.h"
 
 namespace mongo {
 
-class ServiceContext;
-class SessionsCollection;
-class OperationContext;
+TransactionReaperS::~TransactionReaperS() {}
 
-/**
- * TransactionReaper is responsible for scanning the transaction table, checking if sessions are
- * still alive and deleting the transaction records if their sessions have expired.
- */
-class TransactionReaper {
-public:
-    enum class Type {
-        kReplicaSet,
-        kSharded,
-    };
+int TransactionReaperS::reap(OperationContext* OperationContext) {
+    auto sessionCatalog = SessionCatalog::get(OperationContext);
+    return sessionCatalog->cleanTimeoutSessions(OperationContext);
+}
 
-    virtual ~TransactionReaper() = default;
-
-    virtual int reap(OperationContext* OperationContext) = 0;
-
-    /**
-     * The implementation of the sessions collections is different in replica sets versus sharded
-     * clusters, so we have a factory to pick the right impl.
-     */
-    static std::unique_ptr<TransactionReaper> make(Type type,
-                                                   std::shared_ptr<SessionsCollection> collection);
-};
-
-}  // namespace mongo
+} // namespace mongo

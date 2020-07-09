@@ -40,6 +40,7 @@
 #include "mongo/db/server_transactions_metrics.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session_catalog.h"
+#include "mongo/db/session_mongod.h"
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/memory.h"
@@ -170,7 +171,7 @@ bool noopCursorExistsFunction(LogicalSessionId, TxnNumber) {
 
 TEST_F(SessionTest, SessionEntryNotWrittenOnBegin) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 20;
@@ -188,7 +189,7 @@ TEST_F(SessionTest, SessionEntryNotWrittenOnBegin) {
 
 TEST_F(SessionTest, SessionEntryWrittenAtFirstWrite) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 21;
@@ -221,7 +222,7 @@ TEST_F(SessionTest, SessionEntryWrittenAtFirstWrite) {
 
 TEST_F(SessionTest, StartingNewerTransactionUpdatesThePersistedSession) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const auto writeTxnRecordFn = [&](TxnNumber txnNum, StmtId stmtId, repl::OpTime prevOpTime) {
@@ -260,7 +261,7 @@ TEST_F(SessionTest, StartingNewerTransactionUpdatesThePersistedSession) {
 
 TEST_F(SessionTest, StartingOldTxnShouldAssert) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 20;
@@ -275,7 +276,7 @@ TEST_F(SessionTest, StartingOldTxnShouldAssert) {
 
 TEST_F(SessionTest, SessionTransactionsCollectionNotDefaultCreated) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     // Drop the transactions table
@@ -296,7 +297,7 @@ TEST_F(SessionTest, SessionTransactionsCollectionNotDefaultCreated) {
 
 TEST_F(SessionTest, CheckStatementExecuted) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 100;
@@ -337,7 +338,7 @@ TEST_F(SessionTest, CheckStatementExecuted) {
 
 TEST_F(SessionTest, CheckStatementExecutedForOldTransactionThrows) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 100;
@@ -350,7 +351,7 @@ TEST_F(SessionTest, CheckStatementExecutedForOldTransactionThrows) {
 
 TEST_F(SessionTest, CheckStatementExecutedForInvalidatedTransactionThrows) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.invalidate();
 
     ASSERT_THROWS_CODE(session.checkStatementExecuted(opCtx(), 100, 0),
@@ -360,7 +361,7 @@ TEST_F(SessionTest, CheckStatementExecutedForInvalidatedTransactionThrows) {
 
 TEST_F(SessionTest, WriteOpCompletedOnPrimaryForOldTransactionThrows) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 100;
@@ -387,7 +388,7 @@ TEST_F(SessionTest, WriteOpCompletedOnPrimaryForOldTransactionThrows) {
 
 TEST_F(SessionTest, WriteOpCompletedOnPrimaryForInvalidatedTransactionThrows) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 100;
@@ -407,7 +408,7 @@ TEST_F(SessionTest, WriteOpCompletedOnPrimaryForInvalidatedTransactionThrows) {
 
 TEST_F(SessionTest, WriteOpCompletedOnPrimaryCommitIgnoresInvalidation) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 100;
@@ -480,7 +481,7 @@ TEST_F(SessionTest, IncompleteHistoryDueToOpLogTruncation) {
         }());
     }
 
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     ASSERT_THROWS_CODE(session.checkStatementExecuted(opCtx(), txnNum, 0),
@@ -504,7 +505,7 @@ TEST_F(SessionTest, ErrorOnlyWhenStmtIdBeingCheckedIsNotInCache) {
     osi.setSessionId(sessionId);
     osi.setTxnNumber(txnNum);
 
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
     session.beginOrContinueTxn(opCtx(), txnNum, boost::none, boost::none, "testDB", "insert");
 
@@ -591,7 +592,7 @@ TEST_F(SessionTest, TransactionThrowsLockTimeoutIfLockIsUnavailable) {
      */
 
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 20;
@@ -617,7 +618,7 @@ TEST_F(SessionTest, TransactionThrowsLockTimeoutIfLockIsUnavailable) {
     auto newOpCtx = newClient->makeOperationContext();
 
     const auto newSessionId = makeLogicalSessionIdForTest();
-    Session newSession(newSessionId);
+    SessionMongoD newSession(newSessionId);
     newSession.refreshFromStorageIfNeeded(newOpCtx.get());
 
     const TxnNumber newTxnNum = 10;
@@ -653,7 +654,7 @@ TEST_F(SessionTest, StashAndUnstashResources) {
     ASSERT(originalLocker);
     ASSERT(originalRecoveryUnit);
 
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     session.beginOrContinueTxn(opCtx(), txnNum, false, true, "testDB", "find");
@@ -704,7 +705,7 @@ TEST_F(SessionTest, ReportStashedResources) {
     ASSERT(opCtx()->lockState());
     ASSERT(opCtx()->recoveryUnit());
 
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     // Create a ClientMetadata object and set it on ClientMetadataIsMasterState.
@@ -803,7 +804,7 @@ TEST_F(SessionTest, ReportUnstashedResources) {
     ASSERT(opCtx()->lockState());
     ASSERT(opCtx()->recoveryUnit());
 
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     session.beginOrContinueTxn(opCtx(), txnNum, autocommit, true, "testDB", "find");
@@ -867,7 +868,7 @@ TEST_F(SessionTest, ReportUnstashedResourcesForARetryableWrite) {
     ASSERT(opCtx()->lockState());
     ASSERT(opCtx()->recoveryUnit());
 
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     session.beginOrContinueTxn(opCtx(), txnNum, boost::none, boost::none, "testDB", "find");
@@ -890,7 +891,7 @@ TEST_F(SessionTest, ReportUnstashedResourcesForARetryableWrite) {
 
 TEST_F(SessionTest, CannotSpecifyStartTransactionOnInProgressTxn) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     // Autocommit should be true by default
@@ -912,7 +913,7 @@ TEST_F(SessionTest, CannotSpecifyStartTransactionOnInProgressTxn) {
 
 TEST_F(SessionTest, AutocommitRequiredOnEveryTxnOp) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     // Autocommit should be true by default
@@ -950,7 +951,7 @@ TEST_F(SessionTest, AutocommitRequiredOnEveryTxnOp) {
 
 TEST_F(SessionTest, SameTransactionPreservesStoredStatements) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 22;
@@ -977,7 +978,7 @@ TEST_F(SessionTest, SameTransactionPreservesStoredStatements) {
 
 TEST_F(SessionTest, AbortClearsStoredStatements) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 24;
@@ -991,7 +992,7 @@ TEST_F(SessionTest, AbortClearsStoredStatements) {
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
     session.stashTransactionResources(opCtx());
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
     ASSERT_TRUE(session.transactionOperationsForTest().empty());
     ASSERT_TRUE(session.transactionIsAborted());
 }
@@ -1000,7 +1001,7 @@ TEST_F(SessionTest, AbortClearsStoredStatements) {
 // transaction.
 TEST_F(SessionTest, EmptyTransactionCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 25;
@@ -1019,7 +1020,7 @@ TEST_F(SessionTest, EmptyTransactionCommit) {
 // transaction.
 TEST_F(SessionTest, EmptyTransactionAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1030,13 +1031,13 @@ TEST_F(SessionTest, EmptyTransactionAbort) {
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
     session.stashTransactionResources(opCtx());
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
     ASSERT_TRUE(session.transactionIsAborted());
 }
 
 TEST_F(SessionTest, ConcurrencyOfUnstashAndAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1045,7 +1046,7 @@ TEST_F(SessionTest, ConcurrencyOfUnstashAndAbort) {
     session.beginOrContinueTxn(opCtx(), txnNum, false, true, "testDB", "find");
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
 
     // An unstash after an abort should uassert.
     ASSERT_THROWS_CODE(session.unstashTransactionResources(opCtx(), "find"),
@@ -1055,7 +1056,7 @@ TEST_F(SessionTest, ConcurrencyOfUnstashAndAbort) {
 
 TEST_F(SessionTest, ConcurrencyOfUnstashAndMigration) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1082,7 +1083,7 @@ TEST_F(SessionTest, ConcurrencyOfUnstashAndMigration) {
 
 TEST_F(SessionTest, ConcurrencyOfStashAndAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1093,7 +1094,7 @@ TEST_F(SessionTest, ConcurrencyOfStashAndAbort) {
     session.unstashTransactionResources(opCtx(), "find");
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
 
     // A stash after an abort should be a noop.
     session.stashTransactionResources(opCtx());
@@ -1101,7 +1102,7 @@ TEST_F(SessionTest, ConcurrencyOfStashAndAbort) {
 
 TEST_F(SessionTest, ConcurrencyOfStashAndMigration) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1125,7 +1126,7 @@ TEST_F(SessionTest, ConcurrencyOfStashAndMigration) {
 
 TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1136,7 +1137,7 @@ TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndAbort) {
     session.unstashTransactionResources(opCtx(), "insert");
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
 
     // An addTransactionOperation() after an abort should uassert.
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
@@ -1147,7 +1148,7 @@ TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndAbort) {
 
 TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndMigration) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1172,7 +1173,7 @@ TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndMigration) {
 
 TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1183,7 +1184,7 @@ TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndAbort) {
     session.unstashTransactionResources(opCtx(), "insert");
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
 
     // An endTransactionAndRetrieveOperations() after an abort should uassert.
     ASSERT_THROWS_CODE(session.endTransactionAndRetrieveOperations(opCtx()),
@@ -1193,7 +1194,7 @@ TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndAbort) {
 
 TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndMigration) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1218,7 +1219,7 @@ TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndMigration
 
 TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1229,7 +1230,7 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndAbort) {
     session.unstashTransactionResources(opCtx(), "commitTransaction");
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
 
     // An commitTransaction() after an abort should uassert.
     ASSERT_THROWS_CODE(
@@ -1238,7 +1239,7 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndAbort) {
 
 TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndMigration) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 26;
@@ -1264,7 +1265,7 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndMigration) {
 // Tests that a transaction aborts if it becomes too large before trying to commit it.
 TEST_F(SessionTest, TransactionTooLargeWhileBuilding) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 28;
@@ -1290,7 +1291,7 @@ TEST_F(SessionTest, TransactionTooLargeWhileBuilding) {
 
 TEST_F(SessionTest, IncrementTotalStartedUponStartTransaction) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     unsigned long long beforeTransactionStart =
@@ -1307,7 +1308,7 @@ TEST_F(SessionTest, IncrementTotalStartedUponStartTransaction) {
 
 TEST_F(SessionTest, IncrementTotalCommittedOnCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1327,7 +1328,7 @@ TEST_F(SessionTest, IncrementTotalCommittedOnCommit) {
 
 TEST_F(SessionTest, IncrementTotalAbortedUponAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1339,7 +1340,7 @@ TEST_F(SessionTest, IncrementTotalAbortedUponAbort) {
     unsigned long long beforeAbortCount =
         ServerTransactionsMetrics::get(opCtx())->getTotalAborted();
 
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
 
     // Assert that the aborted counter is incremented by 1.
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getTotalAborted(), beforeAbortCount + 1U);
@@ -1347,7 +1348,7 @@ TEST_F(SessionTest, IncrementTotalAbortedUponAbort) {
 
 TEST_F(SessionTest, TrackTotalOpenTransactionsWithAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     unsigned long long beforeTransactionStart =
@@ -1370,13 +1371,13 @@ TEST_F(SessionTest, TrackTotalOpenTransactionsWithAbort) {
               beforeTransactionStart + 1U);
 
     // Tests that aborting a transaction decrements the open transactions counter by 1.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentOpen(), beforeTransactionStart);
 }
 
 TEST_F(SessionTest, TrackTotalOpenTransactionsWithCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     unsigned long long beforeTransactionStart =
@@ -1407,7 +1408,7 @@ TEST_F(SessionTest, TrackTotalOpenTransactionsWithCommit) {
 
 TEST_F(SessionTest, TrackTotalActiveAndInactiveTransactionsWithCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1454,7 +1455,7 @@ TEST_F(SessionTest, TrackTotalActiveAndInactiveTransactionsWithCommit) {
 
 TEST_F(SessionTest, TrackTotalActiveAndInactiveTransactionsWithStashedAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1487,14 +1488,14 @@ TEST_F(SessionTest, TrackTotalActiveAndInactiveTransactionsWithStashedAbort) {
               beforeInactiveCounter + 1U);
 
     // Tests that aborting a stashed transaction decrements the inactive counter only.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentActive(), beforeActiveCounter);
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentInactive(), beforeInactiveCounter);
 }
 
 TEST_F(SessionTest, TrackTotalActiveAndInactiveTransactionsWithUnstashedAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1519,7 +1520,7 @@ TEST_F(SessionTest, TrackTotalActiveAndInactiveTransactionsWithUnstashedAbort) {
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentInactive(), beforeInactiveCounter);
 
     // Tests that aborting a stashed transaction decrements the active counter only.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentActive(), beforeActiveCounter);
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentInactive(), beforeInactiveCounter);
 }
@@ -1531,7 +1532,7 @@ class TransactionsMetricsTest : public SessionTest {};
 
 TEST_F(TransactionsMetricsTest, SingleTransactionStatsStartTimeShouldBeSetUponTransactionStart) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1550,7 +1551,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsStartTimeShouldBeSetUponTr
 
 TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldBeSetUponCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1580,7 +1581,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldBeSetUponCom
 
 TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldBeSetUponAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1596,7 +1597,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldBeSetUponAbo
     sleepmillis(10);
 
     unsigned long long timeBeforeTxnAbort = curTimeMicros64();
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
     unsigned long long timeAfterTxnAbort = curTimeMicros64();
 
     ASSERT_GTE(session.getSingleTransactionStats()->getDuration(curTimeMicros64()),
@@ -1608,7 +1609,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldBeSetUponAbo
 
 TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldKeepIncreasingUntilCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1642,7 +1643,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldKeepIncreasi
 
 TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldKeepIncreasingUntilAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1663,7 +1664,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldKeepIncreasi
     ASSERT_GT(session.getSingleTransactionStats()->getDuration(curTimeMicros64()),
               txnDurationAfterStart);
     sleepmillis(10);
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
     unsigned long long txnDurationAfterAbort =
         session.getSingleTransactionStats()->getDuration(curTimeMicros64());
 
@@ -1676,7 +1677,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldKeepIncreasi
 
 TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndStash) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1725,7 +1726,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndStash) 
 
 TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1740,7 +1741,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndAbort) 
     session.unstashTransactionResources(opCtx(), "insert");
     // Sleep here to allow enough time to elapse.
     sleepmillis(10);
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
 
     // Time active should have increased.
     ASSERT_GT(session.getSingleTransactionStats()->getTimeActiveMicros(curTimeMicros64()),
@@ -1757,7 +1758,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndAbort) 
 
 TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldNotBeSetUponAbortOnly) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1769,7 +1770,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldNotBeSetUponAbortOnly) {
     ASSERT_EQ(session.getSingleTransactionStats()->getTimeActiveMicros(curTimeMicros64()),
               Microseconds{0});
 
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
 
     // Time active should not have increased.
     ASSERT_EQ(session.getSingleTransactionStats()->getTimeActiveMicros(curTimeMicros64()),
@@ -1778,7 +1779,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldNotBeSetUponAbortOnly) {
 
 TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilStash) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1817,7 +1818,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilStash) {
 
 TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1854,7 +1855,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilCommit) {
 
 TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldNotBeSetIfUnstashHasBadReadConcernArgs) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1897,7 +1898,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldNotBeSetIfUnstashHasBadRea
 
 TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponStash) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1938,7 +1939,7 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponS
 
 TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -1979,7 +1980,7 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponC
 
 TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2020,7 +2021,7 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponA
 
 TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldBeSetUponUnstashAndStash) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2073,7 +2074,7 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldBeSetUponUnstashAndStash
 
 TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldBeSetUponUnstashAndAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2096,7 +2097,7 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldBeSetUponUnstashAndAbort
               timeInactiveSoFar);
 
     session.unstashTransactionResources(opCtx(), "insert");
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
 
     timeInactiveSoFar =
         session.getSingleTransactionStats()->getTimeInactiveMicros(curTimeMicros64());
@@ -2110,7 +2111,7 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldBeSetUponUnstashAndAbort
 
 TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldIncreaseUntilCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2168,7 +2169,7 @@ BSONObj constructClientMetadata(StringData appName) {
 
 TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponStash) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2212,7 +2213,7 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponStash) {
 
 TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2242,7 +2243,7 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponCommit) {
 
 TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2392,7 +2393,7 @@ std::string buildTransactionInfoString(OperationContext* opCtx,
 
 TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogAfterCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2428,7 +2429,7 @@ TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogAfterCommit) {
 
 TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogAfterAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2464,7 +2465,7 @@ TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogAfterAbort) {
 
 DEATH_TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogWithNoLockerInfoStats, "invariant") {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2489,7 +2490,7 @@ DEATH_TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogWithNoLockerInfoS
 
 TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowCommit) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2527,7 +2528,7 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowCommit) {
 
 TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2565,7 +2566,7 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowAbort) {
 
 TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowStashedAbort) {
     const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
+    SessionMongoD session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
     const TxnNumber txnNum = 1;
@@ -2596,7 +2597,7 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowStashedAbort) {
     sleepmillis(serverGlobalParams.slowMS + 1);
 
     startCapturingLogMessages();
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx());
     stopCapturingLogMessages();
 
     std::string expectedTransactionInfo = "transaction " +

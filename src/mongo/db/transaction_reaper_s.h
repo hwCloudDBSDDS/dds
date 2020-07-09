@@ -29,6 +29,7 @@
 #pragma once
 
 #include <memory>
+#include "mongo/db/transaction_reaper.h"
 
 namespace mongo {
 
@@ -40,23 +41,10 @@ class OperationContext;
  * TransactionReaper is responsible for scanning the transaction table, checking if sessions are
  * still alive and deleting the transaction records if their sessions have expired.
  */
-class TransactionReaper {
+class TransactionReaperS : public TransactionReaper {
 public:
-    enum class Type {
-        kReplicaSet,
-        kSharded,
-    };
-
-    virtual ~TransactionReaper() = default;
-
-    virtual int reap(OperationContext* OperationContext) = 0;
-
-    /**
-     * The implementation of the sessions collections is different in replica sets versus sharded
-     * clusters, so we have a factory to pick the right impl.
-     */
-    static std::unique_ptr<TransactionReaper> make(Type type,
-                                                   std::shared_ptr<SessionsCollection> collection);
+    virtual ~TransactionReaperS();
+    virtual int reap(OperationContext* OperationContext);
 };
 
 }  // namespace mongo

@@ -35,15 +35,26 @@
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/query/parsed_distinct.h"
 #include "mongo/db/query/view_response_formatter.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/commands/cluster_aggregate.h"
 #include "mongo/s/commands/cluster_commands_helpers.h"
 #include "mongo/s/commands/cluster_explain.h"
 #include "mongo/s/grid.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 namespace {
+
+BSONObj getShardKey(OperationContext* opCtx, const ChunkManager& chunkMgr, const BSONObj& query) {
+    BSONObj shardKey =
+        uassertStatusOK(chunkMgr.getShardKeyPattern().extractShardKeyFromQuery(opCtx, query));
+    uassert(ErrorCodes::ShardKeyNotFound,
+            "Query for sharded distinct must contain the shard key",
+            !shardKey.isEmpty());
+    return shardKey;
+}
 
 class DistinctCmd : public BasicCommand {
 public:
@@ -155,8 +166,21 @@ public:
              BSONObjBuilder& result) override {
         const NamespaceString nss(parseNs(dbName, cmdObj));
 
+        auto routingInfo =
+            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
+
         auto query = extractQuery(cmdObj);
         auto collation = extractCollation(cmdObj);
+
+        ShardId shardId;
+        if (!routingInfo.cm()) {
+            shardId = routingInfo.db().primaryId();
+        } else {
+            const auto chunkMgr = routingInfo.cm();
+            const BSONObj shardKey = getShardKey(opCtx, *chunkMgr, query);
+            auto chunk = chunkMgr->findIntersectingChunk(shardKey, collation);
+            shardId = chunk.getShardId();
+        }
 
         // Construct collator for deduping.
         std::unique_ptr<CollatorInterface> collator;
@@ -165,21 +189,20 @@ public:
                 CollatorFactoryInterface::get(opCtx->getServiceContext())->makeFromBSON(collation));
         }
 
-        const auto routingInfo =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
+        auto cmdTxnObj = CommandHelpers::filterCommandRequestForPassthrough(cmdObj);
 
         std::vector<AsyncRequestsSender::Response> shardResponses;
         try {
-            shardResponses = scatterGatherVersionedTargetByRoutingTable(
-                opCtx,
-                nss.db(),
-                nss,
-                routingInfo,
-                CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-                ReadPreferenceSetting::get(opCtx),
-                Shard::RetryPolicy::kIdempotent,
-                query,
-                collation);
+            shardResponses =
+                scatterGatherVersionedTargetByRoutingTable(opCtx,
+                                                           nss.db(),
+                                                           nss,
+                                                           routingInfo,
+                                                           cmdTxnObj,
+                                                           ReadPreferenceSetting::get(opCtx),
+                                                           Shard::RetryPolicy::kIdempotent,
+                                                           query,
+                                                           collation);
         } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>& ex) {
             auto parsedDistinct = ParsedDistinct::parse(
                 opCtx, ex->getNamespace(), cmdObj, ExtensionsCallbackNoop(), true);

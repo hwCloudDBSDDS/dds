@@ -55,7 +55,8 @@ extern int logicalSessionRefreshMinutes;
  */
 class LogicalSessionCacheImpl final : public LogicalSessionCache {
 public:
-    static constexpr Minutes kLogicalSessionDefaultRefresh = Minutes(5);
+    static constexpr Minutes kLogicalSessionDefaultRefresh =
+        Minutes(5);  // if run js, can set this to 1.
 
     /**
      * An Options type to support the LogicalSessionCacheImpl.

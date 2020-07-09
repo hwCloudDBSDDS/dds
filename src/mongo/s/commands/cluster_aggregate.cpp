@@ -51,6 +51,7 @@
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/find_common.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/db/views/view.h"
 #include "mongo/executor/task_executor_pool.h"
@@ -308,6 +309,13 @@ std::vector<RemoteCursor> establishShardCursors(
                               !routingInfo->db().primary()->isConfig()
                                   ? appendShardVersion(cmdObj, ChunkVersion::UNSHARDED())
                                   : cmdObj);
+    }
+
+    auto session = OperationContextSession::get(opCtx);
+    if (session) {
+        for (auto& r : requests) {
+            r.second = session->appendTransactionInfo(opCtx, r.first, r.second);
+        }
     }
 
     if (MONGO_FAIL_POINT(clusterAggregateHangBeforeEstablishingShardCursors)) {
@@ -1040,6 +1048,11 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
     cmdObj = CommandHelpers::filterCommandRequestForPassthrough(createCommandForTargetedShards(
         opCtx, aggRequest, cmdObj, nullptr, BSONObj(), atClusterTime));
 
+    // add shardId to session
+    auto session = OperationContextSession::get(opCtx);
+    if (session) {
+        cmdObj = session->appendTransactionInfo(opCtx, shardId, cmdObj);
+    }
     auto cmdResponse = uassertStatusOK(shard->runCommandWithFixedRetryAttempts(
         opCtx,
         ReadPreferenceSetting::get(opCtx),

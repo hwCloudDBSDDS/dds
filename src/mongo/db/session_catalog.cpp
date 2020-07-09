@@ -135,6 +135,9 @@ ScopedCheckedOutSession SessionCatalog::checkOutSession(OperationContext* opCtx)
 
     invariant(!sri->checkedOut);
     sri->checkedOut = true;
+    const auto now = curTimeMicros64();
+    sri->expireDate = Date_t::fromMillisSinceEpoch(now / 1000) +
+        stdx::chrono::seconds{30 * 60};  // TODO:TransactionRecordMinimumLifetimeMinutes
 
     return ScopedCheckedOutSession(opCtx, ScopedSession(std::move(sri)));
 }
@@ -170,7 +173,7 @@ void SessionCatalog::invalidateSessions(OperationContext* opCtx,
 
     const auto invalidateSessionFn = [&](WithLock, SessionRuntimeInfoMap::iterator it) {
         auto& sri = it->second;
-        sri->txnState.invalidate();
+        sri->txnState->invalidate();
 
         // We cannot remove checked-out sessions from the cache, because operations expect to find
         // them there to check back in
@@ -209,9 +212,37 @@ void SessionCatalog::scanSessions(OperationContext* opCtx,
         // ScopedKillAllSessionsByPatternImpersonator to not refer to session kill.
         if (const KillAllSessionsByPattern* pattern = matcher.match(it->first)) {
             ScopedKillAllSessionsByPatternImpersonator impersonator(opCtx, *pattern);
-            workerFn(opCtx, &(it->second->txnState));
+            workerFn(opCtx, (it->second->txnState).get());
         }
     }
+}
+
+// only used for mongos
+int SessionCatalog::cleanTimeoutSessions(OperationContext* opCtx) {
+    const auto now = Date_t::now();
+    auto fn = [&](SessionRuntimeInfoMap::iterator it) {
+        auto& sri = it->second;
+
+        if (sri->expireDate > now) {
+            return false;
+        }
+
+        if (!sri->checkedOut) {
+            _txnTable.erase(it);
+            return true;
+        }
+        return false;
+    };
+
+    int ret = 0;
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    for (auto it = _txnTable.begin(); it != _txnTable.end();) {
+        if (fn(it++)) {
+            ret++;
+        }
+    }
+    log() << "SessionCatalog::cleanTimeoutSessions, clean txn num: " << ret;
+    return ret;
 }
 
 std::shared_ptr<SessionCatalog::SessionRuntimeInfo> SessionCatalog::_getOrCreateSessionRuntimeInfo(

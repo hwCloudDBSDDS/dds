@@ -36,6 +36,7 @@
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_liaison_mongos.h"
 #include "mongo/db/sessions_collection_sharded.h"
+#include "mongo/db/transaction_reaper_s.h"
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
@@ -44,8 +45,13 @@ std::unique_ptr<LogicalSessionCache> makeLogicalSessionCacheS() {
     auto liaison = stdx::make_unique<ServiceLiaisonMongos>();
     auto sessionsColl = stdx::make_unique<SessionsCollectionSharded>();
 
-    return stdx::make_unique<LogicalSessionCacheImpl>(
-        std::move(liaison), std::move(sessionsColl), nullptr, LogicalSessionCacheImpl::Options{});
+    auto reaper =
+        std::dynamic_pointer_cast<TransactionReaper>(std::make_shared<TransactionReaperS>());
+
+    return stdx::make_unique<LogicalSessionCacheImpl>(std::move(liaison),
+                                                      std::move(sessionsColl),
+                                                      std::move(reaper),
+                                                      LogicalSessionCacheImpl::Options{});
 }
 
 }  // namespace mongo

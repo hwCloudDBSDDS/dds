@@ -1143,6 +1143,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                 }
 
                 // Disable background cache refreshing to avoid races in tests
+                // if test the auto refresh, need disable this config
                 argArray.push(...['--setParameter', "disableLogicalSessionCacheRefresh=true"]);
             }
 
