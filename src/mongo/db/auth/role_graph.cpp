@@ -588,6 +588,16 @@ Status RoleGraph::getBSONForRole(RoleGraph* graph,
         uassertStatusOK(rolesArrayElement.pushBack(roleObj));
     }
 
+    {
+        mutablebson::Document doc;
+        auto re = graph->getDirectAuthenticationRestrictions(roleName);
+        if (re) {
+            auto subEle = doc.root().getDocument().makeElementArray("tmp");
+            uassertStatusOK(subEle.setValueArray(re->toBSON()));
+            uassertStatusOK(doc.root().pushBack(subEle));
+        }
+    }
+
     return Status::OK();
 } catch (...) {
     return exceptionToStatus();
