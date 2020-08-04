@@ -47,14 +47,6 @@
 namespace mongo {
 namespace {
 
-BSONObj getShardKey(OperationContext* opCtx, const ChunkManager& chunkMgr, const BSONObj& query) {
-    BSONObj shardKey =
-        uassertStatusOK(chunkMgr.getShardKeyPattern().extractShardKeyFromQuery(opCtx, query));
-    uassert(ErrorCodes::ShardKeyNotFound,
-            "Query for sharded distinct must contain the shard key",
-            !shardKey.isEmpty());
-    return shardKey;
-}
 
 class DistinctCmd : public BasicCommand {
 public:
@@ -171,16 +163,6 @@ public:
 
         auto query = extractQuery(cmdObj);
         auto collation = extractCollation(cmdObj);
-
-        ShardId shardId;
-        if (!routingInfo.cm()) {
-            shardId = routingInfo.db().primaryId();
-        } else {
-            const auto chunkMgr = routingInfo.cm();
-            const BSONObj shardKey = getShardKey(opCtx, *chunkMgr, query);
-            auto chunk = chunkMgr->findIntersectingChunk(shardKey, collation);
-            shardId = chunk.getShardId();
-        }
 
         // Construct collator for deduping.
         std::unique_ptr<CollatorInterface> collator;

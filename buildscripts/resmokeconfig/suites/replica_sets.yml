@@ -3,6 +3,10 @@ test_kind: js_test
 selector:
   roots:
   - jstests/replsets/*.js
+  exclude_files:
+  # skip tests that require mmapv1
+  - jstests/replsets/double_rollback.js
+  - jstests/replsets/double_rollback_early.js
 
 executor:
   config:

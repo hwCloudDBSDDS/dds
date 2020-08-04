@@ -304,19 +304,14 @@ var TESTS = [
       name: 'Test cluster user',
       test: function(conn) {
           var adminDB = conn.getDB('admin');
-          print("eharry: Test cluster user1");
           var newDB = new Mongo(conn.host).getDB('admin');
-          print("eharry: Test cluster user2");
 
           assert.eq(1, newDB.auth('admin', AUTH_INFO.admin.admin.pwd));
-          print("eharry: Test cluster user3");
           res = newDB.updateUser('monitor', {roles: AUTH_INFO.admin.cluster.roles});
-          print("eharry res is " + tojson(res));
-          print("eharry: Test cluster user4");
 
           assert.eq(1, adminDB.auth('monitor', AUTH_INFO.admin.monitor.pwd));
 
-          print("eharry: Test cluster user") testOps(conn.getDB('test'), CLUSTER_PERM);
+          testOps(conn.getDB('test'), CLUSTER_PERM);
       }
     },
     {

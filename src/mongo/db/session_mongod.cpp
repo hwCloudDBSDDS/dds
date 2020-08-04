@@ -618,7 +618,7 @@ void SessionMongoD::_beginOrContinueTxn(OperationContext* opCtx,
         // Check for FCV 4.0. The presence of an autocommit field distiguishes this as a
         // multi-statement transaction vs a retryable write.
         uassert(
-            90426,
+            50773,
             str::stream() << "Transactions are only supported in featureCompatibilityVersion 4.0. "
                           << "See "
                           << feature_compatibility_version_documentation::kCompatibilityLink
@@ -973,7 +973,6 @@ void SessionMongoD::_abortTransaction(OperationContext* opCtx, WithLock wl) {
     _transactionOperationBytes = 0;
     _transactionOperations.clear();
     _txnState = MultiDocumentTransactionState::kAborted;
-    printStackTrace();
     _speculativeTransactionReadOpTime = repl::OpTime();
     ServerTransactionsMetrics::get(getGlobalServiceContext())->incrementTotalAborted();
     ServerTransactionsMetrics::get(getGlobalServiceContext())->decrementCurrentOpen();
