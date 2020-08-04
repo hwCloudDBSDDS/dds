@@ -22,29 +22,28 @@
             roles: jsTest.basicUserRoles, "passwordDigestor": "server"
         });
 
-        print("eharry 1: ") admin.system.users.find().forEach(function(doc) {
+        admin.system.users.find().forEach(function(doc) {
             print(tojson(doc));
         });
-        print("eharry 1: ")
-            // Give the test user an invalid set of SCRAM-SHA-1 credentials.
-            assert.eq(admin.system.users
-                          .update({_id: "test.user"}, {
-                              $set: {
-                                  "credentials.SCRAM-SHA-1": {
-                                      salt: "AAAA",
-                                      storedKey: "AAAA",
-                                      serverKey: "AAAA",
-                                      iterationCount: 10000
-                                  }
-                              }
-                          })
-                          .nModified,
-                      1,
-                      "Should have updated one document for user@test");
-        print("eharry 1: ") admin.system.users.find().forEach(function(doc) {
+        // Give the test user an invalid set of SCRAM-SHA-1 credentials.
+        assert.eq(admin.system.users
+                  .update({_id: "test.user"}, {
+                      $set: {
+                          "credentials.SCRAM-SHA-1": {
+                              salt: "AAAA",
+                              storedKey: "AAAA",
+                              serverKey: "AAAA",
+                              iterationCount: 10000
+                          }
+                      }
+                  })
+                  .nModified,
+                  1,
+                  "Should have updated one document for user@test");
+        admin.system.users.find().forEach(function(doc) {
             print(tojson(doc));
         });
-        print("eharry 1: ") admin.logout();
+        admin.logout();
 
         assert(!test.auth({user: 'user', pwd: 'Password@a1b'}));
     }
