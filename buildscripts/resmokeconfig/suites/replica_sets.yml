@@ -7,6 +7,10 @@ selector:
   # skip tests that require mmapv1
   - jstests/replsets/double_rollback.js
   - jstests/replsets/double_rollback_early.js
+  - jstests/replsets/oplog_replay_on_startup.js
+  - jstests/replsets/oplog_replay_on_startup_update_and_delete.js
+  - jstests/replsets/rollback_cmd_unrollbackable.js
+  - jstests/replsets/rollback_collMod_fatal.js
 
 executor:
   config:
