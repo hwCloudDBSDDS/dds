@@ -1,7 +1,5 @@
 """Enable running tests simultaneously by processing them from a multi-consumer queue."""
 
-from __future__ import absolute_import
-
 import sys
 
 from .. import config

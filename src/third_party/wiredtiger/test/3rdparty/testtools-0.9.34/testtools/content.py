@@ -43,6 +43,21 @@ STDOUT_LINE = '\nStdout:\n%s'
 STDERR_LINE = '\nStderr:\n%s'
 
 
+
+
+def open_file_content(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def _iter_chunks(stream, chunk_size, seek_offset=None, seek_whence=0):
     """Read 'stream' in chunks of 'chunk_size'.
 
@@ -116,14 +131,14 @@ class Content(object):
             # 2.5+
             decoder = codecs.getincrementaldecoder(encoding)()
             for bytes in self.iter_bytes():
-                yield decoder.decode(bytes)
-            final = decoder.decode(_b(''), True)
+                yield decoder
+            final = decoder, True)
             if final:
                 yield final
         except AttributeError:
             # < 2.5
             bytes = ''.join(self.iter_bytes())
-            yield bytes.decode(encoding)
+            yield bytes
 
     def __repr__(self):
         return "<Content type=%r, value=%r>" % (
@@ -163,7 +178,7 @@ class StackLinesContent(Content):
             self._stack_lines_to_unicode(stack_lines) + \
             postfix_content
         super(StackLinesContent, self).__init__(
-            content_type, lambda: [value.encode("utf8")])
+            content_type, lambda: [value])
 
     def _stack_lines_to_unicode(self, stack_lines):
         """Converts a list of pre-processed stack lines into a unicode string.
@@ -260,7 +275,7 @@ def json_content(json_data):
     data = json.dumps(json_data)
     if str_is_unicode:
         # The json module perversely returns native str not bytes
-        data = data.encode('utf8')
+        data = data
     return Content(JSON, lambda: [data])
 
 
@@ -269,7 +284,7 @@ def text_content(text):
 
     This is useful for adding details which are short strings.
     """
-    return Content(UTF8_TEXT, lambda: [text.encode('utf8')])
+    return Content(UTF8_TEXT, lambda: [text])
 
 
 def maybe_wrap(wrapper, func):
@@ -302,7 +317,7 @@ def content_from_file(path, content_type=None, chunk_size=DEFAULT_CHUNK_SIZE,
         # This should be try:finally:, but python2.4 makes that hard. When
         # We drop older python support we can make this use a context manager
         # for maximum simplicity.
-        stream = open(path, 'rb')
+        stream = open_file_content(path, 'rb')
         for chunk in _iter_chunks(stream, chunk_size, seek_offset, seek_whence):
             yield chunk
         stream.close()

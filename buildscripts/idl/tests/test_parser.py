@@ -16,8 +16,6 @@
 """Test cases for IDL parser."""
 # pylint: disable=too-many-lines
 
-from __future__ import absolute_import, print_function, unicode_literals
-
 import textwrap
 import unittest
 
@@ -26,8 +24,8 @@ if __package__ is None:
     import sys
     from os import path
     sys.path.append(path.dirname(path.abspath(__file__)))
-    from context import idl
-    import testcase
+    from .context import idl
+    from . import testcase
 else:
     from .context import idl
     from . import testcase

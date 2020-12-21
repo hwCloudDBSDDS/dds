@@ -35,7 +35,7 @@ __revision__ = "src/engine/SCons/Tool/ifl.py rel_2.5.0:3543:937e55cd78f7 2016/04
 
 import SCons.Defaults
 from SCons.Scanner.Fortran import FortranScan
-from FortranCommon import add_all_to_env
+from .FortranCommon import add_all_to_env
 
 def generate(env):
     """Add Builders and construction variables for ifl to an Environment."""

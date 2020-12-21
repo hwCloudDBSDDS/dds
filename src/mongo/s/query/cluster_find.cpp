@@ -273,6 +273,12 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
         appendGeoNearDistanceProjection = true;
     }
 
+    if (QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR) &&
+        query.getQueryRequest().isTailable()) {
+        uassertStatusOK(
+            Status(ErrorCodes::BadValue, "Tailable cursors and geo $near cannot be used together"));
+    }
+
     // Tailable cursors can't have a sort, which should have already been validated.
     invariant(params.sort.isEmpty() || !query.getQueryRequest().isTailable());
 

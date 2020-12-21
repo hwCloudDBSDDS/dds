@@ -37,6 +37,21 @@ from wtscenario import make_scenarios
 # After doing the operation, create a backup copy of the directory,
 # walk the log recording each LSN, truncate the backup copy of the
 # log walking backward from the LSNs and then run recovery.
+
+
+def open_file_test_schema08(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_schema08(wttest.WiredTigerTestCase, suite_subprocess):
     # We want to copy, truncate and run recovery so keep the log
     # file small and don't pre-allocate any. We expect a small log.
@@ -88,7 +103,7 @@ class test_schema08(wttest.WiredTigerTestCase, suite_subprocess):
         self.session.log_flush('sync=on')
         c = self.session.open_cursor('log:', None, None)
         self.lsns.append(0)
-        while c.next() == 0:
+        while next(c) == 0:
             # lsn.file, lsn.offset, opcount
             keys = c.get_key()
             # We don't expect to need more than one log file. We only store
@@ -130,7 +145,7 @@ class test_schema08(wttest.WiredTigerTestCase, suite_subprocess):
             # that record.
             if lsn != 0:
                 logf = os.path.join(newdir + '/' + log1)
-                f = open(logf, "r+")
+                f = open_file_test_schema08(logf, "r+")
                 f.truncate(lsn)
                 f.close()
                 # print "New size " + logf + ": " + str(os.path.getsize(logf))

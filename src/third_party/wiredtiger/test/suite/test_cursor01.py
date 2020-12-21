@@ -55,7 +55,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
         if self.tablekind == 'row':
             return 'key' + str(i)
         else:
-            return long(i+1)
+            return int(i+1)
 
     def genvalue(self, i):
         if self.tablekind == 'fix':
@@ -78,7 +78,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
         try:
             self.session.create(name, args)
         except:
-            print('**** ERROR in session.create("' + name + '","' + args + '") ***** ')
+            print(('**** ERROR in session.create("' + name + '","' + args + '") ***** '))
             raise
 
     # Create and populate the object, returning an open cursor.
@@ -113,7 +113,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
 
         i = 0
         while True:
-            nextret = cursor.next()
+            nextret = next(cursor)
             if nextret != 0:
                 break
             key = cursor.get_key()
@@ -134,7 +134,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
 
         i = 0
         while True:
-            nextret = cursor.next()
+            nextret = next(cursor)
             if nextret != 0:
                 break
             key = cursor.get_key()
@@ -142,7 +142,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
             self.assertEqual(key, self.genkey(i))
             self.assertEqual(value, self.genvalue(i))
             dupc = self.session.open_cursor(None, cursor, None)
-            self.assertEquals(cursor.compare(dupc), 0)
+            self.assertEqual(cursor.compare(dupc), 0)
             key = dupc.get_key()
             value = dupc.get_value()
             self.assertEqual(key, self.genkey(i))
@@ -201,7 +201,7 @@ class test_cursor01(wttest.WiredTigerTestCase):
             self.assertEqual(value, self.genvalue(i))
             i -= 1
             dupc = self.session.open_cursor(None, cursor, None)
-            self.assertEquals(cursor.compare(dupc), 0)
+            self.assertEqual(cursor.compare(dupc), 0)
             cursor.close()
             cursor = dupc
 

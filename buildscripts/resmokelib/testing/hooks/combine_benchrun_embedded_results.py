@@ -1,8 +1,5 @@
 """Module for generating the test results file fed into the perf plugin."""
 
-from __future__ import absolute_import
-from __future__ import division
-
 import collections
 import datetime
 import glob
@@ -13,6 +10,21 @@ import re
 from buildscripts.resmokelib import config as _config
 from buildscripts.resmokelib.testing.hooks import combine_benchmark_results as cbr
 
+
+
+
+def open_file_combine_benchrun_embedded_results(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 class CombineBenchrunEmbeddedResults(cbr.CombineBenchmarkResults):
     """CombineBenchrunEmbeddedResults class.
@@ -40,7 +52,7 @@ class CombineBenchrunEmbeddedResults(cbr.CombineBenchmarkResults):
         for bm_report in self._test_result_files(test):
             test_name = test.short_name()
             thread_count = self._parse_report_name(bm_report)
-            with open(bm_report, "r") as report_file:
+            with open_file_combine_benchrun_embedded_results(bm_report, "r") as report_file:
                 report_dict = json.load(report_file)
                 if test_name not in self.benchmark_reports:
                     self.benchmark_reports[test_name] = _BenchrunEmbeddedThreadsReport()
@@ -62,7 +74,7 @@ class CombineBenchrunEmbeddedResults(cbr.CombineBenchmarkResults):
             "results": []
         }
 
-        for name, report in self.benchmark_reports.items():
+        for name, report in list(self.benchmark_reports.items()):
             test_report = {"name": name, "results": report.generate_perf_plugin_dict()}
 
             perf_report["results"].append(test_report)
@@ -143,7 +155,7 @@ class _BenchrunEmbeddedThreadsReport(object):
         """
 
         res = {}
-        for thread_count, reports in self.thread_benchmark_map.items():
+        for thread_count, reports in list(self.thread_benchmark_map.items()):
             thread_report = {"error_values": [], "ops_per_sec_values": []}
 
             for report in reports:

@@ -28,6 +28,21 @@ logging.Formatter.converter = time.gmtime
 LOGGER = logging.getLogger(__name__)
 
 
+
+
+def open_file_adb_monitor(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class Adb(object):
     """Class to abstract calls to adb."""
 
@@ -135,7 +150,7 @@ class Adb(object):
     def systrace_stop(self, output_file=None):
         """Stop the systrace.py script."""
         self._cmd.send_to_process("bye")
-        with open(self._tempfile) as fh:
+        with open_file_adb_monitor(self._tempfile) as fh:
             buff = fh.read()
         os.remove(self._tempfile)
         self.logger.debug("systrace_stop: %s", buff)

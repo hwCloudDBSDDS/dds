@@ -112,7 +112,7 @@ class test_backup08(wttest.WiredTigerTestCase):
         os.mkdir(self.dir)
         cursor = self.session.open_cursor('backup:')
         while True:
-            ret = cursor.next()
+            ret = next(cursor)
             if ret != 0:
                 break
             shutil.copy(cursor.get_key(), self.dir)

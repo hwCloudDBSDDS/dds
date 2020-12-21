@@ -37,6 +37,21 @@ from wtscenario import make_scenarios
 # A 'fake' cursor based on a set of rows.
 # It emulates a WT cursor well enough for the *_check_cursor methods.
 # They just need an iterable object.
+
+
+def open_file_test_jsondump01(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class FakeCursor:
     def __init__(self, uri, keyfmt, valuefmt, rows):
         self.uri = uri
@@ -49,9 +64,9 @@ class FakeCursor:
         return self
 
     def __next__(self):  # ready for python3.x
-        return self.next()
+        return next(self)
 
-    def next(self):
+    def __next__(self):
         if self.pos >= len(self.rows):
             raise StopIteration
         else:
@@ -107,7 +122,7 @@ class test_jsondump01(wttest.WiredTigerTestCase, suite_subprocess):
         self.runWt(['dump', '-j', uri], outfilename='jsondump.out')
 
         # Load it using python's built-in JSON
-        dumpin = open('jsondump.out')
+        dumpin = open_file_test_jsondump01('jsondump.out')
         tables = json.load(dumpin)
         dumpin.close()
 

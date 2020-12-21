@@ -105,6 +105,16 @@ use_memoizer = None
 # Global list of counter objects
 CounterList = {}
 
+
+
+def cmp(x, y):
+    if x > y:
+        return 1
+    elif x == y:
+        return 0
+    else:
+        return -1
+
 class Counter(object):
     """
     Base class for counting memoization hits and misses.
@@ -124,7 +134,7 @@ class Counter(object):
         return self.cls_name+'.'+self.method_name
     def display(self):
         fmt = "    %7d hits %7d misses    %s()"
-        print fmt % (self.hit, self.miss, self.key())
+        print(fmt % (self.hit, self.miss, self.key()))
     def __cmp__(self, other):
         try:
             return cmp(self.key(), other.key())
@@ -185,7 +195,7 @@ def Dump(title=None):
         collected so far.
     """
     if title:
-        print title
+        print(title)
     for counter in sorted(CounterList):
         CounterList[counter].display()
 

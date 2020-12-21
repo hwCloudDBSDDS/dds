@@ -21,6 +21,21 @@ field_types = {
     'uint64' : ('uint64_t', 'Q', '%" PRIu64 "', 'arg', [ '' ]),
 }
 
+
+
+def open_file_log(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def cintype(f):
     return field_types[f[0]][0]
 
@@ -113,7 +128,7 @@ def printf_line(f, optype, i, ishex):
 # Create log_auto.c with handlers for each record / operation type.
 #####################################################################
 f='../src/log/log_auto.c'
-tfile = open(tmp_file, 'w')
+tfile = open_file_log(tmp_file, 'w')
 
 tfile.write('/* DO NOT EDIT: automatically built by dist/log.py. */\n')
 

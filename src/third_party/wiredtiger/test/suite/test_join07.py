@@ -238,7 +238,7 @@ class test_join07(wttest.WiredTigerTestCase):
         gotkeys = []
         #self.tty('iteration expects ' + str(len(mbr)) +
         #         ' entries: ' + str(mbr))
-        while jc.next() == 0:
+        while next(jc) == 0:
             [k] = jc.get_keys()
             values = jc.get_values()
             if self.keyformat == 'S':
@@ -250,14 +250,14 @@ class test_join07(wttest.WiredTigerTestCase):
             # Duplicates may be returned when the disjunctions are used,
             # so we ignore them.
             if not i in gotkeys:
-                self.assertEquals(self.gen_values(i), values)
+                self.assertEqual(self.gen_values(i), values)
                 if not i in mbr:
                     self.tty('ERROR: result ' + str(i) + ' is not in: ' +
                              str(mbr))
                     self.assertTrue(i in mbr)
                 mbr.remove(i)
                 gotkeys.append(i)
-        self.assertEquals(0, len(mbr))
+        self.assertEqual(0, len(mbr))
 
     def token_literal(self, token):
         if token.kind == Token.STRING:
@@ -285,7 +285,7 @@ class test_join07(wttest.WiredTigerTestCase):
         if searchret != 0:
             self.tty('ERROR: cannot find value ' + str(literal) +
                      ' in ' + idxname)
-        self.assertEquals(0, searchret)
+        self.assertEqual(0, searchret)
         op = optok.kind
         if not isright:
             op = self.reverseop[op]
@@ -463,7 +463,7 @@ class test_join07(wttest.WiredTigerTestCase):
         # may override needed parameters.
         tokenizer = Tokenizer(s)
         self.parse_toplevel_attributes(tokenizer)
-        self.allN = range(1, self.N + 1)
+        self.allN = list(range(1, self.N + 1))
 
         self.session.create('table:join07', 'key_format=' + self.keyformat +
                             ',value_format=SiiiiiSSSSS,' +

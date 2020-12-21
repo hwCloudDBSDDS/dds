@@ -191,7 +191,7 @@ class test_cursor12(wttest.WiredTigerTestCase):
         for i in self.list:
             c.set_key(ds.key(row))
             c.set_value(i['o'])
-            self.assertEquals(c.update(), 0)
+            self.assertEqual(c.update(), 0)
             c.reset()
 
             self.session.begin_transaction()
@@ -200,14 +200,14 @@ class test_cursor12(wttest.WiredTigerTestCase):
             for j in i['mods']:
                 mod = wiredtiger.Modify(j[0], j[1], j[2])
                 mods.append(mod)
-            self.assertEquals(c.modify(mods), 0)
+            self.assertEqual(c.modify(mods), 0)
             self.session.commit_transaction()
             c.reset()
 
             c.set_key(ds.key(row))
-            self.assertEquals(c.search(), 0)
+            self.assertEqual(c.search(), 0)
             v = c.get_value()
-            self.assertEquals(v.replace("\x00", " "), i['f'])
+            self.assertEqual(v.replace("\x00", " "), i['f'])
 
             if not single:
                 row = row + 1
@@ -221,9 +221,9 @@ class test_cursor12(wttest.WiredTigerTestCase):
         c = self.session.open_cursor(self.uri, None)
         for i in self.list:
             c.set_key(ds.key(row))
-            self.assertEquals(c.search(), 0)
+            self.assertEqual(c.search(), 0)
             v = c.get_value()
-            self.assertEquals(v.replace("\x00", " "), i['f'])
+            self.assertEqual(v.replace("\x00", " "), i['f'])
 
             if not single:
                 row = row + 1
@@ -294,19 +294,19 @@ class test_cursor12(wttest.WiredTigerTestCase):
         c.set_key(ds.key(10))
         orig = 'abcdefghijklmnopqrstuvwxyz'
         c.set_value(orig)
-        self.assertEquals(c.update(), 0)
+        self.assertEqual(c.update(), 0)
         for i in range(0, 50000):
-            new = "".join([random.choice(string.digits) for i in xrange(5)])
+            new = "".join([random.choice(string.digits) for i in range(5)])
             orig = orig[:10] + new + orig[15:]
             mods = []
             mod = wiredtiger.Modify(new, 10, 5)
             mods.append(mod)
-            self.assertEquals(c.modify(mods), 0)
+            self.assertEqual(c.modify(mods), 0)
         self.session.commit_transaction()
 
         c.set_key(ds.key(10))
-        self.assertEquals(c.search(), 0)
-        self.assertEquals(c.get_value(), orig)
+        self.assertEqual(c.search(), 0)
+        self.assertEqual(c.get_value(), orig)
 
     # Check that modify returns not-found after a delete.
     def test_modify_delete(self):
@@ -316,7 +316,7 @@ class test_cursor12(wttest.WiredTigerTestCase):
 
         c = self.session.open_cursor(self.uri, None)
         c.set_key(ds.key(10))
-        self.assertEquals(c.remove(), 0)
+        self.assertEqual(c.remove(), 0)
 
         self.session.begin_transaction()
         mods = []
@@ -341,7 +341,7 @@ class test_cursor12(wttest.WiredTigerTestCase):
         c = self.session.open_cursor(self.uri, None)
         c.set_key(ds.key(30))
         c.set_value(ds.value(30))
-        self.assertEquals(c.insert(), 0)
+        self.assertEqual(c.insert(), 0)
 
         # Test that we can successfully modify our own record.
         mods = []

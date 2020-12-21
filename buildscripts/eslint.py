@@ -10,7 +10,7 @@ There is also a -d mode that assumes you only want to run one copy of ESLint per
 parameter supplied. This lets ESLint search for candidate files to lint.
 """
 
-from __future__ import print_function
+
 
 import os
 import shutil
@@ -20,7 +20,7 @@ import sys
 import tarfile
 import tempfile
 import threading
-import urllib
+import urllib.request, urllib.parse, urllib.error
 from distutils import spawn  # pylint: disable=no-name-in-module
 from optparse import OptionParser
 
@@ -57,7 +57,7 @@ ESLINT_SOURCE_TAR_BASE = string.Template(ESLINT_PROGNAME + "-$platform-$arch")
 
 def callo(args):
     """Call a program, and capture its output."""
-    return subprocess.check_output(args)
+    return subprocess.check_output(args).decode('utf-8')
 
 
 def extract_eslint(tar_path, target_file):
@@ -83,8 +83,8 @@ def get_eslint_from_cache(dest_file, platform, arch):
     temp_tar_file = os.path.join(dest_dir, "temp.tar.gz")
 
     # Download the file
-    print("Downloading ESLint %s from %s, saving to %s" % (ESLINT_VERSION, url, temp_tar_file))
-    urllib.urlretrieve(url, temp_tar_file)
+    print(("Downloading ESLint %s from %s, saving to %s" % (ESLINT_VERSION, url, temp_tar_file)))
+    urllib.request.urlretrieve(url, temp_tar_file)
 
     eslint_distfile = ESLINT_SOURCE_TAR_BASE.substitute(platform=platform, arch=arch)
     extract_eslint(temp_tar_file, eslint_distfile)
@@ -113,7 +113,7 @@ class ESLint(object):
             if os.path.isfile(path):
                 self.path = path
             else:
-                print("WARNING: Could not find ESLint at %s" % (path))
+                print(("WARNING: Could not find ESLint at %s" % (path)))
 
         # Check the environment variable
         if "MONGO_ESLINT" in os.environ:
@@ -142,8 +142,8 @@ class ESLint(object):
                 elif sys.platform == "darwin":
                     get_eslint_from_cache(self.path, "Darwin", self.arch)
                 else:
-                    print("ERROR: eslint.py does not support downloading ESLint " +
-                          "on this platform, please install ESLint " + ESLINT_VERSION)
+                    print(("ERROR: eslint.py does not support downloading ESLint " +
+                          "on this platform, please install ESLint " + ESLINT_VERSION))
         # Validate we have the correct version
         if not self._validate_version():
             raise ValueError('correct version of ESLint was not found.')
@@ -158,8 +158,8 @@ class ESLint(object):
             return True
 
         if warn:
-            print("WARNING: eslint found in path, but incorrect version found at " + self.path +
-                  " with version: " + esl_version)
+            print(("WARNING: eslint found in path, but incorrect version found at " + self.path +
+                  " with version: " + esl_version))
         return False
 
     def _lint(self, file_name, print_diff):
@@ -172,8 +172,8 @@ class ESLint(object):
             if print_diff:
                 # Take a lock to ensure error messages do not get mixed when printed to the screen
                 with self.print_lock:
-                    print("ERROR: ESLint found errors in " + file_name)
-                    print(err.output)
+                    print(("ERROR: ESLint found errors in " + file_name))
+                    print((err.output))
             return False
 
         return True

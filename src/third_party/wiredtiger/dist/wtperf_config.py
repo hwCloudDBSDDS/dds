@@ -21,5 +21,5 @@ for line in sys.stdin:
         d = '"' + v[2] + '"'
     else:
         d = v[2]
-    print '@par ' + v[0] + ' (' + v[3] + ', default=' + d + ')'
-    print v[1]
+    print('@par ' + v[0] + ' (' + v[3] + ', default=' + d + ')')
+    print(v[1])

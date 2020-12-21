@@ -38,7 +38,7 @@ class test_pack(wttest.WiredTigerTestCase):
 
     def dump_cursor(self, cursor, name):
         cursor.reset()
-        while cursor.next() == 0:
+        while next(cursor) == 0:
             x = cursor.get_key()
             y = cursor.get_value()
             self.tty(' ' + name + ':  ' + str(x) + ' => ' + str(y))
@@ -50,7 +50,7 @@ class test_pack(wttest.WiredTigerTestCase):
         uri = 'table:' + test_pack.name + '-' + fmtname
         idx_uri = 'index:' + test_pack.name + '-' + fmtname + ':inverse'
         nargs = len(v)
-        colnames = ",".join("v" + str(x) for x in xrange(nargs))
+        colnames = ",".join("v" + str(x) for x in range(nargs))
         self.session.create(uri, "columns=(k," + colnames + ")," +
                             "key_format=i,value_format=" + fmt)
         self.session.create(idx_uri, "columns=(" + colnames + ")")
@@ -65,15 +65,15 @@ class test_pack(wttest.WiredTigerTestCase):
         #self.dump_cursor(forw_idx, 'index')
 
         forw.set_key(1234)
-        self.assertEquals(forw.search(), 0)
+        self.assertEqual(forw.search(), 0)
         got = forw.get_value()
         if nargs == 1:  # API does not return a list, we want one for comparing
             got = [got]
-        self.assertEquals(got, v)
+        self.assertEqual(got, v)
 
         forw_idx.set_key(*v)
-        self.assertEquals(forw_idx.search(), 0)
-        self.assertEquals(forw_idx.get_value(), 1234)
+        self.assertEqual(forw_idx.search(), 0)
+        self.assertEqual(forw_idx.get_value(), 1234)
         forw.close()
         forw_idx.close()
 

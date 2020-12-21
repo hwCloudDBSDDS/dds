@@ -1,5 +1,4 @@
 """GDB commands for MongoDB."""
-from __future__ import print_function
 
 import os
 import re
@@ -72,7 +71,7 @@ class RegisterMongoCommand(object):
         """Print the registered mongo commands."""
         print("Command - Description")
         for key in cls._MONGO_COMMANDS:
-            print("%s - %s" % (key, cls._MONGO_COMMANDS[key]))
+            print(("%s - %s" % (key, cls._MONGO_COMMANDS[key])))
 
 
 class DumpGlobalServiceContext(gdb.Command):
@@ -106,7 +105,7 @@ class MongoDBDumpLocks(gdb.Command):
         if main_binary_name == 'mongod':
             self.dump_mongod_locks()
         else:
-            print("Not invoking mongod lock dump for: %s" % (main_binary_name))
+            print(("Not invoking mongod lock dump for: %s" % (main_binary_name)))
 
     @staticmethod
     def dump_mongod_locks():
@@ -118,7 +117,7 @@ class MongoDBDumpLocks(gdb.Command):
             gdb.execute("call ('mongo::(anonymous namespace)::globalLockManager').dump()",
                         from_tty=False, to_string=False)
         except gdb.error as gdberr:
-            print("Ignoring error '%s' in dump_mongod_locks" % str(gdberr))
+            print(("Ignoring error '%s' in dump_mongod_locks" % str(gdberr)))
 
 
 # Register command
@@ -140,7 +139,7 @@ class BtIfActive(gdb.Command):
             idle_location = None  # If unsure, print a stack trace.
 
         if idle_location:
-            print("Thread is idle at " + idle_location.string())
+            print(("Thread is idle at " + idle_location.string()))
         else:
             gdb.execute("bt")
 
@@ -206,7 +205,7 @@ class MongoDBUniqueStack(gdb.Command):
             try:
                 frame = frame.older()
             except gdb.error as err:
-                print("{} {}".format(thread_info['header'], err))
+                print(("{} {}".format(thread_info['header'], err)))
                 break
         addrs_tuple = tuple(addrs)  # tuples are hashable, lists aren't.
 
@@ -216,7 +215,7 @@ class MongoDBUniqueStack(gdb.Command):
             try:
                 unique['output'] = gdb.execute(arg, to_string=True).rstrip()
             except gdb.error as err:
-                print("{} {}".format(thread_info['header'], err))
+                print(("{} {}".format(thread_info['header'], err)))
 
     @staticmethod
     def _dump_unique_stacks(stacks):
@@ -226,11 +225,11 @@ class MongoDBUniqueStack(gdb.Command):
             """Return the first tid."""
             return stack['threads'][0]['gdb_thread_num']
 
-        for stack in sorted(stacks.values(), key=first_tid, reverse=True):
+        for stack in sorted(list(stacks.values()), key=first_tid, reverse=True):
             for i, thread in enumerate(stack['threads']):
                 prefix = '' if i == 0 else 'Duplicate '
-                print(prefix + thread['header'])
-            print(stack['output'])
+                print((prefix + thread['header']))
+            print((stack['output']))
             print()  # leave extra blank line after each thread stack
 
 
@@ -253,7 +252,7 @@ class MongoDBJavaScriptStack(gdb.Command):
         if main_binary_name.endswith('mongod') or main_binary_name.endswith('mongo'):
             self.javascript_stack()
         else:
-            print("No JavaScript stack print done for: %s" % (main_binary_name))
+            print(("No JavaScript stack print done for: %s" % (main_binary_name)))
 
     @staticmethod
     def javascript_stack():
@@ -262,11 +261,11 @@ class MongoDBJavaScriptStack(gdb.Command):
         for thread in gdb.selected_inferior().threads():
             try:
                 if not thread.is_valid():
-                    print("Ignoring invalid thread %d in javascript_stack" % thread.num)
+                    print(("Ignoring invalid thread %d in javascript_stack" % thread.num))
                     continue
                 thread.switch()
             except gdb.error as err:
-                print("Ignoring GDB error '%s' in javascript_stack" % str(err))
+                print(("Ignoring GDB error '%s' in javascript_stack" % str(err)))
                 continue
 
             try:
@@ -277,7 +276,7 @@ class MongoDBJavaScriptStack(gdb.Command):
                                 'mongo::mozjs::kCurrentScope->buildStackString().c_str()',
                                 from_tty=False, to_string=False)
             except gdb.error as err:
-                print("Ignoring GDB error '%s' in javascript_stack" % str(err))
+                print(("Ignoring GDB error '%s' in javascript_stack" % str(err)))
                 continue
 
 

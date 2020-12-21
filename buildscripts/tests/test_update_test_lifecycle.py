@@ -2,8 +2,6 @@
 Tests for buildscripts/update_test_lifecycle.py.
 """
 
-from __future__ import absolute_import
-
 import collections
 import copy
 import datetime
@@ -964,7 +962,7 @@ class MockEvergreenConfig(object):
     def __init__(self, tasks, variants):
         self.task_names = tasks
         self.variants = {}
-        for name, fields in variants.items():
+        for name, fields in list(variants.items()):
             self.variants[name] = MockVariant(fields["tasks"], fields["distros"])
 
     def get_variant(self, variant_name):

@@ -5,9 +5,6 @@ Any test files with at least 2 executions in the report.json file that have a "s
 this script will change the outputted report to have a "fail" status instead.
 """
 
-from __future__ import absolute_import
-from __future__ import print_function
-
 import collections
 import json
 import optparse
@@ -20,9 +17,24 @@ if __name__ == "__main__" and __package__ is None:
     from buildscripts.resmokelib.testing import report
 
 
+
+
+def open_file_promote_silent_failures(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def read_json_file(json_file):
     """Return contents of a JSON file."""
-    with open(json_file) as json_data:
+    with open_file_promote_silent_failures(json_file) as json_data:
         return json.load(json_data)
 
 
@@ -57,10 +69,10 @@ def main():
 
     result_report = test_report.as_dict()
     if options.outfile != "-":
-        with open(options.outfile, "w") as fp:
+        with open_file_promote_silent_failures(options.outfile, "w") as fp:
             json.dump(result_report, fp)
     else:
-        print(json.dumps(result_report))
+        print((json.dumps(result_report)))
 
 
 if __name__ == "__main__":

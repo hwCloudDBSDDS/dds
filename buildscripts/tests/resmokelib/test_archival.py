@@ -1,8 +1,7 @@
 """ Unit tests for archival. """
 
-from __future__ import absolute_import
 
-import logging
+from . import logging
 import os
 import random
 import shutil
@@ -16,10 +15,25 @@ from buildscripts.resmokelib.utils import archival
 _BUCKET = "mongodatafiles"
 
 
+
+
+def open_file_test_archival(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def create_random_file(file_name, num_chars_mb):
     """ Creates file with random characters, which will have minimal compression. """
-    with open(file_name, "wb") as fileh:
-        for _ in xrange(num_chars_mb * 1024 * 1024):
+    with open_file_test_archival(file_name, "wb") as fileh:
+        for _ in range(num_chars_mb * 1024 * 1024):
             fileh.write(chr(random.randint(0, 255)))
 
 
@@ -144,7 +158,7 @@ class ArchivalFileTests(ArchivalTestCase):
         temp_dir = tempfile.mkdtemp(dir=self.temp_dir)
         s3_path = self.s3_path("unittest/directory_with_files.tgz")
         # Create 10 empty files
-        for _ in xrange(10):
+        for _ in range(10):
             tempfile.mkstemp(dir=temp_dir)
         status, message = self.archive.archive_files_to_s3(display_name, temp_dir, self.bucket,
                                                            s3_path)
@@ -154,7 +168,7 @@ class ArchivalFileTests(ArchivalTestCase):
         temp_dir2 = tempfile.mkdtemp(dir=self.temp_dir)
         s3_path = self.s3_path("unittest/directories_with_files.tgz")
         # Create 10 empty files
-        for _ in xrange(10):
+        for _ in range(10):
             tempfile.mkstemp(dir=temp_dir2)
         status, message = self.archive.archive_files_to_s3(display_name, [temp_dir, temp_dir2],
                                                            self.bucket, s3_path)

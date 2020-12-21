@@ -87,7 +87,7 @@ class test_join06(wttest.WiredTigerTestCase):
         jc = self.session.open_cursor('join:table:join06', None, None)
         c0 = self.session.open_cursor('index:join06:index0', None, None)
         c0.set_key('520')
-        self.assertEquals(0, c0.search())
+        self.assertEqual(0, c0.search())
         self.session.join(jc, c0, 'compare=ge')
 
         joinconfig = 'compare=eq'
@@ -95,7 +95,7 @@ class test_join06(wttest.WiredTigerTestCase):
             joinconfig += ',strategy=bloom,count=1000'
         c1 = self.session.open_cursor('index:join06:index1', None, None)
         c1.set_key('555')
-        self.assertEquals(0, c1.search())
+        self.assertEqual(0, c1.search())
         self.session.join(jc, c1, joinconfig)
 
         if self.isolation == 'read-uncommitted' and self.bloom:
@@ -103,7 +103,7 @@ class test_join06(wttest.WiredTigerTestCase):
             # This is detected on the first next() operation.
             msg = '/cannot be used with read-uncommitted/'
             self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-                lambda: jc.next(), msg)
+                lambda: next(jc), msg)
             return
 
         # Changes made in another session may or may not be visible to us,
@@ -118,14 +118,14 @@ class test_join06(wttest.WiredTigerTestCase):
             mbr = set(range(520,600)) | set(range(53,60))
 
         altered = False
-        while jc.next() == 0:
+        while next(jc) == 0:
             [k] = jc.get_keys()
             [v0,v1] = jc.get_values()
             #self.tty('GOT: ' + str(k) + ': ' + str(jc.get_values()))
             if altered and self.isolation == 'read-uncommitted':
-                self.assertEquals(self.gen_values2(k), [v0, v1])
+                self.assertEqual(self.gen_values2(k), [v0, v1])
             else:
-                self.assertEquals(self.gen_values(k), [v0, v1])
+                self.assertEqual(self.gen_values(k), [v0, v1])
             if not k in mbr:
                 self.tty('**** ERROR: result ' + str(k) + ' is not in: ' +
                          str(mbr))
@@ -146,7 +146,7 @@ class test_join06(wttest.WiredTigerTestCase):
 
         if len(mbr) != 0:
             self.tty('**** ERROR: did not see these: ' + str(mbr))
-        self.assertEquals(0, len(mbr))
+        self.assertEqual(0, len(mbr))
 
         jc.close()
         c1.close()

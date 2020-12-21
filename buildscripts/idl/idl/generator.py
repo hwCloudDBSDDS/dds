@@ -15,8 +15,6 @@
 # pylint: disable=too-many-lines
 """IDL C++ Code Generator."""
 
-from __future__ import absolute_import, print_function, unicode_literals
-
 from abc import ABCMeta, abstractmethod
 import io
 import os
@@ -35,25 +33,25 @@ from . import writer
 
 
 def _get_field_member_name(field):
-    # type: (ast.Field) -> unicode
+    # type: (ast.Field) -> str
     """Get the C++ class member name for a field."""
     return '_%s' % (common.camel_case(field.cpp_name))
 
 
 def _get_field_member_setter_name(field):
-    # type: (ast.Field) -> unicode
+    # type: (ast.Field) -> str
     """Get the C++ class setter name for a field."""
     return "set%s" % (common.title_case(field.cpp_name))
 
 
 def _get_field_member_getter_name(field):
-    # type: (ast.Field) -> unicode
+    # type: (ast.Field) -> str
     """Get the C++ class getter name for a field."""
     return "get%s" % (common.title_case(field.cpp_name))
 
 
 def _get_has_field_member_name(field):
-    # type: (ast.Field) -> unicode
+    # type: (ast.Field) -> str
     """Get the C++ class member name for bool 'has' member field."""
     return '_has%s' % (common.title_case(field.cpp_name))
 
@@ -70,14 +68,14 @@ def _is_required_serializer_field(field):
 
 
 def _get_field_constant_name(field):
-    # type: (ast.Field) -> unicode
+    # type: (ast.Field) -> str
     """Get the C++ string constant name for a field."""
     return common.template_args('k${constant_name}FieldName', constant_name=common.title_case(
         field.cpp_name))
 
 
 def _access_member(field):
-    # type: (ast.Field) -> unicode
+    # type: (ast.Field) -> str
     """Get the declaration to access a member for a field."""
     member_name = _get_field_member_name(field)
 
@@ -89,7 +87,7 @@ def _access_member(field):
 
 
 def _get_bson_type_check(bson_element, ctxt_name, field):
-    # type: (unicode, unicode, ast.Field) -> unicode
+    # type: (str, str, ast.Field) -> str
     """Get the C++ bson type check for a field."""
     bson_types = field.bson_serialization_type
     if len(bson_types) == 1:
@@ -122,10 +120,8 @@ def _get_all_fields(struct):
     return sorted([field for field in all_fields], key=lambda f: f.cpp_name)
 
 
-class _FieldUsageCheckerBase(object):
+class _FieldUsageCheckerBase(object, metaclass=ABCMeta):
     """Check for duplicate fields, and required fields as needed."""
-
-    __metaclass__ = ABCMeta
 
     def __init__(self, indented_writer):
         # type: (writer.IndentedTextWriter) -> None
@@ -135,13 +131,13 @@ class _FieldUsageCheckerBase(object):
 
     @abstractmethod
     def add_store(self, field_name):
-        # type: (unicode) -> None
+        # type: (str) -> None
         """Create the C++ field store initialization code."""
         pass
 
     @abstractmethod
     def add(self, field, bson_element_variable):
-        # type: (ast.Field, unicode) -> None
+        # type: (ast.Field, str) -> None
         """Add a field to track."""
         pass
 
@@ -168,14 +164,14 @@ class _SlowFieldUsageChecker(_FieldUsageCheckerBase):
         self._writer.write_line('std::set<StringData> usedFields;')
 
     def add_store(self, field_name):
-        # type: (unicode) -> None
+        # type: (str) -> None
         self._writer.write_line('auto push_result = usedFields.insert(%s);' % (field_name))
         with writer.IndentedScopedBlock(self._writer,
                                         'if (MONGO_unlikely(push_result.second == false)) {', '}'):
             self._writer.write_line('ctxt.throwDuplicateField(%s);' % (field_name))
 
     def add(self, field, bson_element_variable):
-        # type: (ast.Field, unicode) -> None
+        # type: (ast.Field, str) -> None
         if not field in self._fields:
             self._fields.append(field)
 
@@ -200,7 +196,7 @@ class _SlowFieldUsageChecker(_FieldUsageCheckerBase):
 
 
 def _gen_field_usage_constant(field):
-    # type: (ast.Field) -> unicode
+    # type: (ast.Field) -> str
     """Get the name for a bitset constant in field usage checking."""
     return "k%sBit" % (common.title_case(field.cpp_name))
 
@@ -230,12 +226,12 @@ class _FastFieldUsageChecker(_FieldUsageCheckerBase):
             bit_id += 1
 
     def add_store(self, field_name):
-        # type: (unicode) -> None
+        # type: (str) -> None
         """Create the C++ field store initialization code."""
         pass
 
     def add(self, field, bson_element_variable):
-        # type: (ast.Field, unicode) -> None
+        # type: (ast.Field, str) -> None
         """Add a field to track."""
         if not field in self._fields:
             self._fields.append(field)
@@ -300,7 +296,7 @@ class _CppFileWriterBase(object):
         self._writer = indented_writer  # type: writer.IndentedTextWriter
 
     def write_unindented_line(self, msg):
-        # type: (unicode) -> None
+        # type: (str) -> None
         """Write an unindented line to the stream."""
         self._writer.write_unindented_line(msg)
 
@@ -322,24 +318,24 @@ class _CppFileWriterBase(object):
             """ % (" ".join(sys.argv))))
 
     def gen_system_include(self, include):
-        # type: (unicode) -> None
+        # type: (str) -> None
         """Generate a system C++ include line."""
         self._writer.write_unindented_line('#include <%s>' % (include))
 
     def gen_include(self, include):
-        # type: (unicode) -> None
+        # type: (str) -> None
         """Generate a non-system C++ include line."""
         self._writer.write_unindented_line('#include "%s"' % (include))
 
     def gen_namespace_block(self, namespace):
-        # type: (unicode) -> writer.NamespaceScopeBlock
+        # type: (str) -> writer.NamespaceScopeBlock
         """Generate a namespace block."""
         namespace_list = namespace.split("::")
 
         return writer.NamespaceScopeBlock(self._writer, namespace_list)
 
     def gen_description_comment(self, description):
-        # type: (unicode) -> None
+        # type: (str) -> None
         """Generate a multiline comment with the description from the IDL."""
         self._writer.write_line(
             textwrap.dedent("""\
@@ -348,12 +344,12 @@ class _CppFileWriterBase(object):
          */""" % (description)))
 
     def _with_template(self, template_params):
-        # type: (Mapping[unicode,unicode]) -> writer.TemplateContext
+        # type: (Mapping[str,str]) -> writer.TemplateContext
         """Generate a template context for the current parameters."""
         return writer.TemplateContext(self._writer, template_params)
 
     def _block(self, opening, closing):
-        # type: (unicode, unicode) -> Union[writer.IndentedScopedBlock,writer.EmptyBlock]
+        # type: (str, str) -> Union[writer.IndentedScopedBlock,writer.EmptyBlock]
         """Generate an indented block if opening is not empty."""
         if not opening:
             return writer.EmptyBlock()
@@ -361,7 +357,7 @@ class _CppFileWriterBase(object):
         return writer.IndentedScopedBlock(self._writer, opening, closing)
 
     def _predicate(self, check_str, use_else_if=False):
-        # type: (unicode, bool) -> Union[writer.IndentedScopedBlock,writer.EmptyBlock]
+        # type: (str, bool) -> Union[writer.IndentedScopedBlock,writer.EmptyBlock]
         """
         Generate an if block if the condition is not-empty.
 
@@ -381,7 +377,7 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
     """C++ .h File writer."""
 
     def gen_class_declaration_block(self, class_name):
-        # type: (unicode) -> writer.IndentedScopedBlock
+        # type: (str) -> writer.IndentedScopedBlock
         """Generate a class declaration block."""
         return writer.IndentedScopedBlock(self._writer,
                                           'class %s {' % common.title_case(class_name), '};')
@@ -735,13 +731,13 @@ class _CppSourceFileWriter(_CppFileWriterBase):
     """C++ .cpp File writer."""
 
     def __init__(self, indented_writer, target_arch):
-        # type: (writer.IndentedTextWriter, unicode) -> None
+        # type: (writer.IndentedTextWriter, str) -> None
         """Create a C++ .cpp file code writer."""
         self._target_arch = target_arch
         super(_CppSourceFileWriter, self).__init__(indented_writer)
 
     def _gen_field_deserializer_expression(self, element_name, field):
-        # type: (unicode, ast.Field) -> unicode
+        # type: (str, ast.Field) -> str
         # pylint: disable=invalid-name
         """
         Generate the C++ deserializer piece for a field.
@@ -791,7 +787,7 @@ class _CppSourceFileWriter(_CppFileWriterBase):
         return '%s(%s)' % (method_name, element_name)
 
     def _gen_array_deserializer(self, field, bson_element):
-        # type: (ast.Field, unicode) -> None
+        # type: (ast.Field, str) -> None
         """Generate the C++ deserializer piece for an array field."""
         cpp_type_info = cpp_types.get_cpp_type(field)
         cpp_type = cpp_type_info.get_type_name()
@@ -846,7 +842,7 @@ class _CppSourceFileWriter(_CppFileWriterBase):
             self._writer.write_line('%s = std::move(values);' % (_get_field_member_name(field)))
 
     def gen_field_deserializer(self, field, bson_object, bson_element):
-        # type: (ast.Field, unicode, unicode) -> None
+        # type: (ast.Field, str, str) -> None
         """Generate the C++ deserializer piece for a field."""
         if field.array:
             self._gen_array_deserializer(field, bson_element)
@@ -971,7 +967,7 @@ class _CppSourceFileWriter(_CppFileWriterBase):
             self._writer.write_line('// Used for initialization only')
 
     def _gen_command_deserializer(self, struct, bson_object):
-        # type: (ast.Struct, unicode) -> None
+        # type: (ast.Struct, str) -> None
         """Generate the command field deserializer."""
 
         if isinstance(struct, ast.Command) and struct.command_field:
@@ -984,7 +980,7 @@ class _CppSourceFileWriter(_CppFileWriterBase):
             struct_type_info.gen_namespace_check(self._writer, "_dbName", "commandElement")
 
     def _gen_fields_deserializer_common(self, struct, bson_object):
-        # type: (ast.Struct, unicode) -> _FieldUsageCheckerBase
+        # type: (ast.Struct, str) -> _FieldUsageCheckerBase
         """Generate the C++ code to deserialize list of fields."""
         # pylint: disable=too-many-branches
         field_usage_check = _get_field_usage_checker(self._writer, struct)
@@ -1492,7 +1488,7 @@ class _CppSourceFileWriter(_CppFileWriterBase):
                     struct.cpp_name)))
 
     def generate(self, spec, header_file_name):
-        # type: (ast.IDLAST, unicode) -> None
+        # type: (ast.IDLAST, str) -> None
         """Generate the C++ header to a stream."""
         self.gen_file_header()
 
@@ -1569,7 +1565,7 @@ class _CppSourceFileWriter(_CppFileWriterBase):
 
 
 def generate_header_str(spec):
-    # type: (ast.IDLAST) -> unicode
+    # type: (ast.IDLAST) -> str
     """Generate a C++ header in-memory."""
     stream = io.StringIO()
     text_writer = writer.IndentedTextWriter(stream)
@@ -1582,7 +1578,7 @@ def generate_header_str(spec):
 
 
 def _generate_header(spec, file_name):
-    # type: (ast.IDLAST, unicode) -> None
+    # type: (ast.IDLAST, str) -> None
     """Generate a C++ header."""
 
     str_value = generate_header_str(spec)
@@ -1593,7 +1589,7 @@ def _generate_header(spec, file_name):
 
 
 def generate_source_str(spec, target_arch, header_file_name):
-    # type: (ast.IDLAST, unicode, unicode) -> unicode
+    # type: (ast.IDLAST, str, str) -> str
     """Generate a C++ source file in-memory."""
     stream = io.StringIO()
     text_writer = writer.IndentedTextWriter(stream)
@@ -1606,7 +1602,7 @@ def generate_source_str(spec, target_arch, header_file_name):
 
 
 def _generate_source(spec, target_arch, file_name, header_file_name):
-    # type: (ast.IDLAST, unicode, unicode, unicode) -> None
+    # type: (ast.IDLAST, str, str, str) -> None
     """Generate a C++ source file."""
     str_value = generate_source_str(spec, target_arch, header_file_name)
 
@@ -1616,7 +1612,7 @@ def _generate_source(spec, target_arch, file_name, header_file_name):
 
 
 def generate_code(spec, target_arch, output_base_dir, header_file_name, source_file_name):
-    # type: (ast.IDLAST, unicode, unicode, unicode, unicode) -> None
+    # type: (ast.IDLAST, str, str, str, str) -> None
     """Generate a C++ header and source file from an idl.ast tree."""
 
     _generate_header(spec, header_file_name)

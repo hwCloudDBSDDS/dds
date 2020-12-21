@@ -51,7 +51,7 @@ def apply_scenario(scenario, test):
     if test_desc is not None:
         newtest_desc = "%(test_desc)s %(scenario_suffix)s" % vars()
         newtest.shortDescription = (lambda: newtest_desc)
-    for key, value in parameters.items():
+    for key, value in list(parameters.items()):
         setattr(newtest, key, value)
     return newtest
 
@@ -122,9 +122,9 @@ def multiply_scenarios(*scenarios):
         merged together.
     """
     result = []
-    scenario_lists = map(list, scenarios)
+    scenario_lists = list(map(list, scenarios))
     for combination in product(*scenario_lists):
-        names, parameters = zip(*combination)
+        names, parameters = list(zip(*combination))
         scenario_name = ','.join(names)
         scenario_parameters = {}
         for parameter in parameters:

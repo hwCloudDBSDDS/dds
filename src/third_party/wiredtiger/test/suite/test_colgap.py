@@ -40,7 +40,7 @@ class test_column_store_gap(wttest.WiredTigerTestCase):
         cursor.reset()
         i = 0
         while True:
-            if cursor.next() != 0:
+            if next(cursor) != 0:
                 break
             self.assertEqual(cursor.get_key(), expected[i])
             i += 1

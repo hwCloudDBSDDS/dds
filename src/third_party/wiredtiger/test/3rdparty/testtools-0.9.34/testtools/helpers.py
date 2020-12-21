@@ -27,7 +27,7 @@ def map_values(function, dictionary):
 
 def filter_values(function, dictionary):
     """Filter ``dictionary`` by its values using ``function``."""
-    return dict((k, v) for k, v in dictionary.items() if function(v))
+    return dict((k, v) for k, v in list(dictionary.items()) if function(v))
 
 
 def dict_subtract(a, b):

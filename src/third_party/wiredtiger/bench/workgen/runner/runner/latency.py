@@ -28,8 +28,23 @@
 #
 # runner/latency.py
 #      Utility functions for showing latency statistics
-from __future__ import print_function
+
 import sys
+
+
+
+def open_file_latency(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def _show_buckets(fh, title, mult, buckets, n):
     shown = False
@@ -111,7 +126,7 @@ def _latency_optype(fh, name, ch, t):
 
 def workload_latency(workload, outfilename = None):
     if outfilename:
-        fh = open(outfilename, 'w')
+        fh = open_file_latency(outfilename, 'w')
     else:
         fh = sys.stdout
     _latency_optype(fh, 'insert', 'I', workload.stats.insert)

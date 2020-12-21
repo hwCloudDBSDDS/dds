@@ -1,5 +1,6 @@
-#!/usr/bin/env python2
-# Copyright (C) 2017 MongoDB Inc.
+#!/usr/bin/env python
+#
+# Copyright (C) 2018-present MongoDB, Inc.
 #
 # This program is free software: you can redistribute it and/or  modify
 # it under the terms of the GNU Affero General Public License, version 3,
@@ -15,8 +16,6 @@
 #
 """Test cases for IDL binder."""
 
-from __future__ import absolute_import, print_function, unicode_literals
-
 import io
 import textwrap
 import unittest
@@ -27,24 +26,39 @@ if __package__ is None:
     import sys
     from os import path
     sys.path.append(path.dirname(path.abspath(__file__)))
-    from context import idl
-    import testcase
+    from .context import idl
+    from . import testcase
 else:
     from .context import idl
     from . import testcase
 
 
+
+
+def open_file_test_import(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class DictionaryImportResolver(idl.parser.ImportResolverBase):
     """An import resolver resolves files from a dictionary."""
 
     def __init__(self, import_dict):
-        # type: (Dict[unicode, unicode]) -> None
+        # type: (Dict[str, str]) -> None
         """Construct a DictionaryImportResolver."""
         self._import_dict = import_dict
         super(DictionaryImportResolver, self).__init__()
 
     def resolve(self, base_file, imported_file_name):
-        # type: (unicode, unicode) -> unicode
+        # type: (str, str) -> str
         """Return the complete path to an imported file name."""
         # pylint: disable=unused-argument
         if not imported_file_name in self._import_dict:
@@ -52,8 +66,8 @@ class DictionaryImportResolver(idl.parser.ImportResolverBase):
 
         return "imported_%s" % (imported_file_name)
 
-    def open(self, resolved_file_name):
-        # type: (unicode) -> Any
+    def open_file_test_import(self, resolved_file_name):
+        # type: (str) -> Any
         """Return an io.Stream for the requested file."""
         assert resolved_file_name.startswith("imported_")
         imported_file_name = resolved_file_name.replace("imported_", "")

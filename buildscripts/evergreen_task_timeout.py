@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 """Determine the timeout value a task should use in evergreen."""
 
-from __future__ import absolute_import
-
 import argparse
 import sys
 
@@ -21,6 +19,21 @@ REQUIRED_BUILD_VARIANTS = {
     "ubuntu1604-debug-aubsan-lite"
 }
 
+
+
+
+def open_file_evergreen_task_timeout(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def determine_timeout(task_name, variant, timeout=0):
     """Determine what timeout should be used."""
@@ -43,7 +56,7 @@ def output_timeout(timeout, options):
     }
 
     if options.outfile:
-        with open(options.outfile, "w") as outfile:
+        with open_file_evergreen_task_timeout(options.outfile, "w") as outfile:
             yaml.dump(output, stream=outfile, default_flow_style=False)
 
     yaml.dump(output, stream=sys.stdout, default_flow_style=False)

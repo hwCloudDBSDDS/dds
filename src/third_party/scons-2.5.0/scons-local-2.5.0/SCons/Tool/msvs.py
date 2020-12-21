@@ -51,13 +51,28 @@ import SCons.PathList
 import SCons.Util
 import SCons.Warnings
 
-from MSCommon import msvc_exists, msvc_setup_env_once
+from .MSCommon import msvc_exists, msvc_setup_env_once
 from SCons.Defaults import processDefines
 
 ##############################################################################
 # Below here are the classes and functions for generation of
 # DSP/DSW/SLN/VCPROJ files.
 ##############################################################################
+
+
+
+def open_file_msvs(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def xmlify(s):
     s = s.replace("&", "&amp;") # do this first
@@ -208,11 +223,11 @@ class _UserGenerator(object):
                             dbg_settings and bool([ds for ds in dbg_settings if ds]) 
 
         if self.createfile:
-            dbg_settings = dict(zip(variants, dbg_settings))
-            for var, src in dbg_settings.items():
+            dbg_settings = dict(list(zip(variants, dbg_settings)))
+            for var, src in list(dbg_settings.items()):
                 # Update only expected keys
                 trg = {}
-                for key in [k for k in self.usrdebg.keys() if k in src]:
+                for key in [k for k in list(self.usrdebg.keys()) if k in src]:
                     trg[key] = str(src[key])
                 self.configs[var].debug = trg
     
@@ -229,8 +244,8 @@ class _UserGenerator(object):
             return
         try:
             filename = self.dspabs +'.user'
-            self.usrfile = open(filename, 'w')
-        except IOError, detail:
+            self.usrfile = open_file_msvs(filename, 'w')
+        except IOError as detail:
             raise SCons.Errors.InternalError('Unable to open "' + filename + '" for writing:' + str(detail))
         else:
             self.UserHeader()
@@ -299,7 +314,7 @@ class _GenerateV7User(_UserGenerator):
             debug = self.configs[kind].debug
             if debug:
                 debug_settings = '\n'.join(['\t\t\t\t%s="%s"' % (key, xmlify(value)) 
-                                            for key, value in debug.items() 
+                                            for key, value in list(debug.items())
                                             if value is not None])
                 self.usrfile.write(self.usrconf % locals())
         self.usrfile.write('\t</Configurations>\n</VisualStudioUserFile>')
@@ -361,7 +376,7 @@ class _GenerateV10User(_UserGenerator):
             debug = self.configs[kind].debug
             if debug:
                 debug_settings = '\n'.join(['\t\t<%s>%s</%s>' % (key, xmlify(value), key) 
-                                            for key, value in debug.items() 
+                                            for key, value in list(debug.items())
                                             if value is not None])
                 self.usrfile.write(self.usrconf % locals())
         self.usrfile.write('</Project>')
@@ -525,13 +540,13 @@ class _DSPGenerator(object):
                 config.platform = 'Win32'
 
             self.configs[variant] = config
-            print "Adding '" + self.name + ' - ' + config.variant + '|' + config.platform + "' to '" + str(dspfile) + "'"
+            print("Adding '" + self.name + ' - ' + config.variant + '|' + config.platform + "' to '" + str(dspfile) + "'")
 
         for i in range(len(variants)):
             AddConfig(self, variants[i], buildtarget[i], outdir[i], runfile[i], cmdargs[i])
 
         self.platforms = []
-        for key in self.configs.keys():
+        for key in list(self.configs.keys()):
             platform = self.configs[key].platform
             if not platform in self.platforms:
                 self.platforms.append(platform)
@@ -654,7 +669,7 @@ class _GenerateV6DSP(_DSPGenerator):
                       'Resource Files': 'r|rc|ico|cur|bmp|dlg|rc2|rct|bin|cnt|rtf|gif|jpg|jpeg|jpe',
                       'Other Files': ''}
 
-        for kind in sorted(categories.keys(), key=lambda a: a.lower()):
+        for kind in sorted(list(categories.keys()), key=lambda a: a.lower()):
             if not self.sources[kind]:
                 continue # skip empty groups
 
@@ -676,7 +691,7 @@ class _GenerateV6DSP(_DSPGenerator):
 
     def Parse(self):
         try:
-            dspfile = open(self.dspabs,'r')
+            dspfile = open_file_msvs(self.dspabs,'r')
         except IOError:
             return # doesn't exist yet, so can't add anything to configs.
 
@@ -724,8 +739,8 @@ class _GenerateV6DSP(_DSPGenerator):
 
     def Build(self):
         try:
-            self.file = open(self.dspabs,'w')
-        except IOError, detail:
+            self.file = open_file_msvs(self.dspabs,'w')
+        except IOError as detail:
             raise SCons.Errors.InternalError('Unable to open "' + self.dspabs + '" for writing:' + str(detail))
         else:
             self.PrintHeader()
@@ -920,7 +935,7 @@ class _GenerateV7DSP(_DSPGenerator, _GenerateV7User):
             self.file.write(pdata + '-->\n')
 
     def printSources(self, hierarchy, commonprefix):
-        sorteditems = sorted(hierarchy.items(), key=lambda a: a[0].lower())
+        sorteditems = sorted(list(hierarchy.items()), key=lambda a: a[0].lower())
 
         # First folders, then files
         for key, value in sorteditems:
@@ -950,7 +965,7 @@ class _GenerateV7DSP(_DSPGenerator, _GenerateV7User):
 
         self.file.write('\t<Files>\n')
 
-        cats = sorted([k for k in categories.keys() if self.sources[k]],
+        cats = sorted([k for k in list(categories.keys()) if self.sources[k]],
                       key=lambda a: a.lower())
         for kind in cats:
             if len(cats) > 1:
@@ -989,7 +1004,7 @@ class _GenerateV7DSP(_DSPGenerator, _GenerateV7User):
 
     def Parse(self):
         try:
-            dspfile = open(self.dspabs,'r')
+            dspfile = open_file_msvs(self.dspabs,'r')
         except IOError:
             return # doesn't exist yet, so can't add anything to configs.
 
@@ -1036,8 +1051,8 @@ class _GenerateV7DSP(_DSPGenerator, _GenerateV7User):
 
     def Build(self):
         try:
-            self.file = open(self.dspabs,'w')
-        except IOError, detail:
+            self.file = open_file_msvs(self.dspabs,'w')
+        except IOError as detail:
             raise SCons.Errors.InternalError('Unable to open "' + self.dspabs + '" for writing:' + str(detail))
         else:
             self.PrintHeader()
@@ -1212,8 +1227,8 @@ class _GenerateV10DSP(_DSPGenerator, _GenerateV10User):
         #filter settings in MSVS 2010 are stored in separate file
         self.filtersabs = self.dspabs + '.filters'
         try:
-            self.filters_file = open(self.filtersabs, 'w')
-        except IOError, detail:
+            self.filters_file = open_file_msvs(self.filtersabs, 'w')
+        except IOError as detail:
             raise SCons.Errors.InternalError('Unable to open "' + self.filtersabs + '" for writing:' + str(detail))
             
         self.filters_file.write('<?xml version="1.0" encoding="utf-8"?>\n'
@@ -1239,7 +1254,7 @@ class _GenerateV10DSP(_DSPGenerator, _GenerateV10User):
             self.file.write(pdata + '-->\n')
 
     def printFilters(self, hierarchy, name):
-        sorteditems = sorted(hierarchy.items(), key = lambda a: a[0].lower())
+        sorteditems = sorted(list(hierarchy.items()), key = lambda a: a[0].lower())
         
         for key, value in sorteditems:
             if SCons.Util.is_Dict(value):
@@ -1256,7 +1271,7 @@ class _GenerateV10DSP(_DSPGenerator, _GenerateV10User):
                     'Resource Files': 'None',
                     'Other Files': 'None'}
                     
-        sorteditems = sorted(hierarchy.items(), key = lambda a: a[0].lower())
+        sorteditems = sorted(list(hierarchy.items()), key = lambda a: a[0].lower())
 
         # First folders, then files
         for key, value in sorteditems:
@@ -1282,8 +1297,8 @@ class _GenerateV10DSP(_DSPGenerator, _GenerateV10User):
                       'Resource Files': 'r;rc;ico;cur;bmp;dlg;rc2;rct;bin;cnt;rtf;gif;jpg;jpeg;jpe',
                       'Other Files': ''}
         
-        cats = sorted([k for k in categories.keys() if self.sources[k]],
-		              key = lambda a: a.lower())
+        cats = sorted([k for k in list(categories.keys()) if self.sources[k]],
+                      key = lambda a: a.lower())
         
         # print vcxproj.filters file first
         self.filters_file.write('\t<ItemGroup>\n')
@@ -1342,12 +1357,12 @@ class _GenerateV10DSP(_DSPGenerator, _GenerateV10User):
                         '\t</ItemGroup>\n' % str(self.sconscript))
 
     def Parse(self):
-        print "_GenerateV10DSP.Parse()"
+        print("_GenerateV10DSP.Parse()")
 
     def Build(self):
         try:
-            self.file = open(self.dspabs, 'w')
-        except IOError, detail:
+            self.file = open_file_msvs(self.dspabs, 'w')
+        except IOError as detail:
             raise SCons.Errors.InternalError('Unable to open "' + self.dspabs + '" for writing:' + str(detail))
         else:
             self.PrintHeader()
@@ -1428,7 +1443,7 @@ class _GenerateV7DSW(_DSWGenerator):
                 config.platform = 'Win32'
 
             self.configs[variant] = config
-            print "Adding '" + self.name + ' - ' + config.variant + '|' + config.platform + "' to '" + str(dswfile) + "'"
+            print("Adding '" + self.name + ' - ' + config.variant + '|' + config.platform + "' to '" + str(dswfile) + "'")
 
         if 'variant' not in env:
             raise SCons.Errors.InternalError("You must specify a 'variant' argument (i.e. 'Debug' or " +\
@@ -1440,7 +1455,7 @@ class _GenerateV7DSW(_DSWGenerator):
                 AddConfig(self, variant)
 
         self.platforms = []
-        for key in self.configs.keys():
+        for key in list(self.configs.keys()):
             platform = self.configs[key].platform
             if not platform in self.platforms:
                 self.platforms.append(platform)
@@ -1467,7 +1482,7 @@ class _GenerateV7DSW(_DSWGenerator):
 
     def Parse(self):
         try:
-            dswfile = open(self.dswfile,'r')
+            dswfile = open_file_msvs(self.dswfile,'r')
         except IOError:
             return # doesn't exist yet, so can't add anything to configs.
 
@@ -1611,8 +1626,8 @@ class _GenerateV7DSW(_DSWGenerator):
 
     def Build(self):
         try:
-            self.file = open(self.dswfile,'w')
-        except IOError, detail:
+            self.file = open_file_msvs(self.dswfile,'w')
+        except IOError as detail:
             raise SCons.Errors.InternalError('Unable to open "' + self.dswfile + '" for writing:' + str(detail))
         else:
             self.PrintSolution()
@@ -1660,8 +1675,8 @@ class _GenerateV6DSW(_DSWGenerator):
 
     def Build(self):
         try:
-            self.file = open(self.dswfile,'w')
-        except IOError, detail:
+            self.file = open_file_msvs(self.dswfile,'w')
+        except IOError as detail:
             raise SCons.Errors.InternalError('Unable to open "' + self.dswfile + '" for writing:' + str(detail))
         else:
             self.PrintWorkspace()
@@ -1717,9 +1732,9 @@ def GenerateProject(target, source, env):
     # this detects whether or not we're using a VariantDir
     if not dspfile is builddspfile:
         try:
-            bdsp = open(str(builddspfile), "w+")
-        except IOError, detail:
-            print 'Unable to open "' + str(dspfile) + '" for writing:',detail,'\n'
+            bdsp = open_file_msvs(str(builddspfile), "w+")
+        except IOError as detail:
+            print('Unable to open "' + str(dspfile) + '" for writing:',detail,'\n')
             raise
 
         bdsp.write("This is just a placeholder file.\nThe real project file is here:\n%s\n" % dspfile.get_abspath())
@@ -1733,9 +1748,9 @@ def GenerateProject(target, source, env):
         if not dswfile is builddswfile:
 
             try:
-                bdsw = open(str(builddswfile), "w+")
-            except IOError, detail:
-                print 'Unable to open "' + str(dspfile) + '" for writing:',detail,'\n'
+                bdsw = open_file_msvs(str(builddswfile), "w+")
+            except IOError as detail:
+                print('Unable to open "' + str(dspfile) + '" for writing:',detail,'\n')
                 raise
 
             bdsw.write("This is just a placeholder file.\nThe real workspace file is here:\n%s\n" % dswfile.get_abspath())
@@ -1969,7 +1984,7 @@ def generate(env):
     else:
         env['MSVS']['PROJECTSUFFIX']  = '.vcxproj'
         env['MSVS']['SOLUTIONSUFFIX'] = '.sln'
-		
+
     if (version_num >= 10.0):
         env['MSVSENCODING'] = 'utf-8'
     else:

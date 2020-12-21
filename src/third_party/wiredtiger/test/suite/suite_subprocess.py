@@ -33,6 +33,21 @@ from wttest import WiredTigerTestCase
 # suite_subprocess.py
 #    Run a subprocess within the test suite
 # Used as a 'mixin' class along with a WiredTigerTestCase class
+
+
+def open_file_suite_subprocess(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class suite_subprocess:
     subproc = None
 
@@ -41,7 +56,7 @@ class suite_subprocess:
         Return whether the file contains 'ERROR'.
         WT utilities issue a 'WT_ERROR' output string upon error.
         """
-        with open(filename, 'r') as f:
+        with open_file_suite_subprocess(filename, 'r') as f:
             for line in f:
                 if 'ERROR' in line:
                     return True
@@ -56,7 +71,7 @@ class suite_subprocess:
         hasError = False
         hasPrevious = False  # do we need to prefix an ellipsis?
         hasNext = False  # do we need to suffix an ellipsis?
-        with open(filename, 'r') as f:
+        with open_file_suite_subprocess(filename, 'r') as f:
             for line in f:
                 lines.append(line)
                 hasError = hasError or match in line
@@ -69,14 +84,14 @@ class suite_subprocess:
                         lines.pop(0)
                         hasPrevious = True
         if hasError:
-            print '**************** ' + match + ' in output file: ' + filename + ' ****************'
+            print('**************** ' + match + ' in output file: ' + filename + ' ****************')
             if hasPrevious:
-                print '...'
+                print('...')
             for line in lines:
-                print line,
+                print(line, end=' ')
             if hasNext:
-                print '...'
-            print '********************************'
+                print('...')
+            print('********************************')
             self.fail('ERROR found in output file: ' + filename)
 
     # If the string is of the form '/.../', then return just the embedded
@@ -88,7 +103,7 @@ class suite_subprocess:
             return None
 
     def check_file_content(self, filename, expect):
-        with open(filename, 'r') as f:
+        with open_file_suite_subprocess(filename, 'r') as f:
             got = f.read(len(expect) + 100)
             self.assertEqual(got, expect, filename + ': does not contain expected:\n\'' + expect + '\', but contains:\n\'' + got + '\'.')
 
@@ -97,7 +112,7 @@ class suite_subprocess:
         Check that the file contains the expected string in the first 100K bytes
         """
         maxbytes = 1024*100
-        with open(filename, 'r') as f:
+        with open_file_suite_subprocess(filename, 'r') as f:
             got = f.read(maxbytes)
             found = False
             for expect in expectlist:
@@ -131,10 +146,10 @@ class suite_subprocess:
         """
         filesize = os.path.getsize(filename)
         if filesize > 0:
-            with open(filename, 'r') as f:
+            with open_file_suite_subprocess(filename, 'r') as f:
                 contents = f.read(1000)
-                print 'ERROR: ' + filename + ' expected to be empty, but contains:\n'
-                print contents + '...\n'
+                print('ERROR: ' + filename + ' expected to be empty, but contains:\n')
+                print(contents + '...\n')
         self.assertEqual(filesize, 0, filename + ': expected to be empty')
 
     def check_non_empty_file(self, filename):
@@ -143,7 +158,7 @@ class suite_subprocess:
         """
         filesize = os.path.getsize(filename)
         if filesize == 0:
-            print 'ERROR: ' + filename + ' should not be empty (this command expected error output)'
+            print('ERROR: ' + filename + ' should not be empty (this command expected error output)')
         self.assertNotEqual(filesize, 0, filename + ': expected to not be empty')
 
     def verbose_env(self, envvar):
@@ -159,7 +174,7 @@ class suite_subprocess:
         WiredTigerTestCase.prout(out)
         for filename in filenames:
             maxbytes = 1024*100
-            with open(filename, 'r') as f:
+            with open_file_suite_subprocess(filename, 'r') as f:
                 contents = f.read(maxbytes)
                 if len(contents) > 0:
                     if len(contents) >= maxbytes:
@@ -180,8 +195,8 @@ class suite_subprocess:
 
         wtoutname = outfilename or "wt.out"
         wterrname = errfilename or "wt.err"
-        with open(wterrname, "w") as wterr:
-            with open(wtoutname, "w") as wtout:
+        with open_file_suite_subprocess(wterrname, "w") as wterr:
+            with open_file_suite_subprocess(wtoutname, "w") as wtout:
                 # Prefer running the actual 'wt' executable rather than the
                 # 'wt' script created by libtool. On OS/X with System Integrity
                 # Protection enabled, running a shell script strips
@@ -200,26 +215,26 @@ class suite_subprocess:
                     infilepart = ""
                     if infilename != None:
                         infilepart = "<" + infilename + " "
-                    print str(procargs)
-                    print "*********************************************"
-                    print "**** Run 'wt' via: run " + \
+                    print(str(procargs))
+                    print("*********************************************")
+                    print("**** Run 'wt' via: run " + \
                         " ".join(procargs[3:]) + infilepart + \
-                        ">" + wtoutname + " 2>" + wterrname
-                    print "*********************************************"
+                        ">" + wtoutname + " 2>" + wterrname)
+                    print("*********************************************")
                     returncode = subprocess.call(procargs)
                 elif self._lldbSubprocess:
                     infilepart = ""
                     if infilename != None:
                         infilepart = "<" + infilename + " "
-                    print str(procargs)
-                    print "*********************************************"
-                    print "**** Run 'wt' via: run " + \
+                    print(str(procargs))
+                    print("*********************************************")
+                    print("**** Run 'wt' via: run " + \
                         " ".join(procargs[3:]) + infilepart + \
-                        ">" + wtoutname + " 2>" + wterrname
-                    print "*********************************************"
+                        ">" + wtoutname + " 2>" + wterrname)
+                    print("*********************************************")
                     returncode = subprocess.call(procargs)
                 elif infilename:
-                    with open(infilename, "r") as wtin:
+                    with open_file_suite_subprocess(infilename, "r") as wtin:
                         returncode = subprocess.call(
                             procargs, stdin=wtin, stdout=wtout, stderr=wterr)
                 else:

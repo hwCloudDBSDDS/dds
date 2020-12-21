@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """Command line utility for determining what jstests have been added or modified."""
 
-from __future__ import absolute_import
 
 import collections
 import copy
@@ -12,7 +11,7 @@ import subprocess
 import re
 import shlex
 import sys
-import urlparse
+import urllib.parse
 
 import requests
 import yaml
@@ -25,6 +24,21 @@ from buildscripts.ciconfig import evergreen  # pylint: disable=wrong-import-posi
 
 API_SERVER_DEFAULT = "https://evergreen.mongodb.com"
 
+
+
+
+def open_file_burn_in_tests(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def parse_command_line():
     """Parse command line options."""
@@ -90,7 +104,7 @@ def read_evg_config():
 
     for filename in file_list:
         if os.path.isfile(filename):
-            with open(filename, "r") as fstream:
+            with open_file_burn_in_tests(filename, "r") as fstream:
                 return yaml.load(fstream)
     return None
 
@@ -104,7 +118,7 @@ def find_last_activated_task(revisions, variant, branch_name):
     evg_cfg = read_evg_config()
     if evg_cfg is not None and "api_server_host" in evg_cfg:
         api_server = "{url.scheme}://{url.netloc}".format(
-            url=urlparse.urlparse(evg_cfg["api_server_host"]))
+            url=urllib.parse.urlparse(evg_cfg["api_server_host"]))
     else:
         api_server = API_SERVER_DEFAULT
 
@@ -152,7 +166,7 @@ def find_changed_tests(branch_name, base_commit, max_revisions, buildvariant, ch
             # commit among 'revs_to_check' that's been activated in Evergreen. We handle this by
             # only considering tests changed in the current commit.
             last_activated = "HEAD"
-        print "Comparing current branch against", last_activated
+        print("Comparing current branch against", last_activated)
         revisions = callo(["git", "rev-list", base_commit + "..." + last_activated]).splitlines()
         base_commit = last_activated
     else:
@@ -160,10 +174,10 @@ def find_changed_tests(branch_name, base_commit, max_revisions, buildvariant, ch
 
     revision_count = len(revisions)
     if revision_count > max_revisions:
-        print "There are too many revisions included (%d)." % revision_count, \
+        print("There are too many revisions included (%d)." % revision_count, \
               "This is likely because your base branch is not " + branch_name + ".", \
               "You can allow us to review more than 25 revisions by using", \
-              "the --maxRevisions option."
+              "the --maxRevisions option.")
         return changed_tests
 
     changed_files = callo(["git", "diff", "--name-only", base_commit]).splitlines()
@@ -193,7 +207,7 @@ def find_exclude_tests(selector_file):
     if not selector_file:
         return ([], [], [])
 
-    with open(selector_file, "r") as fstream:
+    with open_file_burn_in_tests(selector_file, "r") as fstream:
         yml = yaml.load(fstream)
 
     try:
@@ -269,7 +283,7 @@ def create_task_list(evergreen_conf, buildvariant, suites, exclude_tasks):
 
     evg_buildvariant = evergreen_conf.get_variant(buildvariant)
     if not evg_buildvariant:
-        print "Buildvariant", buildvariant, "not found in", evergreen_conf.path
+        print("Buildvariant", buildvariant, "not found in", evergreen_conf.path)
         sys.exit(1)
 
     # Find all the buildvariant task's resmoke_args.
@@ -285,8 +299,8 @@ def create_task_list(evergreen_conf, buildvariant, suites, exclude_tasks):
 
     # Create the list of tasks to run for the specified suite.
     tasks_to_run = {}
-    for suite in suites.keys():
-        for task_name, task_arg in variant_task_args.items():
+    for suite in list(suites.keys()):
+        for task_name, task_arg in list(variant_task_args.items()):
             # Find the resmoke_args for matching suite names.
             if re.compile('--suites=' + suite + r'(?:\s+|$)').match(task_arg):
                 tasks_to_run[task_name] = {"resmoke_args": task_arg, "tests": suites[suite]}
@@ -299,7 +313,7 @@ def _write_report_file(tests_by_executor, pathname):
 
     This should be done during the compile task when the git repo is available.
     """
-    with open(pathname, "w") as fstream:
+    with open_file_burn_in_tests(pathname, "w") as fstream:
         json.dump(tests_by_executor, fstream)
 
 
@@ -310,7 +324,7 @@ def _load_tests_file(pathname):
     """
     if not os.path.isfile(pathname):
         return None
-    with open(pathname, "r") as fstream:
+    with open_file_burn_in_tests(pathname, "r") as fstream:
         return json.load(fstream)
 
 
@@ -322,7 +336,7 @@ def _save_report_data(saved_data, pathname, task):
     if not os.path.isfile(pathname):
         return
 
-    with open(pathname, "r") as fstream:
+    with open_file_burn_in_tests(pathname, "r") as fstream:
         current_data = json.load(fstream)
     for result in current_data["results"]:
         result["test_file"] += ":" + task
@@ -354,9 +368,9 @@ def main():
         evergreen_conf = evergreen.parse_evergreen_file(values.evergreen_file)
 
         if values.buildvariant is None:
-            print "Option buildVariant must be specified to find changed tests.\n", \
+            print(("Option buildVariant must be specified to find changed tests.\n", \
                   "Select from the following: \n" \
-                  "\t", "\n\t".join(sorted(evergreen_conf.variant_names))
+                  "\t", "\n\t".join(sorted(evergreen_conf.variant_names))))
             sys.exit(1)
 
         changed_tests = find_changed_tests(values.branch, values.base_commit, values.max_revisions,
@@ -365,7 +379,7 @@ def main():
         changed_tests = filter_tests(changed_tests, exclude_tests)
         # If there are no changed tests, exit cleanly.
         if not changed_tests:
-            print "No new or modified tests found."
+            print ("No new or modified tests found.")
             if values.test_list_outfile is not None:
                 _write_report_file({}, values.test_list_outfile)
             sys.exit(0)
@@ -388,7 +402,7 @@ def main():
             try:
                 subprocess.check_call(resmoke_cmd, shell=False)
             except subprocess.CalledProcessError as err:
-                print "Resmoke returned an error with task:", task
+                print(("Resmoke returned an error with task:", task))
                 _save_report_data(test_results, values.report_file, task)
                 _write_report_file(test_results, values.report_file)
                 sys.exit(err.returncode)

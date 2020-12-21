@@ -13,5 +13,5 @@ def test_suite():
         test_extras,
         ]
     loader = TestLoader()
-    suites = map(loader.loadTestsFromModule, modules)
+    suites = list(map(loader.loadTestsFromModule, modules))
     return TestSuite(suites)

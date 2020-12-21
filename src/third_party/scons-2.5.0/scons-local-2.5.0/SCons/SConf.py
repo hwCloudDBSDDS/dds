@@ -64,6 +64,21 @@ SCons.Conftest.LogErrorMessages = 0
 build_type = None
 build_types = ['clean', 'help']
 
+
+
+def open_file_SConf(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def SetBuildType(type):
     global build_type
     build_type = type
@@ -103,7 +118,7 @@ _ac_config_hs   = {}  # all config.h files created in this build
 sconf_global = None   # current sconf object
 
 def _createConfigH(target, source, env):
-    t = open(str(target[0]), "w")
+    t = open_file_SConf(str(target[0]), "w")
     defname = re.sub('[^A-Za-z0-9_]', '_', str(target[0]).upper())
     t.write("""#ifndef %(DEFNAME)s_SEEN
 #define %(DEFNAME)s_SEEN
@@ -131,7 +146,7 @@ def CreateConfigHBuilder(env):
                                  _stringConfigH)
     sconfigHBld = SCons.Builder.Builder(action=action)
     env.Append( BUILDERS={'SConfigHBuilder':sconfigHBld} )
-    for k in _ac_config_hs.keys():
+    for k in list(_ac_config_hs.keys()):
         env.SConfigHBuilder(k, env.Value(_ac_config_hs[k]))
 
     
@@ -162,7 +177,7 @@ class ConfigureCacheError(SConfError):
 
 # define actions for building text files
 def _createSource( target, source, env ):
-    fd = open(str(target[0]), "w")
+    fd = open_file_SConf(str(target[0]), "w")
     fd.write(source[0].get_contents())
     fd.close()
 def _stringSource( target, source, env ):
@@ -332,7 +347,7 @@ class SConfBuildTask(SCons.Taskmaster.AlwaysTask):
                                     env_decider=env.decide_source):
                         env_decider(dependency, target, prev_ni)
                         return True
-                    if env.decide_source.func_code is not force_build.func_code:
+                    if env.decide_source.__code__ is not force_build.__code__:
                         env.Decider(force_build)
                 env['PSTDOUT'] = env['PSTDERR'] = s
                 try:
@@ -346,7 +361,7 @@ class SConfBuildTask(SCons.Taskmaster.AlwaysTask):
             except SystemExit:
                 exc_value = sys.exc_info()[1]
                 raise SCons.Errors.ExplicitExit(self.targets[0],exc_value.code)
-            except Exception, e:
+            except Exception as e:
                 for t in self.targets:
                     binfo = SConfBuildInfo()
                     binfo.merge(t.get_binfo())
@@ -670,7 +685,7 @@ class SConfBase(object):
         """Adds all the tests given in the tests dictionary to this SConf
         instance
         """
-        for name in tests.keys():
+        for name in list(tests.keys()):
             self.AddTest(name, tests[name])
 
     def _createDir( self, node ):
@@ -703,7 +718,7 @@ class SConfBase(object):
             else:
                 _ac_config_logs[self.logfile] = None
                 log_mode = "w"
-            fp = open(str(self.logfile), log_mode)
+            fp = open_file_SConf(str(self.logfile), log_mode)
             self.logstream = SCons.Util.Unbuffered(fp)
             # logfile may stay in a build directory, so we tell
             # the build system not to override it with a eventually

@@ -57,6 +57,21 @@ from SCons.Debug import Trace
 
 print_duplicate = 0
 
+
+
+def open_file___init__(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def classname(obj):
     return str(obj.__class__).split('.')[-1]
 
@@ -151,7 +166,7 @@ def exists_file(node):
                     # The source file does not exist.  Make sure no old
                     # copy remains in the variant directory.
                     if print_duplicate:
-                        print "dup: no src for %s, unlinking old variant copy"%self
+                        print("dup: no src for %s, unlinking old variant copy"%self)
                     if exists_base(node) or node.islink():
                         node.fs.unlink(node.get_internal_path())
                     # Return None explicitly because the Base.exists() call
@@ -210,8 +225,8 @@ def get_contents_file(node):
         return ''
     fname = node.rfile().get_abspath()
     try:
-        contents = open(fname, "rb").read()
-    except EnvironmentError, e:
+        contents = open_file___init__(fname, "rb").read()
+    except EnvironmentError as e:
         if not e.filename:
             e.filename = fname
         raise
@@ -377,7 +392,7 @@ class NodeInfoBase(object):
             try:
                 field_list = self.field_list
             except AttributeError:
-                field_list = getattr(self, '__dict__', {}).keys()
+                field_list = list(getattr(self, '__dict__', {}).keys())
                 for obj in type(self).mro():
                     for slot in getattr(obj, '__slots__', ()):
                         if slot not in ('__weakref__', '__dict__'):
@@ -422,7 +437,7 @@ class NodeInfoBase(object):
         # TODO check or discard version
         del state['_version_id']
     
-        for key, value in state.items():
+        for key, value in list(state.items()):
             if key not in ('__weakref__',):
                 setattr(self, key, value)
 
@@ -483,7 +498,7 @@ class BuildInfoBase(object):
         """
         # TODO check or discard version
         del state['_version_id']
-        for key, value in state.items():
+        for key, value in list(state.items()):
             if key not in ('__weakref__',):
                 setattr(self, key, value)
 
@@ -737,7 +752,7 @@ class Node(object):
         """
         try:
             self.get_executor()(self, **kw)
-        except SCons.Errors.BuildError, e:
+        except SCons.Errors.BuildError as e:
             e.node = self
             raise
 
@@ -1239,7 +1254,7 @@ class Node(object):
         """Adds dependencies."""
         try:
             self._add_child(self.depends, self.depends_set, depend)
-        except TypeError, e:
+        except TypeError as e:
             e = e.args[0]
             if SCons.Util.is_List(e):
                 s = list(map(str, e))
@@ -1258,7 +1273,7 @@ class Node(object):
         """Adds dependencies to ignore."""
         try:
             self._add_child(self.ignore, self.ignore_set, depend)
-        except TypeError, e:
+        except TypeError as e:
             e = e.args[0]
             if SCons.Util.is_List(e):
                 s = list(map(str, e))
@@ -1272,7 +1287,7 @@ class Node(object):
             return
         try:
             self._add_child(self.sources, self.sources_set, source)
-        except TypeError, e:
+        except TypeError as e:
             e = e.args[0]
             if SCons.Util.is_List(e):
                 s = list(map(str, e))
@@ -1332,7 +1347,7 @@ class Node(object):
         # dictionary patterns I found all ended up using "not in"
         # internally anyway...)
         if self.ignore_set:
-            iter = chain.from_iterable(filter(None, [self.sources, self.depends, self.implicit]))
+            iter = chain.from_iterable([_f for _f in [self.sources, self.depends, self.implicit] if _f])
 
             children = []
             for i in iter:
@@ -1366,7 +1381,7 @@ class Node(object):
         # using dictionary keys, lose the order, and the only ordered
         # dictionary patterns I found all ended up using "not in"
         # internally anyway...)
-        return list(chain.from_iterable(filter(None, [self.sources, self.depends, self.implicit])))
+        return list(chain.from_iterable([_f for _f in [self.sources, self.depends, self.implicit] if _f]))
 
     def children(self, scan=1):
         """Return a list of the node's direct children, minus those
@@ -1390,7 +1405,7 @@ class Node(object):
 
     def Decider(self, function):
         foundkey = None
-        for k, v in _decider_map.iteritems():
+        for k, v in _decider_map.items():
             if v == function:
                 foundkey = k
                 break
@@ -1603,8 +1618,8 @@ class Node(object):
         new_bkids    = new.bsources    + new.bdepends    + new.bimplicit
         new_bkidsigs = new.bsourcesigs + new.bdependsigs + new.bimplicitsigs
 
-        osig = dict(zip(old_bkids, old_bkidsigs))
-        nsig = dict(zip(new_bkids, new_bkidsigs))
+        osig = dict(list(zip(old_bkids, old_bkidsigs)))
+        nsig = dict(list(zip(new_bkids, new_bkidsigs)))
 
         # The sources and dependencies we'll want to report are all stored
         # as relative paths to this target's directory, but we want to

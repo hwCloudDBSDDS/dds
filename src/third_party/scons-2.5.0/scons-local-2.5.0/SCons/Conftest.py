@@ -101,7 +101,6 @@ Autoconf-like configuration support; low level implementation of tests.
 #
 
 import re
-from types import IntType
 
 #
 # PUBLIC VARIABLES
@@ -119,6 +118,21 @@ LogErrorMessages = 1 # Set that to log Conftest-generated error messages
 #   message is a bit different, because not all the arguments for the normal
 #   message are available yet (chicken-egg problem).
 
+
+
+
+def open_file_Conftest(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def CheckBuilder(context, text = None, language = None):
     """
@@ -416,7 +430,7 @@ int main() {
     _YesNoResult(context, ret, "HAVE_" + type_name, text,
                  "Define to 1 if the system has the type `%s'." % type_name)
     if ret and fallback and context.headerfilename:
-        f = open(context.headerfilename, "a")
+        f = open_file_Conftest(context.headerfilename, "a")
         f.write("typedef %s %s;\n" % (fallback, type_name))
         f.close()
 
@@ -745,7 +759,7 @@ def _Have(context, key, have, comment = None):
         line = "#define %s 1\n" % key_up
     elif have == 0:
         line = "/* #undef %s */\n" % key_up
-    elif isinstance(have, IntType):
+    elif isinstance(have, int):
         line = "#define %s %d\n" % (key_up, have)
     else:
         line = "#define %s %s\n" % (key_up, str(have))
@@ -756,7 +770,7 @@ def _Have(context, key, have, comment = None):
         lines = "\n" + line
 
     if context.headerfilename:
-        f = open(context.headerfilename, "a")
+        f = open_file_Conftest(context.headerfilename, "a")
         f.write(lines)
         f.close()
     elif hasattr(context,'config_h'):

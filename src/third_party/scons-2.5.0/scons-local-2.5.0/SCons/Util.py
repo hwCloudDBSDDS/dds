@@ -35,13 +35,38 @@ import types
 from collections import UserDict, UserList, UserString
 
 # Don't "from types import ..." these because we need to get at the
-# types module later to look for UnicodeType.
+# types module later to look for str.
 InstanceType    = types.InstanceType
 MethodType      = types.MethodType
 FunctionType    = types.FunctionType
-try: unicode
-except NameError: UnicodeType = None
-else:             UnicodeType = unicode
+try: str
+except NameError: str = None
+else:             str = str
+
+
+
+def open_file_Util(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+
+
+def cmp(x, y):
+    if x > y:
+        return 1
+    elif x == y:
+        return 0
+    else:
+        return -1
 
 def dictify(keys, values, result={}):
     for k, v in zip(keys, values):
@@ -111,7 +136,7 @@ class NodeList(UserList):
     >>> someList.strip()
     [ 'foo', 'bar' ]
     """
-    def __nonzero__(self):
+    def __bool__(self):
         return len(self.data) != 0
 
     def __str__(self):
@@ -153,7 +178,7 @@ class DisplayEngine(object):
             return
         if append_newline: text = text + '\n'
         try:
-            sys.stdout.write(unicode(text))
+            sys.stdout.write(str(text))
         except IOError:
             # Stdout might be connected to a pipe that has been closed
             # by now. The most likely reason for the pipe being closed
@@ -247,7 +272,7 @@ def print_tree(root, child_func, prune=0, showtags=0, margin=[0], visited=None):
                       '        N  = no clean\n' +
                       '         H = no cache\n' +
                       '\n')
-            sys.stdout.write(unicode(legend))
+            sys.stdout.write(str(legend))
 
         tags = ['[']
         tags.append(' E'[IDX(root.exists())])
@@ -272,10 +297,10 @@ def print_tree(root, child_func, prune=0, showtags=0, margin=[0], visited=None):
     children = child_func(root)
 
     if prune and rname in visited and children:
-        sys.stdout.write(''.join(tags + margins + ['+-[', rname, ']']) + u'\n')
+        sys.stdout.write(''.join(tags + margins + ['+-[', rname, ']']) + '\n')
         return
 
-    sys.stdout.write(''.join(tags + margins + ['+-', rname]) + u'\n')
+    sys.stdout.write(''.join(tags + margins + ['+-', rname]) + '\n')
 
     visited[rname] = 1
 
@@ -304,24 +329,24 @@ def print_tree(root, child_func, prune=0, showtags=0, margin=[0], visited=None):
 # transforms accesses to global variable into local variables
 # accesses (i.e. LOAD_FAST instead of LOAD_GLOBAL).
 
-DictTypes = (dict, UserDict)
-ListTypes = (list, UserList)
+dicts = (dict, UserDict)
+lists = (list, UserList)
 SequenceTypes = (list, tuple, UserList)
 
 # Note that profiling data shows a speed-up when comparing
 # explicitly with str and unicode instead of simply comparing
 # with basestring. (at least on Python 2.5.1)
-StringTypes = (str, unicode, UserString)
+bytess = (str, str, UserString)
 
 # Empirically, it is faster to check explicitly for str and
 # unicode than for basestring.
-BaseStringTypes = (str, unicode)
+Basebytess = (str, str)
 
-def is_Dict(obj, isinstance=isinstance, DictTypes=DictTypes):
-    return isinstance(obj, DictTypes)
+def is_Dict(obj, isinstance=isinstance, dicts=dicts):
+    return isinstance(obj, dicts)
 
-def is_List(obj, isinstance=isinstance, ListTypes=ListTypes):
-    return isinstance(obj, ListTypes)
+def is_List(obj, isinstance=isinstance, lists=lists):
+    return isinstance(obj, lists)
 
 def is_Sequence(obj, isinstance=isinstance, SequenceTypes=SequenceTypes):
     return isinstance(obj, SequenceTypes)
@@ -329,27 +354,27 @@ def is_Sequence(obj, isinstance=isinstance, SequenceTypes=SequenceTypes):
 def is_Tuple(obj, isinstance=isinstance, tuple=tuple):
     return isinstance(obj, tuple)
 
-def is_String(obj, isinstance=isinstance, StringTypes=StringTypes):
-    return isinstance(obj, StringTypes)
+def is_String(obj, isinstance=isinstance, bytess=bytess):
+    return isinstance(obj, bytess)
 
-def is_Scalar(obj, isinstance=isinstance, StringTypes=StringTypes, SequenceTypes=SequenceTypes):
+def is_Scalar(obj, isinstance=isinstance, bytess=bytess, SequenceTypes=SequenceTypes):
     # Profiling shows that there is an impressive speed-up of 2x
     # when explicitly checking for strings instead of just not
     # sequence when the argument (i.e. obj) is already a string.
     # But, if obj is a not string then it is twice as fast to
     # check only for 'not sequence'. The following code therefore
     # assumes that the obj argument is a string most of the time.
-    return isinstance(obj, StringTypes) or not isinstance(obj, SequenceTypes)
+    return isinstance(obj, bytess) or not isinstance(obj, SequenceTypes)
 
 def do_flatten(sequence, result, isinstance=isinstance, 
-               StringTypes=StringTypes, SequenceTypes=SequenceTypes):
+               bytess=bytess, SequenceTypes=SequenceTypes):
     for item in sequence:
-        if isinstance(item, StringTypes) or not isinstance(item, SequenceTypes):
+        if isinstance(item, bytess) or not isinstance(item, SequenceTypes):
             result.append(item)
         else:
             do_flatten(item, result)
 
-def flatten(obj, isinstance=isinstance, StringTypes=StringTypes, 
+def flatten(obj, isinstance=isinstance, bytess=bytess,
             SequenceTypes=SequenceTypes, do_flatten=do_flatten):
     """Flatten a sequence to a non-nested list.
 
@@ -357,17 +382,17 @@ def flatten(obj, isinstance=isinstance, StringTypes=StringTypes,
     to a non-nested list. Note that flatten() considers strings
     to be scalars instead of sequences like Python would.
     """
-    if isinstance(obj, StringTypes) or not isinstance(obj, SequenceTypes):
+    if isinstance(obj, bytess) or not isinstance(obj, SequenceTypes):
         return [obj]
     result = []
     for item in obj:
-        if isinstance(item, StringTypes) or not isinstance(item, SequenceTypes):
+        if isinstance(item, bytess) or not isinstance(item, SequenceTypes):
             result.append(item)
         else:
             do_flatten(item, result)
     return result
 
-def flatten_sequence(sequence, isinstance=isinstance, StringTypes=StringTypes, 
+def flatten_sequence(sequence, isinstance=isinstance, bytess=bytess,
                      SequenceTypes=SequenceTypes, do_flatten=do_flatten):
     """Flatten a sequence to a non-nested list.
 
@@ -377,7 +402,7 @@ def flatten_sequence(sequence, isinstance=isinstance, StringTypes=StringTypes,
     """
     result = []
     for item in sequence:
-        if isinstance(item, StringTypes) or not isinstance(item, SequenceTypes):
+        if isinstance(item, bytess) or not isinstance(item, SequenceTypes):
             result.append(item)
         else:
             do_flatten(item, result)
@@ -390,8 +415,8 @@ def flatten_sequence(sequence, isinstance=isinstance, StringTypes=StringTypes,
 #
 def to_String(s, 
               isinstance=isinstance, str=str,
-              UserString=UserString, BaseStringTypes=BaseStringTypes):
-    if isinstance(s,BaseStringTypes):
+              UserString=UserString, Basebytess=Basebytess):
+    if isinstance(s,Basebytess):
         # Early out when already a string!
         return s
     elif isinstance(s, UserString):
@@ -403,11 +428,11 @@ def to_String(s,
 
 def to_String_for_subst(s, 
                         isinstance=isinstance, str=str, to_String=to_String,
-                        BaseStringTypes=BaseStringTypes, SequenceTypes=SequenceTypes,
+                        Basebytess=Basebytess, SequenceTypes=SequenceTypes,
                         UserString=UserString):
                         
     # Note that the test cases are sorted by order of probability.
-    if isinstance(s, BaseStringTypes):
+    if isinstance(s, Basebytess):
         return s
     elif isinstance(s, SequenceTypes):
         l = []
@@ -448,7 +473,7 @@ _semi_deepcopy_dispatch = d = {}
 
 def semi_deepcopy_dict(x, exclude = [] ):
     copy = {}
-    for key, val in x.items():
+    for key, val in list(x.items()):
         # The regular Python copy.deepcopy() also deepcopies the key,
         # as follows:
         #
@@ -725,7 +750,7 @@ else:
                     # raised so as to not mask possibly serious disk or
                     # network issues.
                     continue
-                if stat.S_IMODE(st[stat.ST_MODE]) & 0111:
+                if stat.S_IMODE(st[stat.ST_MODE]) & 0o111:
                     try:
                         reject.index(f)
                     except ValueError:
@@ -1008,7 +1033,7 @@ class OrderedDict(UserDict):
         if key not in self._keys: self._keys.append(key)
 
     def update(self, dict):
-        for (key, val) in dict.items():
+        for (key, val) in list(dict.items()):
             self.__setitem__(key, val)
 
     def values(self):
@@ -1030,7 +1055,7 @@ class Selector(OrderedDict):
             # Try to perform Environment substitution on the keys of
             # the dictionary before giving up.
             s_dict = {}
-            for (k,v) in self.items():
+            for (k,v) in list(self.items()):
                 if k is not None:
                     s_k = env.subst(k)
                     if s_k in s_dict:
@@ -1090,7 +1115,9 @@ def unique(s):
     unique() will usually work in linear time.
 
     If not possible, the sequence elements should enjoy a total
-    ordering, and if list(s).sort() doesn't raise TypeError it's
+    import functools
+
+    ordering, and if list(functools.cmp_to_key(s).sort()) doesn't raise TypeError it's
     assumed that they do enjoy a total ordering.  Then unique() will
     usually work in O(N*log2(N)) time.
 
@@ -1304,7 +1331,9 @@ class UniqueList(UserList):
         UserList.reverse(self)
     def sort(self, *args, **kwds):
         self.__make_unique()
-        return UserList.sort(self, *args, **kwds)
+        import functools
+
+        return UserList.sort(functools.cmp_to_key(self, *args, **kwds))
     def extend(self, other):
         UserList.extend(self, other)
         self.unique = False
@@ -1391,7 +1420,7 @@ def AddMethod(obj, function, name=None):
       print a.listIndex(5)
     """
     if name is None:
-        name = function.func_name
+        name = function.__name__
     else:
         function = RenameFunction(function, name)
 
@@ -1407,10 +1436,10 @@ def RenameFunction(function, name):
     Returns a function identical to the specified function, but with
     the specified name.
     """
-    return FunctionType(function.func_code,
-                        function.func_globals,
+    return FunctionType(function.__code__,
+                        function.__globals__,
                         name,
-                        function.func_defaults)
+                        function.__defaults__)
 
 
 md5 = False
@@ -1418,7 +1447,7 @@ def MD5signature(s):
     return str(s)
 
 def MD5filesignature(fname, chunksize=65536):
-    f = open(fname, "rb")
+    f = open_file_Util(fname, "rb")
     result = f.read()
     f.close()
     return result
@@ -1437,7 +1466,7 @@ else:
 
         def MD5filesignature(fname, chunksize=65536):
             m = hashlib.md5()
-            f = open(fname, "rb")
+            f = open_file_Util(fname, "rb")
             while True:
                 blck = f.read(chunksize)
                 if not blck:
@@ -1492,7 +1521,7 @@ class Null(object):
         return self
     def __repr__(self):
         return "Null(0x%08X)" % id(self)
-    def __nonzero__(self):
+    def __bool__(self):
         return False
     def __getattr__(self, name):
         return self

@@ -146,7 +146,7 @@ def writeMappingsVar(intlData, dict, name, description, fileDate, url):
     intlData.write("var {0} = {{\n".format(name))
     keys = sorted(dict)
     for key in keys:
-        if isinstance(dict[key], basestring):
+        if isinstance(dict[key], str):
             value = '"{0}"'.format(dict[key])
         else:
             preferred = dict[key]["preferred"]
@@ -169,7 +169,7 @@ def writeLanguageTagData(intlData, fileDate, url, langTagMappings, langSubtagMap
 if __name__ == '__main__':
     import codecs
     import sys
-    import urllib2
+    import urllib.request, urllib.error, urllib.parse
 
     url = "http://www.iana.org/assignments/language-subtag-registry"
     if len(sys.argv) > 1:
@@ -177,8 +177,8 @@ if __name__ == '__main__':
         registry = codecs.open(sys.argv[1], "r", encoding="utf-8")
     else:
         print("Downloading IANA Language Subtag Registry...")
-        reader = urllib2.urlopen(url)
-        text = reader.read().decode("utf-8")
+        reader = urllib.request.urlopen(url)
+        text = reader.read()
         reader.close()
         registry = codecs.open("language-subtag-registry.txt", "w+", encoding="utf-8")
         registry.write(text)

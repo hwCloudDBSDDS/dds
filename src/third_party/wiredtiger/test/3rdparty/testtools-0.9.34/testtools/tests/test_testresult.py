@@ -90,6 +90,21 @@ from testtools.testresult.real import (
     )
 
 
+
+
+def open_file_test_testresult(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def make_erroring_test():
     class Test(TestCase):
         def error(self):
@@ -2316,8 +2331,8 @@ class TestNonAsciiResults(TestCase):
     """
 
     _sample_texts = (
-        _u("pa\u026a\u03b8\u0259n"), # Unicode encodings only
-        _u("\u5357\u7121"), # In ISO 2022 encodings
+        _u("pa\\u026a\\u03b8\\u0259n"), # Unicode encodings only
+        _u("\\u5357\\u7121"), # In ISO 2022 encodings
         _u("\xa7\xa7\xa7"), # In ISO 8859 encodings
         )
 
@@ -2391,8 +2406,8 @@ class TestNonAsciiResults(TestCase):
            encoding = "unicode_internal"
         for u in self._sample_texts:
             try:
-                b = u.encode(encoding)
-                if u == b.decode(encoding):
+                b = u
+                if u == b:
                    if str_is_unicode:
                        return u, u
                    return u, b
@@ -2421,7 +2436,7 @@ class TestNonAsciiResults(TestCase):
         textoutput = self._test_external_case("self.fail('\\a\\a\\a')")
         self.expectFailure("Defense against the beeping horror unimplemented",
             self.assertNotIn, self._as_output("\a\a\a"), textoutput)
-        self.assertIn(self._as_output(_u("\uFFFD\uFFFD\uFFFD")), textoutput)
+        self.assertIn(self._as_output(_u("\\uFFFD\\uFFFD\\uFFFD")), textoutput)
 
     def _local_os_error_matcher(self):
         if sys.version_info > (3, 3):
@@ -2441,14 +2456,14 @@ class TestNonAsciiResults(TestCase):
 
     def test_assertion_text_shift_jis(self):
         """A terminal raw backslash in an encoded string is weird but fine"""
-        example_text = _u("\u5341")
+        example_text = _u("\\u5341")
         textoutput = self._test_external_case(
             coding="shift_jis",
             testline="self.fail('%s')" % example_text)
         if str_is_unicode:
             output_text = example_text
         else:
-            output_text = example_text.encode("shift_jis").decode(
+            output_text = example_text.decode(
                 _get_exception_encoding(), "replace")
         self.assertIn(self._as_output("AssertionError: %s" % output_text),
             textoutput)
@@ -2533,7 +2548,7 @@ class TestNonAsciiResults(TestCase):
             # Python 2.4 assumes the file is latin-1 and tells you off
             self._silence_deprecation_warnings()
         self._setup_external_case("import bad")
-        f = open(os.path.join(self.dir, "bad.py"), "wb")
+        f = open_file_test_testresult(os.path.join(self.dir, "bad.py"), "wb")
         try:
             f.write(_b("x\x9c\xcb*\xcd\xcb\x06\x00\x04R\x01\xb9"))
         finally:
@@ -2594,7 +2609,7 @@ class TestNonAsciiResults(TestCase):
         """Syntax error on a utf-8 line shows the line decoded"""
         text, raw = self._get_sample_text("utf-8")
         textoutput = self._setup_external_case("import bad")
-        self._write_module("bad", "utf-8", _u("\ufeff^ = 0 # %s\n") % text)
+        self._write_module("bad", "utf-8", _u("\\ufeff^ = 0 # %s\n") % text)
         textoutput = self._run_external_case()
         self.assertIn(self._as_output(_u(
             'bad.py", line 1\n'
@@ -2615,7 +2630,7 @@ class TestNonAsciiResultsWithUnittest(TestNonAsciiResults):
     def _as_output(self, text):
         if str_is_unicode:
             return text
-        return text.encode("utf-8")
+        return text
 
 
 class TestDetailsToStr(TestCase):
@@ -2705,7 +2720,7 @@ class TestByTestResultTests(TestCase):
         super(TestByTestResultTests, self).setUp()
         self.log = []
         self.result = TestByTestResult(self.on_test)
-        now = iter(range(5))
+        now = iter(list(range(5)))
         self.result._now = lambda: advance_iterator(now)
 
     def assertCalled(self, **kwargs):

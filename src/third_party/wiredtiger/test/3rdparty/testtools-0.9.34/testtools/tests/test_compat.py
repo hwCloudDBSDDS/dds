@@ -34,6 +34,21 @@ from testtools.matchers import (
     )
 
 
+
+
+def open_file_test_compat(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class TestDetectEncoding(testtools.TestCase):
     """Test detection of Python source encodings"""
 
@@ -146,7 +161,7 @@ class TestGetSourceEncoding(testtools.TestCase):
         self._written = False
 
     def put_source(self, text):
-        f = open(self.filename, "w")
+        f = open_file_test_compat(self.filename, "w")
         try:
             f.write(text)
         finally:
@@ -158,25 +173,25 @@ class TestGetSourceEncoding(testtools.TestCase):
 
     def test_nonexistant_file_as_ascii(self):
         """When file can't be found, the encoding should default to ascii"""
-        self.assertEquals("ascii", _get_source_encoding(self.filename))
+        self.assertEqual("ascii", _get_source_encoding(self.filename))
 
     def test_encoding_is_cached(self):
         """The encoding should stay the same if the cache isn't invalidated"""
         self.put_source(
             "# coding: iso-8859-13\n"
             "import os\n")
-        self.assertEquals("iso-8859-13", _get_source_encoding(self.filename))
+        self.assertEqual("iso-8859-13", _get_source_encoding(self.filename))
         self.put_source(
             "# coding: rot-13\n"
             "vzcbeg bf\n")
-        self.assertEquals("iso-8859-13", _get_source_encoding(self.filename))
+        self.assertEqual("iso-8859-13", _get_source_encoding(self.filename))
 
     def test_traceback_rechecks_encoding(self):
         """A traceback function checks the cache and resets the encoding"""
         self.put_source(
             "# coding: iso-8859-8\n"
             "import os\n")
-        self.assertEquals("iso-8859-8", _get_source_encoding(self.filename))
+        self.assertEqual("iso-8859-8", _get_source_encoding(self.filename))
         self.put_source(
             "# coding: utf-8\n"
             "import os\n")
@@ -186,7 +201,7 @@ class TestGetSourceEncoding(testtools.TestCase):
             traceback.extract_tb(sys.exc_info()[2])
         else:
             self.fail("RuntimeError not raised")
-        self.assertEquals("utf-8", _get_source_encoding(self.filename))
+        self.assertEqual("utf-8", _get_source_encoding(self.filename))
 
 
 class _FakeOutputStream(object):
@@ -202,7 +217,7 @@ class _FakeOutputStream(object):
 class TestUnicodeOutputStream(testtools.TestCase):
     """Test wrapping output streams so they work with arbitrary unicode"""
 
-    uni = _u("pa\u026a\u03b8\u0259n")
+    uni = _u("pa\\u026a\\u03b8\\u0259n")
 
     def setUp(self):
         super(TestUnicodeOutputStream, self).setUp()
@@ -257,7 +272,7 @@ class TestUnicodeOutputStream(testtools.TestCase):
     def test_stringio(self):
         """A StringIO object should maybe get an ascii native str type"""
         try:
-            from cStringIO import StringIO
+            from io import StringIO
             newio = False
         except ImportError:
             from io import StringIO
@@ -339,13 +354,13 @@ class TestTextRepr(testtools.TestCase):
         # Letters latin alphabets are printable
         (_u("\xA1"), _u("'\xa1'"), _u("'''\\\n\xa1'''")),
         (_u("\xFF"), _u("'\xff'"), _u("'''\\\n\xff'''")),
-        (_u("\u0100"), _u("'\u0100'"), _u("'''\\\n\u0100'''")),
+        (_u("\\u0100"), _u("'\\u0100'"), _u("'''\\\n\\u0100'''")),
         # Line and paragraph seperators are unprintable
-        (_u("\u2028"), "'\\u2028'", "'''\\\n\\u2028'''"),
-        (_u("\u2029"), "'\\u2029'", "'''\\\n\\u2029'''"),
+        (_u("\\u2028"), "'\\u2028'", "'''\\\n\\u2028'''"),
+        (_u("\\u2029"), "'\\u2029'", "'''\\\n\\u2029'''"),
         # Unpaired surrogates are unprintable
-        (_u("\uD800"), "'\\ud800'", "'''\\\n\\ud800'''"),
-        (_u("\uDFFF"), "'\\udfff'", "'''\\\n\\udfff'''"),
+        (_u("\\uD800"), "'\\ud800'", "'''\\\n\\ud800'''"),
+        (_u("\\uDFFF"), "'\\udfff'", "'''\\\n\\udfff'''"),
         # Unprintable general categories not fully tested: Cc, Cf, Co, Cn, Zs
         )
 
@@ -467,7 +482,7 @@ class TestExceptionFormatting(Python2CompatibilityTests):
     def _assert_exception_format(self, eclass, evalue, expected):
         actual = _format_exception_only(eclass, evalue)
         self.assertThat(actual, Equals(expected))
-        self.assertThat(''.join(actual), IsInstance(unicode))
+        self.assertThat(''.join(actual), IsInstance(str))
 
     def test_supports_string_exception(self):
         self._assert_exception_format(

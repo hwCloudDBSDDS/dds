@@ -40,6 +40,21 @@ from SCons.Tool.packaging import stripinstallbuilder
 #
 # Utility functions
 #
+
+
+def open_file_msi(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def convert_to_id(s, id_set):
     """ Some parts of .wxs need an Id attribute (for example: The File and
     Directory directives. The charset is limited to A-Z, a-z, digits,
@@ -172,7 +187,7 @@ def generate_guids(root):
 
     # find all XMl nodes matching the key, retrieve their attribute, hash their
     # subtree, convert hash to string and add as a attribute to the xml node.
-    for (key,value) in needs_id.items():
+    for (key,value) in list(needs_id.items()):
         node_list = root.getElementsByTagName(key)
         attribute = value
         for node in node_list:
@@ -189,7 +204,7 @@ def build_wxsfile(target, source, env):
     """ Compiles a .wxs file from the keywords given in env['msi_spec'] and
         by analyzing the tree of source nodes and their tags.
     """
-    file = open(target[0].get_abspath(), 'w')
+    file = open_file_msi(target[0].get_abspath(), 'w')
 
     try:
         # Create a document with the Wix root tag
@@ -216,7 +231,7 @@ def build_wxsfile(target, source, env):
         if 'CHANGE_SPECFILE' in env:
             env['CHANGE_SPECFILE'](target, source)
 
-    except KeyError, e:
+    except KeyError as e:
         raise SCons.Errors.UserError( '"%s" package field for MSI is missing.' % e.args[0] )
 
 #
@@ -335,7 +350,7 @@ def build_wxsfile_file_section(root, files, NAME, VERSION, VENDOR, filename_set,
             }
 
         # fill in the default tags given above.
-        for k,v in [ (k, v) for (k,v) in h.items() if not hasattr(file, k) ]:
+        for k,v in [ (k, v) for (k,v) in list(h.items()) if not hasattr(file, k) ]:
             setattr( file, k, v )
 
         File = factory.createElement( 'File' )
@@ -382,7 +397,7 @@ def build_wxsfile_features_section(root, files, NAME, VERSION, SUMMARY, id_set):
     Feature.attributes['Description']           = escape( SUMMARY )
     Feature.attributes['Display']               = 'expand'
 
-    for (feature, files) in create_feature_dict(files).items():
+    for (feature, files) in list(create_feature_dict(files).items()):
         SubFeature   = factory.createElement('Feature')
         SubFeature.attributes['Level'] = '1'
 
@@ -441,7 +456,7 @@ def build_license_file(directory, spec):
         pass # ignore this as X_MSI_LICENSE_TEXT is optional
 
     if name!='' or text!='':
-        file = open( os.path.join(directory.get_path(), 'License.rtf'), 'w' )
+        file = open_file_msi( os.path.join(directory.get_path(), 'License.rtf'), 'w' )
         file.write('{\\rtf')
         if text!='':
              file.write(text.replace('\n', '\\par '))

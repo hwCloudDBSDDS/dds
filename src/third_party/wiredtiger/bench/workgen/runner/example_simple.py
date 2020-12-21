@@ -33,11 +33,11 @@ from workgen import *
 
 def show(tname):
     print('')
-    print('<><><><> ' + tname + ' <><><><>')
+    print(('<><><><> ' + tname + ' <><><><>'))
     c = s.open_cursor(tname, None)
     for k,v in c:
-        print('key: ' + k)
-        print('value: ' + v)
+        print(('key: ' + k))
+        print(('value: ' + v))
     print('<><><><><><><><><><><><>')
     c.close()
 

@@ -34,7 +34,7 @@ __revision__ = "src/engine/SCons/Tool/hpcc.py rel_2.5.0:3543:937e55cd78f7 2016/0
 
 import SCons.Util
 
-import cc
+from . import cc
 
 def generate(env):
     """Add Builders and construction variables for aCC & cc to an Environment."""

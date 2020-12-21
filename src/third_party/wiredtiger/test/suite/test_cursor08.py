@@ -70,7 +70,7 @@ class test_cursor08(wttest.WiredTigerTestCase, suite_subprocess):
         c = self.session.open_cursor(self.uri, None)
 
         # A binary value.
-        value = u'\u0001\u0002abcd\u0003\u0004'
+        value = '\u0001\u0002abcd\u0003\u0004'
 
         self.session.begin_transaction()
         for k in range(self.nkeys):
@@ -84,7 +84,7 @@ class test_cursor08(wttest.WiredTigerTestCase, suite_subprocess):
         # Check for these values via a log cursor
         c = self.session.open_cursor("log:", None)
         count = 0
-        while c.next() == 0:
+        while next(c) == 0:
             # lsn.file, lsn.offset, opcount
             keys = c.get_key()
             # txnid, rectype, optype, fileid, logrec_key, logrec_value

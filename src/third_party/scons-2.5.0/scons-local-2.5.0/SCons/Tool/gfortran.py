@@ -36,7 +36,7 @@ __revision__ = "src/engine/SCons/Tool/gfortran.py rel_2.5.0:3543:937e55cd78f7 20
 
 import SCons.Util
 
-import fortran
+from . import fortran
 
 def generate(env):
     """Add Builders and construction variables for gfortran to an

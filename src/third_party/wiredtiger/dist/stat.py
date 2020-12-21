@@ -7,6 +7,21 @@ from dist import compare_srcfile
 # Read the source files.
 from stat_data import groups, dsrc_stats, connection_stats, join_stats
 
+
+
+def open_file_stat(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def print_struct(title, name, base, stats):
     '''Print the structures for the stat.h file.'''
     f.write('/*\n')
@@ -21,9 +36,9 @@ def print_struct(title, name, base, stats):
 
 # Update the #defines in the stat.h file.
 tmp_file = '__tmp'
-f = open(tmp_file, 'w')
+f = open_file_stat(tmp_file, 'w')
 skip = 0
-for line in open('../src/include/stat.h', 'r'):
+for line in open_file_stat('../src/include/stat.h', 'r'):
     if not skip:
         f.write(line)
     if line.count('Statistics section: END'):
@@ -94,9 +109,9 @@ def print_defines():
 
 # Update the #defines in the wiredtiger.in file.
 tmp_file = '__tmp'
-f = open(tmp_file, 'w')
+f = open_file_stat(tmp_file, 'w')
 skip = 0
-for line in open('../src/include/wiredtiger.in', 'r'):
+for line in open_file_stat('../src/include/wiredtiger.in', 'r'):
     if not skip:
         f.write(line)
     if line.count('Statistics section: END'):
@@ -233,7 +248,7 @@ __wt_stat_''' + name + '''_aggregate(
     f.write('}\n')
 
 # Write the stat initialization and refresh routines to the stat.c file.
-f = open(tmp_file, 'w')
+f = open_file_stat(tmp_file, 'w')
 f.write('/* DO NOT EDIT: automatically built by dist/stat.py. */\n\n')
 f.write('#include "wt_internal.h"\n')
 

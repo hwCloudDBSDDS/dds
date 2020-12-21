@@ -35,6 +35,21 @@ else:
     have_discover = True
 
 
+
+
+def open_file_run(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def list_test(test):
     """Return the test ids that would be run if test() was run.
 
@@ -209,12 +224,12 @@ class TestProgram(object):
             # OptimisingTestSuite.add, but with a standard protocol).
             # This is needed because the load_tests hook allows arbitrary
             # suites, even if that is rarely used.
-            source = open(self.load_list, 'rb')
+            source = open_file_run(self.load_list, 'rb')
             try:
                 lines = source.readlines()
             finally:
                 source.close()
-            test_ids = set(line.strip().decode('utf-8') for line in lines)
+            test_ids = set(line.strip() for line in lines)
             self.test = filter_by_ids(self.test, test_ids)
         if not self.listtests:
             self.runTests()
@@ -237,7 +252,7 @@ class TestProgram(object):
             usage['catchbreak'] = CATCHBREAK
         if self.buffer != False:
             usage['buffer'] = BUFFEROUTPUT
-        print(self.USAGE % usage)
+        print((self.USAGE % usage))
         sys.exit(2)
 
     def parseArgs(self, argv):

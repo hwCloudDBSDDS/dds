@@ -34,6 +34,21 @@ import wiredtiger, wttest
 # test_huffman01.py
 #    Huffman key and value configurations
 # Basic smoke-test of huffman key and value settings.
+
+
+def open_file_test_huffman01(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_huffman01(wttest.WiredTigerTestCase, suite_subprocess):
     """
     Test basic operations
@@ -58,13 +73,13 @@ class test_huffman01(wttest.WiredTigerTestCase, suite_subprocess):
         dir = self.conn.get_home()
         if self.kfile != None:
             # For the UTF settings write some made-up frequency information.
-            f = open(dir + '/' + self.kfile, 'w')
+            f = open_file_test_huffman01(dir + '/' + self.kfile, 'w')
             f.write('48 546233\n49 460946\n')
             f.write('0x4a 546233\n0x4b 460946\n')
             f.close()
         # if self.vfile != None and not os.path.exists(self.vfile):
         if self.vfile != None:
-            f = open(dir + '/' + self.vfile, 'w')
+            f = open_file_test_huffman01(dir + '/' + self.vfile, 'w')
             # For the UTF settings write some made-up frequency information.
             f.write('48 546233\n49 460946\n')
             f.write('0x4a 546233\n0x4b 460946\n')
@@ -79,7 +94,7 @@ class test_huffman_range(wttest.WiredTigerTestCase):
     # Test UTF8 out-of-range symbol information.
     def test_huffman_range_symbol_utf8(self):
         dir = self.conn.get_home()
-        f = open(dir + '/t8file', 'w')
+        f = open_file_test_huffman01(dir + '/t8file', 'w')
         f.write('256 546233\n257 460946\n')
         f.close()
         config="huffman_key=utf8t8file"
@@ -90,7 +105,7 @@ class test_huffman_range(wttest.WiredTigerTestCase):
     # Test UTF16 out-of-range symbol information.
     def test_huffman_range_symbol_utf16(self):
         dir = self.conn.get_home()
-        f = open(dir + '/t16file', 'w')
+        f = open_file_test_huffman01(dir + '/t16file', 'w')
         f.write('65536 546233\n65537 460946\n')
         f.close()
         config="huffman_key=utf16t16file"
@@ -102,7 +117,7 @@ class test_huffman_range(wttest.WiredTigerTestCase):
     def test_huffman_range_frequency(self):
         # Write out-of-range frequency information.
         dir = self.conn.get_home()
-        f = open(dir + '/t8file', 'w')
+        f = open_file_test_huffman01(dir + '/t8file', 'w')
         f.write('48 4294967296\n49 4294967297\n')
         f.close()
         config="huffman_key=utf8t8file"
@@ -113,7 +128,7 @@ class test_huffman_range(wttest.WiredTigerTestCase):
     # Test duplicate symbol information.
     def test_huffman_range_symbol_dup(self):
         dir = self.conn.get_home()
-        f = open(dir + '/t8file', 'w')
+        f = open_file_test_huffman01(dir + '/t8file', 'w')
         f.write('100 546233\n101 460946\n')
         f.write('102 546233\n100 460946\n')
         f.close()

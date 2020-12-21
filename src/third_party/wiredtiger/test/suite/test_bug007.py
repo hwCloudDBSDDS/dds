@@ -32,6 +32,21 @@
 import wiredtiger, wttest
 
 # Check that forced salvage works correctly.
+
+
+def open_file_test_bug007(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_bug007(wttest.WiredTigerTestCase):
     def test_bug007(self):
         # This is a btree layer test, test files only.
@@ -44,7 +59,7 @@ class test_bug007(wttest.WiredTigerTestCase):
 
         # Force is required if a file doesn't have a reasonable header.
         # Overwrite the file with random data.
-        f = open('test_bug007', 'w')
+        f = open_file_test_bug007('test_bug007', 'w')
         f.write('random data' * 100)
         f.close()
 

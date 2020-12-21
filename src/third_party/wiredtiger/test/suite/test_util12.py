@@ -41,13 +41,13 @@ class test_util12(wttest.WiredTigerTestCase, suite_subprocess):
         self.runWt(['write', 'table:' + self.tablename,
                     'def', '456', 'abc', '123'])
         cursor = self.session.open_cursor('table:' + self.tablename, None, None)
-        self.assertEqual(cursor.next(), 0)
+        self.assertEqual(next(cursor), 0)
         self.assertEqual(cursor.get_key(), 'abc')
         self.assertEqual(cursor.get_value(), '123')
-        self.assertEqual(cursor.next(), 0)
+        self.assertEqual(next(cursor), 0)
         self.assertEqual(cursor.get_key(), 'def')
         self.assertEqual(cursor.get_value(), '456')
-        self.assertEqual(cursor.next(), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(next(cursor), wiredtiger.WT_NOTFOUND)
         cursor.close()
 
     def test_write_no_keys(self):
@@ -70,13 +70,13 @@ class test_util12(wttest.WiredTigerTestCase, suite_subprocess):
         self.runWt(['write', 'table:' + self.tablename,
                     'def', '456', 'abc', '123'])
         cursor = self.session.open_cursor('table:' + self.tablename, None, None)
-        self.assertEqual(cursor.next(), 0)
+        self.assertEqual(next(cursor), 0)
         self.assertEqual(cursor.get_key(), 'abc')
         self.assertEqual(cursor.get_value(), '123')
-        self.assertEqual(cursor.next(), 0)
+        self.assertEqual(next(cursor), 0)
         self.assertEqual(cursor.get_key(), 'def')
         self.assertEqual(cursor.get_value(), '456')
-        self.assertEqual(cursor.next(), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(next(cursor), wiredtiger.WT_NOTFOUND)
         cursor.close()
 
     def test_write_bad_args(self):

@@ -128,7 +128,7 @@ class test_backup_target(wttest.WiredTigerTestCase, suite_subprocess):
         # Open up the backup cursor, and copy the files.
         cursor = self.session.open_cursor('backup:', None, config)
         while True:
-            ret = cursor.next()
+            ret = next(cursor)
             if ret != 0:
                 break
             #print 'Copy from: ' + cursor.get_key() + ' to ' + self.dir

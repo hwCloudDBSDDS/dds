@@ -33,8 +33,23 @@
 # issued for any .wtperf directives that are not known.
 # See also the usage() function.
 #
-from __future__ import print_function
+
 import os, shutil, sys, tempfile
+
+
+
+def open_file_wtperf(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -457,7 +472,7 @@ class Translator:
 
     def translate_inner(self):
         workloadopts = ''
-        with open(self.filename) as fin:
+        with open_file_wtperf(self.filename) as fin:
             for line in fin:
                 self.linenum += 1
                 commentpos = line.find('#')
@@ -626,8 +641,8 @@ for arg in sys.argv[1:]:
             # in the generated code will clean out the directory first.
             raised = None
             try:
-                execfile(tmpfile)
-            except Exception, exception:
+                exec(compile(open(tmpfile, "rb").read(), tmpfile, 'exec'))
+            except Exception as exception:
                 raised = exception
             if not os.path.isdir(homedir):
                 os.makedirs(homedir)

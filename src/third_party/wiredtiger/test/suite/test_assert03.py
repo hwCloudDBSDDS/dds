@@ -64,7 +64,7 @@ class test_assert03(wttest.WiredTigerTestCase, suite_subprocess):
         c['key1'] = 'value1'
         msg = "/none set on this transaction/"
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda:self.assertEquals(self.session.commit_transaction(), 0), msg)
+            lambda:self.assertEqual(self.session.commit_transaction(), 0), msg)
         c.close()
 
         # The never and none settings should succeed.

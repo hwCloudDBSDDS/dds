@@ -32,8 +32,23 @@ from wiredtiger import WiredTigerError
 from wtscenario import make_scenarios
 
 # TODO - tmp code
+
+
+def open_file_test_async01(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def tty_pr(s):
-    o = open('/dev/tty', 'w')
+    o = open_file_test_async01('/dev/tty', 'w')
     o.write(s + '\n')
     o.close()
 
@@ -140,7 +155,7 @@ class test_async01(wttest.WiredTigerTestCase, suite_subprocess):
         if self.tablekind == 'row':
             return 'key' + str(i)
         else:
-            return long(i+1)
+            return int(i+1)
 
     def genvalue(self, i):
         if self.tablekind == 'fix':

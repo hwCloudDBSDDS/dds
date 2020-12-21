@@ -61,7 +61,7 @@ syslibdeps_env_var = 'SYSLIBDEPS'
 missing_syslibdep = 'MISSING_LIBDEP_'
 
 class dependency(object):
-    Public, Private, Interface = range(3)
+    Public, Private, Interface = list(range(3))
 
     def __init__(self, value, deptype):
         self.target_node = value
@@ -85,7 +85,7 @@ dependency_visibility_honored = {
 class DependencyCycleError(SCons.Errors.UserError):
     """Exception representing a cycle discovered in library dependencies."""
 
-    def __init__(self, first_node ):
+    def __init__(self, first_node):
         super(DependencyCycleError, self).__init__()
         self.cycle_nodes = [first_node]
 
@@ -133,7 +133,7 @@ def __get_libdeps(node):
                 marked.add(n.target_node)
                 tsorted.append(n.target_node)
 
-            except DependencyCycleError, e:
+            except DependencyCycleError as e:
                 if len(e.cycle_nodes) == 1 or e.cycle_nodes[0] != e.cycle_nodes[-1]:
                     e.cycle_nodes.insert(0, n.target_node)
                 raise
@@ -161,11 +161,11 @@ def __get_syslibdeps(node):
         for lib in __get_libdeps(node):
             for syslib in node.get_env().Flatten(lib.get_env().get(syslibdeps_env_var, [])):
                 if syslib:
-                    if type(syslib) in (str, unicode) and syslib.startswith(missing_syslibdep):
-                        print("Target '%s' depends on the availability of a "
+                    if type(syslib) is str and syslib.startswith(missing_syslibdep):
+                        print(("Target '%s' depends on the availability of a "
                               "system provided library for '%s', "
                               "but no suitable library was found during configuration." %
-                              (str(node), syslib[len(missing_syslibdep):]))
+                              (str(node), syslib[len(missing_syslibdep):])))
                         node.get_env().Exit(1)
                     syslibdeps.append(syslib)
         setattr(node.attributes, cached_var_name, syslibdeps)
@@ -220,7 +220,7 @@ def get_syslibdeps(source, target, env, for_signature):
         # they're believed to represent library short names, that should be prefixed with -l
         # or the compiler-specific equivalent.  I.e., 'm' becomes '-lm', but 'File("m.a") is passed
         # through whole cloth.
-        if type(d) in (str, unicode):
+        if type(d) is str:
             result.append('%s%s%s' % (lib_link_prefix, d, lib_link_suffix))
         else:
             result.append(d)

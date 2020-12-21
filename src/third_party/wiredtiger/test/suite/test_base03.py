@@ -54,7 +54,7 @@ class test_base03(wttest.WiredTigerTestCase):
         try:
             self.session.create(name, args)
         except:
-            print('**** ERROR in session.create("' + name + '","' + args + '") ***** ')
+            print(('**** ERROR in session.create("' + name + '","' + args + '") ***** '))
             raise
 
     def test_table_ss(self):

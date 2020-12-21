@@ -3,7 +3,22 @@
 from setuptools import setup
 import os.path
 
-description = open(os.path.join(os.path.dirname(__file__), 'README'), 'rt').read()
+
+
+def open_file_setup(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+description = open_file_setup(os.path.join(os.path.dirname(__file__), 'README'), 'rt').read()
 
 setup(name="testscenarios",
       version="0.4",

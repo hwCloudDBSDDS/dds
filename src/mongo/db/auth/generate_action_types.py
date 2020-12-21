@@ -20,8 +20,23 @@
 #    linked combinations including the program with the OpenSSL library. You
 #    must comply with the GNU Affero General Public License in all respects
 #    for all of the code used other than as permitted herein. If you modify
-#    file(s) with this exception, you may extend this exception to your
-#    version of the file(s), but you are not obligated to do so. If you do not
+
+
+def open_file_generate_action_types(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+#    open_file_generate_action_types(s) with this exception, you may extend this exception to your
+#    version of the open_file_generate_action_types(s), but you are not obligated to do so. If you do not
 #    wish to do so, delete this exception statement from your version. If you
 #    delete this exception statement from all source files in the program,
 #    then also delete it in the license file.
@@ -57,8 +72,8 @@ headerFileTemplate = """// AUTO-GENERATED FILE DO NOT EDIT
  *    linked combinations including the program with the OpenSSL library. You
  *    must comply with the GNU Affero General Public License in all respects
  *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
+ *    open_file_generate_action_types(s) with this exception, you may extend this exception to your
+ *    version of the open_file_generate_action_types(s), but you are not obligated to do so. If you do not
  *    wish to do so, delete this exception statement from your version. If you
  *    delete this exception statement from all source files in the program,
  *    then also delete it in the license file.
@@ -137,8 +152,8 @@ sourceFileTemplate = """// AUTO-GENERATED FILE DO NOT EDIT
  *    linked combinations including the program with the OpenSSL library. You
  *    must comply with the GNU Affero General Public License in all respects
  *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
+ *    open_file_generate_action_types(s) with this exception, you may extend this exception to your
+ *    version of the open_file_generate_action_types(s), but you are not obligated to do so. If you do not
  *    wish to do so, delete this exception statement from your version. If you
  *    delete this exception statement from all source files in the program,
  *    then also delete it in the license file.
@@ -227,28 +242,28 @@ def hasDuplicateActionTypes(actionTypes):
     prevActionType = sortedActionTypes[0]
     for actionType in sortedActionTypes[1:]:
         if actionType == prevActionType:
-            print 'Duplicate actionType %s\n' % actionType
+            print('Duplicate actionType %s\n' % actionType)
             didFail = True
         prevActionType = actionType
 
     return didFail
 
 def parseActionTypesFromFile(actionTypesFilename):
-    actionTypesFile = open(actionTypesFilename, 'r')
+    actionTypesFile = open_file_generate_action_types(actionTypesFilename, 'r')
     actionTypes = eval(actionTypesFile.read())
     return actionTypes
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:
-        print "Usage: generate_action_types.py <path to action_types.txt> <header file path> <source file path>"
+        print("Usage: generate_action_types.py <path to action_types.txt> <header file path> <source file path>")
         sys.exit(-1)
 
     actionTypes = parseActionTypesFromFile(sys.argv[1])
     if hasDuplicateActionTypes(actionTypes):
         sys.exit(-1)
 
-    headerOutputFile = open(sys.argv[2], 'w')
-    sourceOutputFile = open(sys.argv[3], 'w')
+    headerOutputFile = open_file_generate_action_types(sys.argv[2], 'w')
+    sourceOutputFile = open_file_generate_action_types(sys.argv[3], 'w')
 
     writeHeaderFile(actionTypes, headerOutputFile)
     writeSourceFile(actionTypes, sourceOutputFile)

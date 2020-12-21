@@ -213,7 +213,7 @@ class TestTagCollapsingDecorator(TestCase):
         tag_collapser.tags(set(['a']), set())
         tag_collapser.tags(set(['b']), set())
         tag_collapser.startTest(self)
-        self.assertEquals(
+        self.assertEqual(
             [('tags', set(['a', 'b']), set([])),
              ('startTest', self),
              ], result._events)
@@ -228,7 +228,7 @@ class TestTagCollapsingDecorator(TestCase):
         tag_collapser.addSuccess(self)
         tag_collapser.stopTest(self)
         tag_collapser.stopTestRun()
-        self.assertEquals(
+        self.assertEqual(
             [('startTestRun',),
              ('tags', set(['a', 'b']), set([])),
              ('startTest', self),
@@ -266,7 +266,7 @@ class TestTagCollapsingDecorator(TestCase):
         tag_collapser.tags(set(['b']), set(['a']))
         tag_collapser.tags(set(['c']), set())
         tag_collapser.stopTest(test)
-        self.assertEquals(
+        self.assertEqual(
             [('startTest', test),
              ('tags', set(['b', 'c']), set(['a'])),
              ('stopTest', test)],
@@ -281,7 +281,7 @@ class TestTagCollapsingDecorator(TestCase):
         tag_collapser.tags(set(['a', 'b']), set())
         tag_collapser.tags(set(['c']), set())
         tag_collapser.stopTest(test)
-        self.assertEquals(
+        self.assertEqual(
             [('startTest', test),
              ('tags', set(['a', 'b', 'c']), set()),
              ('stopTest', test)],
@@ -299,7 +299,7 @@ class TestTagCollapsingDecorator(TestCase):
         tag_collapser.tags(set(['a']), set())
         tag_collapser.addSuccess(test)
         tag_collapser.stopTest(test)
-        self.assertEquals(
+        self.assertEqual(
             [('startTest', test),
              ('tags', set(['a']), set()),
              ('addSuccess', test),
@@ -320,7 +320,7 @@ class TestTimeCollapsingDecorator(TestCase):
         tag_collapser = subunit.test_results.TimeCollapsingDecorator(result)
         a_time = self.make_time()
         tag_collapser.time(a_time)
-        self.assertEquals([('time', a_time)], result._events)
+        self.assertEqual([('time', a_time)], result._events)
 
     def test_time_collapsed_to_first_and_last(self):
         # If there are many consecutive time events, only the first and last
@@ -331,7 +331,7 @@ class TestTimeCollapsingDecorator(TestCase):
         for a_time in times:
             tag_collapser.time(a_time)
         tag_collapser.startTest(subunit.RemotedTestCase('foo'))
-        self.assertEquals(
+        self.assertEqual(
             [('time', times[0]), ('time', times[-1])], result._events[:-1])
 
     def test_only_one_time_sent(self):
@@ -342,7 +342,7 @@ class TestTimeCollapsingDecorator(TestCase):
         a_time = self.make_time()
         tag_collapser.time(a_time)
         tag_collapser.startTest(subunit.RemotedTestCase('foo'))
-        self.assertEquals([('time', a_time)], result._events[:-1])
+        self.assertEqual([('time', a_time)], result._events[:-1])
 
     def test_duplicate_times_not_sent(self):
         # Many time events with the exact same time are collapsed into one
@@ -353,7 +353,7 @@ class TestTimeCollapsingDecorator(TestCase):
         for i in range(5):
             tag_collapser.time(a_time)
         tag_collapser.startTest(subunit.RemotedTestCase('foo'))
-        self.assertEquals([('time', a_time)], result._events[:-1])
+        self.assertEqual([('time', a_time)], result._events[:-1])
 
     def test_no_times_inserted(self):
         result = ExtendedTestResult()
@@ -364,7 +364,7 @@ class TestTimeCollapsingDecorator(TestCase):
         tag_collapser.startTest(foo)
         tag_collapser.addSuccess(foo)
         tag_collapser.stopTest(foo)
-        self.assertEquals(
+        self.assertEqual(
             [('time', a_time),
              ('startTest', foo),
              ('addSuccess', foo),
@@ -378,9 +378,9 @@ class TestByTestResultTests(testtools.TestCase):
         self.log = []
         self.result = subunit.test_results.TestByTestResult(self.on_test)
         if sys.version_info >= (3, 0):
-            self.result._now = iter(range(5)).__next__
+            self.result._now = iter(list(range(5))).__next__
         else:
-            self.result._now = iter(range(5)).next
+            self.result._now = iter(list(range(5))).__next__
 
     def assertCalled(self, **kwargs):
         defaults = {
@@ -537,9 +537,9 @@ class TestCsvResult(testtools.TestCase):
         stream = StringIO()
         result = subunit.test_results.CsvResult(stream)
         if sys.version_info >= (3, 0):
-            result._now = iter(range(5)).__next__
+            result._now = iter(list(range(5))).__next__
         else:
-            result._now = iter(range(5)).next
+            result._now = iter(list(range(5))).__next__
         result.startTestRun()
         result.startTest(self)
         result.addSuccess(self)

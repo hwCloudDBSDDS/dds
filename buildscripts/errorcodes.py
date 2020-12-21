@@ -5,14 +5,15 @@ Parses .cpp files for assertions and verifies assertion codes are distinct.
 Optionally replaces zero codes in source code with new distinct values.
 """
 
-from __future__ import absolute_import
-from __future__ import print_function
+
+
 
 import bisect
 import os.path
 import sys
 from collections import defaultdict, namedtuple
 from optparse import OptionParser
+from functools import reduce
 
 # Get relative imports to work when the package is not installed on the PYTHONPATH.
 if __name__ == "__main__" and __package__ is None:
@@ -39,24 +40,39 @@ AssertLocation = namedtuple("AssertLocation", ['sourceFile', 'byteOffset', 'line
 list_files = False  # pylint: disable=invalid-name
 
 
+
+
+def open_file_errorcodes(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def parse_source_files(callback):
     """Walk MongoDB sourcefiles and invoke a callback for each AssertLocation found."""
 
-    quick = ["assert", "Exception", "ErrorCodes::Error"]
+    quick = [b"assert", b"Exception", b"ErrorCodes::Error"]
 
     patterns = [
-        re.compile(r"(?:u|m(?:sg)?)asser(?:t|ted)(?:NoTrace)?\s*\(\s*(\d+)", re.MULTILINE),
-        re.compile(r"(?:DB|Assertion)Exception\s*[({]\s*(\d+)", re.MULTILINE),
-        re.compile(r"fassert(?:Failed)?(?:WithStatus)?(?:NoTrace)?(?:StatusOK)?\s*\(\s*(\d+)",
+        re.compile(b"(?:u|m(?:sg)?)asser(?:t|ted)(?:NoTrace)?\s*\(\s*(\d+)", re.MULTILINE),
+        re.compile(b"(?:DB|Assertion)Exception\s*[({]\s*(\d+)", re.MULTILINE),
+        re.compile(b"fassert(?:Failed)?(?:WithStatus)?(?:NoTrace)?(?:StatusOK)?\s*\(\s*(\d+)",
                    re.MULTILINE),
-        re.compile(r"ErrorCodes::Error\s*[({]\s*(\d+)", re.MULTILINE)
+        re.compile(b"ErrorCodes::Error\s*[({]\s*(\d+)", re.MULTILINE)
     ]
 
     for source_file in utils.get_all_source_files(prefix='src/mongo/'):
         if list_files:
-            print('scanning file: ' + source_file)
+            print(('scanning file: ' + source_file))
 
-        with open(source_file) as fh:
+        with open_file_errorcodes(source_file, 'rb') as fh:
             text = fh.read()
 
             if not any([zz in text for zz in quick]):
@@ -82,7 +98,7 @@ def get_line_and_column_for_position(loc, _file_cache=None):
     if _file_cache is None:
         _file_cache = {}
     if loc.sourceFile not in _file_cache:
-        with open(loc.sourceFile) as fh:
+        with open_file_errorcodes(loc.sourceFile) as fh:
             text = fh.read()
             line_offsets = [0]
             for line in text.splitlines(True):
@@ -151,13 +167,13 @@ def read_error_codes():
         errors.append(bad)
         line, col = get_line_and_column_for_position(bad)
         print("ZERO_CODE:")
-        print("  %s:%d:%d:%s" % (bad.sourceFile, line, col, bad.lines))
+        print(("  %s:%d:%d:%s" % (bad.sourceFile, line, col, bad.lines)))
 
-    for code, locations in dups.items():
-        print("DUPLICATE IDS: %s" % code)
+    for code, locations in list(dups.items()):
+        print(("DUPLICATE IDS: %s" % code))
         for loc in locations:
             line, col = get_line_and_column_for_position(loc)
-            print("  %s:%d:%d:%s" % (loc.sourceFile, line, col, loc.lines))
+            print(("  %s:%d:%d:%s" % (loc.sourceFile, line, col, loc.lines)))
 
     return (codes, errors)
 
@@ -176,18 +192,18 @@ def replace_bad_codes(errors, next_code):  # pylint: disable=too-many-locals
 
     for loc in skip_errors:
         line, col = get_line_and_column_for_position(loc)
-        print("SKIPPING NONZERO code=%s: %s:%d:%d" % (loc.code, loc.sourceFile, line, col))
+        print(("SKIPPING NONZERO code=%s: %s:%d:%d" % (loc.code, loc.sourceFile, line, col)))
 
     # Dedupe, sort, and reverse so we don't have to update offsets as we go.
     for assert_loc in reversed(sorted(set(zero_errors))):
         (source_file, byte_offset, _, _) = assert_loc
         line_num, _ = get_line_and_column_for_position(assert_loc)
-        print("UPDATING_FILE: %s:%s" % (source_file, line_num))
+        print(("UPDATING_FILE: %s:%s" % (source_file, line_num)))
 
         ln = line_num - 1
 
-        with open(source_file, 'r+') as fh:
-            print("LINE_%d_BEFORE:%s" % (line_num, fh.readlines()[ln].rstrip()))
+        with open_file_errorcodes(source_file, 'r+') as fh:
+            print(("LINE_%d_BEFORE:%s" % (line_num, fh.readlines()[ln].rstrip())))
 
             fh.seek(0)
             text = fh.read()
@@ -198,7 +214,7 @@ def replace_bad_codes(errors, next_code):  # pylint: disable=too-many-locals
             fh.write(text[byte_offset + 1:])
             fh.seek(0)
 
-            print("LINE_%d_AFTER :%s" % (line_num, fh.readlines()[ln].rstrip()))
+            print(("LINE_%d_AFTER :%s" % (line_num, fh.readlines()[ln].rstrip())))
         next_code += 1
 
 
@@ -224,8 +240,8 @@ def main():
 
     next_code = get_next_code()
 
-    print("ok: %s" % ok)
-    print("next: %s" % next_code)
+    print(("ok: %s" % ok))
+    print(("next: %s" % next_code))
 
     if ok:
         sys.exit(0)

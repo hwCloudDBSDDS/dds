@@ -4,10 +4,22 @@ import abc
 import json
 import copy
 
-import graph_consts
+from . import graph_consts
 
-if sys.version_info >= (3, 0):
-    basestring = str
+
+
+def open_file_graph(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 class Graph(object):
     """Graph class for storing the build dependency graph. The graph stores the
@@ -20,9 +32,9 @@ class Graph(object):
         """
         A graph can be initialized with a .json file, graph object, or with no args
         """
-        if isinstance(input, basestring):
+        if isinstance(input, str):
             if input.endswith('.json'):
-                with open(input, 'r') as f:
+                with open_file_graph(input, 'r') as f:
                     data = json.load(f, encoding="ascii")
                 nodes = {}
                 should_fail = False
@@ -72,7 +84,7 @@ class Graph(object):
 
     @nodes.setter
     def nodes(self, value):
-        if isinstance(value,dict):
+        if isinstance(value, dict):
             self._nodes = value
         else:
             raise TypeError("Nodes must be a dict")
@@ -141,7 +153,7 @@ class Graph(object):
             node_dict["id"] = id
             node_dict["node"] = {}
 
-            for property, value in vars(node).iteritems():
+            for property, value in list(vars(node).items()):
                 if isinstance(value, set):
                     node_dict["node"][property] = list(value)
                 else:
@@ -151,7 +163,7 @@ class Graph(object):
 
         for edge_type in graph_consts.RELATIONSHIP_TYPES:
             edges_dict = self._edges[edge_type]
-            for node in edges_dict.keys():
+            for node in list(edges_dict.keys()):
                 to_nodes = list(self._edges[edge_type][node])
                 to_nodes_dicts = [{"index": node_index[to_node], "id": to_node}
                                   for to_node in to_nodes]
@@ -161,19 +173,18 @@ class Graph(object):
                                                     "index": node_index[node]},
                                       "to_node": to_nodes_dicts})
 
-        with open(filename, 'w') as outfile:
+        with open_file_graph(filename, 'w') as outfile:
             json.dump(data, outfile, indent=4, encoding="ascii")
 
     def __str__(self):
         return ("<Number of Nodes : {0}, Number of Edges : {1}, "
-                "Hash: {2}>").format(len(self._nodes.keys()),
-                sum(len(x) for x in self._edges.values()), hash(self))
+                "Hash: {2}>").format(len(list(self._nodes.keys())),
+                sum(len(x) for x in list(self._edges.values())), hash(self))
 
 
-class NodeInterface(object):
+class NodeInterface(object, metaclass=abc.ABCMeta):
     """Abstract base class for all Node Objects - All nodes must have an id and name
     """
-    __metaclass__ = abc.ABCMeta
 
     @abc.abstractproperty
     def id(self):
@@ -190,7 +201,7 @@ class NodeLib(NodeInterface):
     def __init__(self, id, name, input=None):
         if isinstance(input, dict):
             should_fail = False
-            for k, v in input.iteritems():
+            for k, v in list(input.items()):
                 try:
                     if isinstance(v, list):
                         setattr(self, k, set(v))
@@ -310,7 +321,7 @@ class NodeSymbol(NodeInterface):
         if isinstance(input, dict):
             should_fail = False
 
-            for k, v in input.iteritems():
+            for k, v in list(input.items()):
                 try:
                     if isinstance(v, list):
                         setattr(self, k, set(v))
@@ -435,7 +446,7 @@ class NodeFile(NodeInterface):
     def __init__(self, id, name, input=None):
         if isinstance(input, dict):
             should_fail = False
-            for k, v in input.iteritems():
+            for k, v in list(input.items()):
                 try:
                     if isinstance(v, list):
                         setattr(self, k, set(v))
@@ -551,7 +562,7 @@ class NodeExe(NodeInterface):
     def __init__(self, id, name, input=None):
         if isinstance(input, dict):
             should_fail = False
-            for k, v in input.iteritems():
+            for k, v in list(input.items()):
                 try:
                     if isinstance(v, list):
                         setattr(self, k, set(v))

@@ -41,7 +41,7 @@ def main():
         sys.exit(1)
 
     with urllib.request.urlopen(url_str) as f:
-        print(f.read().decode('utf-8'))
+        print((f.read()))
 
     sys.exit(0)
 

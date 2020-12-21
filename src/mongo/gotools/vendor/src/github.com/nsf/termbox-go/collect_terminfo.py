@@ -97,13 +97,13 @@ def do_terms(d):
 	w("\tkeys  []string\n")
 	w("\tfuncs []string\n")
 	w("}{\n")
-	for k, v in d.items():
+	for k, v in list(d.items()):
 		w('\t{"%s", %s_keys, %s_funcs},\n' % (k, v, v))
 	w("}\n\n")
 
 w("// +build !windows\n\npackage termbox\n\n")
 
-for k,v in terminals.items():
+for k,v in list(terminals.items()):
 	do_term(k, v)
 
 do_terms(terminals)

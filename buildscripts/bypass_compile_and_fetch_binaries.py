@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Bypass compile and fetch binaries."""
 
-from __future__ import absolute_import
-from __future__ import print_function
+
+
 
 import argparse
 import json
@@ -11,10 +11,10 @@ import re
 import sys
 import tarfile
 
-import urllib
+import urllib.request, urllib.parse, urllib.error
 # pylint: disable=ungrouped-imports
 try:
-    from urlparse import urlparse
+    from urllib.parse import urlparse
 except ImportError:
     from urllib.parse import urlparse  # type: ignore
 # pylint: enable=ungrouped-imports
@@ -24,6 +24,21 @@ import yaml
 
 _IS_WINDOWS = (sys.platform == "win32" or sys.platform == "cygwin")
 
+
+
+
+def open_file_bypass_compile_and_fetch_binaries(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def executable_name(pathname):
     """Return the executable name."""
@@ -49,7 +64,7 @@ def requests_get_json(url):
     try:
         return response.json()
     except ValueError:
-        print("Invalid JSON object returned with response: {}".format(response.text))
+        print(("Invalid JSON object returned with response: {}".format(response.text)))
         raise
 
 
@@ -60,7 +75,7 @@ def read_evg_config():
     """
     evg_file = os.path.expanduser("~/.evergreen.yml")
     if os.path.isfile(evg_file):
-        with open(evg_file, "r") as fstream:
+        with open_file_bypass_compile_and_fetch_binaries(evg_file, "r") as fstream:
             return yaml.safe_load(fstream)
 
     return None
@@ -68,16 +83,16 @@ def read_evg_config():
 
 def write_out_bypass_compile_expansions(patch_file, **expansions):
     """Write out the macro expansions to given file."""
-    with open(patch_file, "w") as out_file:
-        print("Saving compile bypass expansions to {0}: ({1})".format(patch_file, expansions))
+    with open_file_bypass_compile_and_fetch_binaries(patch_file, "w") as out_file:
+        print(("Saving compile bypass expansions to {0}: ({1})".format(patch_file, expansions)))
         yaml.safe_dump(expansions, out_file, default_flow_style=False)
 
 
 def write_out_artifacts(json_file, artifacts):
     """Write out the JSON file with URLs of artifacts to given file."""
-    with open(json_file, "w") as out_file:
-        print("Generating artifacts.json from pre-existing artifacts {0}".format(
-            json.dumps(artifacts, indent=4)))
+    with open_file_bypass_compile_and_fetch_binaries(json_file, "w") as out_file:
+        print(("Generating artifacts.json from pre-existing artifacts {0}".format(
+            json.dumps(artifacts, indent=4))))
         json.dump(artifacts, out_file)
 
 
@@ -149,7 +164,7 @@ def should_bypass_compile():
 
     args = parse_args()
 
-    with open(args.patchFile, "r") as pch:
+    with open_file_bypass_compile_and_fetch_binaries(args.patchFile, "r") as pch:
         for filename in pch:
             filename = filename.rstrip()
             # Skip directories that show up in 'git diff HEAD --name-only'.
@@ -158,15 +173,15 @@ def should_bypass_compile():
 
             if (filename in requires_compile_files or any(
                     filename.startswith(directory) for directory in requires_compile_directories)):
-                print("Compile bypass disabled after detecting {} as being modified because"
-                      " it is a file known to affect compilation.".format(filename))
+                print(("Compile bypass disabled after detecting {} as being modified because"
+                      " it is a file known to affect compilation.".format(filename)))
                 return False
 
             if (filename not in bypass_files
                     and not any(filename.startswith(directory)
                                 for directory in bypass_directories)):
-                print("Compile bypass disabled after detecting {} as being modified because"
-                      " it isn't a file known to not affect compilation.".format(filename))
+                print(("Compile bypass disabled after detecting {} as being modified because"
+                      " it isn't a file known to not affect compilation.".format(filename)))
                 return False
     return True
 
@@ -235,8 +250,8 @@ def main():  # pylint: disable=too-many-locals,too-many-statements
             if match:
                 break
         else:
-            print("Could not find build id for revision {} on project {}."
-                  " Default compile bypass to false.".format(args.revision, args.project))
+            print(("Could not find build id for revision {} on project {}."
+                  " Default compile bypass to false.".format(args.revision, args.project)))
             return
 
         # Generate the compile task id.
@@ -246,23 +261,23 @@ def main():  # pylint: disable=too-many-locals,too-many-statements
         # Get info on compile task of base commit.
         task = requests_get_json(task_url)
         if task is None or task["status"] != "success":
-            print("Could not retrieve artifacts because the compile task {} for base commit"
-                  " was not available. Default compile bypass to false.".format(compile_task_id))
+            print(("Could not retrieve artifacts because the compile task {} for base commit"
+                  " was not available. Default compile bypass to false.".format(compile_task_id)))
             return
 
         # Get the compile task artifacts from REST API
-        print("Fetching pre-existing artifacts from compile task {}".format(compile_task_id))
+        print(("Fetching pre-existing artifacts from compile task {}".format(compile_task_id)))
         artifacts = []
         for artifact in task["files"]:
             filename = os.path.basename(artifact["url"])
             if filename.startswith(build_id):
-                print("Retrieving archive {}".format(filename))
+                print(("Retrieving archive {}".format(filename)))
                 # This is the artifacts.tgz as referenced in evergreen.yml.
                 try:
-                    urllib.urlretrieve(artifact["url"], filename)
-                except urllib.ContentTooShortError:
-                    print("The artifact {} could not be completely downloaded. Default"
-                          " compile bypass to false.".format(filename))
+                    urllib.request.urlretrieve(artifact["url"], filename)
+                except urllib.error.ContentTooShortError:
+                    print(("The artifact {} could not be completely downloaded. Default"
+                          " compile bypass to false.".format(filename)))
                     return
 
                 # Need to extract certain files from the pre-existing artifacts.tgz.
@@ -282,24 +297,24 @@ def main():  # pylint: disable=too-many-locals,too-many-statements
                         if tarinfo.name.startswith("build/integration_tests/")
                         or tarinfo.name.startswith("repo/") or tarinfo.name in extract_files
                     ]
-                    print("Extracting the following files from {0}...\n{1}".format(
-                        filename, "\n".join(tarinfo.name for tarinfo in subdir)))
+                    print(("Extracting the following files from {0}...\n{1}".format(
+                        filename, "\n".join(tarinfo.name for tarinfo in subdir))))
                     tar.extractall(members=subdir)
             elif filename.startswith("mongo-src"):
-                print("Retrieving mongo source {}".format(filename))
+                print(("Retrieving mongo source {}".format(filename)))
                 # This is the distsrc.[tgz|zip] as referenced in evergreen.yml.
                 try:
-                    urllib.urlretrieve(artifact["url"], filename)
-                except urllib.ContentTooShortError:
-                    print("The artifact {} could not be completely downloaded. Default"
-                          " compile bypass to false.".format(filename))
+                    urllib.request.urlretrieve(artifact["url"], filename)
+                except urllib.error.ContentTooShortError:
+                    print(("The artifact {} could not be completely downloaded. Default"
+                          " compile bypass to false.".format(filename)))
                     return
                 extension = os.path.splitext(filename)[1]
                 distsrc_filename = "distsrc{}".format(extension)
-                print("Renaming {} to {}".format(filename, distsrc_filename))
+                print(("Renaming {} to {}".format(filename, distsrc_filename)))
                 os.rename(filename, distsrc_filename)
             else:
-                print("Linking base artifact {} to this patch build".format(filename))
+                print(("Linking base artifact {} to this patch build".format(filename)))
                 # For other artifacts we just add their URLs to the JSON file to upload.
                 files = {}
                 files["name"] = artifact["name"]
@@ -312,8 +327,8 @@ def main():  # pylint: disable=too-many-locals,too-many-statements
         # SERVER-21492 related issue where without running scons the jstests/libs/key1
         # and key2 files are not chmod to 0600. Need to change permissions here since we
         # bypass SCons.
-        os.chmod("jstests/libs/key1", 0600)
-        os.chmod("jstests/libs/key2", 0600)
+        os.chmod("jstests/libs/key1", 0o600)
+        os.chmod("jstests/libs/key2", 0o600)
 
         # This is the artifacts.json file.
         write_out_artifacts(args.jsonArtifact, artifacts)

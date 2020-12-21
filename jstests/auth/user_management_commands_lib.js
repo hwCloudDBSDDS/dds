@@ -83,7 +83,7 @@ function runAllUserManagementCommandsTests(conn, writeConcern) {
         db.getSisterDB('admin').logout();
         assert(db.auth('andy', 'Password@a1b'));
         var res = db.runCommand({connectionStatus: 1});
-        var res = db.foo.insert({a: 1})
+        var res = db.foo.insert({a: 1});
         hasAuthzError(db.foo.insert({a: 1}));
         assert.throws(function() {
             db.foo.findOne();

@@ -95,7 +95,7 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
         try:
             self.session.create(name, args)
         except:
-            print('**** ERROR in session.create("' + name + '","' + args + '") ***** ')
+            print(('**** ERROR in session.create("' + name + '","' + args + '") ***** '))
             raise
 
     def table_dump(self, name):
@@ -110,15 +110,15 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
     # traceapi and friends are used internally in this module
     def traceapi(self, s):
         if self.TRACE_API:
-            print('> ' + s)
+            print(('> ' + s))
 
     def traceapi_before(self, s):
         if self.TRACE_API:
-            print('> ' + s + '...')
+            print(('> ' + s + '...'))
 
     def traceapi_after(self, s):
         if self.TRACE_API:
-            print('  ==> ' + s)
+            print(('  ==> ' + s))
 
     def setup_encoders_decoders(self):
         if self.tablekind == 'row':
@@ -198,7 +198,7 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
     def check_content(self, s, sizes):
         if sizes != None:
             stretched = self.stretch_content(s[0:20], sizes)
-            self.assertEquals(s, stretched)
+            self.assertEqual(s, stretched)
 
     # There are variants of {encode,decode}_{key,value} to be
     # used with each table kind: 'row', 'col', 'fix'
@@ -237,7 +237,7 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
         # 64 bit key
         maj = ((bits >> 32) & 0xffffffff) + 1
         min = (bits >> 16) & 0xffff
-        return long((maj << 16) | min)
+        return int((maj << 16) | min)
 
     def decode_key_col_or_fix(self, bits):
         maj = ((bits << 16) & 0xffffffff) - 1
@@ -279,15 +279,15 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
     def cur_first(self, cursor, expect=0):
         self.setpos(0, True)
         self.traceapi('cursor.first()')
-        self.assertEquals(0, cursor.reset())
-        self.assertEquals(expect, cursor.next())
+        self.assertEqual(0, cursor.reset())
+        self.assertEqual(expect, next(cursor))
         self.curremoved = False
 
     def cur_last(self, cursor, expect=0):
         self.setpos(len(self.bitlist) - 1, False)
         self.traceapi('cursor.last()')
-        self.assertEquals(0, cursor.reset())
-        self.assertEquals(expect, cursor.prev())
+        self.assertEqual(0, cursor.reset())
+        self.assertEqual(expect, cursor.prev())
         self.curremoved = False
 
     def cur_update(self, cursor, key):
@@ -296,7 +296,7 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
 
     def bitspos(self, bits):
         list = self.bitlist
-        return next(i for i in xrange(len(list)) if list[i] == bits)
+        return next(i for i in range(len(list)) if list[i] == bits)
 
     def cur_insert(self, cursor, major, minor):
         bits = self.triple_to_bits(major, minor, 0)
@@ -333,7 +333,7 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
         cursor.remove()
 
     def cur_recno_search(self, cursor, recno):
-        wtkey = long(recno)
+        wtkey = int(recno)
         self.traceapi('cursor.set_key(' + str(wtkey) + ')')
         cursor.set_key(wtkey)
         if recno > 0 and recno <= len(self.bitlist):
@@ -380,7 +380,7 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
         else:
             wantret = wiredtiger.WT_NOTFOUND
         self.traceapi('cursor.next()')
-        self.check_cursor_ret(cursor.next(), wantret)
+        self.check_cursor_ret(next(cursor), wantret)
 
     def cur_check_backward(self, cursor, n):
         if n < 0:
@@ -436,7 +436,7 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
     def dumpbitlist(self):
         print('bits array:')
         for bits in self.bitlist:
-            print('  ' + str(self.bits_to_triple(bits)) + ' = ' + str(bits))
+            print(('  ' + str(self.bits_to_triple(bits)) + ' = ' + str(bits)))
 
     def _cursor_key_to_string(self, k):
             return str(self.bits_to_triple(self.decode_key(k))) + ' = ' + str(k)
@@ -448,8 +448,8 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
         print('cursor')
         cursor.reset()
         for k,v in cursor:
-            print('  ' + self._cursor_key_to_string(k) + ' ' +
-                  self._cursor_value_to_string(v))
+            print(('  ' + self._cursor_key_to_string(k) + ' ' +
+                  self._cursor_value_to_string(v)))
 
     def cur_dump_here(self, cursor, prefix):
         try:
@@ -460,7 +460,7 @@ class TestCursorTracker(wttest.WiredTigerTestCase):
             v = self._cursor_value_to_string(cursor.get_value())
         except:
             v = '[invalid]'
-        print(prefix + k + ' ' + v)
+        print((prefix + k + ' ' + v))
 
     def cur_check(self, cursor, got, want, iskey):
         if got != want:

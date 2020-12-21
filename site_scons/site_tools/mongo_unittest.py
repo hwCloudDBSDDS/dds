@@ -2,6 +2,21 @@
 """
 from SCons.Script import Action
 
+
+
+def open_file_mongo_unittest(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def exists(env):
     return True
 
@@ -11,10 +26,10 @@ def register_unit_test(env, test):
     env.Alias('$UNITTEST_ALIAS', test)
 
 def unit_test_list_builder_action(env, target, source):
-    ofile = open(str(target[0]), 'wb')
+    ofile = open_file_mongo_unittest(str(target[0]), 'wb')
     try:
         for s in _unittests:
-            print '\t' + str(s)
+            print(('\t' + str(s)))
             ofile.write('%s\n' % s)
     finally:
         ofile.close()

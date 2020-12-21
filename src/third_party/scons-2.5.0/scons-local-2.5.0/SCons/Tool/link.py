@@ -76,7 +76,7 @@ def smart_link(source, target, env, for_signature):
 def _lib_emitter(target, source, env, **kw):
     Verbose = False
     if Verbose:
-        print "_lib_emitter: target[0]=%r" % target[0].get_path()
+        print("_lib_emitter: target[0]=%r" % target[0].get_path())
     for tgt in target:
         tgt.attributes.shared = 1
     
@@ -86,10 +86,10 @@ def _lib_emitter(target, source, env, **kw):
         pass
     else:
         if Verbose:
-            print "_lib_emitter: symlink_generator=%r" % symlink_generator
+            print("_lib_emitter: symlink_generator=%r" % symlink_generator)
         symlinks = symlink_generator(env, target[0])
         if Verbose:
-            print "_lib_emitter: symlinks=%r" % symlinks 
+            print("_lib_emitter: symlinks=%r" % symlinks)
 
         if symlinks:
             SCons.Tool.EmitLibSymlinks(env, symlinks, target[0])
@@ -108,28 +108,28 @@ def _versioned_lib_name(env, libnode, version, prefix, suffix, prefix_generator,
     Verbose = False
 
     if Verbose:
-        print "_versioned_lib_name: libnode=%r" % libnode.get_path()
-        print "_versioned_lib_name: version=%r" % version
-        print "_versioned_lib_name: prefix=%r" % prefix
-        print "_versioned_lib_name: suffix=%r" % suffix
-        print "_versioned_lib_name: suffix_generator=%r" % suffix_generator
+        print("_versioned_lib_name: libnode=%r" % libnode.get_path())
+        print("_versioned_lib_name: version=%r" % version)
+        print("_versioned_lib_name: prefix=%r" % prefix)
+        print("_versioned_lib_name: suffix=%r" % suffix)
+        print("_versioned_lib_name: suffix_generator=%r" % suffix_generator)
 
     versioned_name = os.path.basename(libnode.get_path())
     if Verbose:
-        print "_versioned_lib_name: versioned_name=%r" % versioned_name
+        print("_versioned_lib_name: versioned_name=%r" % versioned_name)
 
     versioned_prefix = prefix_generator(env, **kw)
     versioned_suffix = suffix_generator(env, **kw)
     if Verbose:
-        print "_versioned_lib_name: versioned_prefix=%r" % versioned_prefix
-        print "_versioned_lib_name: versioned_suffix=%r" % versioned_suffix
+        print("_versioned_lib_name: versioned_prefix=%r" % versioned_prefix)
+        print("_versioned_lib_name: versioned_suffix=%r" % versioned_suffix)
 
     versioned_prefix_re = '^' + re.escape(versioned_prefix)
     versioned_suffix_re = re.escape(versioned_suffix) + '$'
     name = re.sub(versioned_prefix_re, prefix, versioned_name)
     name = re.sub(versioned_suffix_re, suffix, name)
     if Verbose:
-        print "_versioned_lib_name: name=%r" % name
+        print("_versioned_lib_name: name=%r" % name)
     return name
 
 def _versioned_shlib_name(env, libnode, version, prefix, suffix, **kw):
@@ -146,26 +146,26 @@ def _versioned_lib_suffix(env, suffix, version):
     """For suffix='.so' and version='0.1.2' it returns '.so.0.1.2'"""
     Verbose = False
     if Verbose:
-        print "_versioned_lib_suffix: suffix=%r" % suffix
-        print "_versioned_lib_suffix: version=%r" % version
+        print("_versioned_lib_suffix: suffix=%r" % suffix)
+        print("_versioned_lib_suffix: version=%r" % version)
     if not suffix.endswith(version):
         suffix = suffix + '.' + version
     if Verbose:
-        print "_versioned_lib_suffix: return suffix=%r" % suffix
+        print("_versioned_lib_suffix: return suffix=%r" % suffix)
     return suffix
 
 def _versioned_lib_soname(env, libnode, version, prefix, suffix, name_func):
     """For libnode='/optional/dir/libfoo.so.X.Y.Z' it returns 'libfoo.so.X'"""
     Verbose = False
     if Verbose:
-        print "_versioned_lib_soname: version=%r" % version
+        print("_versioned_lib_soname: version=%r" % version)
     name = name_func(env, libnode, version, prefix, suffix)
     if Verbose:
-        print "_versioned_lib_soname: name=%r" % name
+        print("_versioned_lib_soname: name=%r" % name)
     major = version.split('.')[0]
     soname = name + '.' + major
     if Verbose:
-        print "_versioned_lib_soname: soname=%r" % soname
+        print("_versioned_lib_soname: soname=%r" % soname)
     return soname
 
 def _versioned_shlib_soname(env, libnode, version, prefix, suffix):
@@ -181,23 +181,23 @@ def _versioned_lib_symlinks(env, libnode, version, prefix, suffix, name_func, so
     Verbose = False
 
     if Verbose:
-        print "_versioned_lib_symlinks: libnode=%r" % libnode.get_path()
-        print "_versioned_lib_symlinks: version=%r" % version
+        print("_versioned_lib_symlinks: libnode=%r" % libnode.get_path())
+        print("_versioned_lib_symlinks: version=%r" % version)
 
     if sys.platform.startswith('openbsd'):
         # OpenBSD uses x.y shared library versioning numbering convention
         # and doesn't use symlinks to backwards-compatible libraries
         if Verbose:
-            print "_versioned_lib_symlinks: return symlinks=%r" % None
+            print("_versioned_lib_symlinks: return symlinks=%r" % None)
         return None
 
     linkdir = libnode.get_dir()
     if Verbose:
-        print "_versioned_lib_symlinks: linkdir=%r" % linkdir.get_path()
+        print("_versioned_lib_symlinks: linkdir=%r" % linkdir.get_path())
 
     name = name_func(env, libnode, version, prefix, suffix)
     if Verbose:
-        print "_versioned_lib_symlinks: name=%r" % name
+        print("_versioned_lib_symlinks: name=%r" % name)
 
     soname = soname_func(env, libnode, version, prefix, suffix)
 
@@ -213,7 +213,7 @@ def _versioned_lib_symlinks(env, libnode, version, prefix, suffix, name_func, so
         symlinks = [ (link0, libnode), (link1, libnode) ]
 
     if Verbose:
-        print "_versioned_lib_symlinks: return symlinks=%r" % SCons.Tool.StringizeLibSymlinks(symlinks)
+        print("_versioned_lib_symlinks: return symlinks=%r" % SCons.Tool.StringizeLibSymlinks(symlinks))
 
     return symlinks
 

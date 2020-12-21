@@ -5,19 +5,34 @@ import fnmatch, os, re, sys
 from dist import all_c_files, compare_srcfile, source_files
 
 # Complain if a function comment is missing.
+
+
+def open_file_function(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def missing_comment():
     for f in source_files():
         skip_re = re.compile(r'DO NOT EDIT: automatically built')
         func_re = re.compile(
             r'(/\*(?:[^\*]|\*[^/])*\*/)?\n\w[\w \*]+\n(\w+)', re.DOTALL)
-        s = open(f, 'r').read()
+        s = open_file_function(f, 'r').read()
         if skip_re.search(s):
             continue
         for m in func_re.finditer(s):
             if not m.group(1) or \
                not m.group(1).startswith('/*\n * %s --\n' % m.group(2)):
-                   print "%s:%d: missing or malformed comment for %s" % \
-                           (f, s[:m.start(2)].count('\n'), m.group(2))
+                   print("%s:%d: missing or malformed comment for %s" % \
+                           (f, s[:m.start(2)].count('\n'), m.group(2)))
 
 # Sort helper function, discard * operators so a pointer doesn't necessarily
 # sort before non-pointers, ignore const/static/volatile keywords.
@@ -89,7 +104,7 @@ def function_args(name, line):
     # Check for illegal types.
     for m in illegal_types:
         if re.search('^' + m + "\s*[\w(*]", line):
-            print >>sys.stderr, name + ": illegal type: " + line.strip()
+            print(name + ": illegal type: " + line.strip(), file=sys.stderr)
             sys.exit(1)
 
     # Check for matching types.
@@ -105,15 +120,15 @@ def function_declaration():
     tmp_file = '__tmp'
     for name in all_c_files():
         skip_re = re.compile(r'DO NOT EDIT: automatically built')
-        s = open(name, 'r').read()
+        s = open_file_function(name, 'r').read()
         if skip_re.search(s):
             continue
 
         # Read through the file, and for each function, do a style pass over
         # the local declarations. Quit tracking declarations as soon as we
         # find anything we don't understand, leaving it untouched.
-        with open(name, 'r') as f:
-            tfile = open(tmp_file, 'w')
+        with open_file_function(name, 'r') as f:
+            tfile = open_file_function(tmp_file, 'w')
             tracking = False
             for line in f:
                 if not tracking:
@@ -136,8 +151,7 @@ def function_declaration():
                     # initializers (and we've already skipped statics, which
                     # are also typically initialized in the declaration).
                     if re.search("\s=\s[-\w]", line):
-                        print >>sys.stderr, \
-                            name + ": assignment in string: " + line.strip()
+                        print(name + ": assignment in string: " + line.strip(), file=sys.stderr)
                         sys.exit(1);
 
                     list[n].append(line)
@@ -145,10 +159,10 @@ def function_declaration():
                     # Sort the resulting lines (we don't yet sort declarations
                     # within a single line). It's two passes, first to catch
                     # the statics, then to catch everything else.
-                    for arg in filter(None, static_list):
+                    for arg in [_f for _f in static_list if _f]:
                         for p in sorted(arg, key=function_args_alpha):
                             tfile.write(p)
-                    for arg in filter(None, list):
+                    for arg in [_f for _f in list if _f]:
                         for p in sorted(arg, key=function_args_alpha):
                             tfile.write(p)
                     tfile.write(line)

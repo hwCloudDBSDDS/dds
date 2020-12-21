@@ -42,6 +42,21 @@ if SCons.Util.case_sensitive_suffixes('.c', '.C'):
 
 # We make no effort to avoid rebuilding the entries. Someday, perhaps we could and even
 # integrate with the cache, but there doesn't seem to be much call for it.
+
+
+def open_file_compilation_db(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class __CompilationDbNode(SCons.Node.Python.Value):
     def __init__(self, value):
         SCons.Node.Python.Value.__init__(self, value)
@@ -129,7 +144,7 @@ def WriteCompilationDb(target, source, env):
     for s in __COMPILATION_DB_ENTRIES:
         entries.append(s.read())
 
-    with open(str(target[0]), 'w') as target_file:
+    with open_file_compilation_db(str(target[0]), 'w') as target_file:
         json.dump(entries, target_file,
                   sort_keys=True,
                   indent=4,

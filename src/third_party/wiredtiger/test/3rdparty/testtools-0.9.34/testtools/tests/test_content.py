@@ -40,6 +40,21 @@ from testtools.tests.helpers import an_exc_info
 raises_value_error = Raises(MatchesException(ValueError))
 
 
+
+
+def open_file_test_content(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class TestContent(TestCase):
 
     def test___init___None_errors(self):
@@ -83,20 +98,20 @@ class TestContent(TestCase):
     def test_iter_text_decodes(self):
         content_type = ContentType("text", "strange", {"charset": "utf8"})
         content = Content(
-            content_type, lambda: [_u("bytes\xea").encode("utf8")])
+            content_type, lambda: [_u("bytes\xea")])
         self.assertEqual([_u("bytes\xea")], list(content.iter_text()))
 
     def test_iter_text_default_charset_iso_8859_1(self):
         content_type = ContentType("text", "strange")
         text = _u("bytes\xea")
-        iso_version = text.encode("ISO-8859-1")
+        iso_version = text
         content = Content(content_type, lambda: [iso_version])
         self.assertEqual([text], list(content.iter_text()))
 
     def test_as_text(self):
         content_type = ContentType("text", "strange", {"charset": "utf8"})
         content = Content(
-            content_type, lambda: [_u("bytes\xea").encode("utf8")])
+            content_type, lambda: [_u("bytes\xea")])
         self.assertEqual(_u("bytes\xea"), content.as_text())
 
     def test_from_file(self):
@@ -164,7 +179,7 @@ class TestContent(TestCase):
         self.addCleanup(os.remove, path)
         self.addCleanup(os.close, fd)
         os.write(fd, _b('some data'))
-        stream = open(path, 'rb')
+        stream = open_file_test_content(path, 'rb')
         self.addCleanup(stream.close)
         content = content_from_stream(stream, UTF8_TEXT, buffer_now=True)
         os.write(fd, _b('more data'))
@@ -187,7 +202,7 @@ class TestContent(TestCase):
 
     def test_from_text(self):
         data = _u("some data")
-        expected = Content(UTF8_TEXT, lambda: [data.encode('utf8')])
+        expected = Content(UTF8_TEXT, lambda: [data])
         self.assertEqual(expected, text_content(data))
 
     def test_json_content(self):
@@ -325,7 +340,7 @@ class TestAttachFile(TestCase):
         path = self.make_file('some data')
         attach_file(test, path, name='foo', buffer_now=False)
         content = test.getDetails()['foo']
-        content_file = open(path, 'w')
+        content_file = open_file_test_content(path, 'w')
         content_file.write('new data')
         content_file.close()
         self.assertEqual(''.join(content.iter_text()), 'new data')
@@ -338,7 +353,7 @@ class TestAttachFile(TestCase):
         path = self.make_file('some data')
         attach_file(test, path, name='foo')
         content = test.getDetails()['foo']
-        content_file = open(path, 'w')
+        content_file = open_file_test_content(path, 'w')
         content_file.write('new data')
         content_file.close()
         self.assertEqual(''.join(content.iter_text()), 'some data')

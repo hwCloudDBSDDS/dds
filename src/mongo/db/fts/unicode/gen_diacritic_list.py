@@ -5,13 +5,28 @@ import sys
 from gen_helper import getCopyrightNotice, openNamespaces, closeNamespaces, \
     include
 
+
+
+def open_file_gen_diacritic_list(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def generate(unicode_proplist_file, target):
     """Generates a C++ source file that contains a diacritic checking function.
 
     The diacritic checking function contains a switch statement with cases for 
     every diacritic in the Unicode Character Database.
     """
-    out = open(target, "w")
+    out = open_file_gen_diacritic_list(target, "w")
 
     out.write(getCopyrightNotice())
     out.write(include("mongo/db/fts/unicode/codepoints.h"))
@@ -20,7 +35,7 @@ def generate(unicode_proplist_file, target):
 
     diacritics = set()
 
-    proplist_file = open(unicode_proplist_file, 'rU')
+    proplist_file = open_file_gen_diacritic_list(unicode_proplist_file, 'rU')
 
     for line in proplist_file:
         # Filter out blank lines and lines that start with #

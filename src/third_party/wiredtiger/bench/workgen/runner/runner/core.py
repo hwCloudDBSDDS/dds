@@ -97,7 +97,7 @@ def extensions_config(exts):
         else:
             extfiles[ext] = complete
     if len(extfiles) != 0:
-        result = ',extensions=[' + ','.join(extfiles.values()) + ']'
+        result = ',extensions=[' + ','.join(list(extfiles.values())) + ']'
     return result
 
 _PARETO_SHAPE = 1.5

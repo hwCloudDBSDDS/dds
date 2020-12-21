@@ -94,7 +94,7 @@ class test_encrypt01(wttest.WiredTigerTestCase):
         cursor = self.session.open_cursor(self.uri, None)
         r = random.Random()
         r.seed(0)
-        for idx in xrange(1,self.nrecords):
+        for idx in range(1,self.nrecords):
             start = r.randint(0,9)
             key = self.bigvalue[start:r.randint(0,100)] + str(idx)
             val = self.bigvalue[start:r.randint(0,10000)] + str(idx)
@@ -109,13 +109,13 @@ class test_encrypt01(wttest.WiredTigerTestCase):
 
         cursor = self.session.open_cursor(self.uri, None)
         r.seed(0)
-        for idx in xrange(1,self.nrecords):
+        for idx in range(1,self.nrecords):
             start = r.randint(0,9)
             key = self.bigvalue[start:r.randint(0,100)] + str(idx)
             val = self.bigvalue[start:r.randint(0,10000)] + str(idx)
             cursor.set_key(key)
             self.assertEqual(cursor.search(), 0)
-            self.assertEquals(cursor.get_value(), val)
+            self.assertEqual(cursor.get_value(), val)
         cursor.close()
 
 if __name__ == '__main__':

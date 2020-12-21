@@ -35,7 +35,7 @@ __revision__ = "src/engine/SCons/Platform/aix.py rel_2.5.0:3543:937e55cd78f7 201
 import os
 import subprocess
 
-import posix
+from . import posix
 
 import SCons.Util
 import SCons.Action

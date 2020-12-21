@@ -71,7 +71,7 @@ class test_cursor_random02(wttest.WiredTigerTestCase):
         cursor = self.session.open_cursor(uri, None, 'next_random=true')
         lastKey = None
         for i in range(0, num_entries):
-            self.assertEqual(cursor.next(), 0)
+            self.assertEqual(next(cursor), 0)
             current = cursor.get_key()
             current = int(current)
             visitedKeys[current] = visitedKeys[current] + 1

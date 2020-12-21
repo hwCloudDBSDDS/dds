@@ -142,7 +142,7 @@ class MismatchError(AssertionError):
         __unicode__ = __str__
 
         def __str__(self):
-            return self.__unicode__().encode("ascii", "backslashreplace")
+            return self.__unicode__()
 
 
 class MismatchDecorator(object):

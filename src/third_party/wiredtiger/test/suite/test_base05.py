@@ -61,7 +61,7 @@ class test_base05(wttest.WiredTigerTestCase):
         try:
             self.session.create(name, args)
         except:
-            print('**** ERROR in session.create("' + name + '","' + args + '") ***** ')
+            print(('**** ERROR in session.create("' + name + '","' + args + '") ***** '))
             raise
 
     # Moby Dick by Herman Melville, Chapter 1 (excerpt)
@@ -126,14 +126,14 @@ class test_base05(wttest.WiredTigerTestCase):
     # 'Hello' in several languages that use the non-latin part of unicode
     non_english_strings = [
         # This notation creates 'string' objects that have embedded unicode.
-        '\u20320\u22909',
-        '\u1571\u1604\u1587\u1617\u1604\u1575\u1605\u32\u1593\u1604\u1610\u1603\u1605',
-        '\u1513\u1500\u1493\u1501',
-        '\u20170\u26085\u12399',
-        '\u50504\u45397\u54616\u49464\u50836',
-        '\u1047\u1076\u1088\u1072\u1074\u1089\u1090\u1074\u1091\u1081\u1090\u1077',
-        "\u4306\u4304\u4315\u4304\u4320\u4335\u4317\u4305\u4304",
-        u'Hello',  # This notation creates a 'unicode' type object.
+        '\\u20320\\u22909',
+        '\\u1571\\u1604\\u1587\\u1617\\u1604\\u1575\\u1605\\u32\\u1593\\u1604\\u1610\\u1603\\u1605',
+        '\\u1513\\u1500\\u1493\\u1501',
+        '\\u20170\\u26085\\u12399',
+        '\\u50504\\u45397\\u54616\\u49464\\u50836',
+        '\\u1047\\u1076\\u1088\\u1072\\u1074\\u1089\\u1090\\u1074\\u1091\\u1081\\u1090\\u1077',
+        "\\u4306\\u4304\\u4315\\u4304\\u4320\\u4335\\u4317\\u4305\\u4304",
+        'Hello',  # This notation creates a 'unicode' type object.
         ]
 
     def mixed_string(self, n):
@@ -207,14 +207,14 @@ class test_base05(wttest.WiredTigerTestCase):
         strlist = self.non_english_strings
         for i in range(0, len(strlist)):
             if convert:
-                key = val = unicode(strlist[i])
+                key = val = str(strlist[i])
             else:
                 key = val = strlist[i]
             cursor[key] = val
 
         for i in range(0, len(strlist)):
             if convert:
-                key = val = unicode(strlist[i])
+                key = val = str(strlist[i])
             else:
                 key = val = strlist[i]
             cursor.set_key(key)

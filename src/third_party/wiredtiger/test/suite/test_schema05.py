@@ -118,7 +118,7 @@ class test_schema05(wttest.WiredTigerTestCase):
                 value = c.get_value()
                 while value != expect and \
                       self.csv(value, idx) == self.csv(expect, idx):
-                    c.next()
+                    next(c)
                     value = c.get_value()
                 self.assertEqual(value, expect)
             i += 1

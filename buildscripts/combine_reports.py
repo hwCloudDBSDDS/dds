@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Combine JSON report files used in Evergreen."""
 
-from __future__ import absolute_import
-from __future__ import print_function
+
+
 
 import errno
 import json
@@ -18,9 +18,24 @@ from buildscripts.resmokelib.testing import report  # pylint: disable=wrong-impo
 from buildscripts.resmokelib import utils  # pylint: disable=wrong-import-position
 
 
+
+
+def open_file_combine_reports(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def read_json_file(json_file):
     """Read JSON file."""
-    with open(json_file) as json_data:
+    with open_file_combine_reports(json_file) as json_data:
         return json.load(json_data)
 
 
@@ -43,7 +58,7 @@ def report_exit(combined_test_report):
 def check_error(input_count, output_count):
     """Raise error if both input and output exist, or if neither exist."""
     if (not input_count) and (not output_count):
-        raise ValueError("None of the input file(s) or output file exists")
+        raise ValueError("None of the input open_file_combine_reports(s) or output file exists")
 
     elif input_count and output_count:
         raise ValueError("Both input file and output files exist")

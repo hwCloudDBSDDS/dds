@@ -40,6 +40,21 @@ progname = 'doxfilter.py'
 linenum = 0
 filename = '<unknown>'
 
+
+
+def open_file_doxfilter(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def err(arg):
     sys.stderr.write(filename + ':' + str(linenum) + ': ERROR: ' + arg + '\n')
     sys.exit(1)
@@ -193,6 +208,6 @@ def process(source):
 if __name__ == '__main__':
     for f in sys.argv[1:]:
         filename = f
-        with open(f, 'r') as infile:
+        with open_file_doxfilter(f, 'r') as infile:
             sys.stdout.write(process(infile.read()))
         sys.exit(0)

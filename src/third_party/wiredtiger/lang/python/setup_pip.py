@@ -32,7 +32,7 @@
 # to package. Also as a prerequisite, SWIG must be run as the generated files
 # are part of the package. To create the distribution, in this directory, run
 # "python setup_pip.py sdist", this creates a tar.gz file under ./dist .
-from __future__ import print_function
+
 import os, os.path, re, shutil, site, sys
 from setuptools import setup, Distribution
 from distutils.extension import Extension
@@ -46,6 +46,21 @@ import setuptools.command.build_ext
 
 # msg --
 #   Print a message to stderr.
+
+
+def open_file_setup_pip(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def msg(s):
     print(os.path.basename(__file__) + ": " + s, file=sys.stderr)
 
@@ -143,7 +158,7 @@ def get_compile_flags(inc_paths, lib_paths):
 # get_sources_curdir --
 #   Get a list of sources from the current directory
 def get_sources_curdir():
-    DEVNULL = open(os.devnull, 'w')
+    DEVNULL = open_file_setup_pip(os.devnull, 'w')
     gitproc = subprocess.Popen(
         ['git', 'ls-tree', '-r', '--name-only', 'HEAD^{tree}'],
         stdin=DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -161,7 +176,7 @@ def get_sources_curdir():
 #   Read the version information from the RELEASE_INFO file.
 def get_wiredtiger_versions(wt_dir):
     v = {}
-    for l in open(os.path.join(wt_dir, 'RELEASE_INFO')):
+    for l in open_file_setup_pip(os.path.join(wt_dir, 'RELEASE_INFO')):
         if re.match(r'WIREDTIGER_VERSION_(?:MAJOR|MINOR|PATCH)=', l):
             exec(l, v)
     wt_ver = '%d.%d' % (v['WIREDTIGER_VERSION_MAJOR'],
@@ -252,7 +267,7 @@ wt_swig_lib_name = os.path.join(python_rel_dir, '_wiredtiger.so')
 short_description = 'high performance, scalable, production quality, ' + \
     'NoSQL, Open Source extensible platform for data management'
 long_description = 'WiredTiger is a ' + short_description + '.\n\n' + \
-    open(os.path.join(wt_dir, 'README')).read()
+    open_file_setup_pip(os.path.join(wt_dir, 'README')).read()
 
 wt_ver, wt_full_ver = get_wiredtiger_versions(wt_dir)
 build_path = get_build_path()
@@ -367,7 +382,7 @@ class WTBuildExt(setuptools.command.build_ext.build_ext):
             self.execute(
                 lambda: build_commands(make_cmds, conf_make_dir, env), [],
                 'wiredtiger make')
-            open(built_sentinal, 'a').close()
+            open_file_setup_pip(built_sentinal, 'a').close()
         return setuptools.command.build_ext.build_ext.run(self)
 
 setup(

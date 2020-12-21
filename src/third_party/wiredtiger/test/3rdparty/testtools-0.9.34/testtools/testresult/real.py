@@ -1334,7 +1334,7 @@ class ExtendedToStreamDecorator(CopyStreamResult, StreamSummary, TestControl):
                 details = {}
             details['traceback'] = TracebackContent(err, test)
         if details is not None:
-            for name, content in details.items():
+            for name, content in list(details.items()):
                 mime_type = repr(content.content_type)
                 for file_bytes in content.iter_bytes():
                     self.status(file_name=name, file_bytes=file_bytes,
@@ -1342,7 +1342,7 @@ class ExtendedToStreamDecorator(CopyStreamResult, StreamSummary, TestControl):
                 self.status(file_name=name, file_bytes=_b(""), eof=True,
                     mime_type=mime_type, test_id=test_id, timestamp=now)
         if reason is not None:
-            self.status(file_name='reason', file_bytes=reason.encode('utf8'),
+            self.status(file_name='reason', file_bytes=reason,
                 eof=True, mime_type="text/plain; charset=utf8",
                 test_id=test_id, timestamp=now)
         self.status(test_id=test_id, test_status=status,

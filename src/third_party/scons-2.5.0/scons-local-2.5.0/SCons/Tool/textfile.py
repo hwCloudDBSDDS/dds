@@ -55,6 +55,21 @@ from SCons.Node import Node
 from SCons.Node.Python import Value
 from SCons.Util import is_String, is_Sequence, is_Dict
 
+
+
+def open_file_textfile(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def _do_subst(node, subs):
     """
     Fetch the node contents and replace all instances of the keys with
@@ -106,8 +121,8 @@ def _action(target, source, env):
 
     # write the file
     try:
-        fd = open(target[0].get_path(), "wb")
-    except (OSError,IOError), e:
+        fd = open_file_textfile(target[0].get_path(), "wb")
+    except (OSError,IOError) as e:
         raise SCons.Errors.UserError("Can't write target file %s" % target[0])
     # separate lines by 'linesep' only if linesep is not empty
     lsep = None

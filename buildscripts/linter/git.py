@@ -1,6 +1,4 @@
 """Git Utility functions."""
-from __future__ import absolute_import
-from __future__ import print_function
 
 import itertools
 import os
@@ -15,6 +13,21 @@ from buildscripts.resmokelib.utils import globstar
 # Has to match the string in SConstruct
 MODULE_DIR = "src/mongo/db/modules"
 
+
+
+
+def open_file_git(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def get_base_dir():
     # type: () -> str
@@ -175,7 +188,7 @@ def get_files_to_check_from_patch(patches, filter_function):
 
     lines = []  # type: List[str]
     for patch in patches:
-        with open(patch, "rb") as infile:
+        with open_file_git(patch, "rb") as infile:
             lines += infile.readlines()
 
     candidates = [check.match(line).group(1) for line in lines if check.match(line)]

@@ -1,7 +1,5 @@
 """Utility for parsing JS comments."""
 
-from __future__ import absolute_import
-
 import re
 
 import yaml
@@ -9,6 +7,21 @@ import yaml
 # TODO: use a more robust regular expression for matching tags
 _JSTEST_TAGS_RE = re.compile(r".*@tags\s*:\s*(\[[^\]]*\])", re.DOTALL)
 
+
+
+
+def open_file_jscomment(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def get_tags(pathname):
     """Return the list of tags found in the (JS-style) comments of 'pathname'.
@@ -29,14 +42,14 @@ def get_tags(pathname):
       */
     """
 
-    with open(pathname) as fp:
+    with open_file_jscomment(pathname) as fp:
         match = _JSTEST_TAGS_RE.match(fp.read())
         if match:
             try:
                 # TODO: it might be worth supporting the block (indented) style of YAML lists in
                 #       addition to the flow (bracketed) style
                 tags = yaml.safe_load(_strip_jscomments(match.group(1)))
-                if not isinstance(tags, list) and all(isinstance(tag, basestring) for tag in tags):
+                if not isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
                     raise TypeError("Expected a list of string tags, but got '%s'" % (tags))
                 return tags
             except yaml.YAMLError as err:
@@ -67,6 +80,9 @@ def _strip_jscomments(string):
     """
 
     yaml_lines = []
+
+    if isinstance(string, bytes):
+        string = string.decode("utf-8")
 
     for line in string.splitlines():
         # Remove leading whitespace and symbols that commonly appear in JS comments.

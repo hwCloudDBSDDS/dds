@@ -54,7 +54,7 @@ class test_encrypt07(test_salvage.test_salvage):
             self.sys_encrypt, self.sys_encrypt_args)
 
     def rot13(self, s):
-        return codecs.encode(s, 'rot_13')
+        return codecs
 
     # overrides test_salvage.damage.
     # When we're looking in the file for our 'unique' set of bytes,

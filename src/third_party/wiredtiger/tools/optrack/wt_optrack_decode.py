@@ -43,6 +43,21 @@ import traceback
 #
 currentLogVersion = 2;
 
+
+
+def open_file_wt_optrack_decode(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class color:
    PURPLE = '\033[95m'
    CYAN = '\033[96m'
@@ -65,11 +80,11 @@ def buildTranslationMap(mapFileName):
         return False;
 
     try:
-        mapFile = open(mapFileName, "r");
+        mapFile = open_file_wt_optrack_decode(mapFileName, "r");
     except:
-        print(color.BOLD + color.RED);
-        print("Could not open " + mapFileName + " for reading");
-        print(color.END);
+        print((color.BOLD + color.RED));
+        print(("Could not open " + mapFileName + " for reading"));
+        print((color.END));
         return;
 
     # Read lines from the map file and build an in-memory map
@@ -97,10 +112,10 @@ def buildTranslationMap(mapFileName):
 
 def funcIDtoName(funcID):
 
-    if (functionMap.has_key(funcID)):
+    if (funcID in functionMap):
         return functionMap[funcID];
     else:
-       print("Could not find the name for func " + str(funcID));
+       print(("Could not find the name for func " + str(funcID)));
        return "NULL";
 
 #
@@ -152,7 +167,7 @@ def validateHeader(file):
     if (len(bytesRead) < HEADER_SIZE):
         return False, -1;
 
-    version, threadType, tsc_nsec = struct.unpack('III', bytesRead);
+    version, threadType, btsc_nsec = struct.unpack('III', bytesRead);
 
     if (version == currentLogVersion):
         return True, threadType, tsc_nsec;
@@ -181,14 +196,14 @@ def parseFile(fileName):
     totalRecords = 0;
     validVersion = False;
 
-    print(color.BOLD + "Processing file " + fileName + color.END);
+    print((color.BOLD + "Processing file " + fileName + color.END));
 
     # Open the log file for reading
     try:
-        file = open(fileName, "r");
+        file = open_file_wt_optrack_decode(fileName, "r");
     except:
-        print(color.BOLD + color.RED +
-              "Could not open " + fileName + " for reading" + color.END);
+        print((color.BOLD + color.RED +
+              "Could not open " + fileName + " for reading" + color.END));
         return;
 
     # Read and validate log header
@@ -207,20 +222,20 @@ def parseFile(fileName):
     # it back to get an accurate ratio.
     tsc_nsec_ratio = float(tsc_nsec_ratio) / 1000.0;
 
-    print("TSC_NSEC ratio parsed: " + '{0:,.4f}'.format(tsc_nsec_ratio));
+    print(("TSC_NSEC ratio parsed: " + '{0:,.4f}'.format(tsc_nsec_ratio)));
 
     # Open the text file for writing
     try:
         outputFileName = fileName + "-" + threadTypeString + ".txt";
-        outputFile = open(outputFileName, "w");
+        outputFile = open_file_wt_optrack_decode(outputFileName, "w");
     except:
-        print(color.BOLD + color.RED +
+        print((color.BOLD + color.RED +
               "Could not open file " + outputfileName + ".txt for writing." +
-              color.END);
+              color.END));
         return;
 
-    print(color.BOLD + color.PURPLE +
-          "Writing to output file " + outputFileName + "." + color.END);
+    print((color.BOLD + color.PURPLE +
+          "Writing to output file " + outputFileName + "." + color.END));
 
     while (not done):
         record = parseOneRecord(file);
@@ -240,20 +255,20 @@ def parseFile(fileName):
             except:
                 exc_type, exc_value, exc_traceback = sys.exc_info()
                 traceback.print_exception(exc_type, exc_value, exc_traceback);
-                print(color.BOLD + color.RED);
-                print("Could not write record " + str(record) +
-                      " to file " + fileName + ".txt.");
-                print(color.END);
+                print((color.BOLD + color.RED));
+                print(("Could not write record " + str(record) +
+                      " to file " + fileName + ".txt."));
+                print((color.END));
                 done = True;
 
-    print("Wrote " + str(totalRecords) + " records to " + outputFileName + ".");
+    print(("Wrote " + str(totalRecords) + " records to " + outputFileName + "."));
     file.close();
     outputFile.close();
 
 def waitOnOneProcess(runningProcesses):
 
     success = False;
-    for fname, p in runningProcesses.items():
+    for fname, p in list(runningProcesses.items()):
         if (not p.is_alive()):
             del runningProcesses[fname];
             success = True;
@@ -288,13 +303,13 @@ def main():
     args = parser.parse_args();
 
     print("Running with the following parameters:");
-    for key, value in vars(args).items():
-        print ("\t" + key + ": " + str(value));
+    for key, value in list(vars(args).items()):
+        print(("\t" + key + ": " + str(value)));
 
     # Parse the map of function ID to name translations.
     if (buildTranslationMap(args.mapFileName) is False):
-        print("Failed to locate or parse the map file " +
-              args.mapFileName);
+        print(("Failed to locate or parse the map file " +
+              args.mapFileName));
         print("Cannot proceed.");
         return;
 
@@ -303,9 +318,9 @@ def main():
         targetParallelism = args.jobParallelism;
     if (targetParallelism == 0):
         targetParallelism = len(args.files);
-    print(color.BLUE + color.BOLD +
+    print((color.BLUE + color.BOLD +
           "Will process " + str(targetParallelism) + " files in parallel."
-          + color.END);
+          + color.END));
 
     # Prepare the processes that will parse files, one per file
     if (len(args.files) > 0):

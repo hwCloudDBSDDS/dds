@@ -1,6 +1,4 @@
 """Class to support running various linters in a common framework."""
-from __future__ import absolute_import
-from __future__ import print_function
 
 import difflib
 import logging
@@ -14,6 +12,21 @@ from typing import Dict, List, Optional
 from . import base
 
 
+
+
+def open_file_runner(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def _check_version(linter, cmd_path, args):
     # type: (base.LinterBase, List[str], List[str]) -> bool
     """Check if the given linter has the correct version."""
@@ -23,6 +36,7 @@ def _check_version(linter, cmd_path, args):
         logging.info(str(cmd))
         process_handle = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output, stderr = process_handle.communicate()
+        output = output.decode('utf-8')
 
         if process_handle.returncode:
             logging.info("Version check failed for [%s], return code '%d'." +
@@ -172,10 +186,10 @@ class LintRunner(object):
         try:
             if linter.linter.needs_file_diff():
                 # Need a file diff
-                with open(file_name, 'rb') as original_text:
-                    original_file = original_text.read()
+                with open_file_runner(file_name, 'rb') as original_text:
+                    original_file = original_text.read().decode('utf-8')
 
-                formatted_file = subprocess.check_output(cmd)
+                formatted_file = subprocess.check_output(cmd).decode('utf-8')
                 if original_file != formatted_file:
                     original_lines = original_file.splitlines()
                     formatted_lines = formatted_file.splitlines()
@@ -183,12 +197,12 @@ class LintRunner(object):
 
                     # Take a lock to ensure diffs do not get mixed when printed to the screen
                     with self.print_lock:
-                        print("ERROR: Found diff for " + file_name)
-                        print("To fix formatting errors, run pylinters.py fix %s" % (file_name))
+                        print(("ERROR: Found diff for " + file_name))
+                        print(("To fix formatting errors, run pylinters.py fix %s" % (file_name)))
 
                         count = 0
                         for line in result:
-                            print(line.rstrip())
+                            print((line.rstrip()))
                             count += 1
 
                         if count == 0:
@@ -196,7 +210,7 @@ class LintRunner(object):
 
                     return False
             else:
-                output = subprocess.check_output(cmd)
+                output = subprocess.check_output(cmd).decode('utf-8')
 
                 # On Windows, mypy.bat returns 0 even if there are length failures so we need to
                 # check if there was any output
@@ -205,7 +219,7 @@ class LintRunner(object):
                     return False
 
         except subprocess.CalledProcessError as cpe:
-            self._safe_print("CMD [%s] failed:\n%s" % (cmd, cpe.output))
+            self._safe_print("CMD [%s] failed:\n%s" % (cmd, cpe.output).decode('utf-8'))
             return False
 
         return True
@@ -217,7 +231,7 @@ class LintRunner(object):
         logging.debug(str(cmd))
 
         try:
-            subprocess.check_output(cmd)
+            subprocess.check_output(cmd).decode('utf-8')
         except subprocess.CalledProcessError as cpe:
             self._safe_print("CMD [%s] failed:\n%s" % (cmd, cpe.output))
             return False

@@ -97,7 +97,7 @@ class test_backup07(wttest.WiredTigerTestCase, suite_subprocess):
         # Now copy the files returned by the backup cursor.  This will
         # include the log file that has updates for the newly created table.
         while True:
-            ret = bkup_c.next()
+            ret = next(bkup_c)
             if ret != 0:
                 break
             newfile = bkup_c.get_key()

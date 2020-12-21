@@ -30,7 +30,7 @@ selection method.
 # LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-from __future__ import division
+
 
 __revision__ = "src/engine/SCons/Tool/intelc.py rel_2.5.0:3543:937e55cd78f7 2016/04/09 11:29:54 bdbaddog"
 
@@ -53,6 +53,16 @@ import SCons.Util
 import SCons.Warnings
 
 # Exceptions for this tool
+
+
+def cmp(x, y):
+    if x > y:
+        return 1
+    elif x == y:
+        return 0
+    else:
+        return -1
+
 class IntelCError(SCons.Errors.InternalError):
     pass
 class MissingRegistryError(IntelCError): # missing registry entry
@@ -164,7 +174,7 @@ def get_intel_registry_value(valuename, version=None, abi=None):
 
             try:
                 v = SCons.Util.RegQueryValueEx(k, valuename)[0]
-                return v  # or v.encode('iso-8859-1', 'replace') to remove unicode?
+                return v  # or v to remove unicode?
             except SCons.Util.RegError:
                 if abi.upper() == 'EM64T':
                     abi = 'em64t_native'
@@ -176,7 +186,7 @@ def get_intel_registry_value(valuename, version=None, abi=None):
 
             try:
                 v = SCons.Util.RegQueryValueEx(k, valuename)[0]
-                return v  # or v.encode('iso-8859-1', 'replace') to remove unicode?
+                return v  # or v to remove unicode?
             except SCons.Util.RegError:
                 raise MissingRegistryError("%s was not found in the registry, for Intel compiler version %s, abi='%s'"%(K, version,abi))
 
@@ -188,7 +198,7 @@ def get_intel_registry_value(valuename, version=None, abi=None):
     # Get the value:
     try:
         v = SCons.Util.RegQueryValueEx(k, valuename)[0]
-        return v  # or v.encode('iso-8859-1', 'replace') to remove unicode?
+        return v  # or v to remove unicode?
     except SCons.Util.RegError:
         raise MissingRegistryError("%s\\%s was not found in the registry."%(K, valuename))
 
@@ -245,17 +255,16 @@ def get_all_compiler_versions():
                         # Registry points to nonexistent dir.  Ignore this
                         # version.
                         value = get_intel_registry_value('ProductDir', subkey, 'IA32')
-                    except MissingRegistryError, e:
+                    except MissingRegistryError as e:
 
                         # Registry key is left dangling (potentially
                         # after uninstalling).
 
-                        print \
-                            "scons: *** Ignoring the registry key for the Intel compiler version %s.\n" \
+                        print("scons: *** Ignoring the registry key for the Intel compiler version %s.\n" \
                             "scons: *** It seems that the compiler was uninstalled and that the registry\n" \
-                            "scons: *** was not cleaned up properly.\n" % subkey
+                            "scons: *** was not cleaned up properly.\n" % subkey)
                     else:
-                        print "scons: *** Ignoring "+str(value)
+                        print("scons: *** Ignoring "+str(value))
 
                 i = i + 1
         except EnvironmentError:
@@ -486,8 +495,8 @@ def generate(env, version=None, abi=None, topdir=None, verbose=0):
             bindir="bin"
             libdir="lib"
         if verbose:
-            print "Intel C compiler: using version %s (%g), abi %s, in '%s/%s'"%\
-                  (repr(version), linux_ver_normalize(version),abi,topdir,bindir)
+            print("Intel C compiler: using version %s (%g), abi %s, in '%s/%s'"%\
+                  (repr(version), linux_ver_normalize(version),abi,topdir,bindir))
             if is_linux:
                 # Show the actual compiler version by running the compiler.
                 os.system('%s/%s/icc --version'%(topdir,bindir))
@@ -501,14 +510,14 @@ def generate(env, version=None, abi=None, topdir=None, verbose=0):
                    'LIB'             : libdir,
                    'PATH'            : bindir,
                    'LD_LIBRARY_PATH' : libdir}
-            for p in paths.keys():
+            for p in list(paths.keys()):
                 env.PrependENVPath(p, os.path.join(topdir, paths[p]))
         if is_mac:
             paths={'INCLUDE'         : 'include',
                    'LIB'             : libdir,
                    'PATH'            : bindir,
                    'LD_LIBRARY_PATH' : libdir}
-            for p in paths.keys():
+            for p in list(paths.keys()):
                 env.PrependENVPath(p, os.path.join(topdir, paths[p]))
         if is_windows:
             #       env key    reg valname   default subdir of top

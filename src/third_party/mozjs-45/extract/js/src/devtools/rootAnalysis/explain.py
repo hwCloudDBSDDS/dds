@@ -14,10 +14,25 @@ args = parser.parse_args()
 num_hazards = 0
 num_refs = 0
 try:
-    with open(args.rootingHazards) as rootingHazards, \
-        open(args.hazards, 'w') as hazards, \
-        open(args.extra, 'w') as extra, \
-        open(args.refs, 'w') as refs:
+
+
+def open_file_explain(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+    with open_file_explain(args.rootingHazards) as rootingHazards, \
+        open_file_explain(args.hazards, 'w') as hazards, \
+        open_file_explain(args.extra, 'w') as extra, \
+        open_file_explain(args.refs, 'w') as refs:
         current_gcFunction = None
 
         # Map from a GC function name to the list of hazards resulting from
@@ -32,20 +47,20 @@ try:
             m = re.match(r'^Time: (.*)', line)
             mm = re.match(r'^Run on:', line)
             if m or mm:
-                print >>hazards, line
-                print >>extra, line
-                print >>refs, line
+                print(line, file=hazards)
+                print(line, file=extra)
+                print(line, file=refs)
                 continue
 
             m = re.match(r'^Function.*has unnecessary root', line)
             if m:
-                print >>extra, line
+                print(line, file=extra)
                 continue
 
             m = re.match(r'^Function.*takes unsafe address of unrooted', line)
             if m:
                 num_refs += 1
-                print >>refs, line
+                print(line, file=refs)
                 continue
 
             m = re.match(r"^Function.*has unrooted.*of type.*live across GC call ('?)(.*?)('?) at \S+:\d+$", line)
@@ -65,7 +80,7 @@ try:
                 else:
                     hazardousGCFunctions[current_gcFunction][-1] += line
 
-        with open(args.gcFunctions) as gcFunctions:
+        with open_file_explain(args.gcFunctions) as gcFunctions:
             gcExplanations = {}  # gcFunction => stack showing why it can GC
 
             current_func = None
@@ -87,14 +102,14 @@ try:
             for gcFunction, index in hazardOrder:
                 gcHazards = hazardousGCFunctions[gcFunction]
                 if gcFunction in gcExplanations:
-                    print >>hazards, (gcHazards[index] + gcExplanations[gcFunction])
+                    print((gcHazards[index] + gcExplanations[gcFunction]), file=hazards)
                 else:
-                    print >>hazards, gcHazards[index]
+                    print(gcHazards[index], file=hazards)
 
 except IOError as e:
-    print 'Failed: %s' % str(e)
+    print('Failed: %s' % str(e))
 
-print("Wrote %s" % args.hazards)
-print("Wrote %s" % args.extra)
-print("Wrote %s" % args.refs)
-print("Found %d hazards and %d unsafe references" % (num_hazards, num_refs))
+print(("Wrote %s" % args.hazards))
+print(("Wrote %s" % args.extra))
+print(("Wrote %s" % args.refs))
+print(("Found %d hazards and %d unsafe references" % (num_hazards, num_refs)))

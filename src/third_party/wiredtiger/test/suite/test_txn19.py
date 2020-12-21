@@ -41,8 +41,23 @@ import wiredtiger, wttest
 # (an even number of records have been created), and when corruption
 # happens in the middle of a log file (with an odd number of records).
 
+
+
+def open_file_test_txn19(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def corrupt(fname, truncate, offset, writeit):
-    with open(fname, 'r+') as log:
+    with open_file_test_txn19(fname, 'r+') as log:
         if offset:
             if offset < 0:  # Negative offset means seek to the end
                 log.seek(0, 2)

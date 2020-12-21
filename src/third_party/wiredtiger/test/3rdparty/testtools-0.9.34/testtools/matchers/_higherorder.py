@@ -19,6 +19,21 @@ from ._impl import (
     )
 
 
+
+
+def open_file__higherorder(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class MatchesAny(object):
     """Matches if any of the matchers it is created with match."""
 
@@ -175,7 +190,7 @@ class AfterPreprocessing(object):
 
       def PathHasFileContent(content):
           def _read(path):
-              return open(path).read()
+              return open_file__higherorder(path).read()
           return AfterPreprocessing(_read, Equals(content))
     """
 
@@ -353,7 +368,7 @@ class _MatchesPredicateWithParams(Matcher):
 
     def __str__(self):
         args = [str(arg) for arg in self.args]
-        kwargs = ["%s=%s" % item for item in self.kwargs.items()]
+        kwargs = ["%s=%s" % item for item in list(self.kwargs.items())]
         args = ", ".join(args + kwargs)
         if self.name is None:
             name = 'MatchesPredicateWithParams(%r, %r)' % (

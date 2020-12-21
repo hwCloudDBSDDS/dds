@@ -26,7 +26,7 @@ def ContainsAll(items):
     the matchee.
     """
     from ._basic import Contains
-    return MatchesAll(*map(Contains, items), first_only=False)
+    return MatchesAll(*list(map(Contains, items)), first_only=False)
 
 
 class MatchesListwise(object):
@@ -127,7 +127,7 @@ class MatchesStructure(object):
 
     def update(self, **kws):
         new_kws = self.kws.copy()
-        for attr, matcher in kws.items():
+        for attr, matcher in list(kws.items()):
             if matcher is None:
                 new_kws.pop(attr, None)
             else:

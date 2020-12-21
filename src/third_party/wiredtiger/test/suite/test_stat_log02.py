@@ -32,6 +32,21 @@ from wiredtiger import stat
 
 # test_stat_log02.py
 #    Statistics log sources argument and JSON testing.
+
+
+def open_file_test_stat_log02(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_stat_log02(wttest.WiredTigerTestCase):
 
     # Tests need to setup the connection in their own way.
@@ -46,14 +61,14 @@ class test_stat_log02(wttest.WiredTigerTestCase):
         self.check_file_is_json(files[0])
 
     def check_file_is_json(self, file_name):
-        f = open(file_name, 'r')
+        f = open_file_test_stat_log02(file_name, 'r')
         for line in f:
             # This will throw assertions if we don't have correctly formed JSON
             json.loads(line)
 
     def check_file_contains_tables(self, dir):
         files = glob.glob(dir + '/' + 'WiredTigerStat.[0-9]*')
-        f = open(files[0], 'r')
+        f = open_file_test_stat_log02(files[0], 'r')
         for line in f:
             data = json.loads(line)
             if "wiredTigerTables" in data:

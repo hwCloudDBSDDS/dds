@@ -74,7 +74,7 @@ class TestDocTestMatchesSpecific(TestCase):
         matcher = DocTestMatches(header, doctest.ELLIPSIS)
         mismatch = matcher.match(_b("GIF89a\1\0\1\0\0\0\0;"))
         # Must be treatable as unicode text, the exact output matters less
-        self.assertTrue(unicode(mismatch.describe()))
+        self.assertTrue(str(mismatch.describe()))
 
 
 def test_suite():

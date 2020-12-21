@@ -36,11 +36,11 @@ def tablename(id):
 
 def show(tname):
     print('')
-    print('<><><><> ' + tname + ' <><><><>')
+    print(('<><><><> ' + tname + ' <><><><>'))
     c = s.open_cursor(tname, None)
     for k,v in c:
-        print('key: ' + k)
-        print('value: ' + v)
+        print(('key: ' + k))
+        print(('value: ' + v))
     print('<><><><><><><><><><><><>')
     c.close()
 
@@ -49,7 +49,7 @@ def expectException(expr):
     try:
         expr()
     except BaseException as e:
-        print('got expected exception: ' + str(e))
+        print(('got expected exception: ' + str(e)))
         gotit = True
     if not gotit:
         raise Exception("missing expected exception")
@@ -78,8 +78,8 @@ s.truncate(tname0, None, None)
 op = Operation(Operation.OP_INSERT, Table(tname0), Key(Key.KEYGEN_APPEND, 10), Value(100))
 op2 = Operation(Operation.OP_INSERT, Table(tname1), Key(Key.KEYGEN_APPEND, 20), Value(30))
 o = op2 * 10
-print 'op is: ' + str(op)
-print 'multiplying op is: ' + str(o)
+print('op is: ' + str(op))
+print('multiplying op is: ' + str(o))
 thread0 = Thread(o + op + op)
 workload = Workload(context, thread0)
 print('RUN2')
@@ -101,8 +101,8 @@ workload.run(conn)
 show(tname0)
 show(tname1)
 
-print('workload is ' + str(workload))
-print('thread0 is ' + str(thread0))
+print(('workload is ' + str(workload)))
+print(('thread0 is ' + str(thread0)))
 
 def assignit(k, n):
     k._size = n
@@ -119,4 +119,4 @@ print('RUN4')
 expectException(lambda: workload.run(conn))
 
 print('HELP:')
-print(workload.options.help())
+print((workload.options.help()))

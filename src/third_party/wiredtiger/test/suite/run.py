@@ -50,7 +50,7 @@ elif os.path.isfile(os.path.join(wt_disttop, 'build_posix', 'wt')):
 elif os.path.isfile(os.path.join(wt_disttop, 'wt.exe')):
     wt_builddir = wt_disttop
 else:
-    print 'Unable to find useable WiredTiger build'
+    print('Unable to find useable WiredTiger build')
     sys.exit(1)
 
 # Cannot import wiredtiger and supporting utils until we set up paths
@@ -71,8 +71,23 @@ import wttest
 unittest = wttest.unittest
 from testscenarios.scenarios import generate_scenarios
 
+
+
+def open_file_run(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def usage():
-    print 'Usage:\n\
+    print('Usage:\n\
   $ cd build_posix\n\
   $ python ../test/suite/run.py [ options ] [ tests ]\n\
 \n\
@@ -99,7 +114,7 @@ Tests:\n\
 \n\
   When -C or -c are present, there may not be any tests named.\n\
   When -s is present, there must be a test named.\n\
-'
+')
 
 # capture the category (AKA 'subsuite') part of a test name,
 # e.g. test_util03 -> util
@@ -180,7 +195,7 @@ def configApplyInner(suites, configmap, configwrite):
 def configApply(suites, configfilename, configwrite):
     configmap = None
     if not configwrite:
-        with open(configfilename, 'r') as f:
+        with open_file_run(configfilename, 'r') as f:
             line = f.readline()
             while line != '\n' and line != '':
                 line = f.readline()
@@ -189,7 +204,7 @@ def configApply(suites, configfilename, configwrite):
         configmap = {}
     newsuite = configApplyInner(suites, configmap, configwrite)
     if configwrite:
-        with open(configfilename, 'w') as f:
+        with open_file_run(configfilename, 'w') as f:
             f.write("""# Configuration file for wiredtiger test/suite/run.py,
 # generated with '-C filename' and consumed with '-c filename'.
 # This shows the hierarchy of tests, and can be used to rerun with
@@ -231,7 +246,7 @@ def testsFromArg(tests, loader, arg, scenario):
         start, end = (int(a) for a in arg.split('-'))
     else:
         start, end = int(arg), int(arg)
-    for t in xrange(start, end+1):
+    for t in range(start, end+1):
         addScenarioTests(tests, loader, 'test%03d' % t, scenario)
 
 if __name__ == '__main__':
@@ -319,7 +334,7 @@ if __name__ == '__main__':
                 configfile = args.pop(0)
                 configwrite = True
                 continue
-            print 'unknown arg: ' + arg
+            print('unknown arg: ' + arg)
             usage()
             sys.exit(2)
         testargs.append(arg)
@@ -356,7 +371,7 @@ if __name__ == '__main__':
         for test in tests:
             dryOutput.add(test.shortDesc())
         for line in dryOutput:
-            print line
+            print(line)
     else:
         result = wttest.runsuite(tests, parallel)
         sys.exit(0 if result.wasSuccessful() else 1)

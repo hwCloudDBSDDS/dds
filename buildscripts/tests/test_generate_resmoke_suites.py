@@ -1,6 +1,5 @@
 """Unit tests for the generate_resmoke_suite script."""
 
-from __future__ import absolute_import
 
 import datetime
 import unittest
@@ -217,7 +216,7 @@ class ExecutionRuntimeTest(unittest.TestCase):
 
         runtime = grs.execution_runtime("test.js", execution, {})
 
-        self.assertEquals(runtime, 1)
+        self.assertEqual(runtime, 1)
 
     def test_execution_runtime_is_calculated_with_no_applicable_hooks(self):
         execution = {
@@ -229,7 +228,7 @@ class ExecutionRuntimeTest(unittest.TestCase):
 
         runtime = grs.execution_runtime("test.js", execution, hooks)
 
-        self.assertEquals(runtime, 1)
+        self.assertEqual(runtime, 1)
 
     def test_execution_runtime_is_calculated_with_hooks(self):
         execution = {
@@ -241,14 +240,14 @@ class ExecutionRuntimeTest(unittest.TestCase):
 
         runtime = grs.execution_runtime("test.js", execution, hooks)
 
-        self.assertEquals(runtime, 2)
+        self.assertEqual(runtime, 2)
 
 
 class OrganizeExecutionsByTestTest(unittest.TestCase):
     def test_no_executions(self):
         tests = grs.organize_executions_by_test([])
 
-        self.assertEquals(len(tests), 0)
+        self.assertEqual(len(tests), 0)
 
     @patch("buildscripts.generate_resmoke_suites.os")
     def test_only_test_executions(self, os):
@@ -273,10 +272,10 @@ class OrganizeExecutionsByTestTest(unittest.TestCase):
 
         tests = grs.organize_executions_by_test(executions)
 
-        self.assertEquals(len(tests), 3)
-        self.assertEquals(tests["test1.js"]["variant1"], 1)
-        self.assertEquals(tests["test2.js"]["variant1"], 2)
-        self.assertEquals(tests["test3.js"]["variant1"], 3)
+        self.assertEqual(len(tests), 3)
+        self.assertEqual(tests["test1.js"]["variant1"], 1)
+        self.assertEqual(tests["test2.js"]["variant1"], 2)
+        self.assertEqual(tests["test3.js"]["variant1"], 3)
 
     @patch("buildscripts.generate_resmoke_suites.os")
     def test_mix_of_test_and_hook_executions(self, os):
@@ -317,10 +316,10 @@ class OrganizeExecutionsByTestTest(unittest.TestCase):
 
         tests = grs.organize_executions_by_test(executions)
 
-        self.assertEquals(len(tests), 3)
-        self.assertEquals(tests["test1.js"]["variant1"], 2)
-        self.assertEquals(tests["test2.js"]["variant1"], 2)
-        self.assertEquals(tests["test3.js"]["variant1"], 6)
+        self.assertEqual(len(tests), 3)
+        self.assertEqual(tests["test1.js"]["variant1"], 2)
+        self.assertEqual(tests["test2.js"]["variant1"], 2)
+        self.assertEqual(tests["test3.js"]["variant1"], 6)
 
     @patch("buildscripts.generate_resmoke_suites.os")
     def test_multiple_revisions_for_same_test(self, os):
@@ -367,10 +366,10 @@ class OrganizeExecutionsByTestTest(unittest.TestCase):
 
         tests = grs.organize_executions_by_test(executions)
 
-        self.assertEquals(len(tests), 3)
-        self.assertEquals(tests["test1.js"]["variant1"], 1)
-        self.assertEquals(tests["test2.js"]["variant1"], 2)
-        self.assertEquals(tests["test3.js"]["variant1"], 3)
+        self.assertEqual(len(tests), 3)
+        self.assertEqual(tests["test1.js"]["variant1"], 1)
+        self.assertEqual(tests["test2.js"]["variant1"], 2)
+        self.assertEqual(tests["test3.js"]["variant1"], 3)
 
     @patch("buildscripts.generate_resmoke_suites.os")
     def test_non_files_are_not_included(self, os):
@@ -395,7 +394,7 @@ class OrganizeExecutionsByTestTest(unittest.TestCase):
 
         tests = grs.organize_executions_by_test(executions)
 
-        self.assertEquals(len(tests), 0)
+        self.assertEqual(len(tests), 0)
 
 
 class DivideTestsIntoSuitesByMaxtimeTest(unittest.TestCase):

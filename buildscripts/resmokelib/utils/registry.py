@@ -6,8 +6,6 @@ This pattern enables the associated class to be looked up later by using
 its name.
 """
 
-from __future__ import absolute_import
-
 # Specifying 'LEAVE_UNREGISTERED' as the "REGISTERED_NAME" attribute will cause the class to be
 # omitted from the registry. This is particularly useful for base classes that define an interface
 # or common functionality, and aren't intended to be constructed explicitly.

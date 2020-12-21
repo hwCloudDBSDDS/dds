@@ -35,7 +35,7 @@ __revision__ = "src/engine/SCons/Tool/sgilink.py rel_2.5.0:3543:937e55cd78f7 201
 
 import SCons.Util
 
-import link
+from . import link
 
 linkers = ['CC', 'cc']
 

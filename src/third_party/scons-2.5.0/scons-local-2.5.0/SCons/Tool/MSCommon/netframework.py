@@ -29,19 +29,29 @@ import os
 import re
 import SCons.Util
 
-from common import read_reg, debug
+from .common import read_reg, debug
 
 # Original value recorded by dcournapeau
 _FRAMEWORKDIR_HKEY_ROOT = r'Software\Microsoft\.NETFramework\InstallRoot'
 # On SGK's system
 _FRAMEWORKDIR_HKEY_ROOT = r'Software\Microsoft\Microsoft SDKs\.NETFramework\v2.0\InstallationFolder'
 
+
+
+def cmp(x, y):
+    if x > y:
+        return 1
+    elif x == y:
+        return 0
+    else:
+        return -1
+
 def find_framework_root():
     # XXX: find it from environment (FrameworkDir)
     try:
         froot = read_reg(_FRAMEWORKDIR_HKEY_ROOT)
         debug("Found framework install root in registry: %s" % froot)
-    except SCons.Util.WinError, e:
+    except SCons.Util.WinError as e:
         debug("Could not read reg key %s" % _FRAMEWORKDIR_HKEY_ROOT)
         return None
 
@@ -70,7 +80,9 @@ def query_versions():
             # Note we sort backwards so the highest version is first.
             return cmp(bbl,aal)
 
-        versions.sort(versrt)
+        import functools
+
+        versions.sort(functools.cmp_to_key(versrt))
     else:
         versions = []
 

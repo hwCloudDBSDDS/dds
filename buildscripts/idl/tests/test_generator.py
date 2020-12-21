@@ -1,5 +1,6 @@
-#!/usr/bin/env python2
-# Copyright (C) 2017 MongoDB Inc.
+#!/usr/bin/env python
+#
+# Copyright (C) 2018-present MongoDB, Inc.
 #
 # This program is free software: you can redistribute it and/or  modify
 # it under the terms of the GNU Affero General Public License, version 3,
@@ -22,8 +23,6 @@ idl base directory:
 $ coverage run run_tests.py && coverage html
 """
 
-from __future__ import absolute_import, print_function, unicode_literals
-
 import os
 import unittest
 
@@ -31,8 +30,8 @@ import unittest
 if __package__ is None:
     import sys
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-    from context import idl
-    import testcase
+    from .context import idl
+    from . import testcase
 else:
     from .context import idl
     from . import testcase

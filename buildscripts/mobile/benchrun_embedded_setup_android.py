@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 """Setup an Android device to run the benchrun_embedded test suite."""
 
-from __future__ import print_function
-
 import glob
 import logging
 import optparse
@@ -13,7 +11,7 @@ import sys
 import tarfile
 import tempfile
 import time
-import urllib
+import urllib.request, urllib.parse, urllib.error
 
 # pylint: disable=wrong-import-position
 # Get relative imports to work when the package is not installed on the PYTHONPATH.
@@ -32,7 +30,7 @@ def download_and_untar(url, root_dir):
     """Download url and untar into root_dir."""
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".tgz").name
     LOGGER.info("Downloading %s", url)
-    urllib.urlretrieve(url, temp_file)
+    urllib.request.urlretrieve(url, temp_file)
     with tarfile.open(temp_file, "r:gz") as tar:
         tar.extractall(root_dir)
     os.remove(temp_file)

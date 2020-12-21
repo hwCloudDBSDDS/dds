@@ -68,7 +68,7 @@ class test_join08(wttest.WiredTigerTestCase):
         tcB.set_key(1)
         tcB.set_value('val1', 'val1')
         tcB.insert()
-        fc.next()
+        next(fc)
 
         # Joining using a non join-cursor
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
@@ -97,8 +97,8 @@ class test_join08(wttest.WiredTigerTestCase):
         # position the cursors now
         ic0.set_key('val1')
         ic0.search()
-        ic0again.next()
-        icB.next()
+        next(ic0again)
+        next(icB)
 
         # Joining non matching index
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
@@ -109,7 +109,7 @@ class test_join08(wttest.WiredTigerTestCase):
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
             lambda: self.session.join(jc, ic1, 'compare=ge'),
             '/requires reference cursor be positioned/')
-        ic1.next()
+        next(ic1)
 
         # This succeeds.
         self.session.join(jc, ic1, 'compare=ge'),
@@ -163,7 +163,7 @@ class test_join08(wttest.WiredTigerTestCase):
 
         # Operations on the joined cursor are frozen until the join is closed.
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: ic0.next(),
+            lambda: next(ic0),
             '/cursor is being used in a join/')
 
         # Operations on the joined cursor are frozen until the join is closed.
@@ -183,14 +183,14 @@ class test_join08(wttest.WiredTigerTestCase):
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
             lambda: jc.prev(), msg)
 
-        self.assertEquals(jc.next(), 0)
-        self.assertEquals(jc.next(), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(next(jc), 0)
+        self.assertEqual(next(jc), wiredtiger.WT_NOTFOUND)
 
         # Only after the join cursor is closed can we use the index cursor
         # normally
         jc.close()
-        self.assertEquals(ic0.next(), wiredtiger.WT_NOTFOUND)
-        self.assertEquals(ic0.prev(), 0)
+        self.assertEqual(next(ic0), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(ic0.prev(), 0)
 
     # common code for making sure that cursors can be
     # implicitly closed, no matter the order they are created
@@ -210,8 +210,8 @@ class test_join08(wttest.WiredTigerTestCase):
             jc = self.session.open_cursor('join:table:join08', None, None)
         c0 = self.session.open_cursor('index:join08:index0', None, None)
         c1 = self.session.open_cursor('index:join08:index1', None, None)
-        c0.next()        # index cursors must be positioned
-        c1.next()
+        next(c0)        # index cursors must be positioned
+        next(c1)
         if not joinfirst:
             jc = self.session.open_cursor('join:table:join08', None, None)
         self.session.join(jc, c0, 'compare=ge')
@@ -244,17 +244,17 @@ class test_join08(wttest.WiredTigerTestCase):
         jcursor = self.session.open_cursor("join:table:join01b", None, None)
         self.session.join(jcursor, cursor, "compare=gt")
 
-        while jcursor.next() == 0:
+        while next(jcursor) == 0:
             [k] = jcursor.get_keys()
             [v] = jcursor.get_values()
 
         statcur = self.session.open_cursor("statistics:join", jcursor, None)
         found = False
-        while statcur.next() == 0:
+        while next(statcur) == 0:
             [desc, pvalue, value] = statcur.get_values()
             #self.tty(str(desc) + "=" + str(pvalue))
             found = True
-        self.assertEquals(found, True)
+        self.assertEqual(found, True)
 
         jcursor.close()
         cursor.close()

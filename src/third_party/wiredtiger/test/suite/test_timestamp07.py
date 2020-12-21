@@ -63,9 +63,9 @@ class test_timestamp07(wttest.WiredTigerTestCase, suite_subprocess):
     scenarios = make_scenarios(types, conncfg, nkeys)
 
     # Binary values.
-    value = u'\u0001\u0002abcd\u0007\u0004'
-    value2 = u'\u0001\u0002dcba\u0007\u0004'
-    value3 = u'\u0001\u0002cdef\u0007\u0004'
+    value = '\u0001\u0002abcd\u0007\u0004'
+    value2 = '\u0001\u0002dcba\u0007\u0004'
+    value3 = '\u0001\u0002cdef\u0007\u0004'
 
     # Check that a cursor (optionally started in a new transaction), sees the
     # expected value for a key
@@ -194,7 +194,7 @@ class test_timestamp07(wttest.WiredTigerTestCase, suite_subprocess):
         # print "tables created"
 
         # Insert keys 1..nkeys each with timestamp=key, in some order.
-        orig_keys = range(1, self.nkeys+1)
+        orig_keys = list(range(1, self.nkeys+1))
         keys = orig_keys[:]
         random.shuffle(keys)
 

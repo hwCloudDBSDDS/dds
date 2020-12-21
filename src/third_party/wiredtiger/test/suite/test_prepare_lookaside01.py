@@ -64,7 +64,7 @@ class test_prepare_lookaside01(wttest.WiredTigerTestCase):
             self.session.begin_transaction()
             cursor.set_key(ds.key(nrows + i))
             cursor.set_value(bigvalue1)
-            self.assertEquals(cursor.update(), 0)
+            self.assertEqual(cursor.update(), 0)
             self.session.commit_transaction('commit_timestamp=' + timestamp_str(i))
 
         # Have prepared updates in multiple sessions. This should ensure writing
@@ -82,7 +82,7 @@ class test_prepare_lookaside01(wttest.WiredTigerTestCase):
             for i in range(start, end):
                 cursors[j].set_key(ds.key(nrows + i))
                 cursors[j].set_value(bigvalue2)
-                self.assertEquals(cursors[j].update(), 0)
+                self.assertEqual(cursors[j].update(), 0)
             sessions[j].prepare_transaction('prepare_timestamp=' + timestamp_str(2))
 
         # Commit more regular updates. To do this, the pages that were just
@@ -94,7 +94,7 @@ class test_prepare_lookaside01(wttest.WiredTigerTestCase):
             self.session.begin_transaction()
             cursor.set_key(ds.key(nrows + i))
             cursor.set_value(bigvalue3)
-            self.assertEquals(cursor.update(), 0)
+            self.assertEqual(cursor.update(), 0)
             self.session.commit_transaction('commit_timestamp=' + timestamp_str(i + 3))
         cursor.close()
 
@@ -120,7 +120,7 @@ class test_prepare_lookaside01(wttest.WiredTigerTestCase):
         for i in range(1, 10000):
             cursor.set_key(ds.key(nrows + i))
             cursor.set_value(bigvalue)
-            self.assertEquals(cursor.insert(), 0)
+            self.assertEqual(cursor.insert(), 0)
         cursor.close()
         self.session.checkpoint()
 

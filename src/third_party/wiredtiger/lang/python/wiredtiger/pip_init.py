@@ -35,7 +35,7 @@
 import os, sys
 fname = os.path.basename(__file__)
 if fname != '__init__.py' and fname != '__init__.pyc':
-    print(__file__ + ': this file is not yet installed')
+    print((__file__ + ': this file is not yet installed'))
     sys.exit(1)
 
 # After importing the SWIG-generated file, copy all symbols from from it

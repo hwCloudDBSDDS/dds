@@ -37,6 +37,21 @@ from SCons.Tool.install import copyFunc
 
 copyToBuilder, copyAsBuilder = None, None
 
+
+
+def open_file_filesystem(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def copyto_emitter(target, source, env):
     """ changes the path of the source to be under the target (which
     are assumed to be directories.
@@ -66,7 +81,7 @@ def generate(env):
     try:
         env['BUILDERS']['CopyTo']
         env['BUILDERS']['CopyAs']
-    except KeyError, e:
+    except KeyError as e:
         global copyToBuilder
         if copyToBuilder is None:
             copyToBuilder = SCons.Builder.Builder(
@@ -86,7 +101,7 @@ def generate(env):
         env['BUILDERS']['CopyTo'] = copyToBuilder
         env['BUILDERS']['CopyAs'] = copyAsBuilder
 
-        env['COPYSTR'] = 'Copy file(s): "$SOURCES" to "$TARGETS"'
+        env['COPYSTR'] = 'Copy open_file_filesystem(s): "$SOURCES" to "$TARGETS"'
 
 def exists(env):
     return 1

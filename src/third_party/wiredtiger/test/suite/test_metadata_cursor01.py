@@ -48,7 +48,7 @@ class test_metadata_cursor01(wttest.WiredTigerTestCase):
         if self.tablekind == 'row':
             return 'key' + str(i)
         else:
-            return long(i+1)
+            return int(i+1)
 
     def genvalue(self, i):
         if self.tablekind == 'fix':
@@ -71,7 +71,7 @@ class test_metadata_cursor01(wttest.WiredTigerTestCase):
         try:
             self.session.create(name, args)
         except:
-            print('**** ERROR in session.create("' + name + '","' + args + '") ***** ')
+            print(('**** ERROR in session.create("' + name + '","' + args + '") ***** '))
             raise
 
     # Create and populate the object, returning an open cursor.
@@ -90,7 +90,7 @@ class test_metadata_cursor01(wttest.WiredTigerTestCase):
         self.assertCursorHasNoKeyValue(cursor)
 
         while True:
-            nextret = cursor.next()
+            nextret = next(cursor)
             if nextret != 0:
                 break
             self.assertIsNotNone(cursor.get_key())

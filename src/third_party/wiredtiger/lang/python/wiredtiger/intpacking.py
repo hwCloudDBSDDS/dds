@@ -62,13 +62,23 @@ POS_2BYTE_MAX = 2**13 + POS_1BYTE_MAX
 MINUS_BIT = -1 << 64
 UINT64_MASK = 0xffffffffffffffff
 
+
+
+def cmp(x, y):
+    if x > y:
+        return 1
+    elif x == y:
+        return 0
+    else:
+        return -1
+
 def getbits(x, start, end=0):
     '''return the least significant bits of x, from start to end'''
     return (x & ((1 << start) - 1)) >> (end)
 
 def get_int(b, size):
     r = 0
-    for i in xrange(size):
+    for i in range(size):
         r = (r << 8) | ord(b[i])
     return r
 
@@ -123,21 +133,21 @@ if __name__ == '__main__':
     import random
 
     for big in (100, 10000, 1 << 40, 1 << 64):
-        for i in xrange(1000):
+        for i in range(1000):
             r = random.randint(-big, big)
-            print "\rChecking %d" % r,
+            print("\rChecking %d" % r, end=' ')
             if unpack_int(pack_int(r))[0] != r:
-                print "\nFound a problem with %d" % r
+                print("\nFound a problem with %d" % r)
                 break
 
-        print
+        print()
 
-        for i in xrange(1000):
+        for i in range(1000):
             r1 = random.randint(-big, big)
             r2  = random.randint(-big, big)
-            print "\rChecking %d, %d" % (r1, r2),
+            print("\rChecking %d, %d" % (r1, r2), end=' ')
             if cmp(r1, r2) != cmp(pack_int(r1), pack_int(r2)):
-                print "\nFound a problem with %d, %d" % (r1, r2)
+                print("\nFound a problem with %d, %d" % (r1, r2))
                 break
 
-        print
+        print()

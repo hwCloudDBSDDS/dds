@@ -161,6 +161,21 @@ PROGRESS_PUSH = 2
 PROGRESS_POP = 3
 
 
+
+
+def open_file___init__(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def test_suite():
     import subunit.tests
     return subunit.tests.test_suite()
@@ -297,7 +312,7 @@ class _InTest(_ParserState):
         :param details_state: The state to switch to for details
             processing of this outcome.
         """
-        test_name = line[offset:-1].decode('utf8')
+        test_name = line[offset:-1]
         if self.parser.current_test_description == test_name:
             self.parser._state = self.parser._outside_test
             self.parser.current_test_description = None
@@ -382,7 +397,7 @@ class _OutSideTest(_ParserState):
     def startTest(self, offset, line):
         """A test start command received."""
         self.parser._state = self.parser._in_test
-        test_name = line[offset:-1].decode('utf8')
+        test_name = line[offset:-1]
         self.parser._current_test = RemotedTestCase(test_name)
         self.parser.current_test_description = test_name
         self.parser.client.startTest(self.parser._current_test)
@@ -549,7 +564,7 @@ class TestProtocolServer(object):
 
     def _handleTags(self, offset, line):
         """Process a tags command."""
-        tags = line[offset:].decode('utf8').split()
+        tags = line[offset:].split()
         new_tags, gone_tags = tags_to_new_gone(tags)
         self.client.tags(new_tags, gone_tags)
 
@@ -604,7 +619,7 @@ class TestProtocolClient(testresult.TestResult):
     suite = make_suite()
     # Create a stream (any object with a 'write' method). This should accept
     # bytes not strings: subunit is a byte orientated protocol.
-    stream = file('tests.log', 'wb')
+    stream = open_file___init__('tests.log', 'wb')
     # Create a subunit result object which will output to the stream
     result = subunit.TestProtocolClient(stream)
     # Optionally, to get timing data for performance analysis, wrap the
@@ -747,7 +762,7 @@ class TestProtocolClient(testresult.TestResult):
     def _test_id(self, test):
         result = test.id()
         if type(result) is not bytes:
-            result = result.encode('utf8')
+            result = result
         return result
 
     def startTest(self, test):
@@ -789,8 +804,8 @@ class TestProtocolClient(testresult.TestResult):
         """Inform the client about tags added/removed from the stream."""
         if not new_tags and not gone_tags:
             return
-        tags = set([tag.encode('utf8') for tag in new_tags])
-        tags.update([_b("-") + tag.encode('utf8') for tag in gone_tags])
+        tags = set([tag for tag in new_tags])
+        tags.update([_b("-") + tag for tag in gone_tags])
         tag_line = _b("tags: ") + _b(" ").join(tags) + _b("\n")
         self._stream.write(tag_line)
 
@@ -817,7 +832,7 @@ class TestProtocolClient(testresult.TestResult):
             if parameters:
                 self._stream.write(_b(";"))
                 param_strs = []
-                for param, value in parameters.items():
+                for param, value in list(parameters.items()):
                     param_strs.append("%s=%s" % (param, value))
                 self._stream.write(_b(",".join(param_strs)))
             self._stream.write(_b("\n%s\n" % name))
@@ -1018,7 +1033,7 @@ def TAP2SubUnit(tap, output_stream):
         if test_name is None:
             return
         if log:
-            log_bytes = b'\n'.join(log_line.encode('utf8') for log_line in log)
+            log_bytes = b'\n'.join(log_line for log_line in log)
             mime_type = UTF8_TEXT
             file_name = 'tap comment'
             eof = True
@@ -1042,7 +1057,7 @@ def TAP2SubUnit(tap, output_stream):
                     # skipped file
                     state = SKIP_STREAM
                     output.status(test_id='file skip', test_status='skip',
-                        file_bytes=comment.encode('utf8'), eof=True,
+                        file_bytes=comment, eof=True,
                         file_name='tap comment')
                 continue
         # not a plan line, or have seen one before
@@ -1091,7 +1106,7 @@ def TAP2SubUnit(tap, output_stream):
             log.append(line[:-1])
             continue
         # Should look at buffering status and binding this to the prior result.
-        output.status(file_bytes=line.encode('utf8'), file_name='stdout',
+        output.status(file_bytes=line, file_name='stdout',
             mime_type=UTF8_TEXT)
     _emit_test()
     while plan_start <= plan_stop:
@@ -1155,7 +1170,7 @@ class ProtocolTestCase(object):
 
     # Get a stream (any object with a readline() method), in this case the
     # stream output by the example from ``subunit.TestProtocolClient``.
-    stream = file('tests.log', 'rb')
+    stream = open_file___init__('tests.log', 'rb')
     # Create a parser which will read from the stream and emit
     # activity to a unittest.TestResult when run() is called.
     suite = subunit.ProtocolTestCase(stream)
@@ -1272,7 +1287,7 @@ def read_test_list(path):
     :param path: Path to the file
     :return: Sequence of test ids
     """
-    f = open(path, 'rb')
+    f = open_file___init__(path, 'rb')
     try:
         return [l.rstrip("\n") for l in f.readlines()]
     finally:
@@ -1306,7 +1321,7 @@ def _unwrap_text(stream):
     if sys.version_info > (3, 0):
         unicode_type = str
     else:
-        unicode_type = unicode
+        unicode_type = str
     try:
         # Read streams
         if type(stream.read(0)) is unicode_type:

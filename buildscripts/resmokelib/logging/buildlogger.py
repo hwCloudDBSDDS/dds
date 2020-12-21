@@ -1,12 +1,10 @@
 """Define handlers for communicating with a buildlogger server."""
 
-from __future__ import absolute_import
-
 import functools
 import json
 import threading
 
-import requests
+#import requests
 
 from . import handlers
 from .. import config as _config
@@ -84,7 +82,7 @@ class _LogsSplitter(object):
             2 is added to each string size to account for the array representation of the logs,
             as each line is preceded by a '[' or a space and followed by a ',' or a ']'.
             """
-            return len(json.dumps(line, encoding="utf-8")) + 2
+            return len(json.dumps(line)) + 2
 
         curr_logs = []
         curr_logs_size = 0
@@ -261,7 +259,7 @@ class BuildloggerServer(object):
         """Initialize BuildloggerServer."""
         tmp_globals = {}
         self.config = {}
-        execfile(_BUILDLOGGER_CONFIG, tmp_globals, self.config)
+        exec(compile(open(_BUILDLOGGER_CONFIG, "rb").read(), _BUILDLOGGER_CONFIG, 'exec'), tmp_globals, self.config)
 
         # Rename "slavename" to "username" if present.
         if "slavename" in self.config and "username" not in self.config:

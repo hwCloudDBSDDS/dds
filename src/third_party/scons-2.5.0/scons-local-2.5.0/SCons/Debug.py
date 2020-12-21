@@ -45,6 +45,21 @@ track_instances = False
 # List of currently tracked classes
 tracked_classes = {}
 
+
+
+def open_file_Debug(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def logInstanceCreation(instance, name=None):
     if name is None:
         name = instance.__class__.__name__
@@ -89,7 +104,7 @@ def dumpLoggedInstances(classes, file=sys.stdout):
             obj = ref()
             if obj is not None:
                 file.write('    %s:\n' % obj)
-                for key, value in obj.__dict__.items():
+                for key, value in list(obj.__dict__.items()):
                     file.write('        %20s : %s\n' % (key, value))
 
 
@@ -97,7 +112,7 @@ def dumpLoggedInstances(classes, file=sys.stdout):
 if sys.platform[:5] == "linux":
     # Linux doesn't actually support memory usage stats from getrusage().
     def memory():
-        mstr = open('/proc/self/stat').read()
+        mstr = open_file_Debug('/proc/self/stat').read()
         mstr = mstr.split()[22]
         return int(mstr)
 elif sys.platform[:6] == 'darwin':
@@ -163,7 +178,7 @@ def caller_trace(back=0):
 # print a single caller and its callers, if any
 def _dump_one_caller(key, file, level=0):
     leader = '      '*level
-    for v,c in sorted([(-v,c) for c,v in caller_dicts[key].items()]):
+    for v,c in sorted([(-v,c) for c,v in list(caller_dicts[key].items())]):
         file.write("%s  %6d %s:%d(%s)\n" % ((leader,-v) + func_shorten(c[-3:])))
         if c in caller_dicts:
             _dump_one_caller(c, file, level+1)
@@ -223,7 +238,7 @@ def Trace(msg, file=None, mode='w', tstamp=None):
         fp = TraceFP[file]
     except KeyError:
         try:
-            fp = TraceFP[file] = open(file, mode)
+            fp = TraceFP[file] = open_file_Debug(file, mode)
         except TypeError:
             # Assume we were passed an open file pointer.
             fp = file

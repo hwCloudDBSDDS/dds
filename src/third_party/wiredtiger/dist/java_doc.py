@@ -15,7 +15,22 @@ tmp_file = '__tmp'
 #####################################################################
 f='../src/include/wiredtiger.in'
 o='../lang/java/java_doc.i'
-tfile = open(tmp_file, 'w')
+
+
+def open_file_java_doc(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+tfile = open_file_java_doc(tmp_file, 'w')
 
 tfile.write('''/* DO NOT EDIT: automatically built by dist/java_doc.py. */
 
@@ -25,7 +40,7 @@ cclass_re = re.compile('^struct __([a-z_]*) {')
 cfunc_re = re.compile('\t.*? __F\(([a-z_]*)\)')
 
 curr_class = ""
-for line in open(f, 'r'):
+for line in open_file_java_doc(f, 'r'):
 
     m = cclass_re.match(line)
     if m:

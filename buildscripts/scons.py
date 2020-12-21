@@ -1,8 +1,6 @@
 #!/usr/bin/env python2
 """Scons module."""
 
-from __future__ import print_function
-
 import os
 import sys
 
@@ -13,15 +11,15 @@ SCONS_DIR = os.path.join(MONGODB_ROOT, 'src', 'third_party', 'scons-' + SCONS_VE
                          'scons-local-' + SCONS_VERSION)
 
 if not os.path.exists(SCONS_DIR):
-    print("Could not find SCons in '%s'" % (SCONS_DIR))
+    print(("Could not find SCons in '%s'" % (SCONS_DIR)))
     sys.exit(1)
 
 sys.path = [SCONS_DIR] + sys.path
 
 try:
-    import SCons.Script
+    from . import SCons.Script
 except ImportError:
-    print("Could not find SCons in '%s'" % (SCONS_DIR))
+    print(("Could not find SCons in '%s'" % (SCONS_DIR)))
     sys.exit(1)
 
 SCons.Script.main()

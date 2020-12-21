@@ -26,7 +26,7 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-import Queue
+import queue
 import threading, time, wiredtiger, wttest
 import glob, os, shutil
 from helper import compare_files
@@ -108,7 +108,7 @@ class test_backup_target(wttest.WiredTigerTestCase, suite_subprocess):
         self.pr('Full backup to ' + dir + ': ')
         os.mkdir(dir)
         while True:
-            ret = cursor.next()
+            ret = next(cursor)
             if ret != 0:
                 break
             newfile = cursor.get_key()
@@ -123,7 +123,7 @@ class test_backup_target(wttest.WiredTigerTestCase, suite_subprocess):
             config = 'target=("log:")'
             cursor = self.session.open_cursor('backup:', None, config)
             while True:
-                ret = cursor.next()
+                ret = next(cursor)
                 if ret != 0:
                     break
                 newfile = cursor.get_key()

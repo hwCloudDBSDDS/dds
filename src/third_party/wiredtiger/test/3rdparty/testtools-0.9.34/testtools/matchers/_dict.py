@@ -133,7 +133,7 @@ class _SuperDictOf(Matcher):
 
 def _format_matcher_dict(matchers):
     return '{%s}' % (
-        ', '.join(sorted('%r: %s' % (k, v) for k, v in matchers.items())))
+        ', '.join(sorted('%r: %s' % (k, v) for k, v in list(matchers.items()))))
 
 
 class _CombinedMatcher(Matcher):
@@ -161,7 +161,7 @@ class _CombinedMatcher(Matcher):
 
     def match(self, observed):
         matchers = dict(
-            (k, v(self._expected)) for k, v in self.matcher_factories.items())
+            (k, v(self._expected)) for k, v in list(self.matcher_factories.items()))
         return MatchesAllDict(matchers).match(observed)
 
 
@@ -241,7 +241,7 @@ class KeysEqual(Matcher):
         """
         super(KeysEqual, self).__init__()
         try:
-            self.expected = expected[0].keys()
+            self.expected = list(expected[0].keys())
         except AttributeError:
             self.expected = list(expected)
 

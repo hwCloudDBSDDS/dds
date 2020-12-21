@@ -27,6 +27,21 @@ Tool specific initialization of `xgettext` tool.
 __revision__ = "src/engine/SCons/Tool/xgettext.py rel_2.5.0:3543:937e55cd78f7 2016/04/09 11:29:54 bdbaddog"
 
 #############################################################################
+
+
+def open_file_xgettext(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class _CmdRunner(object):
   """ Callabe object, which runs shell command storing its stdout and stderr to
   variables. It also provides `strfunction()` method, which shall be used by
@@ -55,7 +70,7 @@ class _CmdRunner(object):
     proc = SCons.Action._subproc(env, command, **kw)
     self.out, self.err = proc.communicate()
     self.status = proc.wait()
-    if self.err: sys.stderr.write(unicode(self.err))
+    if self.err: sys.stderr.write(str(self.err))
     return self.status
 
   def strfunction(self, target, source, env):
@@ -136,7 +151,7 @@ def _update_pot_file(target, source, env):
     # Print message employing SCons.Action.Action for that.
     msg = "Writing " + repr(str(target[0])) + " (" + explain + ")"
     env.Execute(SCons.Action.Action(nop, msg))
-    f = open(str(target[0]),"w")
+    f = open_file_xgettext(str(target[0]),"w")
     f.write(new_content)
     f.close()
     return 0
@@ -153,7 +168,7 @@ from SCons.Builder import BuilderBase
 class _POTBuilder(BuilderBase):
   def _execute(self, env, target, source, *args):
     if not target:
-      if env.has_key('POTDOMAIN') and env['POTDOMAIN']:
+      if 'POTDOMAIN' in env and env['POTDOMAIN']:
         domain = env['POTDOMAIN']
       else:
         domain = 'messages'
@@ -175,7 +190,7 @@ def _scan_xgettext_from_files(target, source, env, files = None, path = None):
     files = [ files ]
 
   if path is None:
-    if env.has_key('XGETTEXTPATH'):
+    if 'XGETTEXTPATH' in env:
       path = env['XGETTEXTPATH']
     else:
       path = []
@@ -222,7 +237,7 @@ def _pot_update_emitter(target, source, env):
   import SCons.Util
   import SCons.Node.FS
 
-  if env.has_key('XGETTEXTFROM'): 
+  if 'XGETTEXTFROM' in env:
     xfrom = env['XGETTEXTFROM']
   else:
     return target, source

@@ -35,6 +35,21 @@ from suite_subprocess import suite_subprocess
 from wtdataset import SimpleDataSet, simple_key
 from wtscenario import make_scenarios
 
+
+
+def open_file_test_compat01(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_compat01(wttest.WiredTigerTestCase, suite_subprocess):
     # Add enough entries and use a small log size to generate more than
     # one log file.
@@ -98,7 +113,7 @@ class test_compat01(wttest.WiredTigerTestCase, suite_subprocess):
         #
         self.runWt(['printlog'], outfilename='printlog.out', closeconn=conn_close)
         contains = False
-        with open('printlog.out') as logfile:
+        with open_file_test_compat01('printlog.out') as logfile:
             for line in logfile:
                 if 'optype' in line and 'prev_lsn' in line:
                     contains = True
@@ -193,7 +208,7 @@ class test_reconfig_fail(wttest.WiredTigerTestCase):
         c = self.session.open_cursor(uri, None)
         c.set_key(ds.key(20))
         c.set_value("abcde")
-        self.assertEquals(c.update(), 0)
+        self.assertEqual(c.update(), 0)
 
         compat_str = 'compatibility=(release="3.0.0")'
         msg = '/system must be quiescent/'

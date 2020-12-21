@@ -4,8 +4,6 @@ The API also provides methods to access specific fields present in the mongodb/m
 configuration file.
 """
 
-from __future__ import print_function
-
 import datetime
 import distutils.spawn  # pylint: disable=no-name-in-module
 import fnmatch
@@ -16,6 +14,21 @@ import yaml
 
 import buildscripts.util.runcommand as runcommand
 
+
+
+
+def open_file_evergreen(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def parse_evergreen_file(path, evergreen_binary="evergreen"):
     """Read an Evergreen file and return EvergreenProjectConfig instance."""
@@ -33,7 +46,7 @@ def parse_evergreen_file(path, evergreen_binary="evergreen"):
             raise RuntimeError("Unable to evaluate {}: {}".format(path, output))
         config = yaml.load(output)
     else:
-        with open(path, "r") as fstream:
+        with open_file_evergreen(path, "r") as fstream:
             config = yaml.load(fstream)
 
     return EvergreenProjectConfig(config)
@@ -63,7 +76,7 @@ class EvergreenProjectConfig(object):  # pylint: disable=too-many-instance-attri
     @property
     def task_names(self):
         """Get the list of task names."""
-        return self._tasks_by_name.keys()
+        return list(self._tasks_by_name.keys())
 
     def get_task(self, task_name):
         """Return the task with the given name as a Task instance."""
@@ -72,7 +85,7 @@ class EvergreenProjectConfig(object):  # pylint: disable=too-many-instance-attri
     @property
     def task_group_names(self):
         """Get the list of task_group names."""
-        return self._task_groups_by_name.keys()
+        return list(self._task_groups_by_name.keys())
 
     def get_task_group(self, task_group_name):
         """Return the task_group with the given name as a Task instance."""
@@ -94,7 +107,7 @@ class EvergreenProjectConfig(object):  # pylint: disable=too-many-instance-attri
     @property
     def variant_names(self):
         """Get the list of build variant names."""
-        return self._variants_by_name.keys()
+        return list(self._variants_by_name.keys())
 
     def get_variant(self, variant_name):
         """Return the variant with the given name as a Variant instance."""

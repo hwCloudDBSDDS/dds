@@ -102,7 +102,7 @@ class test_assert02(wttest.WiredTigerTestCase, suite_subprocess):
 
         msg = "/timestamp set on this transaction/"
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda:self.assertEquals(c_never.search(), 0), msg)
+            lambda:self.assertEqual(c_never.search(), 0), msg)
         self.session.commit_transaction()
         c_always.close()
         c_def.close()
@@ -130,7 +130,7 @@ class test_assert02(wttest.WiredTigerTestCase, suite_subprocess):
 
         msg = "/none set on this transaction/"
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda:self.assertEquals(c_always.search(), 0), msg)
+            lambda:self.assertEqual(c_always.search(), 0), msg)
         self.session.commit_transaction()
         c_always.close()
         c_def.close()

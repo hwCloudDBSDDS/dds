@@ -375,11 +375,11 @@ class test_cursor13_big_base(test_cursor13_base):
     # create some number (self.deep) of cached cursors.
     def create_uri_map(self, baseuri):
         uri_map = {}
-        for i in xrange(0, self.nuris):
+        for i in range(0, self.nuris):
             uri = self.uriname(i)
             cursors = []
             self.session.create(uri, None)
-            for j in xrange(0, self.deep):
+            for j in range(0, self.deep):
                 cursors.append(self.session.open_cursor(uri, None))
             for c in cursors:
                 c.close()
@@ -448,8 +448,8 @@ class test_cursor13_big(test_cursor13_big_base):
         #self.tty('opens = ' + str(self.opencount) + \
         #         ', closes = ' + str(self.closecount))
         #self.tty('stats after = ' + str(end_stats))
-        self.assertEquals(end_stats[0] - begin_stats[0], self.closecount)
-        self.assertEquals(end_stats[1] - begin_stats[1], self.opencount)
+        self.assertEqual(end_stats[0] - begin_stats[0], self.closecount)
+        self.assertEqual(end_stats[1] - begin_stats[1], self.opencount)
 
 class test_cursor13_sweep(test_cursor13_big_base):
     # Set dhandle sweep configuration so that dhandles should be closed within
@@ -479,7 +479,7 @@ class test_cursor13_sweep(test_cursor13_big_base):
                 # use them during this round, so they will be
                 # closed by sweep.
                 half = self.nuris / 2
-                potential_dead += self.close_uris(uri_map, xrange(0, half))
+                potential_dead += self.close_uris(uri_map, range(0, half))
                 bottom_range = half
                 # Let the dhandle sweep run and find the closed cursors.
                 time.sleep(3.0)
@@ -508,7 +508,7 @@ class test_cursor13_sweep(test_cursor13_big_base):
         #         ', closes = ' + str(self.closecount))
         #self.tty('stats after = ' + str(end_stats))
         #self.tty('sweep stats after = ' + str(end_sweep_stats))
-        self.assertEquals(end_stats[0] - begin_stats[0], self.closecount)
+        self.assertEqual(end_stats[0] - begin_stats[0], self.closecount)
         swept = end_sweep_stats[3] - begin_sweep_stats[3]
 
         # Although this is subject to tuning parameters, we know that
@@ -543,7 +543,7 @@ class test_cursor13_dup(test_cursor13_base):
         # Get a cursor and position it.
         # An unpositioned cursor cannot be duplicated.
         c1 = self.session.open_cursor(uri, None)
-        c1.next()
+        next(c1)
 
         for notused in range(0, 100):
             self.session.breakpoint()

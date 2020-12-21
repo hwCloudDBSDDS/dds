@@ -72,7 +72,7 @@ class test_alter01(wttest.WiredTigerTestCase):
         #
         found = False
         while True:
-            ret = cursor.next()
+            ret = next(cursor)
             if ret != 0:
                 break
             key = cursor.get_key()

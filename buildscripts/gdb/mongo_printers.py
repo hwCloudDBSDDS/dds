@@ -1,5 +1,4 @@
 """GDB Pretty-printers for MongoDB."""
-from __future__ import print_function
 
 import struct
 import sys
@@ -12,7 +11,7 @@ try:
     import collections
     from bson.codec_options import CodecOptions
 except ImportError as err:
-    print("Warning: Could not load bson library for Python '" + str(sys.version) + "'.")
+    print(("Warning: Could not load bson library for Python '" + str(sys.version) + "'."))
     print("Check with the pip command if pymongo 3.x is installed.")
     bson = None
 
@@ -122,9 +121,9 @@ class BSONObjPrinter(object):
         inferior = gdb.selected_inferior()
         buf = bytes(inferior.read_memory(self.ptr, self.size))
         options = CodecOptions(document_class=collections.OrderedDict)
-        bsondoc = bson.BSON.decode(buf, codec_options=options)
+        bsondoc = bson.BSON
 
-        for key, val in bsondoc.items():
+        for key, val in list(bsondoc.items()):
             yield 'key', key
             yield 'value', bson.json_util.dumps(val)
 

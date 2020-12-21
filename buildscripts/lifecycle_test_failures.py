@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 """Utility for computing test failure rates from the Evergreen API."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import collections
 import datetime
@@ -27,10 +24,8 @@ import yaml
 
 LOGGER = logging.getLogger(__name__)
 
-if sys.version_info[0] == 2:
-    _STRING_TYPES = (basestring, )
-else:
-    _STRING_TYPES = (str, )
+
+_STRING_TYPES = (str, )
 
 _ReportEntry = collections.namedtuple("_ReportEntry", [
     "test",

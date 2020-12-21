@@ -40,7 +40,7 @@ import wiredtiger, wtscenario, wttest
 class test_unicode01(wttest.WiredTigerTestCase):
     def test_unicode(self):
         self.session.create('table:t',
-            u'app_metadata={"name" : "Employ\xe9s"}'.encode('utf-8'))
+            'app_metadata={"name" : "Employ\xe9s"}')
 
 if __name__ == '__main__':
     wttest.run()

@@ -126,5 +126,5 @@ print('heavy stress workload:')
 workload.run(conn)
 
 latency_filename = conn.get_home() + '/latency.out'
-print('for latency output, see: ' + latency_filename)
+print(('for latency output, see: ' + latency_filename))
 latency.workload_latency(workload, latency_filename)

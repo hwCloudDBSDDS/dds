@@ -43,11 +43,11 @@ from string import digits as string_digits
 
 import SCons.Warnings
 
-import common
+from . import common
 
 debug = common.debug
 
-import sdk
+from . import sdk
 
 get_installed_sdks = sdk.get_installed_sdks
 
@@ -121,14 +121,14 @@ def get_host_target(env):
         
     try:
         host = _ARCH_TO_CANONICAL[host_platform.lower()]
-    except KeyError, e:
+    except KeyError as e:
         msg = "Unrecognized host architecture %s"
         raise ValueError(msg % repr(host_platform))
 
     try:
         target = _ARCH_TO_CANONICAL[target_platform.lower()]
-    except KeyError, e:
-        all_archs = str(_ARCH_TO_CANONICAL.keys())
+    except KeyError as e:
+        all_archs = str(list(_ARCH_TO_CANONICAL.keys()))
         raise ValueError("Unrecognized target architecture %s\n\tValid architectures: %s" % (target_platform, all_archs))
 
     return (host, target,req_target_platform)
@@ -194,7 +194,7 @@ def msvc_version_to_maj_min(msvc_version):
        maj = int(t[0])
        min = int(t[1])
        return maj, min
-   except ValueError, e:
+   except ValueError as e:
        raise ValueError("Unrecognized version %s (%s)" % (msvc_version,msvc_version_numeric))
 
 def is_host_target_supported(host_target, msvc_version):
@@ -244,13 +244,13 @@ def find_vc_pdir(msvc_version):
                 try:
                     # ordinally at win64, try Wow6432Node first.
                     comps = common.read_reg(root + 'Wow6432Node\\' + key, hkroot)
-                except SCons.Util.WinError, e:
+                except SCons.Util.WinError as e:
                     # at Microsoft Visual Studio for Python 2.7, value is not in Wow6432Node
                     pass
             if not comps:
                 # not Win64, or Microsoft Visual Studio for Python 2.7
                 comps = common.read_reg(root + key, hkroot)
-        except SCons.Util.WinError, e:
+        except SCons.Util.WinError as e:
             debug('find_vc_dir(): no VC registry key %s' % repr(key))
         else:
             debug('find_vc_dir(): found VC in registry: %s' % comps)
@@ -323,7 +323,7 @@ def get_installed_vcs():
                 installed_versions.append(ver)
             else:
                 debug('find_vc_pdir return None for ver %s' % ver)
-        except VisualCException, e:
+        except VisualCException as e:
             debug('did not find VC %s: caught exception %s' % (ver, str(e)))
     return installed_versions
 
@@ -440,7 +440,7 @@ def msvc_find_valid_batch_script(env,version):
         try:
             (vc_script,sdk_script) = find_batch_file(env,version,host_platform,tp)
             debug('vc.py:msvc_find_valid_batch_script() vc_script:%s sdk_script:%s'%(vc_script,sdk_script))
-        except VisualCException, e:
+        except VisualCException as e:
             msg = str(e)
             debug('Caught exception while looking for batch file (%s)' % msg)
             warn_msg = "VC version %s not installed.  " + \
@@ -455,7 +455,7 @@ def msvc_find_valid_batch_script(env,version):
         if vc_script:
             try:
                 d = script_env(vc_script, args=arg)
-            except BatchFileExecutionError, e:
+            except BatchFileExecutionError as e:
                 debug('vc.py:msvc_find_valid_batch_script() use_script 3: failed running VC script %s: %s: Error:%s'%(repr(vc_script),arg,e))
                 vc_script=None
                 continue
@@ -463,7 +463,7 @@ def msvc_find_valid_batch_script(env,version):
             debug('vc.py:msvc_find_valid_batch_script() use_script 4: trying sdk script: %s'%(sdk_script))
             try:
                 d = script_env(sdk_script)
-            except BatchFileExecutionError,e:
+            except BatchFileExecutionError as e:
                 debug('vc.py:msvc_find_valid_batch_script() use_script 5: failed running SDK script %s: Error:%s'%(repr(sdk_script),e))
                 continue
         elif not vc_script and not sdk_script:
@@ -515,7 +515,7 @@ def msvc_setup_env(env):
         SCons.Warnings.warn(SCons.Warnings.VisualCMissingWarning, warn_msg)
         return None
 
-    for k, v in d.items():
+    for k, v in list(d.items()):
         debug('vc.py:msvc_setup_env() env:%s -> %s'%(k,v))
         env.PrependENVPath(k, v, delete_existing=True)
 

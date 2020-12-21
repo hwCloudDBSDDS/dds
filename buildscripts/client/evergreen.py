@@ -4,7 +4,7 @@ import os
 import time
 
 try:
-    from urlparse import urlparse
+    from urllib.parse import urlparse
 except ImportError:
     from urllib.parse import urlparse  # type: ignore
 
@@ -15,6 +15,21 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_API_SERVER = "https://evergreen.mongodb.com"
 
+
+
+
+def open_file_evergreen(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def generate_evergreen_project_name(owner, project, branch):
     """Build an evergreen project name based on the project owner, name and branch."""
@@ -35,7 +50,7 @@ def read_evg_config():
 
     for filename in known_locations:
         if os.path.isfile(filename):
-            with open(filename, "r") as fstream:
+            with open_file_evergreen(filename, "r") as fstream:
                 return yaml.safe_load(fstream)
 
     return None

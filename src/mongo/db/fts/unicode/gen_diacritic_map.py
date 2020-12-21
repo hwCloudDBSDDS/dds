@@ -8,8 +8,23 @@ from gen_helper import getCopyrightNotice, openNamespaces, closeNamespaces, \
 
 diacritics = set()
 
+
+
+def open_file_gen_diacritic_map(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def load_diacritics(unicode_proplist_file):
-    proplist_file = open(unicode_proplist_file, 'r')
+    proplist_file = open_file_gen_diacritic_map(unicode_proplist_file, 'r')
 
     for line in proplist_file:
         # Filter out blank lines and lines that start with #
@@ -45,7 +60,7 @@ def add_diacritic_mapping(codepoint):
     # c : recomposed unicode character with diacritics removed
     a = chr(codepoint)
     d = normalize('NFD', a)
-    r = u''
+    r = ''
 
     for i in range(len(d)):
         if ord(d[i]) not in diacritics:
@@ -70,7 +85,7 @@ def generate(target):
     The delimiter checking function contains a switch statement with cases for
     every character in Unicode that has a removable combining diacritical mark.
     """
-    out = open(target, "w")
+    out = open_file_gen_diacritic_map(target, "w")
 
     out.write(getCopyrightNotice())
     out.write(include("mongo/db/fts/unicode/codepoints.h"))

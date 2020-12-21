@@ -43,6 +43,21 @@ cplusplus = __import__('c++', globals(), locals(), [])
 
 package_info = {}
 
+
+
+def open_file_sunc++(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def get_package_info(package_name, pkginfo, pkgchk):
     try:
         return package_info[package_name]
@@ -50,7 +65,7 @@ def get_package_info(package_name, pkginfo, pkgchk):
         version = None
         pathname = None
         try:
-            sadm_contents = open('/var/sadm/install/contents', 'r').read()
+            sadm_contents = open_file_sunc++('/var/sadm/install/contents', 'r').read()
         except EnvironmentError:
             pass
         else:
@@ -62,7 +77,7 @@ def get_package_info(package_name, pkginfo, pkgchk):
         try:
             p = subprocess.Popen([pkginfo, '-l', package_name],
                                  stdout=subprocess.PIPE,
-                                 stderr=open('/dev/null', 'w'))
+                                 stderr=open_file_sunc++('/dev/null', 'w'))
         except EnvironmentError:
             pass
         else:
@@ -76,7 +91,7 @@ def get_package_info(package_name, pkginfo, pkgchk):
             try:
                 p = subprocess.Popen([pkgchk, '-l', package_name],
                                      stdout=subprocess.PIPE,
-                                     stderr=open('/dev/null', 'w'))
+                                     stderr=open_file_sunc++('/dev/null', 'w'))
             except EnvironmentError:
                 pass
             else:

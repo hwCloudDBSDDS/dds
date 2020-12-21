@@ -59,7 +59,7 @@ class test_stat_cursor_config(wttest.WiredTigerTestCase):
         c = self.session.open_cursor(
             'statistics:' + self.uri, None, 'statistics=(size)')
         count = 0
-        while c.next() == 0:
+        while next(c) == 0:
             count += 1
         c.close()
 

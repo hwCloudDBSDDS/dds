@@ -8,7 +8,7 @@ satisfying given version, edition, and operating system requirements.
 import argparse
 import json
 import sys
-import urllib2
+import urllib.request, urllib.error, urllib.parse
 
 url_current = "http://downloads.mongodb.org/current.json"
 url_full = "http://downloads.mongodb.org/full.json"
@@ -47,10 +47,10 @@ def isCorrectDownload(download):
 def locateUrl(specs, override):
   versions = specs["versions"]
   if not override:
-    versions = filter(isCorrectVersion, versions)
+    versions = list(filter(isCorrectVersion, versions))
   for item in versions:
-    downloads = filter(isCorrectDownload, item["downloads"])
-    urls = map(lambda download : download["archive"]["url"], downloads)
+    downloads = list(filter(isCorrectDownload, item["downloads"]))
+    urls = [download["archive"]["url"] for download in downloads]
     if len(urls) > 0:
       if override:
         return urls[0].replace(item["version"], override)
@@ -58,11 +58,11 @@ def locateUrl(specs, override):
 
 override = "latest" if opts.version == "latest" else None
 
-specs = json.load(urllib2.urlopen(url_current))
+specs = json.load(urllib.request.urlopen(url_current))
 url = locateUrl(specs, override)
 
 if not url:
-  specs = json.load(urllib2.urlopen(url_full))
+  specs = json.load(urllib.request.urlopen(url_full))
   url = locateUrl(specs, override)
 
 if not url:

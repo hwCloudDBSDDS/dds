@@ -1,5 +1,15 @@
 # This file is a python script that describes the WiredTiger API.
 
+
+
+def cmp(x, y):
+    if x > y:
+        return 1
+    elif x == y:
+        return 0
+    else:
+        return -1
+
 class Method:
     def __init__(self, config):
         # Deal with duplicates: with complex configurations (like

@@ -10,6 +10,21 @@ import subprocess
 from subprocess import *
 from operator import itemgetter
 
+
+
+def open_file_gc-test(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class Test:
     def __init__(self, path, name):
         self.path = path
@@ -82,20 +97,20 @@ def run_tests(tests, test_dir):
             fmt = '%20s: {"TMax": %4.1f, "TAvg": %4.1f, "MMax": %4.1f, "MAvg": %4.1f, "SMax": %4.1f, "SAvg": %4.1f}'
             if (i != len(tests) - 1):
                 fmt += ','
-            print(fmt %(filename_str ,TMax, TAvg, MMax, MAvg, SMax, MAvg))
+            print((fmt %(filename_str ,TMax, TAvg, MMax, MAvg, SMax, MAvg)))
     except KeyboardInterrupt:
         print('fail')
 
     return dict((filename, dict(TMax=TMax, TAvg=TAvg, MMax=MMax, MAvg=MAvg, SMax=SMax, SAvg=SAvg))
-            for filename, (TMax, TAvg, MMax, MAvg, SMax, SAvg) in bench_map.iteritems())
+            for filename, (TMax, TAvg, MMax, MAvg, SMax, SAvg) in bench_map.items())
 
 def compare(current, baseline):
     percent_speedups = []
-    for key, current_result in current.iteritems():
+    for key, current_result in current.items():
         try:
             baseline_result = baseline[key]
         except KeyError:
-            print key, 'missing from baseline'
+            print(key, 'missing from baseline')
             continue
 
         val_getter = itemgetter('TMax', 'TAvg', 'MMax', 'MAvg', 'SMax', 'SAvg')
@@ -113,9 +128,9 @@ def compare(current, baseline):
             result = 'SLOWER: %6.2f > baseline %6.2f (%+6.2f%%) ' % \
                     (CTAvg, BTAvg, slowdown)
             percent_speedups.append(slowdown)
-        print '%30s: %s' % (key, result)
+        print('%30s: %s' % (key, result))
     if percent_speedups:
-        print 'Average speedup: %.2f%%' % avg(percent_speedups)
+        print('Average speedup: %.2f%%' % avg(percent_speedups))
 
 if __name__ == '__main__':
     script_path = os.path.abspath(__file__)
@@ -141,7 +156,7 @@ if __name__ == '__main__':
     test_list = find_tests(test_dir)
 
     if not test_list:
-        print >> sys.stderr, "No tests found matching command line arguments."
+        print("No tests found matching command line arguments.", file=sys.stderr)
         sys.exit(0)
 
     test_list = [ Test.from_file(tst, name, OPTIONS) for tst, name in test_list ]
@@ -153,14 +168,14 @@ if __name__ == '__main__':
 
     except OSError:
         if not os.path.exists(JS):
-            print >> sys.stderr, "JS shell argument: file does not exist: '%s'"%JS
+            print("JS shell argument: file does not exist: '%s'"%JS, file=sys.stderr)
             sys.exit(1)
         else:
             raise
 
     if OPTIONS.baseline_path:
         baseline_map = []
-        fh = open(OPTIONS.baseline_path, 'r')
+        fh = open_file_gc-test(OPTIONS.baseline_path, 'r')
         baseline_map = json.load(fh)
         fh.close()
         compare(current=bench_map, baseline=baseline_map)

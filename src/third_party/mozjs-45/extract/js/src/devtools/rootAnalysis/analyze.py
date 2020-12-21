@@ -16,6 +16,21 @@ import argparse
 import sys
 import re
 
+
+
+def open_file_analyze(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def env(config):
     e = dict(os.environ)
     e['PATH'] = ':'.join(p for p in (config.get('gcc_bin'), config.get('sixgill_bin'), e['PATH']) if p)
@@ -44,12 +59,12 @@ def print_command(command, outfile=None, env=None):
     if env:
         changed = {}
         e = os.environ
-        for key,value in env.items():
+        for key,value in list(env.items()):
             if (key not in e) or (e[key] != value):
                 changed[key] = value
         if changed:
             outputs = []
-            for key, value in changed.items():
+            for key, value in list(changed.items()):
                 if key in e and e[key] in value:
                     start = value.index(e[key])
                     end = start + len(e[key])
@@ -61,7 +76,7 @@ def print_command(command, outfile=None, env=None):
                     outputs.append("%s='%s'" % (key, value))
             output = ' '.join(outputs) + " " + output
 
-    print output
+    print(output)
 
 def generate_hazards(config, outfilename):
     jobs = []
@@ -76,7 +91,7 @@ def generate_hazards(config, outfilename):
                         'tmp.%s' % (i+1,)),
                        config)
         outfile = 'rootingHazards.%s' % (i+1,)
-        output = open(outfile, 'w')
+        output = open_file_analyze(outfile, 'w')
         print_command(command, outfile=outfile, env=env(config))
         jobs.append((command, Popen(command, stdout=output, env=env(config))))
 
@@ -89,7 +104,7 @@ def generate_hazards(config, outfilename):
     if final_status:
         raise subprocess.CalledProcessError(final_status, 'analyzeRoots.js')
 
-    with open(outfilename, 'w') as output:
+    with open_file_analyze(outfilename, 'w') as output:
         command = ['cat'] + [ 'rootingHazards.%s' % (i+1,) for i in range(int(config['jobs'])) ]
         print_command(command, outfile=outfilename)
         subprocess.call(command, stdout=output)
@@ -141,13 +156,13 @@ def out_indexes(command):
 
 def run_job(name, config):
     cmdspec, outfiles = JOBS[name]
-    print("Running " + name + " to generate " + str(outfiles))
+    print(("Running " + name + " to generate " + str(outfiles)))
     if hasattr(cmdspec, '__call__'):
         cmdspec(config, outfiles)
     else:
         temp_map = {}
         cmdspec = fill(cmdspec, config)
-        if isinstance(outfiles, basestring):
+        if isinstance(outfiles, str):
             stdout_filename = '%s.tmp' % name
             temp_map[stdout_filename] = outfiles
             print_command(cmdspec, outfile=outfiles, env=env(config))
@@ -171,13 +186,13 @@ def run_job(name, config):
         if stdout_filename is None:
             subprocess.check_call(command, env=env(config))
         else:
-            with open(stdout_filename, 'w') as output:
+            with open_file_analyze(stdout_filename, 'w') as output:
                 subprocess.check_call(command, stdout=output, env=env(config))
-        for (temp, final) in temp_map.items():
+        for (temp, final) in list(temp_map.items()):
             try:
                 os.rename(temp, final)
             except OSError:
-                print("Error renaming %s -> %s" % (temp, final))
+                print(("Error renaming %s -> %s" % (temp, final)))
                 raise
 
 config = { 'ANALYSIS_SCRIPTDIR': os.path.dirname(__file__) }
@@ -187,8 +202,8 @@ defaults = [ '%s/defaults.py' % config['ANALYSIS_SCRIPTDIR'],
 
 for default in defaults:
     try:
-        execfile(default, config)
-        print("Loaded %s" % default)
+        exec(compile(open(default, "rb").read(), default, 'exec'), config)
+        print(("Loaded %s" % default))
     except:
         pass
 
@@ -213,7 +228,7 @@ parser.add_argument('--expect-file', type=str, nargs='?',
                     help='deprecated option, temporarily still present for backwards compatibility')
 
 args = parser.parse_args()
-for k,v in vars(args).items():
+for k,v in list(vars(args).items()):
     if v is not None:
         data[k] = v
 
@@ -253,14 +268,14 @@ if args.list:
     for step in steps:
         command, outfilename = JOBS[step]
         if outfilename:
-            print("%s -> %s" % (step, outfilename))
+            print(("%s -> %s" % (step, outfilename)))
         else:
             print(step)
     sys.exit(0)
 
 for step in steps:
     command, outfiles = JOBS[step]
-    if isinstance(outfiles, basestring):
+    if isinstance(outfiles, str):
         data[step] = outfiles
     else:
         outfile = 0

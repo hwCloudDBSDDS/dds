@@ -56,7 +56,7 @@ class test_prepare03(wttest.WiredTigerTestCase):
         if self.tablekind == 'row':
             return 'key' + str(i)
         else:
-            return long(i+1)
+            return int(i+1)
 
     def genvalue(self, i):
         if self.tablekind == 'fix':
@@ -108,13 +108,13 @@ class test_prepare03(wttest.WiredTigerTestCase):
             self.session.begin_transaction()
             self.session.prepare_transaction("prepare_timestamp=2a")
             self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-                lambda:cursor.next(), preparemsg)
+                lambda:next(cursor), preparemsg)
             self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
                 lambda:cursor.get_key(), preparemsg)
             self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
                 lambda:cursor.get_value(), preparemsg)
             self.session.commit_transaction("commit_timestamp=2b")
-            nextret = cursor.next()
+            nextret = next(cursor)
             if nextret != 0:
                 break
             key = cursor.get_key()

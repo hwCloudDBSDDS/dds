@@ -42,7 +42,22 @@ extra_cflags = [ '-w', '-I../../src/include', '-Wno-sign-conversion']
 dir = os.path.dirname(__file__)
 
 # Read the version information from the RELEASE_INFO file
-for l in open(os.path.join(dir, '..', '..', 'RELEASE_INFO')):
+
+
+def open_file_setup(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+for l in open_file_setup(os.path.join(dir, '..', '..', 'RELEASE_INFO')):
     if re.match(r'WIREDTIGER_VERSION_(?:MAJOR|MINOR|PATCH)=', l):
         exec(l)
 

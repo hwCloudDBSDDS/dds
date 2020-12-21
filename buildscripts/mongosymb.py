@@ -24,6 +24,21 @@ import subprocess
 import sys
 
 
+
+
+def open_file_mongosymb(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def symbolize_frames(  # pylint: disable=too-many-locals
         trace_doc, dbg_path_resolver, symbolizer_path=None, dsym_hint=None):
     """Return a list of symbolized stack frames from a trace_doc in MongoDB stack dump format."""
@@ -38,7 +53,7 @@ def symbolize_frames(  # pylint: disable=too-many-locals
 
         The somap_list is a list of dictionaries describing individual loaded libraries.
         """
-        return {so_entry["b"]: so_entry for so_entry in somap_list if so_entry.has_key("b")}
+        return {so_entry["b"]: so_entry for so_entry in somap_list if "b" in so_entry}
 
     base_addr_map = make_base_addr_map(trace_doc["processInfo"]["somap"])
 
@@ -52,7 +67,7 @@ def symbolize_frames(  # pylint: disable=too-many-locals
             addr_base = frame["b"]
         else:
             addr_base = soinfo.get("vmaddr", "0")
-        addr = long(addr_base, 16) + long(frame["o"], 16)
+        addr = int(addr_base, 16) + int(frame["o"], 16)
         # addr currently points to the return address which is the one *after* the call. x86 is
         # variable length so going backwards is difficult. However llvm-symbolizer seems to do the
         # right thing if we just subtract 1 byte here. This has the downside of also adjusting the
@@ -69,7 +84,7 @@ def symbolize_frames(  # pylint: disable=too-many-locals
         symbolizer_args.append("-dsym-hint=%s" % dh)
     symbolizer_process = subprocess.Popen(args=symbolizer_args, close_fds=True,
                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                          stderr=open("/dev/null"))
+                                          stderr=open_file_mongosymb("/dev/null"))
 
     def extract_symbols(stdin):
         """Extract symbol information from the output of llvm-symbolizer.

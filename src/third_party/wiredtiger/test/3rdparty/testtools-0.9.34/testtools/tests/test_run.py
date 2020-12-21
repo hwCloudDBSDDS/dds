@@ -31,6 +31,21 @@ if fixtures:
                 init_contents = _b("""\
 from testtools import TestCase
 
+
+
+def open_file_test_run(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class TestFoo(TestCase):
     def test_bar(self):
         pass
@@ -158,7 +173,7 @@ runexample.__init__
         # the unmentioned one that does.
         tempdir = self.useFixture(fixtures.TempDir())
         tempname = tempdir.path + '/tests.list'
-        f = open(tempname, 'wb')
+        f = open_file_test_run(tempname, 'wb')
         try:
             f.write(_b("""
 testtools.runexample.TestFoo.test_bar
@@ -183,7 +198,7 @@ testtools.runexample.missingtest
         # the unmentioned one that does.
         tempdir = self.useFixture(fixtures.TempDir())
         tempname = tempdir.path + '/tests.list'
-        f = open(tempname, 'wb')
+        f = open_file_test_run(tempname, 'wb')
         try:
             f.write(_b("""
 testtools.runexample.TestFoo.test_bar
@@ -208,7 +223,7 @@ testtools.runexample.missingtest
         # should see just one resource setup occur.
         tempdir = self.useFixture(fixtures.TempDir())
         tempname = tempdir.path + '/tests.list'
-        f = open(tempname, 'wb')
+        f = open_file_test_run(tempname, 'wb')
         try:
             f.write(_b("""
 testtools.resourceexample.TestFoo.test_bar

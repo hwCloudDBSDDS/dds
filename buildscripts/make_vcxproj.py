@@ -35,6 +35,21 @@ VCXPROJ_FOOTER = r"""
 """
 
 
+
+
+def open_file_make_vcxproj(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def get_defines(args):
     """Parse a compiler argument list looking for defines."""
     ret = set()
@@ -76,9 +91,9 @@ class ProjFileGenerator(object):  # pylint: disable=too-many-instance-attributes
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self.vcxproj = open(self.target + ".vcxproj", "wb")
+        self.vcxproj = open_file_make_vcxproj(self.target + ".vcxproj", "wb")
 
-        with open('buildscripts/vcxproj.header', 'r') as header_file:
+        with open_file_make_vcxproj('buildscripts/vcxproj.header', 'r') as header_file:
             header_str = header_file.read()
             header_str = header_str.replace("%_TARGET_%", self.target)
             header_str = header_str.replace("%AdditionalIncludeDirectories%", ';'.join(
@@ -106,7 +121,7 @@ class ProjFileGenerator(object):  # pylint: disable=too-many-instance-attributes
                 self.vcxproj.write("    <ClCompile Include=\"" + command["file"] + "\" />\n")
         self.vcxproj.write("  </ItemGroup>\n")
 
-        self.filters = open(self.target + ".vcxproj.filters", "wb")
+        self.filters = open_file_make_vcxproj(self.target + ".vcxproj.filters", "wb")
         self.filters.write("<?xml version='1.0' encoding='utf-8'?>\n")
         self.filters.write("<Project ToolsVersion='14.0' " +
                            "xmlns='http://schemas.microsoft.com/developer/msbuild/2003'>\n")
@@ -172,8 +187,8 @@ class ProjFileGenerator(object):  # pylint: disable=too-many-instance-attributes
         base_dirs = set()
         for directory in dirs:
             if not os.path.exists(directory):
-                print(("Warning: skipping include file scan for directory '%s'" +
-                       " because it does not exist.") % str(directory))
+                print((("Warning: skipping include file scan for directory '%s'" +
+                       " because it does not exist.") % str(directory)))
                 continue
 
             # Get all the header files
@@ -249,11 +264,11 @@ class ProjFileGenerator(object):  # pylint: disable=too-many-instance-attributes
 def main():
     """Execute Main program."""
     if len(sys.argv) != 2:
-        print r"Usage: python buildscripts\make_vcxproj.py FILE_NAME"
+        print(r"Usage: python buildscripts\make_vcxproj.py FILE_NAME")
         return
 
     with ProjFileGenerator(sys.argv[1]) as projfile:
-        with open("compile_commands.json", "rb") as sjh:
+        with open_file_make_vcxproj("compile_commands.json", "rb") as sjh:
             contents = sjh.read().decode('utf-8')
             commands = json.loads(contents)
 

@@ -46,8 +46,8 @@ __u_doc = """A function version of the 'u' prefix.
 This is needed becayse the u prefix is not usable in Python 3 but is required
 in Python 2 to get a unicode object.
 
-To migrate code that was written as u'\u1234' in Python 2 to 2+3 change
-it to be _u('\u1234'). The Python 3 interpreter will decode it
+To migrate code that was written as u'\\u1234' in Python 2 to 2+3 change
+it to be _u('\\u1234'). The Python 3 interpreter will decode it
 appropriately and the no-op _u for Python 3 lets it through, in Python
 2 we then call unicode-escape in the _u function.
 """
@@ -59,7 +59,7 @@ if sys.version_info > (3, 0):
     _r = ascii
     def _b(s):
         """A byte literal."""
-        return s.encode("latin-1")
+        return s
     advance_iterator = next
     # GZ 2011-08-24: Seems istext() is easy to misuse and makes for bad code.
     def istext(x):
@@ -68,21 +68,21 @@ if sys.version_info > (3, 0):
         return (type,)
     str_is_unicode = True
 else:
-    import __builtin__ as builtins
+    import builtins as builtins
     def _u(s):
         # The double replace mangling going on prepares the string for
         # unicode-escape - \foo is preserved, \u and \U are decoded.
         return (s.replace("\\", "\\\\").replace("\\\\u", "\\u")
-            .replace("\\\\U", "\\U").decode("unicode-escape"))
+            .replace("\\\\U", "\\U"))
     _r = repr
     def _b(s):
         return s
-    advance_iterator = lambda it: it.next()
+    advance_iterator = lambda it: next(it)
     def istext(x):
-        return isinstance(x, basestring)
+        return isinstance(x, str)
     def classtypes():
         import types
-        return (type, types.ClassType)
+        return (type, type)
     str_is_unicode = sys.platform == "cli"
 
 _u.__doc__ = __u_doc
@@ -142,7 +142,7 @@ def _slow_escape(text):
         o = ord(c)
         if o < 256:
             if o < 32 or 126 < o < 161:
-                output.append(c.encode("unicode-escape"))
+                output.append(c)
             elif o == 92:
                 # Separate due to bug in unicode-escape codec in Python 2.4
                 output.append("\\\\")
@@ -151,7 +151,7 @@ def _slow_escape(text):
         else:
             # To get correct behaviour would need to pair up surrogates here
             if unicodedata.category(c)[0] in "CZ":
-                output.append(c.encode("unicode-escape"))
+                output.append(c)
             else:
                 output.append(c)
     return "".join(output)
@@ -179,7 +179,7 @@ def text_repr(text, multiline=None):
                 q = r[-1]
                 lines.append(r[offset:-1].replace("\\" + q, q))
         elif not str_is_unicode and isinstance(text, str):
-            lines = [l.encode("string-escape").replace("\\'", "'")
+            lines = [l.replace("\\'", "'")
                 for l in text.split("\n")]
         else:
             lines = [_slow_escape(l) for l in text.split("\n")]
@@ -309,14 +309,14 @@ def _get_exception_encoding():
 def _exception_to_text(evalue):
     """Try hard to get a sensible text value out of an exception instance"""
     try:
-        return unicode(evalue)
+        return str(evalue)
     except KeyboardInterrupt:
         raise
     except:
         # Apparently this is what traceback._some_str does. Sigh - RBC 20100623
         pass
     try:
-        return str(evalue).decode(_get_exception_encoding(), "replace")
+        return str(evalue)
     except KeyboardInterrupt:
         raise
     except:
@@ -337,9 +337,9 @@ def _format_stack_list(stack_lines):
     extracted_list = []
     for filename, lineno, name, line in stack_lines:
             extracted_list.append((
-                filename.decode(fs_enc, "replace"),
+                filename,
                 lineno,
-                name.decode("ascii", "replace"),
+                name,
                 line and line.decode(
                     _get_source_encoding(filename), "replace")))
     return traceback.format_list(extracted_list)
@@ -355,7 +355,7 @@ def _format_exception_only(eclass, evalue):
     list = []
     if evalue is None:
         # Is a (deprecated) string exception
-        list.append((eclass + "\n").decode("ascii", "replace"))
+        list.append((eclass + "\n"))
         return list
     if isinstance(evalue, SyntaxError):
         # Avoid duplicating the special formatting for SyntaxError here,
@@ -379,10 +379,10 @@ def _format_exception_only(eclass, evalue):
                         _get_source_encoding(filename), "replace")
                     del linecache.cache[filename]
                 else:
-                    line = line.decode("ascii", "replace")
+                    line = line
             if filename:
                 fs_enc = sys.getfilesystemencoding()
-                filename = filename.decode(fs_enc, "replace")
+                filename = filename
             evalue = eclass(msg, (filename, lineno, offset, line))
             list.extend(traceback.format_exception_only(eclass, evalue))
             return list
