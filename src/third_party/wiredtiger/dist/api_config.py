@@ -11,7 +11,22 @@ tmp_file = '__tmp'
 # Update wiredtiger.in with doxygen comments
 #####################################################################
 f='../src/include/wiredtiger.in'
-tfile = open(tmp_file, 'w')
+
+
+def open_file_api_config(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+tfile = open_file_api_config(tmp_file, 'w')
 
 whitespace_re = re.compile(r'\s+')
 cbegin_re = re.compile(r'(\s*\*\s*)@config(?:empty|start)\{(.*?),.*\}')
@@ -97,7 +112,7 @@ def getconfcheck(c):
     return check
 
 skip = False
-for line in open(f, 'r'):
+for line in open_file_api_config(f, 'r'):
     if skip:
         if '@configend' in line:
             skip = False
@@ -110,7 +125,7 @@ for line in open(f, 'r'):
 
     prefix, config_name = m.groups()
     if config_name not in api_data.methods:
-        print >>sys.stderr, "Missing configuration for " + config_name
+        print("Missing configuration for " + config_name, file=sys.stderr)
         tfile.write(line)
         continue
 
@@ -144,7 +159,7 @@ compare_srcfile(tmp_file, f)
 # Create config_def.c with defaults for each config string
 #####################################################################
 f='../src/config/config_def.c'
-tfile = open(tmp_file, 'w')
+tfile = open_file_api_config(tmp_file, 'w')
 
 tfile.write('''/* DO NOT EDIT: automatically built by dist/api_config.py. */
 
@@ -340,9 +355,9 @@ tfile.close()
 compare_srcfile(tmp_file, f)
 
 # Update the config.h file with the #defines for the configuration entries.
-tfile = open(tmp_file, 'w')
+tfile = open_file_api_config(tmp_file, 'w')
 skip = 0
-for line in open('../src/include/config.h', 'r'):
+for line in open_file_api_config('../src/include/config.h', 'r'):
     if skip:
         if 'configuration section: END' in line:
             tfile.write('/*\n' + line)

@@ -21,8 +21,6 @@ This is a lossy translation from the IDL Syntax tree as the IDL AST only contain
 the enums and structs that need code generated for them, and just enough information to do that.
 """
 
-from __future__ import absolute_import, print_function, unicode_literals
-
 from typing import List, Union, Any, Optional, Tuple
 
 from . import common
@@ -62,10 +60,12 @@ class Global(common.SourceLocation):
     """
 
     def __init__(self, file_name, line, column):
-        # type: (unicode, int, int) -> None
+        # type: (str, int, int) -> None
         """Construct a Global."""
-        self.cpp_namespace = None  # type: unicode
-        self.cpp_includes = []  # type: List[unicode]
+        self.cpp_namespace = None  # type: str
+        self.cpp_includes = []  # type: List[str]
+        self.configs = None  # type: ConfigGlobal
+
         super(Global, self).__init__(file_name, line, column)
 
 
@@ -79,11 +79,11 @@ class Struct(common.SourceLocation):
     # pylint: disable=too-many-instance-attributes
 
     def __init__(self, file_name, line, column):
-        # type: (unicode, int, int) -> None
+        # type: (str, int, int) -> None
         """Construct a struct."""
-        self.name = None  # type: unicode
-        self.cpp_name = None  # type: unicode
-        self.description = None  # type: unicode
+        self.name = None  # type: str
+        self.cpp_name = None  # type: str
+        self.description = None  # type: str
         self.strict = True  # type: bool
         self.immutable = False  # type: bool
         self.inline_chained_structs = False  # type: bool
@@ -104,26 +104,26 @@ class Field(common.SourceLocation):
     # pylint: disable=too-many-instance-attributes
 
     def __init__(self, file_name, line, column):
-        # type: (unicode, int, int) -> None
+        # type: (str, int, int) -> None
         """Construct a Field."""
-        self.name = None  # type: unicode
-        self.description = None  # type: unicode
-        self.cpp_name = None  # type: unicode
+        self.name = None  # type: str
+        self.description = None  # type: str
+        self.cpp_name = None  # type: str
         self.optional = False  # type: bool
         self.ignore = False  # type: bool
         self.chained = False  # type: bool
         self.comparison_order = -1  # type: int
 
         # Properties specific to fields which are types.
-        self.cpp_type = None  # type: unicode
-        self.bson_serialization_type = None  # type: List[unicode]
-        self.serializer = None  # type: unicode
-        self.deserializer = None  # type: unicode
-        self.bindata_subtype = None  # type: unicode
-        self.default = None  # type: unicode
+        self.cpp_type = None  # type: str
+        self.bson_serialization_type = None  # type: List[str]
+        self.serializer = None  # type: str
+        self.deserializer = None  # type: str
+        self.bindata_subtype = None  # type: str
+        self.default = None  # type: str
 
         # Properties specific to fields which are structs.
-        self.struct_type = None  # type: unicode
+        self.struct_type = None  # type: str
 
         # Properties specific to fields which are arrays.
         self.array = False  # type: bool
@@ -150,9 +150,9 @@ class Command(Struct):
     """
 
     def __init__(self, file_name, line, column):
-        # type: (unicode, int, int) -> None
+        # type: (str, int, int) -> None
         """Construct a command."""
-        self.namespace = None  # type: unicode
+        self.namespace = None  # type: str
         self.command_field = None  # type: Field
         super(Command, self).__init__(file_name, line, column)
 
@@ -165,10 +165,10 @@ class EnumValue(common.SourceLocation):
     """
 
     def __init__(self, file_name, line, column):
-        # type: (unicode, int, int) -> None
+        # type: (str, int, int) -> None
         """Construct an Enum."""
-        self.name = None  # type: unicode
-        self.value = None  # type: unicode
+        self.name = None  # type: str
+        self.value = None  # type: str
 
         super(EnumValue, self).__init__(file_name, line, column)
 
@@ -181,12 +181,12 @@ class Enum(common.SourceLocation):
     """
 
     def __init__(self, file_name, line, column):
-        # type: (unicode, int, int) -> None
+        # type: (str, int, int) -> None
         """Construct an Enum."""
-        self.name = None  # type: unicode
-        self.description = None  # type: unicode
-        self.cpp_namespace = None  # type: unicode
-        self.type = None  # type: unicode
+        self.name = None  # type: str
+        self.description = None  # type: str
+        self.cpp_namespace = None  # type: str
+        self.type = None  # type: str
         self.values = []  # type: List[EnumValue]
 
         super(Enum, self).__init__(file_name, line, column)

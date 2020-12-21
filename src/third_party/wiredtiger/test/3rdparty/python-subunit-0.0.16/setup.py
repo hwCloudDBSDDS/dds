@@ -15,10 +15,25 @@ else:
     }
 
 
+
+
+def open_file_setup(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def _get_version_from_file(filename, start_of_line, split_marker):
     """Extract version from file, giving last matching value or None"""
     try:
-        return [x for x in open(filename)
+        return [x for x in open_file_setup(filename)
             if x.startswith(start_of_line)][-1].split(split_marker)[1].strip()
     except (IOError, IndexError):
         return None
@@ -36,7 +51,7 @@ setup(
     name='python-subunit',
     version=VERSION,
     description=('Python implementation of subunit test streaming protocol'),
-    long_description=open('README').read(),
+    long_description=open_file_setup('README').read(),
     classifiers=[
         'Intended Audience :: Developers',
         'Programming Language :: Python :: 3',

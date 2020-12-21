@@ -118,7 +118,7 @@ class StreamResultToBytes(object):
             route_code=route_code, timestamp=timestamp)
 
     def _write_utf8(self, a_string, packet):
-        utf8 = a_string.encode('utf-8')
+        utf8 = a_string
         self._write_number(len(utf8), packet)
         packet.append(utf8)
 
@@ -277,7 +277,7 @@ class ByteStreamToStreamResult(object):
             if self.non_subunit_name is None:
                 raise Exception("Non subunit content", content)
             try:
-                if self.codec.decode(content):
+                if self.codec:
                     # End of a character
                     mid_character = False
                 else:
@@ -319,7 +319,7 @@ class ByteStreamToStreamResult(object):
                     buffered.append(content)
                     # Feed into the codec.
                     try:
-                        if self.codec.decode(content):
+                        if self.codec:
                             # End of a character
                             mid_character = False
                         else:
@@ -348,7 +348,7 @@ class ByteStreamToStreamResult(object):
                 mime_type="application/octet-stream")
             result.status(test_id="subunit.parser", test_status='fail',
                 eof=True, file_name="Parser Error",
-                file_bytes=(error.args[0]).encode('utf8'),
+                file_bytes=(error.args[0]),
                 mime_type="text/plain;charset=utf8")
 
     def _to_bytes(self, data, pos, length):

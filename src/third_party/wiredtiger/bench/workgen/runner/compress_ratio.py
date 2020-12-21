@@ -93,7 +93,7 @@ conn = wiredtiger_open("WT_TEST", conn_config)
 s = conn.open_session()
 
 tables = []
-for name_ext, compress_config in compression_opts.iteritems():
+for name_ext, compress_config in compression_opts.items():
     tname = "table:test_" + name_ext
     s.create(tname, 'key_format=S,value_format=S,' + table_config + "," + compress_config)
     table = Table(tname)

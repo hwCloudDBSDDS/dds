@@ -117,7 +117,7 @@ class test_jsondump02(wttest.WiredTigerTestCase, suite_subprocess):
         self.set_kv(self.table_uri1, 'KEY001', '\'\"({[]})\"\'\\, etc. allowed')
         # \u03c0 is pi in Unicode, converted by Python to UTF-8: 0xcf 0x80.
         # Here's how UTF-8 might be used.
-        self.set_kv(self.table_uri1, 'KEY002', u'\u03c0'.encode('utf-8'))
+        self.set_kv(self.table_uri1, 'KEY002', '\u03c0')
         # 0xf5-0xff are illegal in Unicode, but may occur legally in C strings.
         self.set_kv(self.table_uri1, 'KEY003', '\xff\xfe')
         self.set_kv2(self.table_uri2, 'KEY000', 123, 'str0')
@@ -156,7 +156,7 @@ class test_jsondump02(wttest.WiredTigerTestCase, suite_subprocess):
         # bad tokens
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
             lambda: self.load_json(self.table_uri2,
-              (('"abc\u"', ''),)),
+              (('"abc\\u"', ''),)),
             '/invalid Unicode/')
 
         # bad tokens

@@ -5,8 +5,6 @@ Used to avoid deadlocks from the pipe buffer filling up and blocking the subproc
 being waited on.
 """
 
-from __future__ import absolute_import
-
 import threading
 
 
@@ -56,7 +54,7 @@ class LoggerPipe(threading.Thread):  # pylint: disable=too-many-instance-attribu
                 # any characters that cannot be decoded with the official Unicode replacement
                 # character, U+FFFD. The log messages of MongoDB processes are not always valid
                 # UTF-8 sequences. See SERVER-7506.
-                line = line.decode("utf-8", "replace")
+                line = line
                 self.__logger.log(self.__level, line.rstrip())
 
         with self.__lock:

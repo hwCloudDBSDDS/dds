@@ -36,11 +36,26 @@
 #
 # It uses the C preprocessor to process its inputs.
 
-from __future__ import with_statement
+
 import re, sys, os, subprocess
 import shlex
 import which
 import buildconfig
+
+
+
+def open_file_embedjs(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def ToCAsciiArray(lines):
   result = []
@@ -107,13 +122,13 @@ def preprocess(cxx, preprocessorOption, source, args = []):
   tmpOut = 'self-hosting-preprocessed.pp';
   outputArg = shlex.split(preprocessorOption + tmpOut)
 
-  with open(tmpIn, 'wb') as input:
+  with open_file_embedjs(tmpIn, 'wb') as input:
     input.write(source)
-  print(' '.join(cxx + outputArg + args + [tmpIn]))
+  print((' '.join(cxx + outputArg + args + [tmpIn])))
   result = subprocess.Popen(cxx + outputArg + args + [tmpIn]).wait()
   if (result != 0):
     sys.exit(result);
-  with open(tmpOut, 'r') as output:
+  with open_file_embedjs(tmpOut, 'r') as output:
     processed = output.read();
   os.remove(tmpIn)
   os.remove(tmpOut)
@@ -121,7 +136,7 @@ def preprocess(cxx, preprocessorOption, source, args = []):
 
 def messages(jsmsg):
   defines = []
-  for line in open(jsmsg):
+  for line in open_file_embedjs(jsmsg):
     match = re.match("MSG_DEF\((JSMSG_(\w+))", line)
     if match:
       defines.append("#define %s %i" % (match.group(1), len(defines)))
@@ -132,7 +147,7 @@ def messages(jsmsg):
 
 def get_config_defines(buildconfig):
   # Collect defines equivalent to ACDEFINES and add MOZ_DEBUG_DEFINES.
-  env = {key: value for key, value in buildconfig.defines.iteritems()
+  env = {key: value for key, value in buildconfig.defines.items()
          if key not in buildconfig.non_global_defines}
   for value in buildconfig.substs['MOZ_DEBUG_DEFINES'].split():
     assert value[:2] == "-D"
@@ -151,7 +166,7 @@ def process_inputs(namespace, c_out, msg_file, inputs):
   env = get_config_defines(buildconfig)
   js_path = re.sub(r"\.out\.h$", "", c_out.name) + ".js"
   msgs = messages(msg_file)
-  with open(js_path, 'w') as js_out:
+  with open_file_embedjs(js_path, 'w') as js_out:
     embed(cxx, cxx_option, msgs, sources, c_out, js_out, namespace, env)
 
 def generate_selfhosted(c_out, msg_file, *inputs):

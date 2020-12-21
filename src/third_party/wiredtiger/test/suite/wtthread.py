@@ -26,7 +26,7 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-import Queue
+import queue
 import os, shutil, sys, threading, time, wiredtiger, wttest
 from helper import compare_tables
 
@@ -62,7 +62,7 @@ class backup_thread(threading.Thread):
             cursor = sess.open_cursor('backup:', None, None)
             files = list()
             while True:
-                ret = cursor.next()
+                ret = next(cursor)
                 if ret != 0:
                     break
                 files.append(cursor.get_key())
@@ -86,13 +86,13 @@ class backup_thread(threading.Thread):
                 # wttest to do that..
                 if not compare_tables(
                         self, sess, uris, "checkpoint=WiredTigerCheckpoint"):
-                    print "Error: checkpoint tables differ."
+                    print("Error: checkpoint tables differ.")
                 else:
                     wttest.WiredTigerTestCase.printVerbose(
                         3, "Checkpoint tables match")
 
                 if not compare_tables(self, bkp_session, uris):
-                    print "Error: backup tables differ."
+                    print("Error: backup tables differ.")
                 else:
                     wttest.WiredTigerTestCase.printVerbose(
                         3, "Backup tables match")
@@ -167,7 +167,7 @@ class op_thread(threading.Thread):
                         # thread happened
                         pass
                 self.queue.task_done()
-            except Queue.Empty:
+            except queue.Empty:
                 # Wait on the queue until done is flagged
                 time.sleep(0.01)
         if (len(self.uris) == 1):

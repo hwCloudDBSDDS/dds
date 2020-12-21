@@ -95,7 +95,7 @@ class ConcurrentTestSuite(unittest.TestSuite):
                 threads[finished_test][0].join()
                 del threads[finished_test]
         except:
-            for thread, process_result in threads.values():
+            for thread, process_result in list(threads.values()):
                 process_result.stop()
             raise
 
@@ -176,7 +176,7 @@ class ConcurrentStreamTestSuite(object):
                 else:
                     raise ValueError('unknown event type %r' % (event,))
         except:
-            for thread, process_result in threads.values():
+            for thread, process_result in list(threads.values()):
                 # Signal to each TestControl in the ExtendedToStreamDecorator
                 # that the thread should stop running tests and cleanup
                 process_result.stop()

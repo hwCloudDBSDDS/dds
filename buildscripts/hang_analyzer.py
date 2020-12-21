@@ -11,7 +11,7 @@ A prototype hang analyzer for Evergreen integration to help investigate test tim
 Supports Linux, MacOS X, Solaris, and Windows.
 """
 
-import StringIO
+import io
 import csv
 import glob
 import itertools
@@ -60,7 +60,7 @@ def callo(args, logger):
     """Call subprocess on args string."""
     logger.info("%s", str(args))
 
-    return subprocess.check_output(args)
+    return subprocess.check_output(args).decode('utf-8')
 
 
 def find_program(prog, paths):
@@ -181,7 +181,7 @@ class WindowsProcessList(object):
 
         ret = callo([ps, "/FO", "CSV"], logger)
 
-        buff = StringIO.StringIO(ret)
+        buff = io.StringIO(ret)
         csv_reader = csv.reader(buff)
 
         return [[int(row[1]), row[0]] for row in csv_reader if row[1] != "PID"]
@@ -278,7 +278,7 @@ class DarwinProcessList(object):
 
         ret = callo([ps, "-axco", "pid,comm"], logger)
 
-        buff = StringIO.StringIO(ret)
+        buff = io.StringIO(ret)
         csv_reader = csv.reader(buff, delimiter=' ', quoting=csv.QUOTE_NONE, skipinitialspace=True)
 
         return [[int(row[0]), row[1]] for row in csv_reader if row[0] != "PID"]
@@ -420,7 +420,7 @@ class LinuxProcessList(object):
 
         ret = callo([ps, "-eo", "pid,args"], logger)
 
-        buff = StringIO.StringIO(ret)
+        buff = io.StringIO(ret)
         csv_reader = csv.reader(buff, delimiter=' ', quoting=csv.QUOTE_NONE, skipinitialspace=True)
 
         return [[int(row[0]), os.path.split(row[1])[1]] for row in csv_reader if row[0] != "PID"]
@@ -442,7 +442,7 @@ class SolarisProcessList(object):
 
         ret = callo([ps, "-eo", "pid,args"], logger)
 
-        buff = StringIO.StringIO(ret)
+        buff = io.StringIO(ret)
         csv_reader = csv.reader(buff, delimiter=' ', quoting=csv.QUOTE_NONE, skipinitialspace=True)
 
         return [[int(row[0]), os.path.split(row[1])[1]] for row in csv_reader if row[0] != "PID"]
@@ -554,7 +554,7 @@ def signal_process(logger, pid, signalnum):
 
         logger.info("Waiting for process to report")
         time.sleep(5)
-    except OSError, err:
+    except OSError as err:
         logger.error("Hit OS error trying to signal process: %s", err)
 
     except AttributeError:

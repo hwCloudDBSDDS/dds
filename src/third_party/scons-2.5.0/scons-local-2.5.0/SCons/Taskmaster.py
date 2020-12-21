@@ -74,6 +74,21 @@ print_prepare = 0               # set by option --debug=prepare
 
 CollectStats = None
 
+
+
+def open_file_Taskmaster(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class Stats(object):
     """
     A simple class for holding statistics about the disposition of a
@@ -107,7 +122,7 @@ fmt = "%(considered)3d "\
 
 def dump_stats():
     for n in sorted(StatsNodes, key=lambda a: str(a)):
-        print (fmt % n.attributes.stats.__dict__) + str(n)
+        print((fmt % n.attributes.stats.__dict__) + str(n))
 
 
 
@@ -164,7 +179,7 @@ class Task(object):
         """
         global print_prepare
         T = self.tm.trace
-        if T: T.write(self.trace_message(u'Task.prepare()', self.node))
+        if T: T.write(self.trace_message('Task.prepare()', self.node))
 
         # Now that it's the appropriate time, give the TaskMaster a
         # chance to raise any exceptions it encountered while preparing
@@ -177,7 +192,7 @@ class Task(object):
 
         # Let the targets take care of any necessary preparations.
         # This includes verifying that all of the necessary sources
-        # and dependencies exist, removing the target file(s), etc.
+        # and dependencies exist, removing the target open_file_Taskmaster(s), etc.
         #
         # As of April 2008, the get_executor().prepare() method makes
         # sure that all of the aggregate sources necessary to build this
@@ -191,13 +206,13 @@ class Task(object):
         executor.prepare()
         for t in executor.get_action_targets():
             if print_prepare:
-                print "Preparing target %s..."%t
+                print("Preparing target %s..."%t)
                 for s in t.side_effects:
-                    print "...with side-effect %s..."%s
+                    print("...with side-effect %s..."%s)
             t.prepare()
             for s in t.side_effects:
                 if print_prepare:
-                    print "...Preparing side-effect %s..."%s
+                    print("...Preparing side-effect %s..."%s)
                 s.prepare()
 
     def get_target(self):
@@ -226,7 +241,7 @@ class Task(object):
         prepare(), executed() or failed().
         """
         T = self.tm.trace
-        if T: T.write(self.trace_message(u'Task.execute()', self.node))
+        if T: T.write(self.trace_message('Task.execute()', self.node))
 
         try:
             cached_targets = []
@@ -256,7 +271,7 @@ class Task(object):
             raise
         except SCons.Errors.BuildError:
             raise
-        except Exception, e:
+        except Exception as e:
             buildError = SCons.Errors.convert_to_BuildError(e)
             buildError.node = self.targets[0]
             buildError.exc_info = sys.exc_info()
@@ -392,7 +407,7 @@ class Task(object):
         """
         global print_prepare
         T = self.tm.trace
-        if T: T.write(self.trace_message(u'Task.make_ready_current()',
+        if T: T.write(self.trace_message('Task.make_ready_current()',
                                          self.node))
 
         self.out_of_date = []
@@ -402,7 +417,7 @@ class Task(object):
                 t.disambiguate().make_ready()
                 is_up_to_date = not t.has_builder() or \
                                 (not t.always_build and t.is_up_to_date())
-            except EnvironmentError, e:
+            except EnvironmentError as e:
                 raise SCons.Errors.BuildError(node=t, errstr=e.strerror, filename=e.filename)
 
             if not is_up_to_date:
@@ -440,7 +455,7 @@ class Task(object):
         that can be put back on the candidates list.
         """
         T = self.tm.trace
-        if T: T.write(self.trace_message(u'Task.postprocess()', self.node))
+        if T: T.write(self.trace_message('Task.postprocess()', self.node))
 
         # We may have built multiple targets, some of which may have
         # common parents waiting for this build.  Count up how many
@@ -457,7 +472,7 @@ class Task(object):
             # A node can only be in the pending_children set if it has
             # some waiting_parents.
             if t.waiting_parents:
-                if T: T.write(self.trace_message(u'Task.postprocess()',
+                if T: T.write(self.trace_message('Task.postprocess()',
                                                  t,
                                                  'removing'))
                 pending_children.discard(t)
@@ -475,9 +490,9 @@ class Task(object):
                         if p.ref_count == 0:
                             self.tm.candidates.append(p)
 
-        for p, subtract in parents.items():
+        for p, subtract in list(parents.items()):
             p.ref_count = p.ref_count - subtract
-            if T: T.write(self.trace_message(u'Task.postprocess()',
+            if T: T.write(self.trace_message('Task.postprocess()',
                                              p,
                                              'adjusted parent ref count'))
             if p.ref_count == 0:
@@ -537,7 +552,7 @@ class Task(object):
         except ValueError:
             exc_type, exc_value = exc
             exc_traceback = None
-        raise exc_type, exc_value, exc_traceback
+        raise exc_type(exc_value).with_traceback(exc_traceback)
 
 class AlwaysTask(Task):
     def needs_execute(self):
@@ -761,12 +776,12 @@ class Taskmaster(object):
         self.ready_exc = None
 
         T = self.trace
-        if T: T.write(u'\n' + self.trace_message('Looking for a node to evaluate'))
+        if T: T.write('\n' + self.trace_message('Looking for a node to evaluate'))
 
         while True:
             node = self.next_candidate()
             if node is None:
-                if T: T.write(self.trace_message('No candidate anymore.') + u'\n')
+                if T: T.write(self.trace_message('No candidate anymore.') + '\n')
                 return None
 
             node = node.disambiguate()
@@ -789,7 +804,7 @@ class Taskmaster(object):
             else:
                 S = None
 
-            if T: T.write(self.trace_message(u'    Considering node %s and its children:' % self.trace_node(node)))
+            if T: T.write(self.trace_message('    Considering node %s and its children:' % self.trace_node(node)))
 
             if state == NODE_NO_STATE:
                 # Mark this node as being on the execution stack:
@@ -797,7 +812,7 @@ class Taskmaster(object):
             elif state > NODE_PENDING:
                 # Skip this node if it has already been evaluated:
                 if S: S.already_handled = S.already_handled + 1
-                if T: T.write(self.trace_message(u'       already handled (executed)'))
+                if T: T.write(self.trace_message('       already handled (executed)'))
                 continue
 
             executor = node.get_executor()
@@ -810,7 +825,7 @@ class Taskmaster(object):
                 self.ready_exc = (SCons.Errors.ExplicitExit, e)
                 if T: T.write(self.trace_message('       SystemExit'))
                 return node
-            except Exception, e:
+            except Exception as e:
                 # We had a problem just trying to figure out the
                 # children (like a child couldn't be linked in to a
                 # VariantDir, or a Scanner threw something).  Arrange to
@@ -828,7 +843,7 @@ class Taskmaster(object):
             for child in chain(executor.get_all_prerequisites(), children):
                 childstate = child.get_state()
 
-                if T: T.write(self.trace_message(u'       ' + self.trace_node(child)))
+                if T: T.write(self.trace_message('       ' + self.trace_node(child)))
 
                 if childstate == NODE_NO_STATE:
                     children_not_visited.append(child)
@@ -887,7 +902,7 @@ class Taskmaster(object):
                     # count so we can be put back on the list for
                     # re-evaluation when they've all finished.
                     node.ref_count =  node.ref_count + child.add_to_waiting_parents(node)
-                    if T: T.write(self.trace_message(u'     adjusted ref count: %s, child %s' %
+                    if T: T.write(self.trace_message('     adjusted ref count: %s, child %s' %
                                   (self.trace_node(node), repr(str(child)))))
 
                 if T:
@@ -913,7 +928,7 @@ class Taskmaster(object):
             # The default when we've gotten through all of the checks above:
             # this node is ready to be built.
             if S: S.build = S.build + 1
-            if T: T.write(self.trace_message(u'Evaluating %s\n' %
+            if T: T.write(self.trace_message('Evaluating %s\n' %
                                              self.trace_node(node)))
 
             # For debugging only:

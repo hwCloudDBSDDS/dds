@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 """ Unit tests for utils.rmtree. """
 
-from __future__ import absolute_import
-from __future__ import print_function
-
 import os
 import shutil
 import sys
@@ -15,6 +12,21 @@ from buildscripts.resmokelib import utils
 # pylint: disable=missing-docstring,protected-access
 
 
+
+
+def open_file_test_rmtree(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def rmtree(dir_root):
     """Invoke utils.rmtree(dir_root) and return True if removed."""
     utils.rmtree(dir_root)
@@ -23,7 +35,7 @@ def rmtree(dir_root):
 
 def create_file(path):
     """Create file named 'path'."""
-    with open(path, "w") as fh:
+    with open_file_test_rmtree(path, "w") as fh:
         fh.write("")
 
 
@@ -41,7 +53,7 @@ def string_for_ascii_filesystem_encoding(path):
 
     Some file system encodings are set to ASCII if LANG=C or LC_ALL=C is specified.
     """
-    if ascii_filesystemencoding() and isinstance(path, unicode):
+    if ascii_filesystemencoding() and isinstance(path, str):
         return path.encode("utf-8")
     return path
 
@@ -66,15 +78,15 @@ class RmtreeTestCase(unittest.TestCase):
 
     def test_unicode(self):
         # Unicode name
-        self.do_test(u"unicode")
+        self.do_test("unicode")
 
     def test_greek(self):
         # Name with Greek
-        self.do_test(string_for_ascii_filesystem_encoding(u"ελληνικά"))
+        self.do_test(string_for_ascii_filesystem_encoding("ελληνικά"))
 
     def test_japanese(self):
         # Name with Japanese
-        self.do_test(string_for_ascii_filesystem_encoding(u"会社案"))
+        self.do_test(string_for_ascii_filesystem_encoding("会社案"))
 
 
 class RmtreeFileTests(RmtreeTestCase):

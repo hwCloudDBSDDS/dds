@@ -68,6 +68,21 @@ else:
 print_duplicate = 0
 
 
+
+
+def open_file_FS(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def sconsign_none(node):
     raise NotImplementedError
 
@@ -573,7 +588,7 @@ class EntryProxy(SCons.Util.Proxy):
         except KeyError:
             try:
                 attr = SCons.Util.Proxy.__getattr__(self, name)
-            except AttributeError, e:
+            except AttributeError as e:
                 # Raise our own AttributeError subclass with an
                 # overridden __str__() method that identifies the
                 # name of the entry that caused the exception.
@@ -1154,8 +1169,8 @@ class LocalFS(object):
         return os.stat(path)
     def symlink(self, src, dst):
         return os.symlink(src, dst)
-    def open(self, path):
-        return open(path)
+    def open_file_FS(self, path):
+        return open_file_FS(path)
     def unlink(self, path):
         return os.unlink(path)
 
@@ -1615,7 +1630,7 @@ class Dir(Base):
         This clears any cached information that is invalidated by changing
         the repository."""
 
-        for node in self.entries.values():
+        for node in list(self.entries.values()):
             if node != self.dir:
                 if node != self and isinstance(node, Dir):
                     node.__clearRepositoryCache(duplicate)
@@ -2187,7 +2202,7 @@ class Dir(Base):
             for x in excludeList:
                 r = self.glob(x, ondisk, source, strings)
                 excludes.extend(r)
-            result = filter(lambda x: not any(fnmatch.fnmatch(str(x), str(e)) for e in SCons.Util.flatten(excludes)), result)
+            result = [x for x in result if not any(fnmatch.fnmatch(str(x), str(e)) for e in SCons.Util.flatten(excludes))]
         return sorted(result, key=lambda a: str(a))
 
     def _glob1(self, pattern, ondisk=True, source=False, strings=False):
@@ -2211,7 +2226,7 @@ class Dir(Base):
             # We use the .name attribute from the Node because the keys of
             # the dir.entries dictionary are normalized (that is, all upper
             # case) on case-insensitive systems like Windows.
-            node_names = [ v.name for k, v in dir.entries.items()
+            node_names = [ v.name for k, v in list(dir.entries.items())
                            if k not in ('.', '..') ]
             names.extend(node_names)
             if not strings:
@@ -2489,7 +2504,7 @@ class FileNodeInfo(SCons.Node.NodeInfoBase):
         """
         # TODO check or discard version
         del state['_version_id']
-        for key, value in state.items():
+        for key, value in list(state.items()):
             if key not in ('__weakref__',):
                 setattr(self, key, value)
 
@@ -2673,11 +2688,11 @@ class File(Base):
         # strip them; etc.)  Just sidestep all the complication by
         # explicitly stripping the BOM before we decode().
         if contents.startswith(codecs.BOM_UTF8):
-            return contents[len(codecs.BOM_UTF8):].decode('utf-8')
+            return contents[len(codecs.BOM_UTF8):]
         if contents.startswith(codecs.BOM_UTF16_LE):
-            return contents[len(codecs.BOM_UTF16_LE):].decode('utf-16-le')
+            return contents[len(codecs.BOM_UTF16_LE):]
         if contents.startswith(codecs.BOM_UTF16_BE):
-            return contents[len(codecs.BOM_UTF16_BE):].decode('utf-16-be')
+            return contents[len(codecs.BOM_UTF16_BE):]
         return contents
 
     def get_content_hash(self):
@@ -2690,7 +2705,7 @@ class File(Base):
         try:
             cs = SCons.Util.MD5filesignature(fname,
                 chunksize=SCons.Node.FS.File.md5_chunksize*1024)
-        except EnvironmentError, e:
+        except EnvironmentError as e:
             if not e.filename:
                 e.filename = fname
             raise
@@ -3065,7 +3080,7 @@ class File(Base):
     def _rmv_existing(self):
         self.clear_memoized_values()
         if SCons.Node.print_duplicate:
-            print "dup: removing existing target %s"%self
+            print("dup: removing existing target %s"%self)
         e = Unlink(self, [], None)
         if isinstance(e, SCons.Errors.BuildError):
             raise e
@@ -3089,7 +3104,7 @@ class File(Base):
             else:
                 try:
                     self._createDir()
-                except SCons.Errors.StopError, drive:
+                except SCons.Errors.StopError as drive:
                     desc = "No drive `%s' for target `%s'." % (drive, self)
                     raise SCons.Errors.StopError(desc)
 
@@ -3107,7 +3122,7 @@ class File(Base):
     def do_duplicate(self, src):
         self._createDir()
         if SCons.Node.print_duplicate:
-            print "dup: relinking variant '%s' from '%s'"%(self, src)
+            print("dup: relinking variant '%s' from '%s'"%(self, src))
         Unlink(self, None, None)
         e = Link(self, src, None)
         if isinstance(e, SCons.Errors.BuildError):
@@ -3504,7 +3519,7 @@ class FileFinder(object):
         if verbose and not callable(verbose):
             if not SCons.Util.is_String(verbose):
                 verbose = "find_file"
-            _verbose = u'  %s: ' % verbose
+            _verbose = '  %s: ' % verbose
             verbose = lambda s: sys.stdout.write(_verbose + s)
 
         filedir, filename = os.path.split(filename)

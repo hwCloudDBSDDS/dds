@@ -37,7 +37,7 @@ def check_error_callback(test, function, arg, expected_error_count,
             test.assertThat(result, Not(Is(None)))
         else:
             test.assertThat(result, Is(None))
-    test.assertEquals(len(cb_calls), expected_error_count)
+    test.assertEqual(len(cb_calls), expected_error_count)
 
 
 class TestSafeHasattr(TestCase):

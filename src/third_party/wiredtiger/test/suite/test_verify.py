@@ -32,6 +32,21 @@ import wiredtiger, wttest
 
 # test_verify.py
 #    Utilities: wt verify
+
+
+def open_file_test_verify(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_verify(wttest.WiredTigerTestCase, suite_subprocess):
     tablename = 'test_verify.a'
     nentries = 1000
@@ -80,7 +95,7 @@ class test_verify(wttest.WiredTigerTestCase, suite_subprocess):
         position = (filesize * pct) / 100
 
         self.pr('damaging file at: ' + str(position))
-        fp = open(filename, "r+b")
+        fp = open_file_test_verify(filename, "r+b")
         fp.seek(position)
         return fp
 

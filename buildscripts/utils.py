@@ -8,6 +8,21 @@ import subprocess
 import sys
 
 
+
+
+def open_file_utils(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def get_all_source_files(arr=None, prefix="."):
     """Return source files."""
     if arr is None:
@@ -54,7 +69,7 @@ def get_git_branch():
     if not os.path.exists(".git") or not os.path.isdir(".git"):
         return None
 
-    version = open(".git/HEAD", "r").read().strip()
+    version = open_file_utils(".git/HEAD", "r").read().strip()
     if not version.startswith("ref: "):
         return version
     version = version.split("/")
@@ -84,22 +99,22 @@ def get_git_version():
     if not os.path.exists(".git") or not os.path.isdir(".git"):
         return "nogitversion"
 
-    version = open(".git/HEAD", "r").read().strip()
+    version = open_file_utils(".git/HEAD", "r").read().strip()
     if not version.startswith("ref: "):
         return version
     version = version[5:]
     git_ver = ".git/" + version
     if not os.path.exists(git_ver):
         return version
-    return open(git_ver, "r").read().strip()
+    return open_file_utils(git_ver, "r").read().strip()
 
 
 def get_git_describe():
     """Return 'git describe'."""
-    with open(os.devnull, "r+") as devnull:
+    with open_file_utils(os.devnull, "r+") as devnull:
         proc = subprocess.Popen("git describe", stdout=subprocess.PIPE, stderr=devnull,
                                 stdin=devnull, shell=True)
-        return proc.communicate()[0].strip()
+        return proc.communicate()[0].strip().decode('utf-8')
 
 
 def execsys(args):
@@ -130,11 +145,10 @@ def which(executable):
     return executable
 
 
-def find_python(min_version=(2, 5)):
+def find_python(min_version=(3, 7)):
     """Return path of python."""
     try:
-        if sys.version_info >= min_version:
-            return sys.executable
+        return sys.executable
     except AttributeError:
         # In case the version of Python is somehow missing sys.version_info or sys.executable.
         pass
@@ -166,7 +180,7 @@ def replace_with_repr(unicode_error):
     # repr() of the offending bytes into the decoded string
     # at the position they occurred
     offender = unicode_error.object[unicode_error.start:unicode_error.end]
-    return (unicode(repr(offender).strip("'").strip('"')), unicode_error.end)
+    return (str(repr(offender).strip("'").strip('"')), unicode_error.end)
 
 
 codecs.register_error("repr", replace_with_repr)

@@ -115,7 +115,7 @@ class test_prepare01(wttest.WiredTigerTestCase):
         self.check(cursor, 0, 0)
 
         self.session.begin_transaction("ignore_prepare=false")
-        for i in xrange(self.nentries):
+        for i in range(self.nentries):
             if i > 0 and i % (self.nentries / 37) == 0:
                 self.check(cursor, committed, i)
                 self.session.prepare_transaction("prepare_timestamp=2a")

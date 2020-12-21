@@ -99,17 +99,32 @@
 # argument where it matches any number of arguments.
 #
 # Lines of strace generally look something like:
-#  open("./WiredTiger.lock", O_RDWR|O_CREAT|O_CLOEXEC, 0666) = 3
+
+
+def open_file_syscall(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+#  open_file_syscall("./WiredTiger.lock", O_RDWR|O_CREAT|O_CLOEXEC, 0666) = 3
 #
 # where the result of the syscall appears at the end.  A matching line in
 # a run file could look like this:
-#  fd = open("./WiredTiger.lock", O_RDWR|O_CREAT|O_CLOEXEC, 0666);
+#  fd = open_file_syscall("./WiredTiger.lock", O_RDWR|O_CREAT|O_CLOEXEC, 0666);
 #
 # or:
-#  fd = open("./WiredTiger"..., O_RDWR|O_CREAT|O_CLOEXEC, 0666);
+#  fd = open_file_syscall("./WiredTiger"..., O_RDWR|O_CREAT|O_CLOEXEC, 0666);
 #
 # or:
-#  fd = open("./WiredTiger"..., ...);
+#  fd = open_file_syscall("./WiredTiger"..., ...);
 #
 # In each of these cases, the 'fd' (which can be any variable name) becomes
 # bound to the value in the strace output, in this case '3'. So if later the
@@ -125,7 +140,7 @@
 # so that the run file can contain 'O_RDONLY' and it will match a numeric
 # expression (as it appears in the output of dtruss on OS/X).
 
-from __future__ import print_function
+
 import argparse, distutils.spawn, fnmatch, os, platform, re, shutil, \
     subprocess, sys
 
@@ -166,7 +181,7 @@ outputpat = re.compile(r'OUTPUT\("([^"]*)"\)')
 argpat = re.compile(r'''((?:[^,"']|"[^"]*"|'[^']*')+)''')
 discardpat = re.compile(r';')
 
-# e.g. fd = open("blah", 0, 0);
+# e.g. fd = open_file_syscall("blah", 0, 0);
 assignpat = re.compile(ident + r'\s*=\s*' + ident + r'(\([^;]*\));')
 
 # e.g. ASSERT_EQ(close(fd), 0);
@@ -175,7 +190,7 @@ assertpat = re.compile(r'ASSERT_([ENLG][QET])\s*\(\s*' + ident + r'\s*(\(.*\))\s
 # e.g. close(fd);     must return 0
 callpat = re.compile(ident + r'(\(.*\));')
 
-# e.g. open("blah", 0x0, 0x0)   = 6 0
+# e.g. open_file_syscall("blah", 0x0, 0x0)   = 6 0
 # We capture the errno (e.g. "0" or "Err#60"), but don't do anything with it.
 # We don't currently test anything that is errno dependent.
 dtruss_pat = re.compile(ident + r'(\(.*\))\s*=\s*(-*[0-9xA-F]+)\s+([-A-Za-z#0-9]*)')
@@ -217,7 +232,7 @@ def simplify_path(wttop, pathname):
 def printfile(pathname, abbrev):
     print("================================================================")
     print(abbrev + " (" + pathname + "):")
-    with open(pathname, 'r') as f:
+    with open_file_syscall(pathname, 'r') as f:
         shutil.copyfileobj(f, sys.stdout)
     print("================================================================")
 
@@ -342,7 +357,7 @@ class Reader(object):
 class FileReader(Reader):
     def __init__(self, wttop, filename, raw = True):
         return super(FileReader, self).__init__(wttop, filename,
-                                                open(filename), raw, False)
+                                                open_file_syscall(filename), raw, False)
 
 # Read from the C preprocessor run on a file.
 class PreprocessedReader(Reader):
@@ -353,7 +368,7 @@ class PreprocessedReader(Reader):
             if not name.startswith('__'):
                 cmd.append('-D' + name + '=' + str(predefines[name]))
         cmd.append('-')
-        proc = subprocess.Popen(cmd, stdin=open(filename),
+        proc = subprocess.Popen_file_syscall(cmd, stdin=open_file_syscall(filename),
             stdout=subprocess.PIPE)
         super(PreprocessedReader, self).__init__(wttop, filename,
                                                  proc.stdout, raw, True)
@@ -747,8 +762,8 @@ class Runner:
         callargs.append(self.testexe)
         callargs.extend(self.runargs)
 
-        outfile = open(self.outfilename, 'w')
-        errfile = open(self.errfilename, 'w')
+        outfile = open_file_syscall(self.outfilename, 'w')
+        errfile = open_file_syscall(self.errfilename, 'w')
         if self.args.verbose:
             print('RUNNING: ' + str(callargs))
         subret = subprocess.call(callargs, stdout=outfile, stderr=errfile)
@@ -878,7 +893,7 @@ class SyscallCommand:
             '}\n'
         probe_c = os.path.join(self.exetopdir, "syscall_probe.c")
         probe_exe = os.path.join(self.exetopdir, "syscall_probe")
-        with open(probe_c, "w") as f:
+        with open_file_syscall(probe_c, "w") as f:
             f.write(program)
         ccargs = ['cc', '-o', probe_exe]
         ccargs.append('-I' + self.incdir1)

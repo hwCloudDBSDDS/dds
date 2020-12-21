@@ -16,9 +16,24 @@ import SCons
 import gzip
 import shutil
 
+
+
+def open_file_gziptool(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def GZipAction(target, source, env, **kw):
     dst_gzip = gzip.GzipFile(str(target[0]), 'wb')
-    with open(str(source[0]), 'r') as src_file:
+    with open_file_gziptool(str(source[0]), 'r') as src_file:
         shutil.copyfileobj(src_file, dst_gzip)
     dst_gzip.close()
 

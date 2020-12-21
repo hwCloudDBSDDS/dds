@@ -56,8 +56,23 @@ WTPERF_DIR = "../../build_posix/bench/wtperf/"
 CONF_NOT_PROVIDED = -2
 
 # Generate a wtperf conf file to use
+
+
+def open_file_test_conf_dump(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def generate_conf_file(file_name):
-    f = open(file_name, 'w')
+    f = open_file_test_conf_dump(file_name, 'w')
     f.write(
 '''conn_config="cache_size=16GB,eviction=(threads_max=4),log=(enabled=false),session_max=33"
 table_config="leaf_page_max=32k,internal_page_max=16k,allocation_size=4k,split_pct=90,type=file"
@@ -97,9 +112,9 @@ def execute_wtperf(conf_file, option_C = "", option_T = "", option_o = ""):
         option_o_cmd_str = option_o.replace('"', '\\"')
         cmd += " -o " + option_o_cmd_str
 
-    print "Running: ", cmd
+    print("Running: ", cmd)
     subprocess.check_call(cmd, shell=True)
-    print "=========================\n"
+    print("=========================\n")
 
 # Build a dictionary of config key and it's value from the given config file.
 # Optionally take -C, -T and -o and overwrite/append values as per correct
@@ -107,7 +122,7 @@ def execute_wtperf(conf_file, option_C = "", option_T = "", option_o = ""):
 def build_dict_from_conf(
         conf_file, option_C = "", option_T = "", option_o = ""):
     # Open given conf file and make a dictionary of passed arguments and values
-    with open(conf_file) as f:
+    with open_file_test_conf_dump(conf_file) as f:
         lines = f.read().splitlines()
 
         # Maintain precedence order of config file, -o, -C/-T
@@ -162,7 +177,7 @@ def build_dict_from_conf(
 # Extract configuration value for the given key from the given config file
 def extract_config_from_file(conf_file, key):
     ret_val = ""
-    with open(conf_file) as f:
+    with open_file_test_conf_dump(conf_file) as f:
         lines = f.read().splitlines()
         for line in lines:
             if re.match('^\s*#', line) is None:
@@ -209,7 +224,7 @@ def run_test(conf_file, option_C = "", option_T = "", option_o = ""):
 
         # Check if we see this config key in the dumped file
         if not key in key_val_dict_op:
-            print "Key '", key, "' not found in dumped file ", OP_FILE
+            print("Key '", key, "' not found in dumped file ", OP_FILE)
             match = match_itr = False
             continue
 
@@ -235,7 +250,7 @@ def run_test(conf_file, option_C = "", option_T = "", option_o = ""):
             if ((conn_config_from_file and file_loc == -1) or
                 (conn_config_from_opt_o and option_o_loc == -1) or
                 (option_C and option_C_loc == -1)):
-                print "Part of conn_config missing in dumped file ", OP_FILE
+                print("Part of conn_config missing in dumped file ", OP_FILE)
                 match_itr = False
 
             # Check if the values got appended in the correct order
@@ -244,7 +259,7 @@ def run_test(conf_file, option_C = "", option_T = "", option_o = ""):
                      option_o_loc < file_loc) or
                     (option_C_loc != CONF_NOT_PROVIDED and
                      (option_C_loc < file_loc or option_C_loc < option_o_loc))):
-                    print "Detected incorrect config append order:"
+                    print("Detected incorrect config append order:")
                     match_itr = False
 
         # Check if values from all sources of table_config are presented in the
@@ -270,7 +285,7 @@ def run_test(conf_file, option_C = "", option_T = "", option_o = ""):
             if ((table_config_from_file and file_loc == -1) or
                 (table_config_from_opt_o and option_o_loc == -1) or
                 (option_T and option_T_loc == -1)):
-                print "Part of table_config missing in dumped file ", OP_FILE
+                print("Part of table_config missing in dumped file ", OP_FILE)
                 match_itr = False
 
             # Check if the values got appended in the correct order
@@ -279,18 +294,18 @@ def run_test(conf_file, option_C = "", option_T = "", option_o = ""):
                      option_o_loc < file_loc) or
                     (option_T_loc != CONF_NOT_PROVIDED and
                      (option_T_loc < file_loc or option_T_loc < option_o_loc))):
-                    print "Detected incorrect config append order:"
+                    print("Detected incorrect config append order:")
                     match_itr = False
 
         if (key != 'table_config' and key != 'conn_config' and
             key_val_dict_ip[key] != key_val_dict_op[key]):
-            print "Config mismatch between:"
+            print("Config mismatch between:")
             match_itr = False
 
         if match_itr is False:
-            print "Input Config:", key, '=', key_val_dict_ip[key]
-            print "Dumped Config:", key, '=', key_val_dict_op[key]
-            print "\n"
+            print("Input Config:", key, '=', key_val_dict_ip[key])
+            print("Dumped Config:", key, '=', key_val_dict_op[key])
+            print("\n")
 
         match = match and match_itr
 
@@ -321,4 +336,4 @@ subprocess.check_call("rm -rf WT_TEST/", shell=True)
 if len(sys.argv) == 1 and conf_file == TMP_CONF:
     subprocess.check_call("rm " + TMP_CONF, shell=True)
 
-print "All tests succeeded"
+print("All tests succeeded")

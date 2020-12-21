@@ -96,11 +96,11 @@ class test_cursor05(wttest.WiredTigerTestCase):
         if testmode == 0:
             pass
         elif testmode == 1:
-            cursor.next()
+            next(cursor)
             cursor.prev()
         elif testmode == 2:
             cursor.prev()
-            cursor.next()
+            next(cursor)
 
         # Verify that by iterating
         self.check_iterate(cursor, expectcount, isforward)
@@ -120,12 +120,12 @@ class test_cursor05(wttest.WiredTigerTestCase):
             cursor.reset()
         elif testmode == 1:
             cursor.reset()
-            cursor.next()
+            next(cursor)
             cursor.prev()
         elif testmode == 2:
             cursor.reset()
             cursor.prev()
-            cursor.next()
+            next(cursor)
 
         # Verify that by iterating
         self.check_iterate(cursor, expectcount, isforward)
@@ -135,11 +135,11 @@ class test_cursor05(wttest.WiredTigerTestCase):
         if testmode == 0:
             pass
         elif testmode == 1:
-            cursor.next()
+            next(cursor)
             cursor.prev()
         elif testmode == 2:
             cursor.prev()
-            cursor.next()
+            next(cursor)
 
         # Verify that by iterating
         self.check_iterate(cursor, expectcount, isforward)

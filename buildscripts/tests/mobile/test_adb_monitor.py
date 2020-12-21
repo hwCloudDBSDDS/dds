@@ -1,7 +1,5 @@
 """ Unit tests for adb_monitor. """
 
-from __future__ import absolute_import
-
 import distutils.spawn  # pylint: disable=no-name-in-module
 import os
 import shutil
@@ -19,6 +17,21 @@ if _IS_WINDOWS:
 # pylint: disable=missing-docstring,protected-access
 
 
+
+
+def open_file_test_adb_monitor(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def mock_adb_and_systrace(directory):
     """Mock adb and systrace.py."""
     # Create mock 'adb', which is really 'echo'.
@@ -35,20 +48,20 @@ def mock_adb_and_systrace(directory):
     systrace_dir = os.path.join(directory, "systrace")
     os.mkdir(systrace_dir)
     systrace = os.path.join(systrace_dir, "systrace.py")
-    with open(systrace, "w") as fh:
+    with open_file_test_adb_monitor(systrace, "w") as fh:
         fh.write("import optparse\n")
-        fh.write("raw_input('waiting...')\n")
+        fh.write("input('waiting...')\n")
         fh.write("print('Wrote trace')\n")
         fh.write("parser = optparse.OptionParser()\n")
         fh.write("parser.add_option('-o', dest='output_file')\n")
         fh.write("parser.add_option('--json', dest='json_opts', action='store_true')\n")
         fh.write("options, args = parser.parse_args()\n")
-        fh.write("with open(options.output_file, 'w') as fh:\n")
+        fh.write("with open_file_test_adb_monitor(options.output_file, 'w') as fh:\n")
         fh.write("\tfh.write('{hello:1}')\n")
 
 
 def file_contents(path):
-    with open(path, "r") as fh:
+    with open_file_test_adb_monitor(path, "r") as fh:
         return fh.read()
 
 

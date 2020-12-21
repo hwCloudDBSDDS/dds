@@ -35,6 +35,21 @@ import wiredtiger, wttest
 from wtscenario import make_scenarios
 
 # Test encryption, when on, does not leak any information
+
+
+def open_file_test_encrypt06(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_encrypt06(wttest.WiredTigerTestCase):
 
     key11 = ',keyid=11,secretkey=XYZ'
@@ -106,7 +121,7 @@ class test_encrypt06(wttest.WiredTigerTestCase):
             return ',encryption=(name=' + name + args + ')'
 
     def match_string_in_file(self, fname, match):
-        with open(fname, 'rb') as f:
+        with open_file_test_encrypt06(fname, 'rb') as f:
             return (f.read().find(match) != -1)
 
     def match_string_in_rundir(self, match):
@@ -177,7 +192,7 @@ class test_encrypt06(wttest.WiredTigerTestCase):
 
         c0 = s.open_cursor(pfx + name0, None)
         c1 = s.open_cursor(pfx + name1, None)
-        for idx in xrange(1,self.nrecords):
+        for idx in range(1,self.nrecords):
             c0.set_key(str(idx) + txt0)
             c1.set_key(str(idx) + txt1)
             c0.set_value(txt0 * (idx % 97), txt0 * 3, txt0 * 5, txt0 * 7)

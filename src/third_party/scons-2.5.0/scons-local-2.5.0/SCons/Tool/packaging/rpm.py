@@ -36,6 +36,21 @@ from SCons.Environment import OverrideEnvironment
 from SCons.Tool.packaging import stripinstallbuilder, src_targz
 from SCons.Errors import UserError
 
+
+
+def open_file_rpm(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def package(env, target, source, PACKAGEROOT, NAME, VERSION,
             PACKAGEVERSION, DESCRIPTION, SUMMARY, X_RPM_GROUP, LICENSE,
             **kw):
@@ -101,7 +116,7 @@ def collectintargz(target, source, env):
     tarball = (str(target[0])+".tar.gz").replace('.rpm', '')
     try:
         tarball = env['SOURCE_URL'].split('/')[-1]
-    except KeyError, e:
+    except KeyError as e:
         raise SCons.Errors.UserError( "Missing PackageTag '%s' for RPM packager" % e.args[0] )
 
     tarball = src_targz.package(env, source=sources, target=tarball,
@@ -124,7 +139,7 @@ def build_specfile(target, source, env):
     """ Builds a RPM specfile from a dictionary with string metadata and
     by analyzing a tree of nodes.
     """
-    file = open(target[0].get_abspath(), 'w')
+    file = open_file_rpm(target[0].get_abspath(), 'w')
 
     try:
         file.write( build_specfile_header(env) )
@@ -136,7 +151,7 @@ def build_specfile(target, source, env):
         if 'CHANGE_SPECFILE' in env:
             env['CHANGE_SPECFILE'](target, source)
 
-    except KeyError, e:
+    except KeyError as e:
         raise SCons.Errors.UserError( '"%s" package field for RPM is missing.' % e.args[0] )
 
 
@@ -270,7 +285,7 @@ def build_specfile_filesection(spec, files):
     for file in files:
         # build the tagset
         tags = {}
-        for k in supported_tags.keys():
+        for k in list(supported_tags.keys()):
             try:
                 v = file.GetTag(k)
                 if v:
@@ -324,18 +339,18 @@ class SimpleTagCompiler(object):
         for key, replacement in domestic:
             try:
                 str = str + replacement % values[key]
-            except KeyError, e:
+            except KeyError as e:
                 if self.mandatory:
                     raise e
 
         international = [t for t in replacements if is_international(t[0])]
         for key, replacement in international:
             try:
-                x = [t for t in values.items() if strip_country_code(t[0]) == key]
+                x = [t for t in list(values.items()) if strip_country_code(t[0]) == key]
                 int_values_for_key = [(get_country_code(t[0]),t[1]) for t in x]
                 for v in int_values_for_key:
                     str = str + replacement % v
-            except KeyError, e:
+            except KeyError as e:
                 if self.mandatory:
                     raise e
 

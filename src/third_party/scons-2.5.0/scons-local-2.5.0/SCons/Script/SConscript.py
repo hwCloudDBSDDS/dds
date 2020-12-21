@@ -26,8 +26,8 @@ files.
 # LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-from __future__ import division
-from __future__ import print_function
+
+
 
 __revision__ = "src/engine/SCons/Script/SConscript.py rel_2.5.0:3543:937e55cd78f7 2016/04/09 11:29:54 bdbaddog"
 
@@ -52,6 +52,21 @@ import os.path
 import re
 import sys
 import traceback
+
+
+
+def open_file_SConscript(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 class SConscriptReturn(Exception):
     pass
@@ -104,7 +119,7 @@ def compute_exports(exports):
                     retval[export] = loc[export]
                 except KeyError:
                     retval[export] = glob[export]
-    except KeyError, x:
+    except KeyError as x:
         raise SCons.Errors.UserError("Export of non-existent variable '%s'"%x)
 
     return retval
@@ -136,7 +151,7 @@ def Return(*vars, **kw):
         for var in fvars:
             for v in var.split():
                 retval.append(call_stack[-1].globals[v])
-    except KeyError, x:
+    except KeyError as x:
         raise SCons.Errors.UserError("Return of non-existent variable '%s'"%x)
 
     if len(retval) == 1:
@@ -165,7 +180,7 @@ def _SConscript(fs, *files, **kw):
         try:
             SCons.Script.sconscript_reading = SCons.Script.sconscript_reading + 1
             if fn == "-":
-                exec sys.stdin in call_stack[-1].globals
+                exec(sys.stdin, call_stack[-1].globals)
             else:
                 if isinstance(fn, SCons.Node.Node):
                     f = fn
@@ -179,10 +194,10 @@ def _SConscript(fs, *files, **kw):
                 fs.chdir(top, change_os_dir=1)
                 if f.rexists():
                     actual = f.rfile()
-                    _file_ = open(actual.get_abspath(), "r")
+                    _file_ = open_file_SConscript(actual.get_abspath(), "r")
                 elif f.srcnode().rexists():
                     actual = f.srcnode().rfile()
-                    _file_ = open(actual.get_abspath(), "r")
+                    _file_ = open_file_SConscript(actual.get_abspath(), "r")
                 elif f.has_src_builder():
                     # The SConscript file apparently exists in a source
                     # code management system.  Build it, but then clear
@@ -192,7 +207,7 @@ def _SConscript(fs, *files, **kw):
                     f.built()
                     f.builder_set(None)
                     if f.exists():
-                        _file_ = open(f.get_abspath(), "r")
+                        _file_ = open_file_SConscript(f.get_abspath(), "r")
                 if _file_:
                     # Chdir to the SConscript directory.  Use a path
                     # name relative to the SConstruct file so that if
@@ -248,7 +263,7 @@ def _SConscript(fs, *files, **kw):
                         pass
                     try:
                         try:
-                            exec _file_ in call_stack[-1].globals
+                            exec(_file_, call_stack[-1].globals)
                         except SConscriptReturn:
                             pass
                     finally:
@@ -273,7 +288,7 @@ def _SConscript(fs, *files, **kw):
                 rdir._create()  # Make sure there's a directory there.
                 try:
                     os.chdir(rdir.get_abspath())
-                except OSError, e:
+                except OSError as e:
                     # We still couldn't chdir there, so raise the error,
                     # but only if actions are being executed.
                     #
@@ -295,7 +310,7 @@ def _SConscript(fs, *files, **kw):
         return tuple(results)
 
 def SConscript_exception(file=sys.stderr):
-    """Print an exception stack trace just for the SConscript file(s).
+    """Print an exception stack trace just for the SConscript open_file_SConscript(s).
     This will show users who have Python errors where the problem is,
     without cluttering the output with all of the internal calls leading
     up to where we exec the SConscript."""
@@ -510,7 +525,7 @@ class SConsEnvironment(SCons.Environment.Base):
                             globals[v] = exports[v]
                         else:
                             globals[v] = global_exports[v]
-        except KeyError,x:
+        except KeyError as x:
             raise SCons.Errors.UserError("Import of non-existent variable '%s'"%x)
 
     def SConscript(self, *ls, **kw):
@@ -525,7 +540,7 @@ class SConsEnvironment(SCons.Environment.Base):
             return x
         ls = list(map(subst_element, ls))
         subst_kw = {}
-        for key, val in kw.items():
+        for key, val in list(kw.items()):
             if SCons.Util.is_String(val):
                 val = self.subst(val)
             elif SCons.Util.is_List(val):

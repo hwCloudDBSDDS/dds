@@ -16,8 +16,6 @@
 # pylint: disable=too-many-lines
 """Test cases for IDL binder."""
 
-from __future__ import absolute_import, print_function, unicode_literals
-
 import textwrap
 import unittest
 
@@ -26,8 +24,8 @@ if __package__ is None:
     import sys
     from os import path
     sys.path.append(path.dirname(path.abspath(__file__)))
-    from context import idl
-    import testcase
+    from .context import idl
+    from . import testcase
 else:
     from .context import idl
     from . import testcase
@@ -37,7 +35,7 @@ INDENT_SPACE_COUNT = 4
 
 
 def fill_spaces(count):
-    # type: (int) -> unicode
+    # type: (int) -> str
     """Fill a string full of spaces."""
     fill = ''
     for _ in range(count * INDENT_SPACE_COUNT):
@@ -47,7 +45,7 @@ def fill_spaces(count):
 
 
 def indent_text(count, unindented_text):
-    # type: (int, unicode) -> unicode
+    # type: (int, str) -> str
     """Indent each line of a multi-line string."""
     lines = unindented_text.splitlines()
     fill = fill_spaces(count)
@@ -74,7 +72,7 @@ class TestBinder(testcase.IDLTestcase):
             cpp_includes:
                 - 'bar'
                 - 'foo'"""))
-        self.assertEquals(spec.globals.cpp_namespace, "something")
+        self.assertEqual(spec.globals.cpp_namespace, "something")
         self.assertListEqual(spec.globals.cpp_includes, ['bar', 'foo'])
 
     def test_type_positive(self):

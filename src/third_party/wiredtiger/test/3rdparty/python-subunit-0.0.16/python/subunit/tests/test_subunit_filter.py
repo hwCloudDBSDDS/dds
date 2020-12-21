@@ -92,7 +92,7 @@ xfail todo
         tests_expected = list(map(
             subunit.RemotedTestCase,
             ['passed', 'error', 'skipped', 'todo']))
-        self.assertEquals(tests_expected, tests_included)
+        self.assertEqual(tests_expected, tests_included)
 
     def test_tags_tracked_correctly(self):
         tag_filter = make_tag_filter(['a'], [])
@@ -107,7 +107,7 @@ xfail todo
             "successful: bar\n")
         self.run_tests(result_filter, input_stream)
         foo = subunit.RemotedTestCase('foo')
-        self.assertEquals(
+        self.assertEqual(
             [('startTest', foo),
              ('tags', set(['a']), set()),
              ('addSuccess', foo),
@@ -275,7 +275,7 @@ xfail todo
         result_filter = TestResultFilter(result)
         self.run_tests(result_filter, subunit_stream)
         foo = subunit.RemotedTestCase('foo')
-        self.assertEquals(
+        self.assertEqual(
             [('startTest', foo),
              ('addSkip', foo, {}),
              ('stopTest', foo), ], result._events)

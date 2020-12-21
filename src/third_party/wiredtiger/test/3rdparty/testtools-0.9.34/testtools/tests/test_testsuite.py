@@ -178,7 +178,7 @@ class TestConcurrentStreamTestSuiteRun(TestCase):
         suite.run(result)
         events = result._events
         # Check the traceback loosely.
-        self.assertThat(events[1][6].decode('utf8'), DocTestMatches("""\
+        self.assertThat(events[1][6], DocTestMatches("""\
 Traceback (most recent call last):
   File "...testtools/testsuite.py", line ..., in _run_test
     test.run(process_result)

@@ -31,6 +31,21 @@ import wiredtiger, wttest
 
 # test_util08.py
 #    Utilities: wt copyright
+
+
+def open_file_test_util08(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_util08(wttest.WiredTigerTestCase, suite_subprocess):
     def test_copyright(self):
         """
@@ -38,7 +53,7 @@ class test_util08(wttest.WiredTigerTestCase, suite_subprocess):
         """
         outfile = "copyrightout.txt"
         self.runWt(["copyright"], outfilename=outfile)
-        with open(outfile, 'r') as f:
+        with open_file_test_util08(outfile, 'r') as f:
             text = f.read(1000)
             self.assertTrue('Copyright' in text)
 

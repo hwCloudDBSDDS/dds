@@ -14,8 +14,6 @@
 #
 """Text Writing Utilites."""
 
-from __future__ import absolute_import, print_function, unicode_literals
-
 import io
 import string
 from typing import List, Mapping, Union
@@ -27,7 +25,7 @@ _INDENT_SPACE_COUNT = 4
 
 
 def _fill_spaces(count):
-    # type: (int) -> unicode
+    # type: (int) -> str
     """Fill a string full of spaces."""
     fill = ''
     for _ in range(count * _INDENT_SPACE_COUNT):
@@ -37,7 +35,7 @@ def _fill_spaces(count):
 
 
 def _indent_text(count, unindented_text):
-    # type: (int, unicode) -> unicode
+    # type: (int, str) -> str
     """Indent each line of a multi-line string."""
     lines = unindented_text.splitlines()
     fill = _fill_spaces(count)
@@ -45,7 +43,7 @@ def _indent_text(count, unindented_text):
 
 
 def is_function(name):
-    # type: (unicode) -> bool
+    # type: (str) -> bool
     """
     Return True if a serializer/deserializer is function.
 
@@ -56,7 +54,7 @@ def is_function(name):
 
 
 def get_method_name(name):
-    # type: (unicode) -> unicode
+    # type: (str) -> str
     """Get a method name from a fully qualified method name."""
     pos = name.rfind('::')
     if pos == -1:
@@ -65,7 +63,7 @@ def get_method_name(name):
 
 
 def get_method_name_from_qualified_method_name(name):
-    # type: (unicode) -> unicode
+    # type: (str) -> str
     # pylint: disable=invalid-name
     """Get a method name from a fully qualified method name."""
     # TODO: in the future, we may want to support full-qualified calls to static methods
@@ -95,10 +93,10 @@ class IndentedTextWriter(object):
         """Create an indented text writer."""
         self._stream = stream
         self._indent = 0
-        self._template_context = None  # type: Mapping[unicode, unicode]
+        self._template_context = None  # type: Mapping[str, str]
 
     def write_unindented_line(self, msg):
-        # type: (unicode) -> None
+        # type: (str) -> None
         """Write an unindented line to the stream, no template formattin applied."""
         self._stream.write(msg)
         self._stream.write("\n")
@@ -115,13 +113,13 @@ class IndentedTextWriter(object):
         self._indent -= 1
 
     def write_line(self, msg):
-        # type: (unicode) -> None
+        # type: (str) -> None
         """Write a line to the stream, no template formattin applied."""
         self._stream.write(_indent_text(self._indent, msg))
         self._stream.write("\n")
 
     def set_template_mapping(self, template_params):
-        # type: (Mapping[unicode,unicode]) -> None
+        # type: (Mapping[str,str]) -> None
         """Set the current template mapping parameters for string.Template formatting."""
         assert not self._template_context
         self._template_context = template_params
@@ -133,7 +131,7 @@ class IndentedTextWriter(object):
         self._template_context = None
 
     def write_template(self, template):
-        # type: (unicode) -> None
+        # type: (str) -> None
         """Write a template to the stream."""
         msg = common.template_format(template, self._template_context)
         self._stream.write(_indent_text(self._indent, msg))
@@ -149,7 +147,7 @@ class TemplateContext(object):
     """Set the template context for the writer."""
 
     def __init__(self, writer, template_params):
-        # type: (IndentedTextWriter, Mapping[unicode,unicode]) -> None
+        # type: (IndentedTextWriter, Mapping[str,str]) -> None
         """Create a template context."""
         self._writer = writer
         self._template_context = template_params
@@ -188,7 +186,7 @@ class IndentedScopedBlock(object):
     """Generate a block, template the parameters, and indent the contents."""
 
     def __init__(self, writer, opening, closing):
-        # type: (IndentedTextWriter, unicode, unicode) -> None
+        # type: (IndentedTextWriter, str, str) -> None
         """Create a block."""
         self._writer = writer
         self._opening = opening
@@ -211,7 +209,7 @@ class NamespaceScopeBlock(object):
     """Generate an unindented blocks for a list of namespaces, and do not indent the contents."""
 
     def __init__(self, indented_writer, namespaces):
-        # type: (IndentedTextWriter, List[unicode]) -> None
+        # type: (IndentedTextWriter, List[str]) -> None
         """Create a block."""
         self._writer = indented_writer
         self._namespaces = namespaces

@@ -20,8 +20,23 @@
 #    linked combinations including the program with the OpenSSL library. You
 #    must comply with the GNU Affero General Public License in all respects
 #    for all of the code used other than as permitted herein. If you modify
-#    file(s) with this exception, you may extend this exception to your
-#    version of the file(s), but you are not obligated to do so. If you do not
+
+
+def open_file_generate_icu_init_cpp(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+#    open_file_generate_icu_init_cpp(s) with this exception, you may extend this exception to your
+#    version of the open_file_generate_icu_init_cpp(s), but you are not obligated to do so. If you do not
 #    wish to do so, delete this exception statement from your version. If you
 #    delete this exception statement from all source files in the program,
 #    then also delete it in the license file.
@@ -69,8 +84,8 @@ def generate_cpp_file(data_file_path, cpp_file_path):
  *    linked combinations including the program with the OpenSSL library. You
  *    must comply with the GNU Affero General Public License in all respects
  *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
+ *    open_file_generate_icu_init_cpp(s) with this exception, you may extend this exception to your
+ *    version of the open_file_generate_icu_init_cpp(s), but you are not obligated to do so. If you do not
  *    wish to do so, delete this exception statement from your version. If you
  *    delete this exception statement from all source files in the program,
  *    then also delete it in the license file.
@@ -109,9 +124,9 @@ MONGO_INITIALIZER(LoadICUData)(InitializerContext* context) {
 }  // namespace mongo
 '''
     decimal_encoded_data = ''
-    with open(data_file_path, 'rb') as data_file:
-        decimal_encoded_data = ','.join([str(ord(byte)) for byte in data_file.read()])
-    with open(cpp_file_path, 'wb') as cpp_file:
+    with open_file_generate_icu_init_cpp(data_file_path, 'rb') as data_file:
+        decimal_encoded_data = ','.join([str(byte) for byte in data_file.read()])
+    with open_file_generate_icu_init_cpp(cpp_file_path, 'w') as cpp_file:
         cpp_file.write(source_template % dict(decimal_encoded_data=decimal_encoded_data))
 
 if __name__ == '__main__':

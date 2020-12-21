@@ -1,7 +1,5 @@
 """Replica set fixture for executing JSTests against."""
 
-from __future__ import absolute_import
-
 import os.path
 import time
 
@@ -77,11 +75,11 @@ class ReplicaSetFixture(interface.ReplFixture):  # pylint: disable=too-many-inst
         self.replset_name = self.mongod_options.get("replSet", "rs")
 
         if not self.nodes:
-            for i in xrange(self.num_nodes):
+            for i in range(self.num_nodes):
                 node = self._new_mongod(i, self.replset_name)
                 self.nodes.append(node)
 
-        for i in xrange(self.num_nodes):
+        for i in range(self.num_nodes):
             if self.linear_chain and i > 0:
                 self.nodes[i].mongod_options["set_parameters"][
                     "failpoint.forceSyncSourceCandidate"] = {
@@ -210,7 +208,8 @@ class ReplicaSetFixture(interface.ReplFixture):  # pylint: disable=too-many-inst
             res = client.admin.command({"replSetGetStatus": 1})
             read_concern_majority_optime = res["optimes"]["readConcernMajorityOpTime"]
 
-            if read_concern_majority_optime >= primary_optime:
+            if (read_concern_majority_optime["t"] == primary_optime["t"]
+                    and read_concern_majority_optime["ts"] >= primary_optime["ts"]):
                 up_to_date_nodes.add(node.port)
 
             return len(up_to_date_nodes) == len(self.nodes)

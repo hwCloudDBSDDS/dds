@@ -47,7 +47,7 @@ class test_txn12(wttest.WiredTigerTestCase, suite_subprocess):
 
         # Create a read only transaction.
         c = session.open_cursor(self.uri, None)
-        c.next()
+        next(c)
         msg = '/next_random.*boolean/'
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
             lambda:session.open_cursor(self.uri, None, "next_random=bar"), msg)

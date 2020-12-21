@@ -1,24 +1,23 @@
 """Additional handlers that are used as the base classes of the buildlogger handler."""
 
-from __future__ import absolute_import
-
 import json
 import logging
 import sys
 import threading
 import warnings
 
-import requests
-import requests.adapters
-import requests.auth
 
 try:
+    import requests
+    import requests.adapters
+    import requests.auth
+
     import requests.packages.urllib3.exceptions as urllib3_exceptions
 except ImportError:
     # Versions of the requests package prior to 1.2.0 did not vendor the urllib3 package.
     urllib3_exceptions = None
 
-import urllib3.util.retry as urllib3_retry
+#import urllib3.util.retry as urllib3_retry
 
 from . import flush
 from .. import utils

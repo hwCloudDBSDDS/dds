@@ -35,16 +35,31 @@ from wtdataset import SimpleDataSet, SimpleIndexDataSet, ComplexDataSet
 # python has a filecmp.cmp function, but different versions of python approach
 # file comparison differently.  To make sure we get byte for byte comparison,
 # we define it here.
+
+
+def open_file_helper(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def compare_files(self, filename1, filename2):
     self.pr('compare_files: ' + filename1 + ', ' + filename2)
     bufsize = 4096
     if os.path.getsize(filename1) != os.path.getsize(filename2):
-        print 'file comparison failed: ' + filename1 + ' size ' +\
+        print('file comparison failed: ' + filename1 + ' size ' +\
             str(os.path.getsize(filename1)) + ' != ' + filename2 +\
-            ' size ' + str(os.path.getsize(filename2))
+            ' size ' + str(os.path.getsize(filename2)))
         return False
-    with open(filename1, "rb") as fp1:
-        with open(filename2, "rb") as fp2:
+    with open_file_helper(filename1, "rb") as fp1:
+        with open_file_helper(filename2, "rb") as fp2:
             while True:
                 b1 = fp1.read(bufsize)
                 b2 = fp2.read(bufsize)
@@ -65,7 +80,7 @@ def compare_tables(self, session, uris, config=None):
         while not done:
             keys = list()
             for next_cursor in cursors:
-                if (next_cursor.next() == wiredtiger.WT_NOTFOUND):
+                if (next(next_cursor) == wiredtiger.WT_NOTFOUND):
                     done = True
                     break
                 keys.append(next_cursor.get_value())
@@ -95,7 +110,7 @@ def confirm_empty(self, uri):
         for key,val in cursor:
             self.assertEqual(val, 0)
     else:
-        self.assertEqual(cursor.next(), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(next(cursor), wiredtiger.WT_NOTFOUND)
     cursor.close()
 
 # copy a WT home directory

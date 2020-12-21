@@ -58,7 +58,7 @@ class test_autoclose(wttest.WiredTigerTestCase):
         inscursor['key1'] = 'value1'
         inscursor.close()
         self.assertRaisesHavingMessage(exceptions.RuntimeError,
-                                       lambda: inscursor.next(),
+                                       lambda: next(inscursor),
                                        '/wt_cursor.* is None/')
         self.drop_table()
         self.close_conn()
@@ -73,7 +73,7 @@ class test_autoclose(wttest.WiredTigerTestCase):
         inscursor['key1'] = 'value1'
         self.session.close()
         self.assertRaisesHavingMessage(exceptions.RuntimeError,
-                                       lambda: inscursor.next(),
+                                       lambda: next(inscursor),
                                        '/wt_cursor.* is None/')
         self.close_conn()
 
@@ -87,7 +87,7 @@ class test_autoclose(wttest.WiredTigerTestCase):
         inscursor['key1'] = 'value1'
         self.close_conn()
         self.assertRaisesHavingMessage(exceptions.RuntimeError,
-                                       lambda: inscursor.next(),
+                                       lambda: next(inscursor),
                                        '/wt_cursor.* is None/')
 
     def test_close_cursor4(self):

@@ -40,6 +40,21 @@ from contextlib import contextmanager
 import glob, os, re, shutil, sys, time, traceback
 import wiredtiger, wtscenario
 
+
+
+def open_file_wttest(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def shortenWithEllipsis(s, maxlen):
     if len(s) > maxlen:
         s = s[0:maxlen-3] + '...'
@@ -65,7 +80,7 @@ class CapturedFd(object):
         Read a file starting at a given position,
         returning the beginning of its contents
         """
-        with open(filename, 'r') as f:
+        with open_file_wttest(filename, 'r') as f:
             f.seek(pos)
             return shortenWithEllipsis(f.read(maxchars+1), maxchars)
 
@@ -76,7 +91,7 @@ class CapturedFd(object):
         that the caller has duped it and passed the dup to us
         in the constructor.
         """
-        self.file = open(self.filename, 'w')
+        self.file = open_file_wttest(self.filename, 'w')
         return self.file
 
     def release(self):
@@ -192,7 +207,7 @@ class WiredTigerTestCase(unittest.TestCase):
         WiredTigerTestCase._parentTestdir = d
         WiredTigerTestCase._builddir = builddir
         WiredTigerTestCase._origcwd = os.getcwd()
-        WiredTigerTestCase._resultfile = open(os.path.join(d, 'results.txt'), "w", 0)  # unbuffered
+        WiredTigerTestCase._resultfile = open_file_wttest(os.path.join(d, 'results.txt'), "w", 0)  # unbuffered
         WiredTigerTestCase._gdbSubprocess = gdbSub
         WiredTigerTestCase._lldbSubprocess = lldbSub
         WiredTigerTestCase._longtest = longtest
@@ -293,7 +308,7 @@ class WiredTigerTestCase(unittest.TestCase):
             else:
                 extfiles[ext] = complete
         if len(extfiles) != 0:
-            result = ',extensions=[' + ','.join(extfiles.values()) + ']'
+            result = ',extensions=[' + ','.join(list(extfiles.values())) + ']'
         return result
 
     # Can be overridden, but first consider setting self.conn_config
@@ -311,10 +326,10 @@ class WiredTigerTestCase(unittest.TestCase):
         try:
             conn = self.wiredtiger_open(home, conn_param)
         except wiredtiger.WiredTigerError as e:
-            print "Failed wiredtiger_open: dir '%s', config '%s'" % \
-                (home, conn_param)
+            print("Failed wiredtiger_open: dir '%s', config '%s'" % \
+                (home, conn_param))
             raise e
-        self.pr(`conn`)
+        self.pr(repr(conn))
         return conn
 
     # Replacement for wiredtiger.wiredtiger_open that returns
@@ -380,7 +395,7 @@ class WiredTigerTestCase(unittest.TestCase):
             raise Exception(self.testdir + ": cannot remove directory")
         os.makedirs(self.testdir)
         os.chdir(self.testdir)
-        with open('testname.txt', 'w+') as namefile:
+        with open_file_wttest('testname.txt', 'w+') as namefile:
             namefile.write(str(self) + '\n')
         self.fdSetUp()
         # tearDown needs a conn field, set it here in case the open fails.
@@ -425,12 +440,12 @@ class WiredTigerTestCase(unittest.TestCase):
             os.chdir(self.origcwd)
 
         # Make sure no read-only files or directories were left behind
-        os.chmod(self.testdir, 0777)
+        os.chmod(self.testdir, 0o777)
         for root, dirs, files in os.walk(self.testdir):
             for d in dirs:
-                os.chmod(os.path.join(root, d), 0777)
+                os.chmod(os.path.join(root, d), 0o777)
             for f in files:
-                os.chmod(os.path.join(root, f), 0666)
+                os.chmod(os.path.join(root, f), 0o666)
 
         # Clean up unless there's a failure
         if (passed or skipped) and not WiredTigerTestCase._preserveFiles:
@@ -440,9 +455,9 @@ class WiredTigerTestCase(unittest.TestCase):
 
         elapsed = time.time() - self.starttime
         if elapsed > 0.001 and WiredTigerTestCase._verbose >= 2:
-            print "%s: %.2f seconds" % (str(self), elapsed)
+            print("%s: %.2f seconds" % (str(self), elapsed))
         if not passed and not skipped:
-            print "ERROR in " + str(self)
+            print("ERROR in " + str(self))
             self.pr('FAIL')
             self.prexception(excinfo)
             self.pr('preserving directory ' + self.testdir)
@@ -456,7 +471,7 @@ class WiredTigerTestCase(unittest.TestCase):
         os.mkdir(backup_dir)
         bkp_cursor = session.open_cursor('backup:', None, None)
         while True:
-            ret = bkp_cursor.next()
+            ret = next(bkp_cursor)
             if ret != 0:
                 break
             shutil.copy(bkp_cursor.get_key(), backup_dir)
@@ -515,7 +530,7 @@ class WiredTigerTestCase(unittest.TestCase):
         raised = False
         try:
             expr()
-        except BaseException, err:
+        except BaseException as err:
             if not isinstance(err, exceptionType):
                 self.fail('Exception of incorrect type raised, got type: ' + \
                     str(type(err)))
@@ -550,7 +565,7 @@ class WiredTigerTestCase(unittest.TestCase):
         """
         try:
             expr()
-        except BaseException, err:
+        except BaseException as err:
             sys.stderr.write('Exception: ' + str(err))
             raise
 
@@ -630,7 +645,7 @@ class WiredTigerTestCase(unittest.TestCase):
     @staticmethod
     def tty(message):
         if WiredTigerTestCase._ttyDescriptor == None:
-            WiredTigerTestCase._ttyDescriptor = open('/dev/tty', 'w')
+            WiredTigerTestCase._ttyDescriptor = open_file_wttest('/dev/tty', 'w')
         WiredTigerTestCase._ttyDescriptor.write(message + '\n')
 
     def ttyVerbose(self, level, message):
@@ -676,7 +691,7 @@ def runsuite(suite, parallel):
             verbosity=WiredTigerTestCase._verbose).run(suite_to_run)
     except BaseException as e:
         # This should not happen for regular test errors, unittest should catch everything
-        print('ERROR: running test: ', e)
+        print(('ERROR: running test: ', e))
         raise e
 
 def run(name='__main__'):

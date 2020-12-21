@@ -310,8 +310,8 @@ class TestAssertions(TestCase):
                 dct.update({'answer': 42})
                 type.__init__(cls, name, bases, dct)
 
-        class MyEx(Exception):
-            __metaclass__ = MyExMeta
+        class MyEx(Exception, metaclass=MyExMeta):
+            pass
 
         self.assertRaises(MyEx, self.raiseError, MyEx)
 
@@ -388,7 +388,7 @@ class TestAssertions(TestCase):
 
     def test_assertIn_success(self):
         # assertIn(needle, haystack) asserts that 'needle' is in 'haystack'.
-        self.assertIn(3, range(10))
+        self.assertIn(3, list(range(10)))
         self.assertIn('foo', 'foo bar baz')
         self.assertIn('foo', 'foo bar baz'.split())
 
@@ -635,16 +635,16 @@ class TestAssertions(TestCase):
             ': ' + message,
             ])
         self.assertFails(expected_error, self.assertEqual, a, b, message)
-        self.assertFails(expected_error, self.assertEquals, a, b, message)
-        self.assertFails(expected_error, self.failUnlessEqual, a, b, message)
+        self.assertFails(expected_error, self.assertEqual, a, b, message)
+        self.assertFails(expected_error, self.assertEqual, a, b, message)
 
     def test_assertEqual_formatting_no_message(self):
         a = "cat"
         b = "dog"
         expected_error = "'cat' != 'dog'"
         self.assertFails(expected_error, self.assertEqual, a, b)
-        self.assertFails(expected_error, self.assertEquals, a, b)
-        self.assertFails(expected_error, self.failUnlessEqual, a, b)
+        self.assertFails(expected_error, self.assertEqual, a, b)
+        self.assertFails(expected_error, self.assertEqual, a, b)
 
     def test_assertEqual_non_ascii_str_with_newlines(self):
         message = _u("Be careful mixing unicode and bytes")

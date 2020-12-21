@@ -38,12 +38,27 @@ import SCons.Util
 logfile = os.environ.get('SCONS_MSCOMMON_DEBUG')
 if logfile == '-':
     def debug(x):
-        print x
+        print(x)
 elif logfile:
     try:
         import logging
     except ImportError:
-        debug = lambda x: open(logfile, 'a').write(x + '\n')
+
+
+def open_file_common(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+        debug = lambda x: open_file_common(logfile, 'a').write(x + '\n')
     else:
         logging.basicConfig(filename=logfile, level=logging.DEBUG)
         debug = logging.debug
@@ -113,12 +128,12 @@ def normalize_env(env, keys, force=False):
     Note: the environment is copied."""
     normenv = {}
     if env:
-        for k in env.keys():
-            normenv[k] = copy.deepcopy(env[k]).encode('mbcs')
+        for k in list(env.keys()):
+            normenv[k] = copy.deepcopy(env[k])
 
         for k in keys:
             if k in os.environ and (force or not k in normenv):
-                normenv[k] = os.environ[k].encode('mbcs')
+                normenv[k] = os.environ[k]
 
     # This shouldn't be necessary, since the default environment should include system32,
     # but keep this here to be safe, since it's needed to find reg.exe which the MSVC
@@ -190,9 +205,9 @@ def get_output(vcbat, args = None, env = None):
         import sys
         sys.stderr.write(stderr)
     if popen.wait() != 0:
-        raise IOError(stderr.decode("mbcs"))
+        raise IOError(stderr)
 
-    output = stdout.decode("mbcs")
+    output = stdout
     return output
 
 def parse_output(output, keep = ("INCLUDE", "LIB", "LIBPATH", "PATH")):
@@ -211,7 +226,7 @@ def parse_output(output, keep = ("INCLUDE", "LIB", "LIBPATH", "PATH")):
         for p in plist:
             # Do not add empty paths (when a var ends with ;)
             if p:
-                p = p.encode('mbcs')
+                p = p
                 # XXX: For some reason, VC98 .bat file adds "" around the PATH
                 # values, and it screws up the environment later, so we strip
                 # it.
@@ -219,7 +234,7 @@ def parse_output(output, keep = ("INCLUDE", "LIB", "LIBPATH", "PATH")):
                 dkeep[key].append(p)
 
     for line in output.splitlines():
-        for k,v in rdk.items():
+        for k,v in list(rdk.items()):
             m = v.match(line)
             if m:
                 add_env(m, k)

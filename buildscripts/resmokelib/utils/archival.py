@@ -1,8 +1,6 @@
 """Archival utility."""
 
-from __future__ import absolute_import
-
-import Queue
+from . import queue
 import collections
 import json
 import math
@@ -27,6 +25,21 @@ ArchiveArgs = collections.namedtuple("ArchiveArgs",
                                      ["archival_file", "display_name", "remote_file"])
 
 
+
+
+def open_file_archival(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def file_list_size(files):
     """Return size (in bytes) of all 'files' and their subdirectories."""
     if isinstance(files, str):
@@ -45,7 +58,7 @@ def file_list_size(files):
 def directory_size(directory):
     """Return size (in bytes) of files in 'directory' tree."""
     dir_bytes = 0
-    for root_dir, _, files in os.walk(unicode(directory)):
+    for root_dir, _, files in os.walk(str(directory)):
         for name in files:
             full_name = os.path.join(root_dir, name)
             try:
@@ -103,7 +116,7 @@ class Archival(object):  # pylint: disable=too-many-instance-attributes
         self._lock = threading.Lock()
 
         # Start the worker thread to update the 'archival_json_file'.
-        self._archive_file_queue = Queue.Queue()
+        self._archive_file_queue = queue.Queue()
         self._archive_file_worker = threading.Thread(target=self._update_archive_file_wkr,
                                                      args=(self._archive_file_queue,
                                                            logger), name="archive_file_worker")
@@ -115,7 +128,7 @@ class Archival(object):  # pylint: disable=too-many-instance-attributes
             self.s3_client = s3_client
 
         # Start the worker thread which uploads the archive.
-        self._upload_queue = Queue.Queue()
+        self._upload_queue = queue.Queue()
         self._upload_worker = threading.Thread(target=self._upload_to_s3_wkr,
                                                args=(self._upload_queue, self._archive_file_queue,
                                                      logger, self.s3_client), name="upload_worker")
@@ -161,14 +174,14 @@ class Archival(object):  # pylint: disable=too-many-instance-attributes
         return status, message
 
     @staticmethod
-    def _update_archive_file_wkr(queue, logger):
+    def _update_archive_file_wkr(work_queue, logger):
         """Worker thread: Update the archival JSON file from 'queue'."""
         archival_json = []
         while True:
-            archive_args = queue.get()
+            archive_args = work_queue.get()
             # Exit worker thread when sentinel is received.
             if archive_args is None:
-                queue.task_done()
+                work_queue.task_done()
                 break
             archival_record = {
                 "name": archive_args.display_name, "link": archive_args.remote_file,
@@ -177,18 +190,18 @@ class Archival(object):  # pylint: disable=too-many-instance-attributes
             logger.debug("Updating archive file %s with %s", archive_args.archival_file,
                          archival_record)
             archival_json.append(archival_record)
-            with open(archive_args.archival_file, "w") as archival_fh:
+            with open_file_archival(archive_args.archival_file, "w") as archival_fh:
                 json.dump(archival_json, archival_fh)
-            queue.task_done()
+            work_queue.task_done()
 
     @staticmethod
-    def _upload_to_s3_wkr(queue, archive_file_queue, logger, s3_client):
+    def _upload_to_s3_wkr(work_queue, archive_file_queue, logger, s3_client):
         """Worker thread: Upload to S3 from 'queue', dispatch to 'archive_file_queue'."""
         while True:
-            upload_args = queue.get()
+            upload_args = work_queue.get()
             # Exit worker thread when sentinel is received.
             if upload_args is None:
-                queue.task_done()
+                work_queue.task_done()
                 archive_file_queue.put(None)
                 break
             extra_args = {"ContentType": upload_args.content_type, "ACL": "public-read"}
@@ -215,7 +228,7 @@ class Archival(object):  # pylint: disable=too-many-instance-attributes
                 archive_file_queue.put(
                     ArchiveArgs(upload_args.archival_file, upload_args.display_name, remote_file))
 
-            queue.task_done()
+            work_queue.task_done()
 
     def _archive_files(self, display_name, input_files, s3_bucket, s3_path):
         """
@@ -291,7 +304,7 @@ class Archival(object):  # pylint: disable=too-many-instance-attributes
         self._archive_file_worker.join(timeout=timeout)
         self.check_thread(self._archive_file_worker, False)
 
-        self.logger.info("Total tar/gzip archive time is %0.2f seconds, for %d file(s) %d MB",
+        self.logger.info("Total tar/gzip archive time is %0.2f seconds, for %d open_file_archival(s) %d MB",
                          self.archive_time, self.num_files, self.size_mb)
 
     def files_archived_num(self):

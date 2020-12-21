@@ -34,8 +34,8 @@ from wtscenario import make_scenarios
 class test_alter02(wttest.WiredTigerTestCase):
     entries = 500
     # Binary values.
-    value = u'\u0001\u0002abcd\u0003\u0004'
-    value2 = u'\u0001\u0002dcba\u0003\u0004'
+    value = '\u0001\u0002abcd\u0003\u0004'
+    value2 = '\u0001\u0002dcba\u0003\u0004'
 
     conn_log = [
         ('conn-always-logged', dict(conncreate=True, connreopen=True)),
@@ -78,7 +78,7 @@ class test_alter02(wttest.WiredTigerTestCase):
         try:
             self.conn = wiredtiger.wiredtiger_open(self.home, conn_params)
         except wiredtiger.WiredTigerError as e:
-            print "Failed conn at '%s' with config '%s'" % (dir, conn_params)
+            print("Failed conn at '%s' with config '%s'" % (dir, conn_params))
         self.session = self.conn.open_session()
 
     # Verify the metadata string for this URI and that its setting in the
@@ -93,7 +93,7 @@ class test_alter02(wttest.WiredTigerTestCase):
         #
         found = False
         while True:
-            ret = cursor.next()
+            ret = next(cursor)
             if ret != 0:
                 break
             key = cursor.get_key()
@@ -111,7 +111,7 @@ class test_alter02(wttest.WiredTigerTestCase):
     def verify_logrecs(self, expected_keys):
         c = self.session.open_cursor('log:', None, None)
         count = 0
-        while c.next() == 0:
+        while next(c) == 0:
             # lsn.file, lsn.offset, opcount
             keys = c.get_key()
             # txnid, rectype, optype, fileid, logrec_key, logrec_value

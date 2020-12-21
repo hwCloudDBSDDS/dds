@@ -48,7 +48,7 @@ class test_metadata03(wttest.WiredTigerTestCase):
     def count_logrecs(self):
         count = 0
         c = self.session.open_cursor('log:', None, None)
-        while c.next() == 0:
+        while next(c) == 0:
             # lsn.file, lsn.offset, opcount
             keys = c.get_key()
             # Only count whole records, which is when opcount is zero.

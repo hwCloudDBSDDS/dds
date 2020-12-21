@@ -1,8 +1,5 @@
 """Module for generating the test results file fed into the perf plugin."""
 
-from __future__ import absolute_import
-from __future__ import division
-
 import collections
 import datetime
 import json
@@ -10,6 +7,21 @@ import json
 from buildscripts.resmokelib import config as _config
 from buildscripts.resmokelib.testing.hooks import interface
 
+
+
+
+def open_file_combine_benchmark_results(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 class CombineBenchmarkResults(interface.Hook):
     """CombineBenchmarkResults class.
@@ -44,7 +56,7 @@ class CombineBenchmarkResults(interface.Hook):
 
         bm_report_path = test.report_name()
 
-        with open(bm_report_path, "r") as report_file:
+        with open_file_combine_benchmark_results(bm_report_path, "r") as report_file:
             report_dict = json.load(report_file)
             self._parse_report(report_dict)
 
@@ -59,7 +71,7 @@ class CombineBenchmarkResults(interface.Hook):
 
         self.end_time = datetime.datetime.now()
         report = self._generate_perf_plugin_report()
-        with open(self.report_file, "w") as fh:
+        with open_file_combine_benchmark_results(self.report_file, "w") as fh:
             json.dump(report, fh)
 
     def _generate_perf_plugin_report(self):
@@ -71,7 +83,7 @@ class CombineBenchmarkResults(interface.Hook):
             "results": []
         }
 
-        for name, report in self.benchmark_reports.items():
+        for name, report in list(self.benchmark_reports.items()):
             test_report = {
                 "name": name, "context": report.context._asdict(),
                 "results": report.generate_perf_plugin_dict()
@@ -164,7 +176,7 @@ class _BenchmarkThreadsReport(object):
         """
 
         res = {}
-        for thread_count, reports in self.thread_benchmark_map.items():
+        for thread_count, reports in list(self.thread_benchmark_map.items()):
             thread_report = {
                 "error_values": [0 for _ in range(len(reports))],
                 "ops_per_sec_values": []  # This is actually storing latency per op, not ops/s

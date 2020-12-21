@@ -109,7 +109,7 @@ class FreeMonHandler(http.server.BaseHTTPRequestHandler):
         stats.register_calls += 1
 
         raw_input = self.rfile.read(clen)
-        decoded_doc = bson.BSON.decode(raw_input)
+        decoded_doc = bson.BSON
         last_register = dumps(decoded_doc)
 
         if not disable_faults and fault_type == FAULT_FAIL_REGISTER:
@@ -159,7 +159,7 @@ You can disable monitoring at any time by running db.disableFreeMonitoring()."""
         stats.metrics_calls += 1
 
         raw_input = self.rfile.read(clen)
-        decoded_doc = bson.BSON.decode(raw_input)
+        decoded_doc = bson.BSON
         last_metrics = dumps(decoded_doc)
 
         if not disable_faults and \
@@ -228,17 +228,17 @@ You can disable monitoring at any time by running db.disableFreeMonitoring()."""
     def _do_stats(self):
         self._send_header()
 
-        self.wfile.write(str(stats).encode('utf-8'))
+        self.wfile.write(str(stats))
 
     def _do_last_register(self):
         self._send_header()
 
-        self.wfile.write(str(last_register).encode('utf-8'))
+        self.wfile.write(str(last_register))
 
     def _do_last_metrics(self):
         self._send_header()
 
-        self.wfile.write(str(last_metrics).encode('utf-8'))
+        self.wfile.write(str(last_metrics))
 
     def _do_disable_faults(self):
         global disable_faults
@@ -258,7 +258,7 @@ def run(port, server_class=http.server.HTTPServer, handler_class=FreeMonHandler)
 
     httpd = server_class(server_address, handler_class)
 
-    print("Mock Web Server Listening on %s" % (str(server_address)))
+    print(("Mock Web Server Listening on %s" % (str(server_address))))
 
     httpd.serve_forever()
 
@@ -284,7 +284,7 @@ def main():
 
     if args.fault:
         if args.fault not in SUPPORTED_FAULT_TYPES:
-            print("Unsupported fault type %s, supports types are %s" % (args.fault, SUPPORTED_FAULT_TYPES))
+            print(("Unsupported fault type %s, supports types are %s" % (args.fault, SUPPORTED_FAULT_TYPES)))
             sys.exit(1)
 
         fault_type = args.fault

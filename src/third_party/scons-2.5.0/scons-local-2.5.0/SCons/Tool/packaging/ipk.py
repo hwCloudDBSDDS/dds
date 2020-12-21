@@ -32,6 +32,21 @@ import os
 
 from SCons.Tool.packaging import stripinstallbuilder, putintopackageroot
 
+
+
+def open_file_ipk(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def package(env, target, source, PACKAGEROOT, NAME, VERSION, DESCRIPTION,
             SUMMARY, X_IPK_PRIORITY, X_IPK_SECTION, SOURCE_URL,
             X_IPK_MAINTAINER, X_IPK_DEPENDS, **kw):
@@ -119,8 +134,8 @@ def build_specfiles(source, target, env):
         try:
             return opened_files[needle]
         except KeyError:
-            file=filter(lambda x: x.get_path().rfind(needle)!=-1, haystack)[0]
-            opened_files[needle]=open(file.get_abspath(), 'w')
+            file=[x for x in haystack if x.get_path().rfind(needle)!=-1][0]
+            opened_files[needle]=open_file_ipk(file.get_abspath(), 'w')
             return opened_files[needle]
 
     control_file=open_file('control', target)
@@ -169,7 +184,7 @@ Description: $X_IPK_DESCRIPTION
 
     #
     # close all opened files
-    for f in opened_files.values():
+    for f in list(opened_files.values()):
         f.close()
 
     # call a user specified function

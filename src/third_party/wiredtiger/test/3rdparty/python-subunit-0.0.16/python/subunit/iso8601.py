@@ -41,11 +41,11 @@ ISO8601_REGEX_PATTERN = (r"(?P<year>[0-9]{4})(-(?P<month>[0-9]{1,2})(-(?P<day>[0
     r"(?P<timezone>Z|(([-+])([0-9]{2}):([0-9]{2})))?)?)?)?"
 )
 TIMEZONE_REGEX_PATTERN = "(?P<prefix>[+-])(?P<hours>[0-9]{2}).(?P<minutes>[0-9]{2})"
-ISO8601_REGEX = re.compile(ISO8601_REGEX_PATTERN.encode('utf8'))
-TIMEZONE_REGEX = re.compile(TIMEZONE_REGEX_PATTERN.encode('utf8'))
+ISO8601_REGEX = re.compile(ISO8601_REGEX_PATTERN)
+TIMEZONE_REGEX = re.compile(TIMEZONE_REGEX_PATTERN)
 
-zulu = "Z".encode('latin-1')
-minus = "-".encode('latin-1')
+zulu = "Z"
+minus = "-"
 
 if sys.version_info < (3, 0):
     bytes = str
@@ -127,7 +127,7 @@ def parse_date(datestring, default_timezone=UTC):
     if groups["fraction"] is None:
         groups["fraction"] = 0
     else:
-        groups["fraction"] = int(float("0.%s" % groups["fraction"].decode()) * 1e6)
+        groups["fraction"] = int(float("0.%s" % groups["fraction"]
     return datetime(int(groups["year"]), int(groups["month"]), int(groups["day"]),
         int(groups["hour"]), int(groups["minute"]), int(groups["second"]),
         int(groups["fraction"]), tz)

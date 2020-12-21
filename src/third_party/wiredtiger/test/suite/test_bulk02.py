@@ -103,7 +103,7 @@ class test_bulkload_backup(wttest.WiredTigerTestCase, suite_subprocess):
         conn = self.wiredtiger_open(backupdir)
         session = conn.open_session()
         cursor = session.open_cursor(self.uri, None, None)
-        self.assertEqual(cursor.next(), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(next(cursor), wiredtiger.WT_NOTFOUND)
         conn.close()
 
     def test_bulk_backup(self):

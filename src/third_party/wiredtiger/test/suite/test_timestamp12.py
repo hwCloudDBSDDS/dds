@@ -79,9 +79,9 @@ class test_timestamp12(wttest.WiredTigerTestCase):
 
         # Begin by adding some data.
         nentries = 10
-        first_range = range(1, nentries)
-        second_range = range(nentries, nentries*2)
-        all_keys = range(1, nentries*2)
+        first_range = list(range(1, nentries))
+        second_range = list(range(nentries, nentries*2))
+        all_keys = list(range(1, nentries*2))
         for i in first_range:
             self.session.begin_transaction()
             c_op[i] = 1

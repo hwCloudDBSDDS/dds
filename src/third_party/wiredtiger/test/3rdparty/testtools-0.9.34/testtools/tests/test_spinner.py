@@ -173,8 +173,7 @@ class TestRunInReactor(NeedsTwistedTestCase):
 
     def test_preserve_signal_handler(self):
         signals = ['SIGINT', 'SIGTERM', 'SIGCHLD']
-        signals = filter(
-            None, (getattr(signal, name, None) for name in signals))
+        signals = [_f for _f in (getattr(signal, name, None) for name in signals) if _f]
         for sig in signals:
             self.addCleanup(signal.signal, sig, signal.getsignal(sig))
         new_hdlrs = list(lambda *a: None for _ in signals)
@@ -182,7 +181,7 @@ class TestRunInReactor(NeedsTwistedTestCase):
             signal.signal(sig, hdlr)
         spinner = self.make_spinner()
         spinner.run(self.make_timeout(), lambda: None)
-        self.assertEqual(new_hdlrs, map(signal.getsignal, signals))
+        self.assertEqual(new_hdlrs, list(map(signal.getsignal, signals)))
 
     def test_timeout(self):
         # If the function takes too long to run, we raise a

@@ -38,6 +38,21 @@ import pickle
 import SCons.dblite
 import SCons.Warnings
 
+
+
+def open_file_SConsign(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def corrupt_dblite_warning(filename):
     SCons.Warnings.warn(SCons.Warnings.CorruptSConsignWarning,
                         "Ignoring corrupt .sconsign file: %s"%filename)
@@ -84,7 +99,7 @@ def Get_DataBase(dir):
         DB_sync_list.append(db)
         return db, "c"
     except TypeError:
-        print "DataBase =", DataBase
+        print("DataBase =", DataBase)
         raise
 
 def Reset():
@@ -152,7 +167,7 @@ class SConsignEntry(object):
         return state
 
     def __setstate__(self, state):
-        for key, value in state.items():
+        for key, value in list(state.items()):
             if key not in ('_version_id','__weakref__'):
                 setattr(self, key, value)
         
@@ -196,7 +211,7 @@ class Base(object):
         pass
 
     def merge(self):
-        for key, node in self.to_be_merged.items():
+        for key, node in list(self.to_be_merged.items()):
             entry = node.get_stored_info()
             try:
                 ninfo = entry.ninfo
@@ -239,10 +254,10 @@ class DB(Base):
                     raise TypeError
             except KeyboardInterrupt:
                 raise
-            except Exception, e:
+            except Exception as e:
                 SCons.Warnings.warn(SCons.Warnings.CorruptSConsignWarning,
                                     "Ignoring corrupt sconsign entry : %s (%s)\n"%(self.dir.get_tpath(), e))
-            for key, entry in self.entries.items():
+            for key, entry in list(self.entries.items()):
                 entry.convert_from_sconsign(dir, key)
 
         if mode == "r":
@@ -269,7 +284,7 @@ class DB(Base):
         # the Repository; we only write to our own .sconsign file,
         # not to .sconsign files in Repositories.
         path = normcase(self.dir.get_internal_path())
-        for key, entry in self.entries.items():
+        for key, entry in list(self.entries.items()):
             entry.convert_to_sconsign()
         db[path] = pickle.dumps(self.entries, 1)
 
@@ -298,7 +313,7 @@ class Dir(Base):
             raise TypeError
 
         if dir:
-            for key, entry in self.entries.items():
+            for key, entry in list(self.entries.items()):
                 entry.convert_from_sconsign(dir, key)
 
 class DirFile(Dir):
@@ -314,7 +329,7 @@ class DirFile(Dir):
         self.sconsign = os.path.join(dir.get_internal_path(), '.sconsign')
 
         try:
-            fp = open(self.sconsign, 'rb')
+            fp = open_file_SConsign(self.sconsign, 'rb')
         except IOError:
             fp = None
 
@@ -349,22 +364,22 @@ class DirFile(Dir):
 
         temp = os.path.join(self.dir.get_internal_path(), '.scons%d' % os.getpid())
         try:
-            file = open(temp, 'wb')
+            file = open_file_SConsign(temp, 'wb')
             fname = temp
         except IOError:
             try:
-                file = open(self.sconsign, 'wb')
+                file = open_file_SConsign(self.sconsign, 'wb')
                 fname = self.sconsign
             except IOError:
                 return
-        for key, entry in self.entries.items():
+        for key, entry in list(self.entries.items()):
             entry.convert_to_sconsign()
         pickle.dump(self.entries, file, 1)
         file.close()
         if fname != self.sconsign:
             try:
                 mode = os.stat(self.sconsign)[0]
-                os.chmod(self.sconsign, 0666)
+                os.chmod(self.sconsign, 0o666)
                 os.unlink(self.sconsign)
             except (IOError, OSError):
                 # Try to carry on in the face of either OSError
@@ -382,7 +397,7 @@ class DirFile(Dir):
                 # here, or in any of the following calls, would get
                 # raised, indicating something like a potentially
                 # serious disk or network issue.
-                open(self.sconsign, 'wb').write(open(fname, 'rb').read())
+                open_file_SConsign(self.sconsign, 'wb').write(open_file_SConsign(fname, 'rb').read())
                 os.chmod(self.sconsign, mode)
         try:
             os.unlink(temp)

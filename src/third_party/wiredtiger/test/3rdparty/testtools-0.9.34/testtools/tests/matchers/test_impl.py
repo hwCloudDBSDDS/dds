@@ -97,11 +97,11 @@ class TestMismatchError(TestCase):
         if str_is_unicode:
             actual = str(e)
         else:
-            actual = unicode(e)
+            actual = str(e)
             # Using str() should still work, and return ascii only
             self.assertEqual(
-                expected.replace(matchee, matchee.encode("unicode-escape")),
-                str(e).decode("ascii"))
+                expected.replace(matchee, matchee),
+                str(e))
         self.assertEqual(expected, actual)
 
 

@@ -34,6 +34,21 @@ from wtdataset import SimpleDataSet, simple_key, simple_value
 
 # Check that verify works when the file has additional data after the last
 # checkpoint.
+
+
+def open_file_test_bug005(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_bug005(wttest.WiredTigerTestCase):
     # This is a btree layer test, test files, ignore tables.
     uri = 'file:test_bug005'
@@ -52,7 +67,7 @@ class test_bug005(wttest.WiredTigerTestCase):
         self.session.verify(self.uri)
 
         # Append random data to the end.
-        f = open('test_bug005', 'a')
+        f = open_file_test_bug005('test_bug005', 'a')
         f.write('random data')
         f.close()
 

@@ -53,7 +53,7 @@ var roles = [
 function testProperAuthorization(conn, t, testcase, r) {
     var adminDb = conn.getDB(adminDbName);
     assert(adminDb.auth("admin", "Password@a1b"));
-    adminDb.dropUser("monitor"); 
+    adminDb.dropUser("monitor");
     adminDb.createUser(
         {user: "monitor", pwd: "Password@a1b", roles: [], "passwordDigestor": "server"});
     if (r.dbname == "admin") {

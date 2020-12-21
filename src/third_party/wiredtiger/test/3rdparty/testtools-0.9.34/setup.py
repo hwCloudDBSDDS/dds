@@ -13,6 +13,21 @@ if getattr(testtools, 'TestCommand', None) is not None:
     cmd_class['test'] = testtools.TestCommand
 
 
+
+
+def open_file_setup(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class testtools_build_py(build_py):
     def build_module(self, module, module_file, package):
         if sys.version_info >= (3,) and module == '_compat2x':
@@ -25,7 +40,7 @@ def get_version_from_pkg_info():
     """Get the version from PKG-INFO file if we can."""
     pkg_info_path = os.path.join(os.path.dirname(__file__), 'PKG-INFO')
     try:
-        pkg_info_file = open(pkg_info_path, 'r')
+        pkg_info_file = open_file_setup(pkg_info_path, 'r')
     except (IOError, OSError):
         return None
     try:
@@ -54,7 +69,7 @@ def get_version():
 def get_long_description():
     manual_path = os.path.join(
         os.path.dirname(__file__), 'doc/overview.rst')
-    return open(manual_path).read()
+    return open_file_setup(manual_path).read()
 
 
 setup(name='testtools',

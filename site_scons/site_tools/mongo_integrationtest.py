@@ -2,6 +2,21 @@
 """
 from SCons.Script import Action
 
+
+
+def open_file_mongo_integrationtest(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def exists(env):
     return True
 
@@ -12,10 +27,10 @@ def register_integration_test(env, test):
     env.Alias('$INTEGRATION_TEST_ALIAS', installed_test)
 
 def integration_test_list_builder_action(env, target, source):
-    ofile = open(str(target[0]), 'wb')
+    ofile = open_file_mongo_integrationtest(str(target[0]), 'wb')
     try:
         for s in _integration_tests:
-            print '\t' + str(s)
+            print(('\t' + str(s)))
             ofile.write('%s\n' % s)
     finally:
         ofile.close()

@@ -70,7 +70,7 @@ class test_assert01(wttest.WiredTigerTestCase, suite_subprocess):
         else:
             msg = "/timestamp set on this transaction/"
             self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-                lambda:self.assertEquals(self.session.commit_transaction(),
+                lambda:self.assertEqual(self.session.commit_transaction(),
                 0), msg)
         c.close()
         self.count += 1
@@ -87,7 +87,7 @@ class test_assert01(wttest.WiredTigerTestCase, suite_subprocess):
         else:
             msg = "/none set on this transaction/"
             self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-                lambda:self.assertEquals(self.session.commit_transaction(),
+                lambda:self.assertEqual(self.session.commit_transaction(),
                 0), msg)
         self.count += 1
         c.close()

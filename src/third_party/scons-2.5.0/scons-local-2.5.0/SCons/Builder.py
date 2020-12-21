@@ -110,6 +110,16 @@ import SCons.Memoize
 import SCons.Util
 import SCons.Warnings
 
+
+
+def cmp(x, y):
+    if x > y:
+        return 1
+    elif x == y:
+        return 0
+    else:
+        return -1
+
 class _Null(object):
     pass
 
@@ -166,7 +176,7 @@ class DictCmdGenerator(SCons.Util.Selector):
 
         try:
             ret = SCons.Util.Selector.__call__(self, env, source, ext)
-        except KeyError, e:
+        except KeyError as e:
             raise UserError("Ambiguous suffixes after environment substitution: %s == %s == %s" % (e.args[0], e.args[1], e.args[2]))
         if ret is None:
             raise UserError("While building `%s' from `%s': Don't know how to build from a source file with suffix `%s'.  Expected a suffix in this list: %s." % \
@@ -229,7 +239,7 @@ class OverrideWarner(collections.UserDict):
     def warn(self):
         if self.already_warned:
             return
-        for k in self.keys():
+        for k in list(self.keys()):
             if k in misleading_keywords:
                 alt = misleading_keywords[k]
                 msg = "Did you mean to use `%s' instead of `%s'?" % (alt, k)
@@ -420,7 +430,7 @@ class BuilderBase(object):
             src_builder = [ src_builder ]
         self.src_builder = src_builder
 
-    def __nonzero__(self):
+    def __bool__(self):
         raise InternalError("Do not test for the Node.builder attribute directly; use Node.has_builder() instead")
 
     def get_name(self, env):

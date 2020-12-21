@@ -34,7 +34,7 @@ __revision__ = "src/engine/SCons/Tool/suncc.py rel_2.5.0:3543:937e55cd78f7 2016/
 
 import SCons.Util
 
-import cc
+from . import cc
 
 def generate(env):
     """

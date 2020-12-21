@@ -69,8 +69,8 @@ class test_cursor07(wttest.WiredTigerTestCase, suite_subprocess):
         c3 = self.session.open_cursor(self.uri3, None)
 
         # A binary value.
-        value = u'\u0001\u0002abcd\u0003\u0004'
-        value_nolog = u'\u0001\u0002dcba\u0003\u0004'
+        value = '\u0001\u0002abcd\u0003\u0004'
+        value_nolog = '\u0001\u0002dcba\u0003\u0004'
 
         # We want to test both adding data to a table that is not logged
         # that is part of the same transaction as a table that is logged
@@ -95,7 +95,7 @@ class test_cursor07(wttest.WiredTigerTestCase, suite_subprocess):
         # Check for these values via a log cursor
         c = self.session.open_cursor("log:", None)
         count = 0
-        while c.next() == 0:
+        while next(c) == 0:
             # lsn.file, lsn.offset, opcount
             keys = c.get_key()
             # txnid, rectype, optype, fileid, logrec_key, logrec_value

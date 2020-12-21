@@ -192,7 +192,7 @@ class TestLoadTests(testtools.TestCase):
             [self.SampleTest('test_nothing')],
             None)
         result_tests = list(testtools.iterate_tests(suite))
-        self.assertEquals(
+        self.assertEqual(
             2,
             len(result_tests),
             result_tests)
@@ -205,7 +205,7 @@ class TestLoadTests(testtools.TestCase):
             unittest.TestLoader(),
             )
         result_tests = list(testtools.iterate_tests(suite))
-        self.assertEquals(
+        self.assertEqual(
             2,
             len(result_tests),
             result_tests)

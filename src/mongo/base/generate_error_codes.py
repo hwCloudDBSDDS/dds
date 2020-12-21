@@ -20,8 +20,23 @@
 #    linked combinations including the program with the OpenSSL library. You
 #    must comply with the GNU Affero General Public License in all respects
 #    for all of the code used other than as permitted herein. If you modify
-#    file(s) with this exception, you may extend this exception to your
-#    version of the file(s), but you are not obligated to do so. If you do not
+
+
+def open_file_generate_error_codes(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+#    open_file_generate_error_codes(s) with this exception, you may extend this exception to your
+#    version of the open_file_generate_error_codes(s), but you are not obligated to do so. If you do not
 #    wish to do so, delete this exception statement from your version. If you
 #    delete this exception statement from all source files in the program,
 #    then also delete it in the license file.
@@ -98,7 +113,7 @@ def main(argv):
                 categories=error_classes,
                 )
 
-        with open(output, 'wb') as outfile:
+        with open_file_generate_error_codes(output, 'w') as outfile:
             outfile.write(text)
 
 def die(message=None):
@@ -110,7 +125,7 @@ def usage(message=None):
     die(message)
 
 def parse_error_definitions_from_file(errors_filename):
-    errors_file = open(errors_filename, 'r')
+    errors_file = open_file_generate_error_codes(errors_filename, 'r')
     errors_code = compile(errors_file.read(), errors_filename, 'exec')
     error_codes = []
     error_classes = []

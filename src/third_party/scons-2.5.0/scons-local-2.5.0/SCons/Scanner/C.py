@@ -35,6 +35,21 @@ import SCons.Util
 
 import SCons.cpp
 
+
+
+def open_file_C(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class SConsCPPScanner(SCons.cpp.PreProcessor):
     """
     SCons-specific subclass of the cpp.py module's processing.
@@ -58,8 +73,8 @@ class SConsCPPScanner(SCons.cpp.PreProcessor):
         return result
     def read_file(self, file):
         try:
-            fp = open(str(file.rfile()))
-        except EnvironmentError, e:
+            fp = open_file_C(str(file.rfile()))
+        except EnvironmentError as e:
             self.missing.append((file, self.current_file))
             return ''
         else:

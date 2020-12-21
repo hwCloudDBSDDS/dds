@@ -94,6 +94,14 @@ env.Prepend(CPPPATH=[
     'platform/' + env["TARGET_ARCH"] + "/" + env["TARGET_OS"] + "/include",
 ])
 
+# Debian
+# Apparently, Spidermonkey 38 (and up to 49) is prone to segfaults at GC time
+# when built with GCC 6 or later. Disabling the following optimizations fixes
+# this.
+# See https://trac.wildfiregames.com/ticket/4053 and
+# https://gcc.gnu.org/bugzilla/show_bug.cgi?id=70526#c14 for more information
+env.Append(CXXFLAGS=["-fno-schedule-insns2", "-fno-delete-null-pointer-checks"])
+
 sources = [
     "extract/js/src/builtin/RegExp.cpp",
     "extract/js/src/frontend/Parser.cpp",

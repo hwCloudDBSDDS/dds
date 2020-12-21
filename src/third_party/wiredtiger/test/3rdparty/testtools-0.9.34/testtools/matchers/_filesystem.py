@@ -25,6 +25,21 @@ from ._impl import (
     )
 
 
+
+
+def open_file__filesystem(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def PathExists():
     """Matches if the given path exists.
 
@@ -120,7 +135,7 @@ class FileContains(Matcher):
         mismatch = PathExists().match(path)
         if mismatch is not None:
             return mismatch
-        f = open(path)
+        f = open_file__filesystem(path)
         try:
             actual_contents = f.read()
             return self.matcher.match(actual_contents)
@@ -181,7 +196,7 @@ class TarballContains(Matcher):
     def match(self, tarball_path):
         # Open underlying file first to ensure it's always closed:
         # <http://bugs.python.org/issue10233>
-        f = open(tarball_path, "rb")
+        f = open_file__filesystem(tarball_path, "rb")
         try:
             tarball = tarfile.open(tarball_path, fileobj=f)
             try:

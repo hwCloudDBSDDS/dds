@@ -436,6 +436,21 @@ arch_canon = {
 
 # End of rpmrc dictionaries (Marker, don't change or remove!)
 
+
+
+def open_file_rpmutils(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def defaultMachine(use_rpm_default=True):
     """ Return the canonicalized machine name. """
 
@@ -478,9 +493,9 @@ def updateRpmDicts(rpmrc, pyfile):
     """
     try:
         # Read old rpmutils.py file
-        oldpy = open(pyfile,"r").readlines()
+        oldpy = open_file_rpmutils(pyfile,"r").readlines()
         # Read current rpmrc.in file
-        rpm = open(rpmrc,"r").readlines()
+        rpm = open_file_rpmutils(rpmrc,"r").readlines()
         # Parse for data
         data = {}
         # Allowed section names that get parsed
@@ -501,13 +516,13 @@ def updateRpmDicts(rpmrc, pyfile):
                 key = tokens[0]
                 if key in sections:
                     # Have we met this section before?
-                    if not data.has_key(tokens[0]):
+                    if tokens[0] not in data:
                         # No, so insert it
                         data[key] = {}
                     # Insert data
                     data[key][tokens[1]] = tokens[2:]
         # Write new rpmutils.py file
-        out = open(pyfile,"w")
+        out = open_file_rpmutils(pyfile,"w")
         pm = 0
         for l in oldpy:
             if pm:
@@ -519,7 +534,7 @@ def updateRpmDicts(rpmrc, pyfile):
                 if l.startswith('# Start of rpmrc dictionaries'):
                     pm = 1
                     # Write data sections to single dictionaries
-                    for key, entries in data.iteritems():
+                    for key, entries in data.items():
                         out.write("%s = {\n" % key)
                         for arch in sorted(entries.keys()):
                             out.write("  '%s' : ['%s'],\n" % (arch, "','".join(entries[arch])))
@@ -529,7 +544,7 @@ def updateRpmDicts(rpmrc, pyfile):
         pass
 
 def usage():
-    print "rpmutils.py rpmrc.in rpmutils.py"
+    print("rpmutils.py rpmrc.in rpmutils.py")
 
 def main():
     import sys

@@ -191,7 +191,7 @@ if __name__ == "__main__":
     except ImportError:
         print("SCons import failed. Unable to find engine files in:")
         for path in libs:
-            print("  %s" % path)
+            print(("  %s" % path))
         raise
 
     # this does all the work, and calls sys.exit

@@ -1,6 +1,6 @@
 # -*- mode: python; -*-
 
-import md5
+import hashlib
 
 # Default and alternative generator definitions go here.
 
@@ -44,11 +44,11 @@ def default_variant_dir_generator(target, source, env, for_signature):
 
     # Hash the named options and their values, and take the first 8 characters of the hash as
     # the variant name
-    hasher = md5.md5()
+    hasher = hashlib.md5()
     for option in variant_options:
-        hasher.update(option)
-        hasher.update(str(env.GetOption(option)))
-    variant_dir = hasher.hexdigest()[0:8]
+        hasher.update(option.encode('utf-8'))
+        hasher.update(str(env.GetOption(option)).encode('utf-8'))
+    variant_dir = str(hasher.hexdigest()[0:8])
 
     # If our option hash yields a well known hash, replace it with its name.
     known_variant_hashes = {

@@ -1139,7 +1139,7 @@ class TestTestProtocolClient(TestCase):
         super(TestTestProtocolClient, self).setUp()
         self.io = BytesIO()
         self.protocol = subunit.TestProtocolClient(self.io)
-        self.unicode_test = PlaceHolder(_u('\u2603'))
+        self.unicode_test = PlaceHolder(_u('\\u2603'))
         self.test = TestTestProtocolClient("test_start_test")
         self.sample_details = {'something':Content(
             ContentType('text', 'plain'), lambda:[_b('serialised\nform')])}
@@ -1155,7 +1155,7 @@ class TestTestProtocolClient(TestCase):
     def test_start_test_unicode_id(self):
         """Test startTest on a TestProtocolClient."""
         self.protocol.startTest(self.unicode_test)
-        expected = _b("test: ") + _u('\u2603').encode('utf8') + _b("\n")
+        expected = _b("test: ") + _u('\\u2603') + _b("\n")
         self.assertEqual(expected, self.io.getvalue())
 
     def test_stop_test(self):
@@ -1172,7 +1172,7 @@ class TestTestProtocolClient(TestCase):
     def test_add_outcome_unicode_id(self):
         """Test addSuccess on a TestProtocolClient."""
         self.protocol.addSuccess(self.unicode_test)
-        expected = _b("successful: ") + _u('\u2603').encode('utf8') + _b("\n")
+        expected = _b("successful: ") + _u('\\u2603') + _b("\n")
         self.assertEqual(expected, self.io.getvalue())
 
     def test_add_success_details(self):

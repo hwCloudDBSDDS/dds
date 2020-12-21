@@ -69,7 +69,7 @@ class test_join04(wttest.WiredTigerTestCase):
         self.session.join(jcursor, cursor2, 'compare=eq')
 
         found = 0
-        while jcursor.next() == 0:
+        while next(jcursor) == 0:
             [k] = jcursor.get_keys()
             [v] = jcursor.get_values()
             self.assertEqual(k, 2)
@@ -128,7 +128,7 @@ class test_join04(wttest.WiredTigerTestCase):
                 self.assertEqual(c.search(), 0)
                 cursors.append(c)
                 self.session.join(jcursor, c, 'compare=eq')
-            while jcursor.next() == 0:
+            while next(jcursor) == 0:
                 [k] = jcursor.get_keys()
                 [v] = jcursor.get_values()
                 #self.tty('got=' + str(v) + ' at key=' + str(k))

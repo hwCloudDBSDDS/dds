@@ -102,7 +102,7 @@ class test_schema04(wttest.WiredTigerTestCase):
                 self.assertEqual(c.search(), 0)
                 value = c.get_value()
                 while value != expect and value[idx] == expect[idx]:
-                    c.next()
+                    next(c)
                     value = c.get_value()
                 self.assertEqual(value, expect)
             i += 1

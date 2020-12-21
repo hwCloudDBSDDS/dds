@@ -50,7 +50,7 @@ class TestSimpleDetails(unittest.TestCase):
                 {'charset': 'utf8'}),
             lambda:[_b("")])
         found = parser.get_details()
-        self.assertEqual(expected.keys(), found.keys())
+        self.assertEqual(list(expected.keys()), list(found.keys()))
         self.assertEqual(expected['traceback'].content_type,
             found['traceback'].content_type)
         self.assertEqual(_b('').join(expected['traceback'].iter_bytes()),
@@ -99,7 +99,7 @@ class TestMultipartDetails(unittest.TestCase):
             content_type.ContentType("text", "plain"),
             lambda:[_b("serialised\nform")])
         found = parser.get_details()
-        self.assertEqual(expected.keys(), found.keys())
+        self.assertEqual(list(expected.keys()), list(found.keys()))
         self.assertEqual(expected['something'].content_type,
             found['something'].content_type)
         self.assertEqual(_b('').join(expected['something'].iter_bytes()),

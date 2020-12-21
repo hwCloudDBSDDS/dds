@@ -10,10 +10,25 @@ from dist import all_c_files, all_h_files, compare_srcfile
 # #define WT_NEW_FLAG_NAME      0x0u
 #
 # and it will be automatically alphabetized and assigned the proper value.
+
+
+def open_file_flags(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def flag_declare(name):
     tmp_file = '__tmp'
-    with open(name, 'r') as f:
-        tfile = open(tmp_file, 'w')
+    with open_file_flags(name, 'r') as f:
+        tfile = open_file_flags(tmp_file, 'w')
 
         lcnt = 0
         parsing = False
@@ -26,8 +41,8 @@ def flag_declare(name):
             elif line.find('AUTOMATIC FLAG VALUE GENERATION STOP') != -1:
                 # We only support 64 bits.
                 if len(defines) > 64:
-                    print >>sys.stderr, name + ": line " +\
-                        str(lcnt) + ": exceeds maximum 64 bit flags"
+                    print(name + ": line " +\
+                        str(lcnt) + ": exceeds maximum 64 bit flags", file=sys.stderr)
                     sys.exit(1)
 
                 # Calculate number of hex bytes, create format string
@@ -42,8 +57,8 @@ def flag_declare(name):
 
                 parsing = False
             elif parsing and line.find('#define') == -1:
-                print >>sys.stderr, name + ": line " +\
-                    str(lcnt) + ": unexpected flag line, no #define"
+                print(name + ": line " +\
+                    str(lcnt) + ": unexpected flag line, no #define", file=sys.stderr)
                 sys.exit(1)
             elif parsing:
                 defines.append(line)

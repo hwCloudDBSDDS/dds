@@ -31,13 +31,28 @@ import wiredtiger, wttest
 
 # test_baseconfig
 #       test base configuration file being ignored.
+
+
+def open_file_test_baseconfig(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_baseconfig(wttest.WiredTigerTestCase):
     def test_baseconfig(self):
         # Open up another database and modify the baseconfig
         os.mkdir("A")
         conn = self.wiredtiger_open("A", 'create')
         self.assertTrue(os.path.exists("A/WiredTiger.basecfg"))
-        with open("A/WiredTiger.basecfg", "a") as basecfg_file:
+        with open_file_test_baseconfig("A/WiredTiger.basecfg", "a") as basecfg_file:
             basecfg_file.write("foo!")
         conn.close()
 

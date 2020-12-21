@@ -23,7 +23,6 @@ alter those programs' behavior.
 MongoDB module SConscript files can describe libraries, programs and unit tests, just as other
 MongoDB SConscript files do.
 """
-from __future__ import print_function
 
 __all__ = ('discover_modules', 'discover_module_directories', 'configure_modules',
            'register_module_test')  # pylint: disable=undefined-all-variable
@@ -32,6 +31,21 @@ import imp
 import inspect
 import os
 
+
+
+
+def open_file_moduleconfig(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def discover_modules(module_root, allowed_modules):
     """Scan module_root for subdirectories that look like MongoDB modules.
@@ -55,12 +69,12 @@ def discover_modules(module_root, allowed_modules):
         module = None
 
         if allowed_modules is not None and name not in allowed_modules:
-            print("skipping module: %s" % (name))
+            print(("skipping module: %s" % (name)))
             continue
 
         if os.path.isfile(build_py):
-            print("adding module: %s" % (name))
-            fp = open(build_py, "r")
+            print(("adding module: %s" % (name)))
+            fp = open_file_moduleconfig(build_py, "r")
             try:
                 module = imp.load_module("module_" + name, fp, build_py,
                                          (".py", "r", imp.PY_SOURCE))
@@ -94,11 +108,11 @@ def discover_module_directories(module_root, allowed_modules):
         build_py = os.path.join(root, 'build.py')
 
         if allowed_modules is not None and name not in allowed_modules:
-            print("skipping module: %s" % (name))
+            print(("skipping module: %s" % (name)))
             continue
 
         if os.path.isfile(build_py):
-            print("adding module: %s" % (name))
+            print(("adding module: %s" % (name)))
             found_modules.append(name)
 
     return found_modules
@@ -113,7 +127,7 @@ def configure_modules(modules, conf):
     """
     for module in modules:
         name = module.name
-        print("configuring module: %s" % (name))
+        print(("configuring module: %s" % (name)))
         module.configure(conf, conf.env)
 
 

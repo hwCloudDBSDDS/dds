@@ -237,8 +237,8 @@ class TempFileMunge(object):
                                source) if self.cmdstr is not None else ''
             # Print our message only if XXXCOMSTR returns an empty string
             if len(cmdstr) == 0 :
-                print("Using tempfile "+native_tmp+" for command line:\n"+
-                      str(cmd[0]) + " " + " ".join(args))
+                print(("Using tempfile "+native_tmp+" for command line:\n"+
+                      str(cmd[0]) + " " + " ".join(args)))
             
         # Store the temporary file command list into the target Node.attributes 
         # to avoid creating two temporary files one for print and one for execute.

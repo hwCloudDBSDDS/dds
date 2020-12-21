@@ -41,7 +41,7 @@ start_time = time.time()
 
 import collections
 import os
-import StringIO
+import io
 import sys
 
 # Special chicken-and-egg handling of the "--debug=memoizer" flag:
@@ -67,7 +67,7 @@ if "--debug=memoizer" in _args:
     except SCons.Warnings.Warning:
         # Some warning was thrown.  Arrange for it to be displayed
         # or not after warnings are configured.
-        import Main
+        from . import Main
         exc_type, exc_value, tb = sys.exc_info()
         Main.delayed_warnings.append((exc_type, exc_value))
 del _args
@@ -86,7 +86,7 @@ import SCons.Util
 import SCons.Variables
 import SCons.Defaults
 
-import Main
+from . import Main
 
 main                    = Main.main
 
@@ -130,7 +130,7 @@ GetBuildFailures        = Main.GetBuildFailures
 #repositories            = Main.repositories
 
 #
-import SConscript
+from . import SConscript
 _SConscript = SConscript
 
 call_stack              = _SConscript.call_stack
@@ -264,7 +264,7 @@ def HelpFunction(text, append=False):
     global help_text
     if help_text is None:
         if append:
-            s = StringIO.StringIO()
+            s = io.StringIO()
             PrintHelp(s)  
             help_text = s.getvalue()
             s.close()
@@ -374,7 +374,7 @@ GlobalDefaultBuilders = [
 ]
 
 for name in GlobalDefaultEnvironmentFunctions + GlobalDefaultBuilders:
-    exec "%s = _SConscript.DefaultEnvironmentCall(%s)" % (name, repr(name))
+    exec("%s = _SConscript.DefaultEnvironmentCall(%s)" % (name, repr(name)))
 del name
 
 # There are a handful of variables that used to live in the

@@ -26,7 +26,7 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-import Queue
+import queue
 import threading, time, wiredtiger, wttest
 from wtthread import backup_thread, checkpoint_thread, op_thread
 
@@ -57,13 +57,13 @@ class test_backup02(wttest.WiredTigerTestCase):
         bkp = backup_thread(self.conn, 'backup.dir', done)
         bkp.start()
 
-        queue = Queue.Queue()
+        queue = queue.Queue()
         my_data = 'a' * self.dsize
-        for i in xrange(self.nops):
+        for i in range(self.nops):
             queue.put_nowait(('gi', i, my_data))
 
         opthreads = []
-        for i in xrange(self.nthreads):
+        for i in range(self.nthreads):
             t = op_thread(self.conn, uris, self.fmt, queue, done)
             opthreads.append(t)
             t.start()
@@ -74,7 +74,7 @@ class test_backup02(wttest.WiredTigerTestCase):
             time.sleep(0.1)
             my_data = str(more_time) + 'a' * (self.dsize - len(str(more_time)))
             more_time = more_time - 0.1
-            for i in xrange(self.nops):
+            for i in range(self.nops):
                 queue.put_nowait(('gu', i, my_data))
 
         queue.join()

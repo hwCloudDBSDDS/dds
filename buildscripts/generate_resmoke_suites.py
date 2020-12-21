@@ -6,7 +6,6 @@ Analyze the evergreen history for tests run under the given task and create new 
 to attempt to keep the task runtime under a specified amount.
 """
 
-from __future__ import absolute_import
 
 import argparse
 import datetime
@@ -21,11 +20,11 @@ from operator import itemgetter
 
 from jinja2 import Template
 
-from client.github import GithubApi
+from .client.github import GithubApi
 
-import client.evergreen as evergreen
-import util.testname as testname
-import util.time as timeutil
+from . import client.evergreen as evergreen
+from . import util.testname as testname
+from . import util.time as timeutil
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +37,21 @@ CommitRange = namedtuple("CommitRange", ["start", "end"])
 ProjectTarget = namedtuple("ProjectTarget", ["owner", "project", "branch"])
 Dependencies = namedtuple("Dependencies", ["evergreen", "github"])
 
+
+
+
+def open_file_generate_resmoke_suites(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def enable_logging():
     """Enable verbose logging for execution."""
@@ -198,7 +212,7 @@ def average_of_array(array):
 
 def sort_list_of_test_by_max_runtime(tests):
     """Return a list of tests sorted by descending average runtime."""
-    return sorted(tests.keys(), key=lambda test: tests[test][MAX_RUNTIME_KEY], reverse=True)
+    return sorted(list(tests.keys()), key=lambda test: tests[test][MAX_RUNTIME_KEY], reverse=True)
 
 
 def divide_tests_into_suites_by_maxtime(tests, sorted_tests, max_time_seconds):
@@ -250,7 +264,7 @@ def render_template(model, task, index):
 
 def render(model, source, destination):
     """Render the specified model with the template at `source` to the file `destination`."""
-    with open(source, "r") as inp, open(destination, "w") as out:
+    with open_file_generate_resmoke_suites(source, "r") as inp, open_file_generate_resmoke_suites(destination, "w") as out:
         template = Template(inp.read(), trim_blocks=True)
         out.write(template.render(model))
 

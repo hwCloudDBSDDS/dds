@@ -72,6 +72,21 @@ re_refname = re.compile("<refname>([^<]*)</refname>")
 #
 # Helper functions
 #
+
+
+def open_file___init__(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def __extend_targets_sources(target, source):
     """ Prepare the lists of target and source files. """
     if not SCons.Util.is_List(target):
@@ -335,7 +350,7 @@ def __build_lxml(target, source, env):
         result = transform(doc)
         
     try:
-        of = open(str(target[0]), "w")
+        of = open_file___init__(str(target[0]), "w")
         of.write(of.write(etree.tostring(result, pretty_print=True)))
         of.close()
     except:
@@ -424,7 +439,7 @@ def DocbookEpub(env, target, source=None, *args, **kw):
         was added for different compression formats for separate source nodes.
         """
         zf = zipfile.ZipFile(str(target[0]), 'w')
-        mime_file = open('mimetype', 'w')
+        mime_file = open_file___init__('mimetype', 'w')
         mime_file.write('application/epub+zip')
         mime_file.close()
         zf.write(mime_file.name, compress_type = zipfile.ZIP_STORED)
@@ -461,7 +476,7 @@ def DocbookEpub(env, target, source=None, *args, **kw):
             # Create xpath context
             xpath_context = doc.xpathNewContext()
             # Register namespaces
-            for key, val in nsmap.iteritems():
+            for key, val in nsmap.items():
                 xpath_context.xpathRegisterNs(key, val)
 
             if hasattr(opf, 'xpathEval') and xpath_context:
@@ -684,7 +699,7 @@ def DocbookMan(env, target, source=None, *args, **kw):
                         
             except:
                 # Use simple regex parsing 
-                f = open(__ensure_suffix(str(s),'.xml'), 'r')
+                f = open_file___init__(__ensure_suffix(str(s),'.xml'), 'r')
                 content = f.read()
                 f.close()
                 

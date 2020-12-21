@@ -1,5 +1,4 @@
 """Test hook that periodically makes the primary of a replica set step down."""
-from __future__ import absolute_import
 
 import collections
 import os.path
@@ -16,6 +15,21 @@ from buildscripts.resmokelib.testing.hooks import interface
 from buildscripts.resmokelib.testing.fixtures import replicaset
 from buildscripts.resmokelib.testing.fixtures import shardedcluster
 
+
+
+
+def open_file_stepdown(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 class ContinuousStepdown(interface.Hook):  # pylint: disable=too-many-instance-attributes
     """Regularly connect to replica sets and send a replSetStepDown command."""
@@ -177,25 +191,31 @@ class _StepdownThread(threading.Thread):  # pylint: disable=too-many-instance-at
             self.logger.warning("No replica set on which to run stepdowns.")
             return
 
-        while True:
-            if self._is_stopped():
-                break
-            self._wait_for_permission_or_resume()
-            now = time.time()
-            if now - self._last_exec > self._stepdown_interval_secs:
-                self.logger.info("Starting stepdown of all primaries")
-                self._step_down_all()
-                # Wait until each replica set has a primary, so the test can make progress.
-                self._await_primaries()
-                self._last_exec = time.time()
-                self.logger.info("Completed stepdown of all primaries in %0d ms",
-                                 (self._last_exec - now) * 1000)
-            now = time.time()
-            if self._is_permitted():
-                # The 'wait_secs' is used to wait 'self._stepdown_interval_secs' from the moment
-                # the last stepdown command was sent.
-                wait_secs = max(0, self._stepdown_interval_secs - (now - self._last_exec))
-                self._wait(wait_secs)
+        try:
+            while True:
+                if self.__is_stopped():
+                    break
+                self._wait_for_permission_or_resume()
+                now = time.time()
+                if now - self._last_exec > self._stepdown_interval_secs:
+                    self.logger.info("Starting stepdown of all primaries")
+                    self._step_down_all()
+                    # Wait until each replica set has a primary, so the test can make progress.
+                    self._await_primaries()
+                    self._last_exec = time.time()
+                    self.logger.info("Completed stepdown of all primaries in %0d ms",
+                                     (self._last_exec - now) * 1000)
+                now = time.time()
+                if self._is_permitted():
+                    # The 'wait_secs' is used to wait 'self._stepdown_interval_secs' from the moment
+                    # the last stepdown command was sent.
+                    wait_secs = max(0, self._stepdown_interval_secs - (now - self._last_exec))
+                    self._wait(wait_secs)
+
+        except Exception:  # pylint: disable=W0703
+            # Proactively log the exception when it happens so it will be
+            # flushed immediately.
+            self.logger.exception("Stepdown Thread threw exception")
 
     def stop(self):
         """Stop the thread."""
@@ -204,7 +224,7 @@ class _StepdownThread(threading.Thread):  # pylint: disable=too-many-instance-at
         self.resume()
         self.join()
 
-    def _is_stopped(self):
+    def __is_stopped(self):
         return self._is_stopped_evt.is_set()
 
     def pause(self):
@@ -228,7 +248,7 @@ class _StepdownThread(threading.Thread):  # pylint: disable=too-many-instance-at
     def _wait_for_permission_or_resume(self):
         # Wait until stop, _stepdown_permitted_file or resume.
         if self._stepdown_permitted_file:
-            while not os.path.isfile(self._stepdown_permitted_file) and not self._is_stopped():
+            while not os.path.isfile(self._stepdown_permitted_file) and not self.__is_stopped():
                 # Set a short sleep during busy wait time for self._stepdown_permitted_file.
                 self._wait(0.1)
         else:
@@ -439,7 +459,7 @@ class _StepdownThread(threading.Thread):  # pylint: disable=too-many-instance-at
             if os.path.isfile(self._stepping_down_file):
                 raise RuntimeError("Stepping down file {} already exists".format(
                     self._stepping_down_file))
-            with open(self._stepping_down_file, "w") as fh:
+            with open_file_stepdown(self._stepping_down_file, "w") as fh:
                 fh.write("")
 
     def _stepdown_completed(self):

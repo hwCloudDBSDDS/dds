@@ -27,6 +27,21 @@ from subunit import (
 from subunit.test_results import CatFiles
 
 
+
+
+def open_file_filters(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def make_options(description):
     parser = OptionParser(description=description)
     parser.add_option(
@@ -143,7 +158,7 @@ def filter_by_result(result_factory, output_path, passthrough, forward,
     if output_path is None:
         output_to = sys.stdout
     else:
-        output_to = file(output_path, 'wb')
+        output_to = open_file_filters(output_path, 'wb')
 
     try:
         result = result_factory(output_to)
@@ -201,6 +216,6 @@ def find_stream(stdin, argv):
     """
     assert len(argv) < 2, "Too many filenames."
     if argv:
-        return open(argv[0], 'rb')
+        return open_file_filters(argv[0], 'rb')
     else:
         return stdin

@@ -2,6 +2,21 @@ import os
 import sys
 
 
+
+
+def open_file_jstoh(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def jsToHeader(target, source):
 
     outFile = target
@@ -23,7 +38,7 @@ def jsToHeader(target, source):
 
         h.append('constexpr char ' + stringname + "[] = {")
 
-        with open(filename, 'r') as f:
+        with open_file_jstoh(filename, 'r') as f:
             for line in f:
                 h.append(lineToChars(line))
 
@@ -39,7 +54,7 @@ def jsToHeader(target, source):
 
     text = '\n'.join(h)
 
-    with open(outFile, 'wb') as out:
+    with open_file_jstoh(outFile, 'w') as out:
         try:
             out.write(text)
         finally:
@@ -48,7 +63,7 @@ def jsToHeader(target, source):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print "Must specify [target] [source] "
+        print("Must specify [target] [source] ")
         sys.exit(1)
 
     jsToHeader(sys.argv[1], sys.argv[2:])

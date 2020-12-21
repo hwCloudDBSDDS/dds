@@ -84,7 +84,7 @@ class MultipartDetailsParser(DetailsParser):
             self._state.endDetails()
             return
         # TODO error handling
-        field, value = line[:-1].decode('utf8').split(' ', 1)
+        field, value = line[:-1].split(' ', 1)
         try:
             main, sub = value.split('/')
         except ValueError:
@@ -93,7 +93,7 @@ class MultipartDetailsParser(DetailsParser):
         self._parse_state = self._get_name
 
     def _get_name(self, line):
-        self._name = line[:-1].decode('utf8')
+        self._name = line[:-1]
         self._body = BytesIO()
         self._chunk_parser = chunked.Decoder(self._body)
         self._parse_state = self._feed_chunks

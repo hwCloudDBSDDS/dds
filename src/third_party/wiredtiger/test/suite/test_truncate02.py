@@ -92,7 +92,7 @@ class test_truncate_fast_delete(wttest.WiredTigerTestCase):
     # and backward iteration, they are different code paths in this case.
     def cursor_count(self, cursor, expected):
         count = 0
-        while cursor.next() == 0:
+        while next(cursor) == 0:
             count += 1
         self.assertEqual(count, expected)
         cursor.reset()

@@ -53,7 +53,7 @@ class test_txn08(wttest.WiredTigerTestCase, suite_subprocess):
 
         # We want to test some chars that produce Unicode encoding
         # for printlog output.
-        value = u'\u0001\u0002abcd\u0003\u0004'
+        value = '\u0001\u0002abcd\u0003\u0004'
 
         self.session.begin_transaction()
         for k in range(5):

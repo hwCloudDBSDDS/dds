@@ -32,10 +32,25 @@ Python won't blow up even if dbm wasn't compiled in.
 
 __revision__ = "src/engine/SCons/compat/_scons_dbm.py rel_2.5.0:3543:937e55cd78f7 2016/04/09 11:29:54 bdbaddog"
 
+
+
+def open_file__scons_dbm(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class error(Exception):
     pass
 
-def open(*args, **kw):
+def open_file__scons_dbm(*args, **kw):
     raise error()
 
 # Local Variables:

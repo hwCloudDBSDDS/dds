@@ -1,7 +1,5 @@
 """Test hook for verifying correctness of secondary's behavior during an unclean shutdown."""
 
-from __future__ import absolute_import
-
 import time
 
 import bson

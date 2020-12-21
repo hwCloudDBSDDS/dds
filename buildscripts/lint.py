@@ -1,8 +1,5 @@
 """Lint module."""
 
-from __future__ import absolute_import
-from __future__ import print_function
-
 import codecs
 import os
 import sys
@@ -134,7 +131,7 @@ def main():
                 nudge = True
                 continue
             else:
-                print("unknown arg [%s]" % arg)
+                print(("unknown arg [%s]" % arg))
                 sys.exit(-1)
         paths.append(arg)
 

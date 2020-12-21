@@ -34,23 +34,38 @@ import time
 DATE_TIME_STR = "%Y-%m-%d %H:%M:%S"
 
 
+
+
+def open_file_prune_check(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def get_prune_file_path(mount_point):
     """Get the shared scons directory for this AMI."""
-    with open('/etc/mongodb-build-system-id', 'r') as fh:
+    with open_file_prune_check('/etc/mongodb-build-system-id', 'r') as fh:
         uuid = fh.read().strip()
     return os.path.join(mount_point, uuid, 'info', 'last_prune_time')
 
 
 def write_last_prune_time(last_prune_time, prune_file_path):
     """Write the last prune timestamp in a 'last_prune_time' file."""
-    with open(prune_file_path, 'w') as fh:
+    with open_file_prune_check(prune_file_path, 'w') as fh:
         fh.write(last_prune_time.strftime(DATE_TIME_STR) + '\n')
 
 
 def retrieve_last_prune_time(prune_file_path):
     """Get the last prune time from the 'last_prune_time' file."""
     if os.path.isfile(prune_file_path):
-        with open(prune_file_path, 'r') as fh:
+        with open_file_prune_check(prune_file_path, 'r') as fh:
             last_prune_time_str = fh.read().strip()
             last_prune_time = datetime.strptime(last_prune_time_str, DATE_TIME_STR)
     else:
@@ -78,14 +93,14 @@ def check_last_prune_time(args):
     # A 0 return code signals our Evergreen task that we should run the prune script.
     # Otherwise, return 1 and skip pruning.
     if diff.total_seconds() > seconds_since_last_prune:
-        print("It has been {0:.2f} seconds ({1:.2f} hours) since last prune.".format(
+        print(("It has been {0:.2f} seconds ({1:.2f} hours) since last prune.".format(
             diff.total_seconds(),
-            diff.total_seconds() / 60 / 60))
+            diff.total_seconds() / 60 / 60)))
         sys.exit(0)
     else:
-        print("It has been {0:.2f} seconds ({1:.2f} hours) since last prune.".format(
+        print(("It has been {0:.2f} seconds ({1:.2f} hours) since last prune.".format(
             diff.total_seconds(),
-            diff.total_seconds() / 60 / 60))
+            diff.total_seconds() / 60 / 60)))
         sys.exit(1)
 
 

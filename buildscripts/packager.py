@@ -47,6 +47,21 @@ ARCH_CHOICES = ["x86_64", "arm64", "s390x"]
 DISTROS = ["suse", "debian", "redhat", "ubuntu", "amazon", "amazon2"]
 
 
+
+
+def open_file_packager(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class Spec(object):
     """Spec class."""
 
@@ -409,7 +424,7 @@ def main():
     prefix = args.prefix
     if prefix is None:
         prefix = tempfile.mkdtemp()
-    print "Working in directory %s" % prefix
+    print(("Working in directory %s" % prefix))
 
     os.chdir(prefix)
     try:
@@ -449,7 +464,7 @@ def crossproduct(*seqs):
 
 def sysassert(argv):
     """Run argv and assert that it exited with status 0."""
-    print "In %s, running %s" % (os.getcwd(), " ".join(argv))
+    print(("In %s, running %s" % (os.getcwd(), " ".join(argv))))
     sys.stdout.flush()
     sys.stderr.flush()
     assert subprocess.Popen(argv).wait() == 0
@@ -457,7 +472,7 @@ def sysassert(argv):
 
 def backtick(argv):
     """Run argv and return its output string."""
-    print "In %s, running %s" % (os.getcwd(), " ".join(argv))
+    print(("In %s, running %s" % (os.getcwd(), " ".join(argv))))
     sys.stdout.flush()
     sys.stderr.flush()
     return subprocess.Popen(argv, stdout=subprocess.PIPE).communicate()[0]
@@ -493,11 +508,11 @@ def unpack_binaries_into(build_os, arch, spec, where):
         sysassert(["tar", "xvzf", rootdir + "/" + tarfile(build_os, arch, spec)])
         release_dir = glob('mongodb-linux-*')[0]
         for releasefile in "bin", "LICENSE-Community.txt", "GNU-AGPL-3.0", "README", "THIRD-PARTY-NOTICES", "MPL-2":
-            print "moving file: %s/%s" % (release_dir, releasefile)
+            print(("moving file: %s/%s" % (release_dir, releasefile)))
             os.rename("%s/%s" % (release_dir, releasefile), releasefile)
         os.rmdir(release_dir)
     except Exception:
-        exc = sys.exc_value
+        exc = sys.exc_info()[1]
         os.chdir(rootdir)
         raise exc
     os.chdir(rootdir)
@@ -515,7 +530,7 @@ def make_package(distro, build_os, arch, spec, srcdir):
     # directory, so the debian directory is needed in all cases (and
     # innocuous in the debianoids' sdirs).
     for pkgdir in ["debian", "rpm"]:
-        print "Copying packaging files from %s to %s" % ("%s/%s" % (srcdir, pkgdir), sdir)
+        print(("Copying packaging files from %s to %s" % ("%s/%s" % (srcdir, pkgdir), sdir)))
         # FIXME: sh-dash-cee is bad. See if tarfile can do this.
         sysassert([
             "sh", "-c",
@@ -614,10 +629,10 @@ def make_deb_repo(repo, distro, build_os):
             [os.path.dirname(deb)[2:] for deb in backtick(["find", ".", "-name", "*.deb"]).split()])
         for directory in dirs:
             st = backtick(["dpkg-scanpackages", directory, "/dev/null"])
-            with open(directory + "/Packages", "w") as fh:
+            with open_file_packager(directory + "/Packages", "w") as fh:
                 fh.write(st)
             bt = backtick(["gzip", "-9c", directory + "/Packages"])
-            with open(directory + "/Packages.gz", "wb") as fh:
+            with open_file_packager(directory + "/Packages.gz", "wb") as fh:
                 fh.write(bt)
     finally:
         os.chdir(oldpwd)
@@ -640,7 +655,7 @@ Description: MongoDB packages
     os.chdir(repo + "../../")
     s2 = backtick(["apt-ftparchive", "release", "."])
     try:
-        with open("Release", 'w') as fh:
+        with open_file_packager("Release", 'w') as fh:
             fh.write(s1)
             fh.write(s2)
     finally:
@@ -663,7 +678,7 @@ def move_repos_into_place(src, dst):  # pylint: disable=too-many-branches
             os.mkdir(dname)
             break
         except OSError:
-            exc = sys.exc_value
+            exc = sys.exc_info()[1]
             if exc.errno == errno.EEXIST:
                 pass
             else:
@@ -683,7 +698,7 @@ def move_repos_into_place(src, dst):  # pylint: disable=too-many-branches
             os.symlink(dname, tmpnam)
             break
         except OSError:  # as exc: # Python >2.5
-            exc = sys.exc_value
+            exc = sys.exc_info()[1]
             if exc.errno == errno.EEXIST:
                 pass
             else:
@@ -701,7 +716,7 @@ def move_repos_into_place(src, dst):  # pylint: disable=too-many-branches
                 os.symlink(os.readlink(dst), oldnam)
                 break
             except OSError:  # as exc: # Python >2.5
-                exc = sys.exc_value
+                exc = sys.exc_info()[1]
                 if exc.errno == errno.EEXIST:
                     pass
                 else:
@@ -732,7 +747,7 @@ def write_debian_changelog(path, spec, srcdir):
     lines = [re.sub("^mongodb ", "mongodb%s " % (spec.suffix()), line) for line in lines]
     lines = [re.sub("^  --", " --", line) for line in lines]
     sb = "\n".join(lines)
-    with open(path, 'w') as fh:
+    with open_file_packager(path, 'w') as fh:
         fh.write(sb)
 
 
@@ -815,8 +830,8 @@ def make_rpm(distro, build_os, arch, spec, srcdir):  # pylint: disable=too-many-
     #
     # The version of rpm and rpm tools in RHEL 5.5 can't interpolate the
     # %{dynamic_version} macro, so do it manually
-    with open(specfile, "r") as spec_source:
-        with open(topdir + "SPECS/" + os.path.basename(specfile), "w") as spec_dest:
+    with open_file_packager(specfile, "r") as spec_source:
+        with open_file_packager(topdir + "SPECS/" + os.path.basename(specfile), "w") as spec_dest:
             for line in spec_source:
                 line = line.replace('%{dynamic_version}', spec.pversion(distro))
                 line = line.replace('%{dynamic_release}', spec.prelease())
@@ -860,15 +875,15 @@ def make_rpm_repo(repo):
 
 def write_rpmrc_file(path, string):
     """Write the RPM rc file."""
-    with open(path, 'w') as fh:
+    with open_file_packager(path, 'w') as fh:
         fh.write(string)
 
 
 def write_rpm_macros_file(path, topdir, release_dist):
     """Write the RPM macros file."""
-    with open(path, 'w') as fh:
-        fh.write("%%_topdir	%s\n" % topdir)
-        fh.write("%%dist	.%s\n" % release_dist)
+    with open_file_packager(path, 'w') as fh:
+        fh.write("%%_topdir    %s\n" % topdir)
+        fh.write("%%dist    .%s\n" % release_dist)
         fh.write("%_use_internal_dependency_generator 0\n")
 
 
@@ -878,7 +893,7 @@ def ensure_dir(filename):
     try:
         os.makedirs(dirpart)
     except OSError:  # as exc: # Python >2.5
-        exc = sys.exc_value
+        exc = sys.exc_info()[1]
         if exc.errno == errno.EEXIST:
             pass
         else:

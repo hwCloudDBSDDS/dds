@@ -18,7 +18,6 @@ IDL Parser.
 Converts a YAML document to an idl.syntax tree.
 Only validates the document is syntatically correct, not semantically.
 """
-from __future__ import absolute_import, print_function, unicode_literals
 
 from abc import ABCMeta, abstractmethod
 import io
@@ -31,6 +30,21 @@ from . import cpp_types
 from . import errors
 from . import syntax
 
+
+
+
+def open_file_parser(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 class _RuleDesc(object):
     """
@@ -50,11 +64,11 @@ class _RuleDesc(object):
     OPTIONAL = 2
 
     def __init__(self, node_type, required=OPTIONAL, mapping_parser_func=None):
-        # type: (unicode, int, Callable[[errors.ParserContext,yaml.nodes.MappingNode], Any]) -> None
+        # type: (str, int, Callable[[errors.ParserContext,yaml.nodes.MappingNode], Any]) -> None
         """Construct a parser rule description."""
-        assert required == _RuleDesc.REQUIRED or required == _RuleDesc.OPTIONAL
+        assert required in (_RuleDesc.REQUIRED, _RuleDesc.OPTIONAL)
 
-        self.node_type = node_type  # type: unicode
+        self.node_type = node_type  # type: str
         self.required = required  # type: int
         self.mapping_parser_func = mapping_parser_func  # type: Callable[[errors.ParserContext,yaml.nodes.MappingNode], Any]
 
@@ -62,9 +76,9 @@ class _RuleDesc(object):
 def _generic_parser(
         ctxt,  # type: errors.ParserContext
         node,  # type: Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]
-        syntax_node_name,  # type: unicode
+        syntax_node_name,  # type: str
         syntax_node,  # type: Any
-        mapping_rules  # type: Dict[unicode, _RuleDesc]
+        mapping_rules  # type: Dict[str, _RuleDesc]
 ):  # type: (...) -> None
     # pylint: disable=too-many-branches
     field_name_set = set()  # type: Set[str]
@@ -108,7 +122,7 @@ def _generic_parser(
         field_name_set.add(first_name)
 
     # Check for any missing required fields
-    for name, rule_desc in mapping_rules.items():
+    for name, rule_desc in list(mapping_rules.items()):
         if not rule_desc.required == _RuleDesc.REQUIRED:
             continue
 
@@ -127,8 +141,8 @@ def _parse_mapping(
         ctxt,  # type: errors.ParserContext
         spec,  # type: syntax.IDLSpec
         node,  # type: Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]
-        syntax_node_name,  # type: unicode
-        func  # type: Callable[[errors.ParserContext,syntax.IDLSpec,unicode,Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]], None]
+        syntax_node_name,  # type: str
+        func  # type: Callable[[errors.ParserContext,syntax.IDLSpec,str,Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]], None]
 ):  # type: (...) -> None
     """Parse a top-level mapping section in the IDL file."""
     if not ctxt.is_mapping_node(node, syntax_node_name):
@@ -169,7 +183,7 @@ def _parse_imports(ctxt, spec, node):
 
 
 def _parse_type(ctxt, spec, name, node):
-    # type: (errors.ParserContext, syntax.IDLSpec, unicode, Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]) -> None
+    # type: (errors.ParserContext, syntax.IDLSpec, str, Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]) -> None
     """Parse a type section in the IDL file."""
     if not ctxt.is_mapping_node(node, "type"):
         return
@@ -330,7 +344,7 @@ def _parse_chained_structs(ctxt, node):
 
 
 def _parse_struct(ctxt, spec, name, node):
-    # type: (errors.ParserContext, syntax.IDLSpec, unicode, Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]) -> None
+    # type: (errors.ParserContext, syntax.IDLSpec, str, Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]) -> None
     """Parse a struct section in the IDL file."""
     if not ctxt.is_mapping_node(node, "struct"):
         return
@@ -387,7 +401,7 @@ def _parse_enum_values(ctxt, node):
 
 
 def _parse_enum(ctxt, spec, name, node):
-    # type: (errors.ParserContext, syntax.IDLSpec, unicode, Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]) -> None
+    # type: (errors.ParserContext, syntax.IDLSpec, str, Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]) -> None
     """Parse an enum section in the IDL file."""
     if not ctxt.is_mapping_node(node, "struct"):
         return
@@ -409,7 +423,7 @@ def _parse_enum(ctxt, spec, name, node):
 
 
 def _parse_command(ctxt, spec, name, node):
-    # type: (errors.ParserContext, syntax.IDLSpec, unicode, Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]) -> None
+    # type: (errors.ParserContext, syntax.IDLSpec, str, Union[yaml.nodes.MappingNode, yaml.nodes.ScalarNode, yaml.nodes.SequenceNode]) -> None
     """Parse a command section in the IDL file."""
     if not ctxt.is_mapping_node(node, "command"):
         return
@@ -458,7 +472,7 @@ def _parse_command(ctxt, spec, name, node):
 
 
 def _prefix_with_namespace(cpp_namespace, cpp_name):
-    # type: (unicode, unicode) -> unicode
+    # type: (str, str) -> str
     """Preface a C++ type name with a namespace if not already qualified or a primitive type."""
     if "::" in cpp_name or cpp_types.is_primitive_scalar_type(cpp_name):
         return cpp_name
@@ -488,7 +502,7 @@ def _propagate_globals(spec):
 
 
 def _parse(stream, error_file_name):
-    # type: (Any, unicode) -> syntax.IDLParsedSpec
+    # type: (Any, str) -> syntax.IDLParsedSpec
     """
     Parse a YAML document into an idl.syntax tree.
 
@@ -548,10 +562,8 @@ def _parse(stream, error_file_name):
     return syntax.IDLParsedSpec(spec, None)
 
 
-class ImportResolverBase(object):
+class ImportResolverBase(object, metaclass=ABCMeta):
     """Base class for resolving imported files."""
-
-    __metaclass__ = ABCMeta
 
     def __init__(self):
         # type: () -> None
@@ -560,19 +572,19 @@ class ImportResolverBase(object):
 
     @abstractmethod
     def resolve(self, base_file, imported_file_name):
-        # type: (unicode, unicode) -> unicode
+        # type: (str, str) -> str
         """Return the complete path to an imported file name."""
         pass
 
     @abstractmethod
-    def open(self, resolved_file_name):
-        # type: (unicode) -> Any
+    def open_file_parser(self, resolved_file_name):
+        # type: (str) -> Any
         """Return an io.Stream for the requested file."""
         pass
 
 
 def parse(stream, input_file_name, resolver):
-    # type: (Any, unicode, ImportResolverBase) -> syntax.IDLParsedSpec
+    # type: (Any, str, ImportResolverBase) -> syntax.IDLParsedSpec
     """
     Parse a YAML document into an idl.syntax tree.
 
@@ -586,13 +598,13 @@ def parse(stream, input_file_name, resolver):
     if root_doc.errors:
         return root_doc
 
-    imports = []  # type: List[Tuple[common.SourceLocation, unicode, unicode]]
-    needs_include = []  # type: List[unicode]
+    imports = []  # type: List[Tuple[common.SourceLocation, str, str]]
+    needs_include = []  # type: List[str]
     if root_doc.spec.imports:
         imports = [(root_doc.spec.imports, input_file_name, import_file_name)
                    for import_file_name in root_doc.spec.imports.imports]
 
-    resolved_file_names = []  # type: List[unicode]
+    resolved_file_names = []  # type: List[str]
 
     ctxt = errors.ParserContext(input_file_name, errors.ParserErrorCollection())
 
@@ -617,7 +629,7 @@ def parse(stream, input_file_name, resolver):
         resolved_file_names.append(resolved_file_name)
 
         # Parse imported file
-        with resolver.open(resolved_file_name) as file_stream:
+        with resolver.open_file_parser(resolved_file_name) as file_stream:
             parsed_doc = _parse(file_stream, resolved_file_name)
 
         # Check for errors

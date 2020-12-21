@@ -39,13 +39,13 @@ class _NonManglingOutputChecker(doctest.OutputChecker):
     # Only do this overriding hackery if doctest has a broken _input function
     if getattr(doctest, "_encoding", None) is not None:
         from types import FunctionType as __F
-        __f = doctest.OutputChecker.output_difference.im_func
-        __g = dict(__f.func_globals)
+        __f = doctest.OutputChecker.output_difference.__func__
+        __g = dict(__f.__globals__)
         def _indent(s, indent=4, _pattern=re.compile("^(?!$)", re.MULTILINE)):
             """Prepend non-empty lines in ``s`` with ``indent`` number of spaces"""
             return _pattern.sub(indent*" ", s)
         __g["_indent"] = _indent
-        output_difference = __F(__f.func_code, __g, "output_difference")
+        output_difference = __F(__f.__code__, __g, "output_difference")
         del __F, __f, __g, _indent
 
 
@@ -97,8 +97,8 @@ class DocTestMismatch(Mismatch):
 
     def describe(self):
         s = self.matcher._describe_difference(self.with_nl)
-        if str_is_unicode or isinstance(s, unicode):
+        if str_is_unicode or isinstance(s, str):
             return s
         # GZ 2011-08-24: This is actually pretty bogus, most C0 codes should
         #                be escaped, in addition to non-ascii bytes.
-        return s.decode("latin1").encode("ascii", "backslashreplace")
+        return s

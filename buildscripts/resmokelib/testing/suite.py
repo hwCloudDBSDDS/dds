@@ -1,7 +1,5 @@
 """Holder for the (test kind, list of tests) pair with additional metadata their execution."""
 
-from __future__ import absolute_import
-
 import itertools
 import threading
 import time
@@ -234,7 +232,7 @@ class Suite(object):  # pylint: disable=too-many-instance-attributes
         sb.append("Executed %d times in %0.2f seconds:" % (num_iterations, total_time_taken))
 
         combined_summary = _summary.Summary(0, 0.0, 0, 0, 0, 0)
-        for iteration in xrange(num_iterations):
+        for iteration in range(num_iterations):
             # Summarize each execution as a bulleted list of results.
             bulleter_sb = []
             summary = self._summarize_report(reports[iteration], start_times[iteration],

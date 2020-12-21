@@ -25,5 +25,5 @@ def test_suite():
         test_higherorder,
         test_impl,
         ]
-    suites = map(lambda x: x.test_suite(), modules)
+    suites = [x.test_suite() for x in modules]
     return TestSuite(suites)

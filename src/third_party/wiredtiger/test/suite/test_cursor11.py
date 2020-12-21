@@ -70,16 +70,16 @@ class test_cursor11(wttest.WiredTigerTestCase):
         c = s.open_cursor(uri, None)
 
         c.set_key(ds.key(25))
-        self.assertEquals(c.search(), 0)
-        self.assertEquals(c.next(), 0)
-        self.assertEquals(c.get_key(), ds.key(26))
+        self.assertEqual(c.search(), 0)
+        self.assertEqual(next(c), 0)
+        self.assertEqual(c.get_key(), ds.key(26))
         c.remove()
-        self.assertEquals(c.get_key(), ds.key(26))
+        self.assertEqual(c.get_key(), ds.key(26))
         msg = '/requires value be set/'
         self.assertRaisesWithMessage(
             wiredtiger.WiredTigerError, c.get_value, msg)
-        self.assertEquals(c.next(), 0)
-        self.assertEquals(c.get_key(), ds.key(27))
+        self.assertEqual(next(c), 0)
+        self.assertEqual(c.get_key(), ds.key(27))
 
     # Do a remove using the cursor without setting a position, and confirm
     # no key, value or position remains.
@@ -102,8 +102,8 @@ class test_cursor11(wttest.WiredTigerTestCase):
         msg = '/requires value be set/'
         self.assertRaisesWithMessage(
             wiredtiger.WiredTigerError, c.get_value, msg)
-        self.assertEquals(c.next(), 0)
-        self.assertEquals(c.get_key(), ds.key(1))
+        self.assertEqual(next(c), 0)
+        self.assertEqual(c.get_key(), ds.key(1))
 
     # Do a remove using the key after also setting a position, and confirm
     # no key, value or position remains.
@@ -119,7 +119,7 @@ class test_cursor11(wttest.WiredTigerTestCase):
         c = s.open_cursor(uri, None)
 
         c.set_key(ds.key(25))
-        self.assertEquals(c.search(), 0)
+        self.assertEqual(c.search(), 0)
         c.set_key(ds.key(25))
         c.remove()
         msg = '/requires key be set/'
@@ -128,8 +128,8 @@ class test_cursor11(wttest.WiredTigerTestCase):
         msg = '/requires value be set/'
         self.assertRaisesWithMessage(
             wiredtiger.WiredTigerError, c.get_value, msg)
-        self.assertEquals(c.next(), 0)
-        self.assertEquals(c.get_key(), ds.key(1))
+        self.assertEqual(next(c), 0)
+        self.assertEqual(c.get_key(), ds.key(1))
 
     # Do an insert and confirm no key, value or position remains.
     def test_cursor_insert(self):
@@ -152,8 +152,8 @@ class test_cursor11(wttest.WiredTigerTestCase):
         msg = '/requires value be set/'
         self.assertRaisesWithMessage(
             wiredtiger.WiredTigerError, c.get_value, msg)
-        self.assertEquals(c.next(), 0)
-        self.assertEquals(c.get_key(), ds.key(1))
+        self.assertEqual(next(c), 0)
+        self.assertEqual(c.get_key(), ds.key(1))
 
 if __name__ == '__main__':
     wttest.run()

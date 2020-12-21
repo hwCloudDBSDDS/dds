@@ -26,7 +26,7 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-import Queue
+import queue
 import threading, time, wiredtiger, wttest
 from wtthread import checkpoint_thread, op_thread
 from wtscenario import make_scenarios
@@ -49,15 +49,15 @@ class test_checkpoint02(wttest.WiredTigerTestCase):
 
         uris = list()
         uris.append(self.uri)
-        queue = Queue.Queue()
+        queue = queue.Queue()
         my_data = 'a' * self.dsize
-        for i in xrange(self.nops):
+        for i in range(self.nops):
             if i % 191 == 0 and i != 0:
                 queue.put_nowait(('b', i, my_data))
             queue.put_nowait(('i', i, my_data))
 
         opthreads = []
-        for i in xrange(self.nthreads):
+        for i in range(self.nthreads):
             t = op_thread(self.conn, uris, self.fmt, queue, done)
             opthreads.append(t)
             t.start()
@@ -72,7 +72,7 @@ class test_checkpoint02(wttest.WiredTigerTestCase):
         cursor = self.session.open_cursor(self.uri, None, None)
         i = 0
         while True:
-            nextret = cursor.next()
+            nextret = next(cursor)
             if nextret != 0:
                 break
             key = cursor.get_key()

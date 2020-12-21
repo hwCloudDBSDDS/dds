@@ -4,8 +4,6 @@ Unlike dbhash.py, this version of the hook runs continously in a background thre
 running.
 """
 
-from __future__ import absolute_import
-
 import os.path
 import sys
 import threading

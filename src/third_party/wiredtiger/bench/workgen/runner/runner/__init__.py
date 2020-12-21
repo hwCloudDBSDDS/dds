@@ -27,8 +27,8 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 #
 # runner/__init__.py
-#	Used as a first import by runners, does any common initialization.
-from __future__ import print_function
+#    Used as a first import by runners, does any common initialization.
+
 
 import os, shutil, sys
 thisdir = os.path.dirname(os.path.abspath(__file__))
@@ -69,7 +69,7 @@ except:
             py_args.insert(0, sys.executable)
             try:
                 os.execv(sys.executable, py_args)
-            except Exception, exception:
+            except Exception as exception:
                 print('re-exec failed: ' + str(exception), file=sys.stderr)
                 print('  exec(' + sys.executable + ', ' + str(py_args) + ')')
                 print('Try adding "' + dotlibs + '" to the', file=sys.stderr)

@@ -68,7 +68,7 @@ class SubunitTestRunner(object):
         "List the test."
         result, errors = self._list(test)
         if errors:
-            failed_descr = '\n'.join(errors).encode('utf8')
+            failed_descr = '\n'.join(errors)
             result.status(file_name="import errors", runnable=False,
                 file_bytes=failed_descr, mime_type="text/plain;charset=utf8")
             sys.exit(2)
@@ -108,7 +108,7 @@ class SubunitTestProgram(TestProgram):
         usage_lines = usage_text.split('\n')
         usage_lines.insert(2, "Run a test suite with a subunit reporter.")
         usage_lines.insert(3, "")
-        print('\n'.join(usage_lines))
+        print(('\n'.join(usage_lines)))
         sys.exit(2)
 
 

@@ -6,6 +6,21 @@ import sys
 from gen_helper import getCopyrightNotice, openNamespaces, closeNamespaces, \
     include
 
+
+
+def open_file_gen_casefold_map(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def generate(unicode_casefold_file, target):
     """Generates a C++ source file that contains a Unicode case folding
        function.
@@ -13,7 +28,7 @@ def generate(unicode_casefold_file, target):
     The case folding function contains a switch statement with cases for every
     Unicode codepoint that has a case folding mapping.
     """
-    out = open(target, "w")
+    out = open_file_gen_casefold_map(target, "w")
 
     out.write(getCopyrightNotice())
     out.write(include("mongo/db/fts/unicode/codepoints.h"))
@@ -22,7 +37,7 @@ def generate(unicode_casefold_file, target):
 
     case_mappings = {}
 
-    cf_file = open(unicode_casefold_file, 'rU')
+    cf_file = open_file_gen_casefold_map(unicode_casefold_file, 'rU')
 
     for line in cf_file:
         # Filter out blank lines and lines that start with #

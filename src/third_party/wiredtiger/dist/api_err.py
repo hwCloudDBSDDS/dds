@@ -4,6 +4,21 @@
 import re, textwrap
 from dist import compare_srcfile
 
+
+
+def open_file_api_err(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class Error:
     def __init__(self, name, value, desc, long_desc=None, **flags):
         self.name = name
@@ -73,9 +88,9 @@ errors = [
 
 # Update the #defines in the wiredtiger.in file.
 tmp_file = '__tmp'
-tfile = open(tmp_file, 'w')
+tfile = open_file_api_err(tmp_file, 'w')
 skip = 0
-for line in open('../src/include/wiredtiger.in', 'r'):
+for line in open_file_api_err('../src/include/wiredtiger.in', 'r'):
     if not skip:
         tfile.write(line)
     if line.count('Error return section: END'):
@@ -102,7 +117,7 @@ compare_srcfile(tmp_file, '../src/include/wiredtiger.in')
 
 # Output the wiredtiger_strerror and wiredtiger_sterror_r code.
 tmp_file = '__tmp'
-tfile = open(tmp_file, 'w')
+tfile = open_file_api_err(tmp_file, 'w')
 tfile.write('''/* DO NOT EDIT: automatically built by dist/api_err.py. */
 
 #include "wt_internal.h"
@@ -170,9 +185,9 @@ compare_srcfile(tmp_file, '../src/conn/api_strerror.c')
 # Update the error documentation block.
 doc = '../src/docs/error-handling.dox'
 tmp_file = '__tmp'
-tfile = open(tmp_file, 'w')
+tfile = open_file_api_err(tmp_file, 'w')
 skip = 0
-for line in open(doc, 'r'):
+for line in open_file_api_err(doc, 'r'):
     if not skip:
         tfile.write(line)
     if line.count('IGNORE_BUILT_BY_API_ERR_END'):

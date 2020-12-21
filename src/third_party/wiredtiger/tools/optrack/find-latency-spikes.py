@@ -52,6 +52,21 @@ colorList = [];
 
 # Codes for various colors for printing of informational and error messages.
 #
+
+
+def open_file_find_latency_spikes(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class color:
     PURPLE = '\033[95m'
     CYAN = '\033[96m'
@@ -113,7 +128,7 @@ def initColorList():
 
     global colorList;
 
-    colorList = matplotlib.colors.cnames.keys();
+    colorList = list(matplotlib.colors.cnames.keys());
 
     for color in colorList:
         # Some browsers break if you try to give them 'sage'
@@ -131,7 +146,7 @@ def getColorForFunction(function):
     global lastColorUsed;
     global funcToColor;
 
-    if not funcToColor.has_key(function):
+    if function not in funcToColor:
         funcToColor[function] = colorList[lastColorUsed % len(colorList)];
         lastColorUsed += 1;
 
@@ -212,9 +227,9 @@ def plotOutlierHistogram(dataframe, maxOutliers, func, durationThreshold,
     y_upper_bound = (maxOutliers / y_ticker_step + 1) * y_ticker_step;
 
     p.yaxis.ticker = FixedTicker(ticks =
-                                 range(0, y_upper_bound, y_ticker_step));
+                                 list(range(0, y_upper_bound, y_ticker_step)));
     p.ygrid.ticker = FixedTicker(ticks =
-                                 range(0, y_upper_bound, y_ticker_step));
+                                 list(range(0, y_upper_bound, y_ticker_step)));
     p.xaxis.formatter = NumeralTickFormatter(format="0,");
 
     p.y_range = Range1d(0, y_upper_bound);
@@ -254,9 +269,9 @@ def normalizeIntervalData():
     global firstTimeStamp;
     global perFileDataFrame;
 
-    print(color.BLUE + color.BOLD + "Normalizing data..." + color.END);
+    print((color.BLUE + color.BOLD + "Normalizing data..." + color.END));
 
-    for file, df in perFileDataFrame.iteritems():
+    for file, df in perFileDataFrame.items():
         df['origstart'] = df['start'];
         df['start'] = df['start'] - firstTimeStamp;
         df['end'] = df['end'] - firstTimeStamp;
@@ -264,8 +279,8 @@ def normalizeIntervalData():
 def reportDataError(logfile, logfilename):
 
     if (logfile is not sys.stdout):
-        print(color.BOLD + color.RED + "Your data may have errors. " +
-              "Check the file " + logfilename + " for details." + color.END);
+        print((color.BOLD + color.RED + "Your data may have errors. " +
+              "Check the file " + logfilename + " for details." + color.END));
     return True;
 
 #
@@ -312,7 +327,7 @@ def createCallstackSeries(data, logfilename):
 
     # Let's open the log file.
     try:
-        logfile = open(logfilename, "w");
+        logfile = open_file_find-latency-spikes(logfilename, "w");
     except:
         logfile = sys.stdout;
 
@@ -345,7 +360,7 @@ def createCallstackSeries(data, logfilename):
 
         else:
             print("Invalid event in this line:");
-            print(str(row[0]) + " " + str(row[1]) + " " + str(row[2]));
+            print((str(row[0]) + " " + str(row[1]) + " " + str(row[2])));
             continue;
 
     if (len(intervalBeginningsStack) > 0):
@@ -502,8 +517,8 @@ def generateBucketChartForFile(figureName, dataframe, y_max, x_min, x_max):
     p.yaxis.major_tick_line_color = None;
     p.yaxis.minor_tick_line_color = None;
     p.yaxis.major_label_text_font_size = '0pt';
-    p.yaxis.ticker = FixedTicker(ticks = range(0, y_max+1));
-    p.ygrid.ticker = FixedTicker(ticks = range(0, y_max+1));
+    p.yaxis.ticker = FixedTicker(ticks = list(range(0, y_max+1)));
+    p.ygrid.ticker = FixedTicker(ticks = list(range(0, y_max+1)));
 
     p.xaxis.formatter = NumeralTickFormatter(format="0,");
     p.title.text_font_style = "bold";
@@ -512,7 +527,7 @@ def generateBucketChartForFile(figureName, dataframe, y_max, x_min, x_max):
            top = 'stackdepthNext', color = 'color', line_color = "lightgrey",
            line_width = 0.5, source=cds);
 
-    for func, fColor in funcToColor.iteritems():
+    for func, fColor in funcToColor.items():
 
         # If this function is not present in this dataframe,
         # we don't care about it.
@@ -526,7 +541,7 @@ def generateBucketChartForFile(figureName, dataframe, y_max, x_min, x_max):
         # add it again to avoid redundancy in the charts and
         # in order not to waste space.
         #
-        if (colorAlreadyUsedInLegend.has_key(fColor)):
+        if (fColor in colorAlreadyUsedInLegend):
             continue;
         else:
             colorAlreadyUsedInLegend[fColor] = True;
@@ -694,8 +709,8 @@ def generateNavigatorFigure(dataframe, i, title):
     p.yaxis.major_tick_line_color = None;
     p.yaxis.minor_tick_line_color = None;
     p.yaxis.major_label_text_font_size = '0pt';
-    p.yaxis.ticker = FixedTicker(ticks = range(0, 1));
-    p.ygrid.ticker = FixedTicker(ticks = range(0, 1));
+    p.yaxis.ticker = FixedTicker(ticks = list(range(0, 1)));
+    p.ygrid.ticker = FixedTicker(ticks = list(range(0, 1)));
 
     p.xaxis.formatter = NumeralTickFormatter(format="0,");
 
@@ -777,12 +792,12 @@ def generateTSSlicesForBuckets():
                                                    navigatorDF);
 
         percentComplete = float(i) / float(numBuckets) * 100;
-        print(color.BLUE + color.BOLD + " Generating timeline charts... "),
+        print((color.BLUE + color.BOLD + " Generating timeline charts... "), end=' ')
         sys.stdout.write("%d%% complete  \r" % (percentComplete) );
         sys.stdout.flush();
         bucketFilenames.append(fileName);
 
-    print(color.END);
+    print((color.END));
 
     return bucketFilenames;
 
@@ -798,18 +813,18 @@ def processFile(fname):
                        dtype={"Event": np.int32, "Timestamp": np.int64},
                        thousands=",");
 
-    print(color.BOLD + color.BLUE +
-          "Processing file " + str(fname) + color.END);
+    print((color.BOLD + color.BLUE +
+          "Processing file " + str(fname) + color.END));
     iDF = createCallstackSeries(rawData, "." + fname + ".log");
 
     perFileDataFrame[fname] = iDF;
 
-    for func in funcToColor.keys():
+    for func in list(funcToColor.keys()):
 
         funcDF = iDF.loc[lambda iDF: iDF.function == func, :];
         funcDF = funcDF.drop(columns = ['function']);
 
-        if (not perFuncDF.has_key(func)):
+        if (func not in perFuncDF):
             perFuncDF[func] = funcDF;
         else:
             perFuncDF[func] = pd.concat([perFuncDF[func], funcDF]);
@@ -853,10 +868,10 @@ def createOutlierHistogramForFunction(func, funcDF, bucketFilenames):
     averageDuration = funcDF['durations'].mean();
     maxDuration = funcDF['durations'].max();
 
-    if (outlierThresholdDict.has_key(func)):
+    if (func in outlierThresholdDict):
         durationThreshold = outlierThresholdDict[func];
         durationThresholdDescr = outlierPrettyNames[func];
-    elif (outlierThresholdDict.has_key("*")):
+    elif ("*" in outlierThresholdDict):
         durationThreshold = outlierThresholdDict["*"];
         durationThresholdDescr = outlierPrettyNames["*"];
     else:
@@ -979,10 +994,10 @@ def parseConfigFile(fname):
     unitsPerNanosecond = 0.0;
 
     try:
-        configFile = open(fname, "r");
+        configFile = open_file_find_latency_spikes(fname, "r");
     except:
-        print(color.BOLD + color.RED +
-              "Could not open " + fname + " for reading." + color.END);
+        print((color.BOLD + color.RED +
+              "Could not open " + fname + " for reading." + color.END));
         return False;
 
     for line in configFile:
@@ -1000,10 +1015,10 @@ def parseConfigFile(fname):
 
                 firstNonCommentLine = False;
             except ValueError:
-                print(color.BOLD + color.RED +
+                print((color.BOLD + color.RED +
                       "Could not parse the number of measurement units " +
                       "per second. This must be the first value in the " +
-                      "config file." + color.END);
+                      "config file." + color.END));
                 return False;
         else:
             func = "";
@@ -1017,9 +1032,9 @@ def parseConfigFile(fname):
                 number = int(words[1]);
                 units = words[2];
             except ValueError:
-                print(color.BOLD + color.RED +
+                print((color.BOLD + color.RED +
                       "While parsing the config file, could not understand " +
-                      "the following line: " + color.END);
+                      "the following line: " + color.END));
                 print(line);
                 continue;
 
@@ -1040,9 +1055,9 @@ def parseConfigFile(fname):
                 # this is a standard deviation. We will compute
                 # the actual value once we know the average.
             else:
-                print(color.BOLD + color.RED +
+                print((color.BOLD + color.RED +
                       "While parsing the config file, could not understand " +
-                      "the following line: " + color.END);
+                      "the following line: " + color.END));
                 print(line);
                 continue;
 
@@ -1053,7 +1068,7 @@ def parseConfigFile(fname):
     if (firstNonCommentLine):
         return False;
 
-    print outlierThresholdDict;
+    print(outlierThresholdDict);
     return True;
 
 
@@ -1091,11 +1106,11 @@ def main():
         pluralSuffix = "";
         if (STDEV_MULT > 1):
             pluralSuffix = "s";
-        print(color.BLUE + color.BOLD +
+        print((color.BLUE + color.BOLD +
               "Will deem as outliers all function instances whose runtime " +
               "was " + str(STDEV_MULT) + " standard deviation" + pluralSuffix +
               " greater than the average runtime for that function."
-              + color.END);
+              + color.END));
 
 
     # Create a directory for the files that display the data summarized
@@ -1116,7 +1131,7 @@ def main():
     #
     fileNameList = generateTSSlicesForBuckets();
 
-    totalFuncs = len(perFuncDF.keys());
+    totalFuncs = len(list(perFuncDF.keys()));
     i = 0;
     # Generate a histogram of outlier durations
     for func in sorted(perFuncDF.keys()):
@@ -1127,11 +1142,11 @@ def main():
 
         i += 1;
         percentComplete = float(i) / float(totalFuncs) * 100;
-        print(color.BLUE + color.BOLD + " Generating outlier histograms... "),
+        print((color.BLUE + color.BOLD + " Generating outlier histograms... "), end=' ')
         sys.stdout.write("%d%% complete  \r" % (percentComplete) );
         sys.stdout.flush();
 
-    print(color.END);
+    print((color.END));
     reset_output();
     output_file(filename = "WT-outliers.html", title="Outlier histograms");
     show(column(figuresForAllFunctions));

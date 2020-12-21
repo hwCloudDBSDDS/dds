@@ -5,6 +5,21 @@ import sys
 from gen_helper import getCopyrightNotice, openNamespaces, closeNamespaces, \
     include
 
+
+
+def open_file_gen_delimiter_list(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def generate(unicode_proplist_file, target):
     """Generates a C++ source file that contains a delimiter checking function.
 
@@ -12,7 +27,7 @@ def generate(unicode_proplist_file, target):
     every delimiter in the Unicode Character Database with the properties 
     specified in delim_properties.
     """
-    out = open(target, "w")
+    out = open_file_gen_delimiter_list(target, "w")
 
     out.write(getCopyrightNotice())
     out.write(include("mongo/db/fts/unicode/codepoints.h"))
@@ -21,7 +36,7 @@ def generate(unicode_proplist_file, target):
 
     delim_codepoints = set()
 
-    proplist_file = open(unicode_proplist_file, 'rU')
+    proplist_file = open_file_gen_delimiter_list(unicode_proplist_file, 'rU')
 
     delim_properties = ["White_Space", 
                         "Dash", 

@@ -75,7 +75,7 @@ class test_util02(wttest.WiredTigerTestCase, suite_subprocess):
         if self.key_format == 'S':
             return ("%0.6d" % i) + ':' + self.get_string(i, 20)
         elif self.key_format == 'r':
-            return long(i + 1)
+            return int(i + 1)
         else:
             return i + 1
 

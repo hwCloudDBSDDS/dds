@@ -35,13 +35,28 @@ import tempfile
 from subprocess import (Popen, PIPE, STDOUT)
 
 
+
+
+def open_file_make_archive(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def main(argv):
     """Execute Main program."""
     args = []
     for arg in argv[1:]:
         if arg.startswith("@"):
             file_name = arg[1:]
-            f_handle = open(file_name, "r")
+            f_handle = open_file_make_archive(file_name, "r")
             args.extend(s1.strip('"') for s1 in shlex.split(f_handle.readline(), posix=False))
             f_handle.close()
         else:
@@ -96,14 +111,14 @@ def make_tar_archive(opts):
         enclosing_file_directory = os.path.dirname(temp_file_location)
         if not os.path.exists(enclosing_file_directory):
             os.makedirs(enclosing_file_directory)
-        print "copying %s => %s" % (input_filename, temp_file_location)
+        print(("copying %s => %s" % (input_filename, temp_file_location)))
         if os.path.isdir(input_filename):
             shutil.copytree(input_filename, temp_file_location)
         else:
             shutil.copy2(input_filename, temp_file_location)
         tar_command.append(preferred_filename)
 
-    print " ".join(tar_command)
+    print((" ".join(tar_command)))
     # execute the full tar command
     run_directory = os.path.join(os.getcwd(), enclosing_archive_directory)
     proc = Popen(tar_command, stdout=PIPE, stderr=STDOUT, bufsize=0, cwd=run_directory)
@@ -171,7 +186,7 @@ def parse_options(args):
             xform.replace(os.path.altsep or os.path.sep, os.path.sep).split('=', 1)
             for xform in opts.transformations
         ]
-    except Exception, err:  # pylint: disable=broad-except
+    except Exception as err:  # pylint: disable=broad-except
         parser.error(err)
 
     return opts

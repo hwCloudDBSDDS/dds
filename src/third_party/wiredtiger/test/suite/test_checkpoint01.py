@@ -67,14 +67,14 @@ class test_checkpoint(wttest.WiredTigerTestCase):
     # checkpoint the object, and verify it (which verifies all underlying
     # checkpoints individually).
     def build_file_with_checkpoints(self):
-        for checkpoint_name, entry in self.checkpoints.iteritems():
+        for checkpoint_name, entry in self.checkpoints.items():
             self.add_records(checkpoint_name)
             self.session.checkpoint("name=" + checkpoint_name)
 
     # Create a dictionary of sorted records a checkpoint should include.
     def list_expected(self, name):
         records = {}
-        for checkpoint_name, entry in self.checkpoints.iteritems():
+        for checkpoint_name, entry in self.checkpoints.items():
             start, stop = entry[0]
             for i in range(start, stop+1):
                 records['%010d KEY------' % i] =\
@@ -87,7 +87,7 @@ class test_checkpoint(wttest.WiredTigerTestCase):
     def list_checkpoint(self, name):
         records = {}
         cursor = self.session.open_cursor(self.uri, None, 'checkpoint=' + name)
-        while cursor.next() == 0:
+        while next(cursor) == 0:
             records[cursor.get_key()] = cursor.get_value()
         cursor.close()
         return records
@@ -98,7 +98,7 @@ class test_checkpoint(wttest.WiredTigerTestCase):
         # Physically verify the file, including the individual checkpoints.
         self.session.verify(self.uri, None)
 
-        for checkpoint_name, entry in self.checkpoints.iteritems():
+        for checkpoint_name, entry in self.checkpoints.items():
             if entry[1] == 0:
                 self.assertRaises(wiredtiger.WiredTigerError,
                     lambda: self.session.open_cursor(
@@ -131,7 +131,7 @@ class test_checkpoint(wttest.WiredTigerTestCase):
         # Drop remaining checkpoints, all subsequent checkpoint opens should
         # fail.
         self.session.checkpoint("drop=(from=all)")
-        for checkpoint_name, entry in self.checkpoints.iteritems():
+        for checkpoint_name, entry in self.checkpoints.items():
             self.checkpoints[checkpoint_name] =\
                 (self.checkpoints[checkpoint_name][0], 0)
         self.check()
@@ -215,7 +215,7 @@ class test_checkpoint_target(wttest.WiredTigerTestCase):
 
     def check(self, uri, ds, value):
         cursor = self.session.open_cursor(uri, None, "checkpoint=checkpoint-1")
-        self.assertEquals(cursor[ds.key(10)], value)
+        self.assertEqual(cursor[ds.key(10)], value)
         cursor.close()
 
     def test_checkpoint_target(self):
@@ -305,7 +305,7 @@ class test_checkpoint_last(wttest.WiredTigerTestCase):
             # Verify the "last" checkpoint sees the correct value.
             cursor = self.session.open_cursor(
                 uri, None, "checkpoint=WiredTigerCheckpoint")
-            self.assertEquals(cursor[ds.key(10)], value)
+            self.assertEqual(cursor[ds.key(10)], value)
             # Don't close the checkpoint cursor, we want it to remain open until
             # the test completes.
 
@@ -392,7 +392,7 @@ class test_checkpoint_empty(wttest.WiredTigerTestCase):
         self.session.create(self.uri, "key_format=S,value_format=S")
         self.session.checkpoint('name=ckpt')
         cursor = self.session.open_cursor(self.uri, None, "checkpoint=ckpt")
-        self.assertEquals(cursor.next(), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(next(cursor), wiredtiger.WT_NOTFOUND)
         cursor.close()
 
         cursor = self.session.open_cursor(self.uri, None)
@@ -400,14 +400,14 @@ class test_checkpoint_empty(wttest.WiredTigerTestCase):
         self.session.checkpoint()
 
         cursor = self.session.open_cursor(self.uri, None, "checkpoint=ckpt")
-        self.assertEquals(cursor.next(), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(next(cursor), wiredtiger.WT_NOTFOUND)
 
     def test_checkpoint_empty_six(self):
         self.session.create(self.uri, "key_format=S,value_format=S")
         self.session.checkpoint()
         cursor = self.session.open_cursor(
             self.uri, None, "checkpoint=WiredTigerCheckpoint")
-        self.assertEquals(cursor.next(), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(next(cursor), wiredtiger.WT_NOTFOUND)
         cursor.close()
 
         cursor = self.session.open_cursor(self.uri, None)
@@ -416,7 +416,7 @@ class test_checkpoint_empty(wttest.WiredTigerTestCase):
 
         cursor = self.session.open_cursor(
             self.uri, None, "checkpoint=WiredTigerCheckpoint")
-        self.assertEquals(cursor.next(), wiredtiger.WT_NOTFOUND)
+        self.assertEqual(next(cursor), wiredtiger.WT_NOTFOUND)
 
 if __name__ == '__main__':
     wttest.run()

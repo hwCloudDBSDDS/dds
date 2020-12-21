@@ -6,8 +6,6 @@ Invoke by specifying an output file.
 $ python generate_compile_expansions.py --out compile_expansions.yml
 """
 
-from __future__ import print_function
-
 import argparse
 import json
 import os
@@ -17,6 +15,21 @@ import yaml
 
 VERSION_JSON = "version.json"
 
+
+
+
+def open_file_generate_compile_expansions_shared_cache(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def generate_expansions():
     """Entry point for the script.
@@ -29,8 +42,8 @@ def generate_expansions():
     expansions.update(generate_version_expansions())
     expansions.update(generate_scons_cache_expansions())
 
-    with open(args.out, "w") as out:
-        print("saving compile expansions to {0}: ({1})".format(args.out, expansions))
+    with open_file_generate_compile_expansions_shared_cache(args.out, "w") as out:
+        print(("saving compile expansions to {0}: ({1})".format(args.out, expansions)))
         yaml.safe_dump(expansions, out, default_flow_style=False)
 
 
@@ -46,7 +59,7 @@ def generate_version_expansions():
     expansions = {}
 
     if os.path.exists(VERSION_JSON):
-        with open(VERSION_JSON, "r") as fh:
+        with open_file_generate_compile_expansions_shared_cache(VERSION_JSON, "r") as fh:
             data = fh.read()
             version_data = json.loads(data)
         version_line = version_data['version']
@@ -86,7 +99,7 @@ def generate_scons_cache_expansions():
         system_id_path = "/etc/mongodb-build-system-id"
 
     if os.path.isfile(system_id_path):
-        with open(system_id_path, "r") as fh:
+        with open_file_generate_compile_expansions_shared_cache(system_id_path, "r") as fh:
             system_uuid = fh.readline().strip()
 
     # Set the scons shared cache setting

@@ -12,21 +12,36 @@ import time
 keep_all_files = 00000
 ignore_corrupt_dbfiles = 0
 
-def corruption_warning(filename):
-    print "Warning: Discarding corrupt database:", filename
 
-try: unicode
+
+def open_file_dblite(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
+def corruption_warning(filename):
+    print("Warning: Discarding corrupt database:", filename)
+
+try: str
 except NameError:
     def is_string(s):
         return isinstance(s, str)
 else:
     def is_string(s):
-        return type(s) in (str, unicode)
+        return type(s) in (str, str)
 
 try:
-    unicode('a')
+    str('a')
 except NameError:
-    def unicode(s): return s
+    def str(s): return s
 
 dblite_suffix = '.dblite'
 tmp_suffix = '.tmp'
@@ -76,7 +91,7 @@ class dblite(object):
         statinfo = os.stat(self._file_name)
         self._chown_to = statinfo.st_uid
         self._chgrp_to = statinfo.st_gid
-      except OSError, e:
+      except OSError as e:
         # db file doesn't exist yet.
         # Check os.environ for SUDO_UID, use if set
         self._chown_to = int(os.environ.get('SUDO_UID', -1))
@@ -89,7 +104,7 @@ class dblite(object):
     else:
       try:
         f = self._open(self._file_name, "rb")
-      except IOError, e:
+      except IOError as e:
         if (self._flag != "c"):
           raise e
         self._open(self._file_name, "wb", self._mode)
@@ -124,7 +139,7 @@ class dblite(object):
     # (e.g. from a previous run as root).  We should still be able to
     # unlink() the file if the directory's writable, though, so ignore
     # any OSError exception  thrown by the chmod() call.
-    try: self._os_chmod(self._file_name, 0777)
+    try: self._os_chmod(self._file_name, 0o777)
     except OSError: pass
     self._os_unlink(self._file_name)
     self._os_rename(self._tmp_name, self._file_name)
@@ -153,7 +168,7 @@ class dblite(object):
     if (not is_string(value)):
       raise TypeError("value `%s' must be a string but is %s" % (value, type(value)))
     self._dict[key] = value
-    self._needs_sync = 0001
+    self._needs_sync = 0o001
 
   def keys(self):
     return list(self._dict.keys())
@@ -173,78 +188,78 @@ class dblite(object):
   def __len__(self):
     return len(self._dict)
 
-def open(file, flag=None, mode=0666):
+def open_file_dblite(file, flag=None, mode=0o666):
   return dblite(file, flag, mode)
 
 def _exercise():
-  db = open("tmp", "n")
+  db = open_file_dblite("tmp", "n")
   assert len(db) == 0
   db["foo"] = "bar"
   assert db["foo"] == "bar"
-  db[unicode("ufoo")] = unicode("ubar")
-  assert db[unicode("ufoo")] == unicode("ubar")
+  db[str("ufoo")] = str("ubar")
+  assert db[str("ufoo")] == str("ubar")
   db.sync()
-  db = open("tmp", "c")
+  db = open_file_dblite("tmp", "c")
   assert len(db) == 2, len(db)
   assert db["foo"] == "bar"
   db["bar"] = "foo"
   assert db["bar"] == "foo"
-  db[unicode("ubar")] = unicode("ufoo")
-  assert db[unicode("ubar")] == unicode("ufoo")
+  db[str("ubar")] = str("ufoo")
+  assert db[str("ubar")] == str("ufoo")
   db.sync()
-  db = open("tmp", "r")
+  db = open_file_dblite("tmp", "r")
   assert len(db) == 4, len(db)
   assert db["foo"] == "bar"
   assert db["bar"] == "foo"
-  assert db[unicode("ufoo")] == unicode("ubar")
-  assert db[unicode("ubar")] == unicode("ufoo")
+  assert db[str("ufoo")] == str("ubar")
+  assert db[str("ubar")] == str("ufoo")
   try:
     db.sync()
-  except IOError, e:
+  except IOError as e:
     assert str(e) == "Read-only database: tmp.dblite"
   else:
     raise RuntimeError("IOError expected.")
-  db = open("tmp", "w")
+  db = open_file_dblite("tmp", "w")
   assert len(db) == 4
   db["ping"] = "pong"
   db.sync()
   try:
     db[(1,2)] = "tuple"
-  except TypeError, e:
+  except TypeError as e:
     assert str(e) == "key `(1, 2)' must be a string but is <type 'tuple'>", str(e)
   else:
     raise RuntimeError("TypeError exception expected")
   try:
     db["list"] = [1,2]
-  except TypeError, e:
+  except TypeError as e:
     assert str(e) == "value `[1, 2]' must be a string but is <type 'list'>", str(e)
   else:
     raise RuntimeError("TypeError exception expected")
-  db = open("tmp", "r")
+  db = open_file_dblite("tmp", "r")
   assert len(db) == 5
-  db = open("tmp", "n")
+  db = open_file_dblite("tmp", "n")
   assert len(db) == 0
   dblite._open("tmp.dblite", "w")
-  db = open("tmp", "r")
+  db = open_file_dblite("tmp", "r")
   dblite._open("tmp.dblite", "w").write("x")
   try:
-    db = open("tmp", "r")
+    db = open_file_dblite("tmp", "r")
   except pickle.UnpicklingError:
     pass
   else:
     raise RuntimeError("pickle exception expected.")
   global ignore_corrupt_dbfiles
   ignore_corrupt_dbfiles = 2
-  db = open("tmp", "r")
+  db = open_file_dblite("tmp", "r")
   assert len(db) == 0
   os.unlink("tmp.dblite")
   try:
-    db = open("tmp", "w")
-  except IOError, e:
+    db = open_file_dblite("tmp", "w")
+  except IOError as e:
     assert str(e) == "[Errno 2] No such file or directory: 'tmp.dblite'", str(e)
   else:
     raise RuntimeError("IOError expected.")
-  print "OK"
+  print("OK")
 
 if (__name__ == "__main__"):
   _exercise()

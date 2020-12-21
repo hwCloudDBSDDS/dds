@@ -41,6 +41,21 @@ cache_force = False
 cache_show = False
 cache_readonly = False
 
+
+
+def open_file_CacheDir(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def CacheRetrieveFunc(target, source, env):
     t = target[0]
     fs = t.fs
@@ -186,14 +201,14 @@ class CacheDir(object):
                 self.config['prefix_len'] = 2
                 if not os.path.exists(config_file):
                     try:
-                        with open(config_file, 'w') as config:
+                        with open_file_CacheDir(config_file, 'w') as config:
                             json.dump(self.config, config)
                     except:
                         msg = "Failed to write cache configuration for " + path
                         raise SCons.Errors.EnvironmentError(msg)
         else:
             try:
-                with open(config_file) as config:
+                with open_file_CacheDir(config_file) as config:
                     self.config = json.load(config)
             except ValueError:
                 msg = "Failed to read cache configuration for " + path
@@ -205,7 +220,7 @@ class CacheDir(object):
             if cache_debug == '-':
                 self.debugFP = sys.stdout
             elif cache_debug:
-                self.debugFP = open(cache_debug, 'w')
+                self.debugFP = open_file_CacheDir(cache_debug, 'w')
             else:
                 self.debugFP = None
             self.current_cache_debug = cache_debug

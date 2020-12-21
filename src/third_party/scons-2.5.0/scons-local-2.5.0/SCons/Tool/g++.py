@@ -40,7 +40,7 @@ import subprocess
 import SCons.Tool
 import SCons.Util
 
-import gcc
+from . import gcc
 
 cplusplus = __import__('c++', globals(), locals(), [])
 

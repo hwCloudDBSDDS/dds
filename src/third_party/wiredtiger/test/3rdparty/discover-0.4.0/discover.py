@@ -21,10 +21,20 @@ __all__ = ['DiscoveringTestLoader', 'main', 'defaultTestLoader']
 
 
 if hasattr(types, 'ClassType'):
-    class_types = (types.ClassType, type)
+    class_types = (type, type)
 else:
     # for Python 3.0 compatibility
     class_types = type
+
+
+
+def cmp(x, y):
+    if x > y:
+        return 1
+    elif x == y:
+        return 0
+    else:
+        return -1
 
 def _CmpToKey(mycmp):
     'Convert a cmp= function into a key= function'
@@ -93,7 +103,7 @@ class DiscoveringTestLoader(unittest.TestLoader):
         testCaseNames = self.getTestCaseNames(testCaseClass)
         if not testCaseNames and hasattr(testCaseClass, 'runTest'):
             testCaseNames = ['runTest']
-        loaded_suite = self.suiteClass(map(testCaseClass, testCaseNames))
+        loaded_suite = self.suiteClass(list(map(testCaseClass, testCaseNames)))
         return loaded_suite
 
     def loadTestsFromModule(self, module, use_load_tests=True):

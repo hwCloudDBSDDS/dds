@@ -7,7 +7,7 @@
 4. Has support for checking which files are to be checked.
 5. Supports validating and updating a set of files to the right coding style.
 """
-from __future__ import print_function, absolute_import
+
 
 import difflib
 import glob
@@ -20,7 +20,7 @@ import sys
 import tarfile
 import tempfile
 import threading
-import urllib2
+import urllib.request, urllib.error, urllib.parse
 from distutils import spawn  # pylint: disable=no-name-in-module
 from optparse import OptionParser
 from multiprocessing import cpu_count
@@ -57,9 +57,24 @@ CLANG_FORMAT_SOURCE_TAR_BASE = string.Template(
 
 
 ##############################################################################
+
+
+def open_file_clang_format(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def callo(args):
     """Call a program, and capture its output."""
-    return subprocess.check_output(args)
+    return subprocess.check_output(args).decode('utf-8')
 
 
 def get_tar_path(version, tar_path):
@@ -89,18 +104,18 @@ def get_clang_format_from_cache_and_extract(url, tarball_ext):
     temp_tar_file = os.path.join(dest_dir, "temp.tar" + tarball_ext)
 
     # Download from file
-    print("Downloading clang-format %s from %s, saving to %s" % (CLANG_FORMAT_VERSION, url,
-                                                                 temp_tar_file))
+    print(("Downloading clang-format %s from %s, saving to %s" % (CLANG_FORMAT_VERSION, url,
+                                                                 temp_tar_file)))
 
     # Retry download up to 5 times.
     num_tries = 5
     for attempt in range(num_tries):
         try:
-            resp = urllib2.urlopen(url)
-            with open(temp_tar_file, 'wb') as fh:
+            resp = urllib.request.urlopen(url)
+            with open_file_clang_format(temp_tar_file, 'wb') as fh:
                 fh.write(resp.read())
             break
-        except urllib2.URLError:
+        except urllib.error.URLError:
             if attempt == num_tries - 1:
                 raise
             continue
@@ -140,7 +155,7 @@ class ClangFormat(object):
             if os.path.isfile(path):
                 self.path = path
             else:
-                print("WARNING: Could not find clang-format %s" % (path))
+                print(("WARNING: Could not find clang-format %s" % (path)))
 
         # Check the environment variable
         if "MONGO_CLANG_FORMAT" in os.environ:
@@ -202,8 +217,8 @@ class ClangFormat(object):
                 elif sys.platform == "darwin":
                     get_clang_format_from_darwin_cache(self.path)
                 else:
-                    print("ERROR: clang-format.py does not support downloading clang-format " +
-                          " on this platform, please install clang-format " + CLANG_FORMAT_VERSION)
+                    print(("ERROR: clang-format.py does not support downloading clang-format " +
+                          " on this platform, please install clang-format " + CLANG_FORMAT_VERSION))
 
         # Validate we have the correct version
         # We only can fail here if the user specified a clang-format binary and it is the wrong
@@ -221,15 +236,15 @@ class ClangFormat(object):
         if CLANG_FORMAT_VERSION in cf_version:
             return True
 
-        print("WARNING: clang-format found in path, but incorrect version found at " + self.path +
-              " with version: " + cf_version)
+        print(("WARNING: clang-format found in path, but incorrect version found at " + self.path +
+              " with version: " + cf_version))
 
         return False
 
     def _lint(self, file_name, print_diff):
         """Check the specified file has the correct format."""
-        with open(file_name, 'rb') as original_text:
-            original_file = original_text.read()
+        with open_file_clang_format(file_name, 'rb') as original_text:
+            original_file = original_text.read().decode('utf-8')
 
         # Get formatted file as clang-format would format the file
         formatted_file = callo([self.path, "--style=file", file_name])
@@ -242,11 +257,11 @@ class ClangFormat(object):
 
                 # Take a lock to ensure diffs do not get mixed when printed to the screen
                 with self.print_lock:
-                    print("ERROR: Found diff for " + file_name)
-                    print("To fix formatting errors, run %s --style=file -i %s" % (self.path,
-                                                                                   file_name))
+                    print(("ERROR: Found diff for " + file_name))
+                    print(("To fix formatting errors, run %s --style=file -i %s" % (self.path,
+                                                                                   file_name)))
                     for line in result:
-                        print(line.rstrip())
+                        print((line.rstrip()))
 
             return False
 
@@ -433,20 +448,20 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
 
             # Format each file needed if it was not deleted
             if not os.path.exists(commit_file):
-                print("Skipping file '%s' since it has been deleted in commit '%s'" % (commit_file,
-                                                                                       commit_hash))
+                print(("Skipping file '%s' since it has been deleted in commit '%s'" % (commit_file,
+                                                                                       commit_hash)))
                 deleted_files.append(commit_file)
                 continue
 
             if files_match.search(commit_file):
                 clang_format.format(commit_file)
             else:
-                print("Skipping file '%s' since it is not a file clang_format should format" %
-                      commit_file)
+                print(("Skipping file '%s' since it is not a file clang_format should format" %
+                      commit_file))
 
         # Check if anything needed reformatting, and if so amend the commit
         if not repo.is_working_tree_dirty():
-            print("Commit %s needed no reformatting" % commit_hash)
+            print(("Commit %s needed no reformatting" % commit_hash))
         else:
             repo.commit(["--all", "--amend", "--no-edit"])
 
@@ -474,7 +489,7 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
             if root_dir and not os.path.exists(root_dir):
                 os.makedirs(root_dir)
 
-            with open(diff_file, "w+") as new_file:
+            with open_file_clang_format(diff_file, "w+") as new_file:
                 new_file.write(file_contents)
 
             repo.add([diff_file])
@@ -488,8 +503,8 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
     repo.checkout(["-b", new_branch])
 
     print("reformat-branch is done running.\n")
-    print("A copy of your branch has been made named '%s', and formatted with clang-format.\n" %
-          new_branch)
+    print(("A copy of your branch has been made named '%s', and formatted with clang-format.\n" %
+          new_branch))
     print("The original branch has been left unchanged.")
     print("The next step is to rebase the new branch on 'master'.")
 

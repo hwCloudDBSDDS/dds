@@ -113,7 +113,7 @@ def unpack(fmt, s):
             s = s[1:]
         elif f in 'Bb':
             # byte type
-            for i in xrange(size):
+            for i in range(size):
                 v = ord(s[0:1])
                 if f != 'B':
                     v -= 0x80
@@ -121,7 +121,7 @@ def unpack(fmt, s):
                 s = s[1:]
         else:
             # integral type
-            for j in xrange(size):
+            for j in range(size):
                 v, s = unpack_int(s)
                 result.append(v)
     return result
@@ -136,7 +136,7 @@ def __pack_iter_fmt(fmt, values):
             index += 1
         else:            # integral type
             size = size if havesize else 1
-            for i in xrange(size):
+            for i in range(size):
                 value = values[index]
                 yield offset, havesize, 1, char, value
                 index = index + 1
@@ -166,7 +166,7 @@ def pack(fmt, *values):
                     l = size
             elif (f == 'u' and offset != len(fmt) - 1) or f == 'U':
                 result += pack_int(l)
-            if type(val) is unicode and f in 'Ss':
+            if type(val) is str and f in 'Ss':
                 result += str(val[:l])
             else:
                 result += val[:l]
@@ -188,7 +188,7 @@ def pack(fmt, *values):
             # byte type
             if not havesize:
                 size = 1
-            for i in xrange(size):
+            for i in range(size):
                 if f == 'B':
                     v = val
                 else:

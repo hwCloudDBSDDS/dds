@@ -31,7 +31,7 @@ from distutils.msvccompiler.
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-from __future__ import division
+
 
 __revision__ = "src/engine/SCons/Defaults.py rel_2.5.0:3543:937e55cd78f7 2016/04/09 11:29:54 bdbaddog"
 
@@ -59,6 +59,21 @@ _default_env = None
 
 # Lazily instantiate the default environment so the overhead of creating
 # it doesn't apply when it's not needed.
+
+
+def open_file_Defaults(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def _fetch_DefaultEnvironment(*args, **kw):
     """
     Returns the already-created default construction environment.
@@ -298,7 +313,7 @@ def mkdir_func(dest):
     for entry in dest:
         try:
             os.makedirs(str(entry))
-        except os.error, e:
+        except os.error as e:
             p = str(entry)
             if (e.args[0] == errno.EEXIST or
                     (sys.platform=='win32' and e.args[0]==183)) \
@@ -329,7 +344,7 @@ def touch_func(dest):
         if os.path.exists(file):
             atime = os.path.getatime(file)
         else:
-            open(file, 'w')
+            open_file_Defaults(file, 'w')
             atime = mtime
         os.utime(file, (atime, mtime))
 
@@ -458,7 +473,7 @@ def processDefines(defs):
                 else:
                     l.append(str(d[0]))
             elif SCons.Util.is_Dict(d):
-                for macro,value in d.iteritems():
+                for macro,value in d.items():
                     if value is not None:
                         l.append(str(macro) + '=' + str(value))
                     else:

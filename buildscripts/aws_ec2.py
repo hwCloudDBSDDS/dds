@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """AWS EC2 instance launcher and controller."""
 
-from __future__ import print_function
+
 
 import base64
 import collections
@@ -56,7 +56,6 @@ class AwsEc2(object):
     @staticmethod
     def wait_for_state(instance, state, wait_time_secs=0, show_progress=False):
         """Wait up to 'wait_time_secs' for instance to be in 'state'.
-
         Return 0 if 'state' reached, 1 otherwise.
         """
         if show_progress:
@@ -331,8 +330,8 @@ def main():  # pylint: disable=too-many-locals,too-many-statements
         # The 'expire-on' key is a UTC time.
         expire_dt = datetime.datetime.utcnow() + datetime.timedelta(hours=options.tag_expire_hours)
         tags = [{"Key": "expire-on", "Value": expire_dt.strftime("%Y-%m-%d %H:%M:%S")},
-                {"Key": "Name",
-                 "Value": options.tag_name}, {"Key": "owner", "Value": options.tag_owner}]
+                {"Key": "Name", "Value": options.tag_name},
+                {"Key": "owner", "Value": options.tag_owner}]
 
         my_kwargs = {}
         if options.extra_args is not None:

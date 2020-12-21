@@ -140,7 +140,7 @@ def gather_details(source_dict, target_dict):
     :param source_dict: A dictionary of details will be gathered.
     :param target_dict: A dictionary into which details will be gathered.
     """
-    for name, content_object in source_dict.items():
+    for name, content_object in list(source_dict.items()):
         new_name = name
         disambiguator = itertools.count(1)
         while new_name in target_dict:
@@ -409,7 +409,7 @@ class TestCase(unittest.TestCase):
         if not mismatch:
             return
         existing_details = self.getDetails()
-        for (name, content) in mismatch.get_details().items():
+        for (name, content) in list(mismatch.get_details().items()):
             self.addDetailUniqueName(name, content)
         raise MismatchError(matchee, matcher, mismatch, verbose)
 

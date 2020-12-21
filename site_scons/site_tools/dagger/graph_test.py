@@ -5,9 +5,24 @@ from JSON
 
 import json
 import unittest
-import graph
-import graph_consts
+from . import graph
+from . import graph_consts
 
+
+
+
+def open_file_graph_test(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def generate_graph():
     """Generates our test graph"""
@@ -122,15 +137,15 @@ class TestGraphMethods(unittest.TestCase, CustomAssertions):
         node = graph.NodeLib("test_node", "test_node")
         self.g._nodes = {"test_node": node}
 
-        self.assertEquals(self.g.get_node("test_node"), node)
+        self.assertEqual(self.g.get_node("test_node"), node)
 
-        self.assertEquals(self.g.get_node("missing_node"), None)
+        self.assertEqual(self.g.get_node("missing_node"), None)
 
     def test_add_node(self):
         node = graph.NodeLib("test_node", "test_node")
         self.g.add_node(node)
 
-        self.assertEquals(self.g.get_node("test_node"), node)
+        self.assertEqual(self.g.get_node("test_node"), node)
 
         self.assertRaises(ValueError, self.g.add_node, node)
 
@@ -153,16 +168,16 @@ class TestGraphMethods(unittest.TestCase, CustomAssertions):
         self.g.add_edge(graph_consts.LIB_FIL, self.from_node_lib.id,
                         self.to_node_file.id)
 
-        self.assertEquals(self.g.edges[graph_consts.LIB_LIB][
+        self.assertEqual(self.g.edges[graph_consts.LIB_LIB][
             self.from_node_lib.id], set([self.to_node_lib.id]))
 
-        self.assertEquals(self.g.edges[graph_consts.LIB_SYM][
+        self.assertEqual(self.g.edges[graph_consts.LIB_SYM][
             self.from_node_lib.id], set([self.to_node_sym.id]))
 
-        self.assertEquals(self.g.edges[graph_consts.LIB_FIL][
+        self.assertEqual(self.g.edges[graph_consts.LIB_FIL][
             self.from_node_lib.id], set([self.to_node_file.id]))
 
-        self.assertEquals(self.to_node_lib.dependent_libs,
+        self.assertEqual(self.to_node_lib.dependent_libs,
                           set([self.from_node_lib.id]))
 
     def test_add_edge_files(self):
@@ -173,22 +188,22 @@ class TestGraphMethods(unittest.TestCase, CustomAssertions):
         self.g.add_edge(graph_consts.FIL_LIB, self.from_node_file.id,
                         self.to_node_lib.id)
 
-        self.assertEquals(self.g.edges[graph_consts.FIL_FIL][
+        self.assertEqual(self.g.edges[graph_consts.FIL_FIL][
             self.from_node_file.id], set([self.to_node_file.id]))
-        self.assertEquals(self.g.edges[graph_consts.FIL_SYM][
+        self.assertEqual(self.g.edges[graph_consts.FIL_SYM][
             self.from_node_file.id], set([self.to_node_sym.id]))
-        self.assertEquals(self.g.edges[graph_consts.FIL_LIB][
+        self.assertEqual(self.g.edges[graph_consts.FIL_LIB][
             self.from_node_file.id], set([self.to_node_lib.id]))
 
-        self.assertEquals(self.to_node_file.dependent_files,
+        self.assertEqual(self.to_node_file.dependent_files,
                           set([self.from_node_file.id]))
 
     def test_export_to_json(self):
         generated_graph = generate_graph()
         generated_graph.export_to_json("export_test.json")
-        generated = open("export_test.json", "r")
-        correct = open("test_graph.json", "r")
-        self.assertEquals(json.load(generated), json.load(correct))
+        generated = open_file_graph_test("export_test.json", "r")
+        correct = open_file_graph_test("test_graph.json", "r")
+        self.assertEqual(json.load(generated), json.load(correct))
         generated.close()
         correct.close()
 
@@ -196,7 +211,7 @@ class TestGraphMethods(unittest.TestCase, CustomAssertions):
         graph_fromJSON = graph.Graph("test_graph.json")
         correct_graph = generate_graph()
 
-        for id in graph_fromJSON.nodes.keys():
+        for id in list(graph_fromJSON.nodes.keys()):
             # for some reason, neither
             # assertTrue(graph_fromJSON.get_node(id) == correct_graph.get_node(str(id)))
             # nor assertEquals() seem to call the correct eq method here, hence
@@ -205,7 +220,7 @@ class TestGraphMethods(unittest.TestCase, CustomAssertions):
             self.assertNodeEquals(
                 graph_fromJSON.get_node(id), correct_graph.get_node(id))
 
-        self.assertEquals(graph_fromJSON.edges, correct_graph.edges)
+        self.assertEqual(graph_fromJSON.edges, correct_graph.edges)
 
 
 if __name__ == '__main__':

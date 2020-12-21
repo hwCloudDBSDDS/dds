@@ -16,8 +16,6 @@ The server needs these utilities:
 This script will either download a MongoDB tarball or use an existing setup.
 """
 
-from __future__ import print_function
-
 import atexit
 import collections
 import copy
@@ -43,28 +41,14 @@ import tempfile
 import threading
 import time
 import traceback
-import urlparse
+import urllib.parse
 import zipfile
+import subprocess
 
 import psutil
 import pymongo
 import requests
 import yaml
-
-# The subprocess32 module is untested on Windows and thus isn't recommended for use, even when it's
-# installed. See https://github.com/google/python-subprocess32/blob/3.2.7/README.md#usage.
-if os.name == "posix" and sys.version_info[0] == 2:
-    try:
-        import subprocess32 as subprocess
-    except ImportError:
-        import warnings
-        warnings.warn(("Falling back to using the subprocess module because subprocess32 isn't"
-                       " available. When using the subprocess module, a child process may"
-                       " trigger an invalid free(). See SERVER-22219 for more details."),
-                      RuntimeWarning)
-        import subprocess  # type: ignore
-else:
-    import subprocess
 
 # Get relative imports to work when the package is not installed on the PYTHONPATH.
 if __name__ == "__main__" and __package__ is None:
@@ -75,6 +59,21 @@ _IS_WINDOWS = sys.platform == "win32" or sys.platform == "cygwin"
 _IS_LINUX = sys.platform.startswith("linux")
 _IS_DARWIN = sys.platform == "darwin"
 
+
+
+
+def open_file_powertest(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def _try_import(module, name=None):
     """Attempt to import a module and add it as a global variable.
@@ -148,7 +147,7 @@ def exit_handler():
             REPORT_JSON["results"][0]["exit_code"] = exit_code
             REPORT_JSON["results"][0]["end"] = test_end
             REPORT_JSON["results"][0]["elapsed"] = test_time
-            with open(REPORT_JSON_FILE, "w") as jstream:
+            with open_file_powertest(REPORT_JSON_FILE, "w") as jstream:
                 json.dump(REPORT_JSON, jstream)
             LOGGER.debug("Exit handler: report file contents %s", REPORT_JSON)
         except:  # pylint: disable=bare-except
@@ -157,7 +156,7 @@ def exit_handler():
     if EXIT_YML_FILE:
         LOGGER.debug("Exit handler: Saving exit file %s", EXIT_YML_FILE)
         try:
-            with open(EXIT_YML_FILE, "w") as yaml_stream:
+            with open_file_powertest(EXIT_YML_FILE, "w") as yaml_stream:
                 yaml.safe_dump(EXIT_YML, yaml_stream)
         except:  # pylint: disable=bare-except
             pass
@@ -456,7 +455,7 @@ def download_file(url, file_name, download_retries=5):
             response = session.get(url, stream=True)
             response.raise_for_status()
 
-            with open(file_name, "wb") as file_handle:
+            with open_file_powertest(file_name, "wb") as file_handle:
                 try:
                     for block in response.iter_content(1024 * 1000):
                         file_handle.write(block)
@@ -618,7 +617,7 @@ def install_mongod(bin_dir=None, tarball_url="latest", root_dir=None):
         elif _IS_LINUX:
             tarball_url = "https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-latest.tgz"
 
-    tarball = os.path.split(urlparse.urlsplit(tarball_url).path)[-1]
+    tarball = os.path.split(urllib.parse.urlsplit(tarball_url).path)[-1]
     download_file(tarball_url, tarball)
     install_tarball(tarball, root_dir)
     chmod_x_binaries(get_bin_dir(root_dir))
@@ -637,7 +636,7 @@ def get_boot_datetime(uptime_string):
     """
     match = re.search(r"last booted (.*), up", uptime_string)
     if match:
-        return datetime.datetime(*map(int, map(float, re.split("[ :-]", match.groups()[0]))))
+        return datetime.datetime(*list(map(int, list(map(float, re.split("[ :-]", match.groups()[0]))))))
     return -1
 
 
@@ -841,7 +840,7 @@ class WindowsService(object):
 
     def create(self):
         """Create service, if not installed. Return (code, output) tuple."""
-        if self.status() in self._states.values():
+        if self.status() in list(self._states.values()):
             return 1, "Service '{}' already installed, status: {}".format(self.name, self.status())
         try:
             win32serviceutil.InstallService(pythonClassString="Service.{}".format(
@@ -857,7 +856,7 @@ class WindowsService(object):
 
     def update(self):
         """Update installed service. Return (code, output) tuple."""
-        if self.status() not in self._states.values():
+        if self.status() not in list(self._states.values()):
             return 1, "Service update '{}' status: {}".format(self.name, self.status())
         try:
             win32serviceutil.ChangeServiceConfig(pythonClassString="Service.{}".format(
@@ -873,7 +872,7 @@ class WindowsService(object):
 
     def delete(self):
         """Delete service. Return (code, output) tuple."""
-        if self.status() not in self._states.values():
+        if self.status() not in list(self._states.values()):
             return 1, "Service delete '{}' status: {}".format(self.name, self.status())
         try:
             win32serviceutil.RemoveService(serviceName=self.name)
@@ -887,7 +886,7 @@ class WindowsService(object):
 
     def start(self):
         """Start service. Return (code, output) tuple."""
-        if self.status() not in self._states.values():
+        if self.status() not in list(self._states.values()):
             return 1, "Service start '{}' status: {}".format(self.name, self.status())
         try:
             win32serviceutil.StartService(serviceName=self.name)
@@ -905,7 +904,7 @@ class WindowsService(object):
     def stop(self, timeout):
         """Stop service, waiting for 'timeout' seconds. Return (code, output) tuple."""
         self.pids = []
-        if self.status() not in self._states.values():
+        if self.status() not in list(self._states.values()):
             return 1, "Service '{}' status: {}".format(self.name, self.status())
         try:
             win32serviceutil.StopService(serviceName=self.name)
@@ -1390,9 +1389,9 @@ def internal_crash(use_sudo=False, crash_option=None):
         # in a subprocess call to isolate them and not require the invocation
         # of this script to be with sudo.
         # Code to perform natively:
-        #   with open("/proc/sys/kernel/sysrq", "w") as f:
+        #   with open_file_powertest("/proc/sys/kernel/sysrq", "w") as f:
         #       f.write("1\n")
-        #   with open("/proc/sysrq-trigger", "w") as f:
+        #   with open_file_powertest("/proc/sysrq-trigger", "w") as f:
         #       f.write("b\n")
         sudo = "/usr/bin/sudo" if use_sudo else ""
         cmds = """
@@ -1601,13 +1600,13 @@ def mongo_seed_docs(mongo, db_name, coll_name, num_docs):
     base_num = 100000
     bulk_num = min(num_docs, 10000)
     bulk_loops = num_docs / bulk_num
-    for _ in xrange(bulk_loops):
+    for _ in range(bulk_loops):
         num_coll_docs = mongo[db_name][coll_name].count()
         if num_coll_docs >= num_docs:
             break
         mongo[db_name][coll_name].insert_many(
             [{"x": random.randint(0, base_num), "doc": rand_string(1024)}
-             for _ in xrange(bulk_num)])
+             for _ in range(bulk_num)])
     LOGGER.info("After seeding there are %d documents in the collection",
                 mongo[db_name][coll_name].count())
     return 0
@@ -1661,10 +1660,10 @@ def new_resmoke_config(config_file, new_config_file, test_data, eval_str=""):
             "config": {"shell_options": {"eval": eval_str, "global_vars": {"TestData": test_data}}}
         }
     }
-    with open(config_file, "r") as yaml_stream:
+    with open_file_powertest(config_file, "r") as yaml_stream:
         config = yaml.load(yaml_stream)
     config.update(new_config)
-    with open(new_config_file, "w") as yaml_stream:
+    with open_file_powertest(new_config_file, "w") as yaml_stream:
         yaml.safe_dump(config, yaml_stream)
 
 
@@ -2036,7 +2035,7 @@ Examples:
     # Command line options override the config file options.
     config_options = None
     if options.config_file:
-        with open(options.config_file) as ystream:
+        with open_file_powertest(options.config_file) as ystream:
             config_options = yaml.safe_load(ystream)
         LOGGER.info("Loading config file %s with options %s", options.config_file, config_options)
         # Load the options specified in the config_file
@@ -2056,14 +2055,14 @@ Examples:
                 if getattr(options, opt.dest, None) != opt.default:
                     save_options[opt.dest] = getattr(options, opt.dest, None)
         LOGGER.info("Config options being saved %s", save_options)
-        with open(save_config_options, "w") as ystream:
+        with open_file_powertest(save_config_options, "w") as ystream:
             yaml.safe_dump(save_options, ystream, default_flow_style=False)
         sys.exit(0)
 
     script_name = os.path.basename(__file__)
     # Print script name and version.
     if options.version:
-        print("{}:{}".format(script_name, __version__))
+        print(("{}:{}".format(script_name, __version__)))
         sys.exit(0)
 
     if options.exit_yml_file:
@@ -2074,7 +2073,7 @@ Examples:
     if options.report_json_file:
         REPORT_JSON_FILE = options.report_json_file
         if REPORT_JSON_FILE and os.path.exists(REPORT_JSON_FILE):
-            with open(REPORT_JSON_FILE) as jstream:
+            with open_file_powertest(REPORT_JSON_FILE) as jstream:
                 REPORT_JSON = json.load(jstream)
         else:
             REPORT_JSON = {
@@ -2427,7 +2426,7 @@ Examples:
 
         # Start CRUD clients
         host_port = "{}:{}".format(mongod_host, standard_port)
-        for i in xrange(options.num_crud_clients):
+        for i in range(options.num_crud_clients):
             if options.config_crud_client == with_external_server:
                 crud_config_file = NamedTempFile.create(suffix=".yml", directory="tmp")
                 crud_test_data["collectionName"] = "{}-{}".format(options.collection_name, i)
@@ -2443,7 +2442,7 @@ Examples:
             LOGGER.info("****Started %d CRUD client(s)****", options.num_crud_clients)
 
         # Start FSM clients
-        for i in xrange(options.num_fsm_clients):
+        for i in range(options.num_fsm_clients):
             fsm_config_file = NamedTempFile.create(suffix=".yml", directory="tmp")
             fsm_test_data["dbNamePrefix"] = "fsm-{}".format(i)
             # Do collection validation only for the first FSM client.

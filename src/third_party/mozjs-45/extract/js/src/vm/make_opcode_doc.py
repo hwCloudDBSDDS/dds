@@ -10,12 +10,27 @@
     https://developer.mozilla.org/en-US/docs/SpiderMonkey/Internals/Bytecode
 """
 
-from __future__ import print_function
+
 import re
 import sys
 from xml.sax.saxutils import escape
 
 SOURCE_BASE = 'http://mxr.mozilla.org/mozilla-central/source'
+
+
+
+def open_file_make_opcode_doc(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def error(message):
     print("Error: {message}".format(message=message), file=sys.stderr)
@@ -25,7 +40,7 @@ def get_xdr_version(dir):
     subtrahend_pat = re.compile('XDR_BYTECODE_VERSION_SUBTRAHEND\s*=\s*(\d+);', re.S)
     version_expr_pat = re.compile('XDR_BYTECODE_VERSION\s*=\s*uint32_t\(0xb973c0de\s*-\s*(.+?)\);', re.S)
 
-    with open('{dir}/js/src/vm/Xdr.h'.format(dir=dir), 'r') as f:
+    with open_file_make_opcode_doc('{dir}/js/src/vm/Xdr.h'.format(dir=dir), 'r') as f:
         data = f.read()
 
     m = subtrahend_pat.search(data)
@@ -159,7 +174,7 @@ def get_opcodes(dir):
     opcode = OpcodeInfo()
     merged = opcode
 
-    with open('{dir}/js/src/vm/Opcodes.h'.format(dir=dir), 'r') as f:
+    with open_file_make_opcode_doc('{dir}/js/src/vm/Opcodes.h'.format(dir=dir), 'r') as f:
         data = f.read()
 
     for m in re.finditer(iter_pat, data):
@@ -294,20 +309,18 @@ def print_opcode(opcode):
     names_template = '{name} [-{nuses}, +{ndefs}]{flags}'
     opcodes = sorted([opcode] + opcode.group,
                      key=lambda opcode: opcode.name)
-    names = map(lambda code: names_template.format(name=escape(code.name),
+    names = [names_template.format(name=escape(code.name),
                                                    nuses=override(code.nuses,
                                                                   opcode.nuses_override),
                                                    ndefs=override(code.ndefs,
                                                                   opcode.ndefs_override),
-                                                   flags=format_flags(code.flags)),
-                opcodes)
+                                                   flags=format_flags(code.flags)) for code in opcodes]
     if len(opcodes) == 1:
         values = ['{value} (0x{value:02x})'.format(value=opcode.value)]
     else:
         values_template = '{name}: {value} (0x{value:02x})'
-        values = map(lambda code: values_template.format(name=escape(code.name),
-                                                         value=code.value),
-                    opcodes)
+        values = [values_template.format(name=escape(code.name),
+                                                         value=code.value) for code in opcodes]
 
     print("""<dt id="{id}">{names}</dt>
 <dd>

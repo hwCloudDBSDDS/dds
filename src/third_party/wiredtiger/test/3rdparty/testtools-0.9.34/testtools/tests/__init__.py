@@ -43,5 +43,5 @@ def test_suite():
         test_testresult,
         test_testsuite,
         ]
-    suites = map(lambda x: x.test_suite(), modules)
+    suites = [x.test_suite() for x in modules]
     return TestSuite(suites)

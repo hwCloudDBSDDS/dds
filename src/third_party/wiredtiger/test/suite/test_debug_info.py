@@ -37,7 +37,7 @@ class test_debug_info(wttest.WiredTigerTestCase):
 
         self.session.create(self.uri, 'key_format=i,value_format=i')
         c = self.session.open_cursor(self.uri, None)
-        keys = range(1, 101)
+        keys = list(range(1, 101))
         for k in keys:
             c[k] = 1
         c.close()

@@ -11,6 +11,21 @@ import sys
 from optparse import OptionParser
 
 
+
+
+def open_file_aggregate_tracefiles(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def aggregate(inputs, output):
     """Aggregate the tracefiles given in inputs to a tracefile given by output."""
     args = ['lcov']
@@ -20,7 +35,7 @@ def aggregate(inputs, output):
 
     args += ['-o', output]
 
-    print ' '.join(args)
+    print((' '.join(args)))
 
     return subprocess.call(args)
 
@@ -51,7 +66,7 @@ def main():
                 inputs.append(path)
 
         elif ext == '.txt':
-            inputs += [line.strip() for line in open(path) if getfilesize(line.strip()) > 0]
+            inputs += [line.strip() for line in open_file_aggregate_tracefiles(path) if getfilesize(line.strip()) > 0]
         else:
             return "unrecognized file type"
 

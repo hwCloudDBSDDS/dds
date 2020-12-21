@@ -49,7 +49,7 @@ class test_las01(wttest.WiredTigerTestCase):
                 session.begin_transaction()
             cursor.set_key(ds.key(nrows + i))
             cursor.set_value(value)
-            self.assertEquals(cursor.update(), 0)
+            self.assertEqual(cursor.update(), 0)
             if timestamp == True:
                 session.commit_transaction('commit_timestamp=' + timestamp_str(i + 1))
         cursor.close()
@@ -82,10 +82,10 @@ class test_las01(wttest.WiredTigerTestCase):
         cursor = session.open_cursor(uri, None)
         # Skip the initial rows, which were not updated
         for i in range(0, nrows+1):
-            self.assertEquals(cursor.next(), 0)
+            self.assertEqual(next(cursor), 0)
         if (check_value != cursor.get_value()):
-            print "Check value : " + str(check_value)
-            print "value : " + str(cursor.get_value())
+            print("Check value : " + str(check_value))
+            print("value : " + str(cursor.get_value()))
         self.assertTrue(check_value == cursor.get_value())
         cursor.close()
         session.close()
@@ -107,7 +107,7 @@ class test_las01(wttest.WiredTigerTestCase):
         for i in range(1, 10000):
             cursor.set_key(ds.key(nrows + i))
             cursor.set_value(bigvalue)
-            self.assertEquals(cursor.insert(), 0)
+            self.assertEqual(cursor.insert(), 0)
         cursor.close()
         self.session.checkpoint()
 

@@ -143,8 +143,8 @@ class test_assert04(wttest.WiredTigerTestCase, suite_subprocess):
         c.close()
 
         c = self.session.open_cursor(uri)
-        self.assertEquals(c['key_ts1'], 'value5')
-        self.assertEquals(c['key_nots'], 'value_nots3')
+        self.assertEqual(c['key_ts1'], 'value5')
+        self.assertEqual(c['key_nots'], 'value_nots3')
         c.close()
 
         # Now alter the setting again and detection is off.
@@ -239,8 +239,8 @@ class test_assert04(wttest.WiredTigerTestCase, suite_subprocess):
         c.close()
 
         c = self.session.open_cursor(uri)
-        self.assertEquals(c['key_ts3'], 'value10')
-        self.assertEquals(c['key_ts4'], 'value15')
+        self.assertEqual(c['key_ts3'], 'value10')
+        self.assertEqual(c['key_ts4'], 'value15')
         c.close()
 
         #
@@ -275,7 +275,7 @@ class test_assert04(wttest.WiredTigerTestCase, suite_subprocess):
             lambda: self.session.commit_transaction(), msg_ooo)
         c.close()
         c = self.session.open_cursor(uri)
-        self.assertEquals(c['key_ts4'], 'value15')
+        self.assertEqual(c['key_ts4'], 'value15')
         c.close()
 
         c = self.session.open_cursor(uri)
@@ -286,7 +286,7 @@ class test_assert04(wttest.WiredTigerTestCase, suite_subprocess):
         self.session.commit_transaction()
         c.close()
         c = self.session.open_cursor(uri)
-        self.assertEquals(c['key_ts4'], 'value16')
+        self.assertEqual(c['key_ts4'], 'value16')
         c.close()
 
         # Now try to modify a key previously used with timestamps without
@@ -305,7 +305,7 @@ class test_assert04(wttest.WiredTigerTestCase, suite_subprocess):
             lambda: self.session.commit_transaction(), msg_usage)
         c.close()
         c = self.session.open_cursor(uri)
-        self.assertEquals(c['key_ts4'], 'value16')
+        self.assertEqual(c['key_ts4'], 'value16')
         c.close()
 
         # Now confirm the other way. Create a key without a timestamp and then
@@ -342,7 +342,7 @@ class test_assert04(wttest.WiredTigerTestCase, suite_subprocess):
         c.close()
 
         c = self.session.open_cursor(uri)
-        self.assertEquals(c['key_nots'], 'value_nots1')
+        self.assertEqual(c['key_nots'], 'value_nots1')
         c.close()
 
         # Confirm it is okay to set the timestamp in the middle or end of the
@@ -357,7 +357,7 @@ class test_assert04(wttest.WiredTigerTestCase, suite_subprocess):
         c.close()
 
         c = self.session.open_cursor(uri)
-        self.assertEquals(c['key_ts5'], 'value20')
+        self.assertEqual(c['key_ts5'], 'value20')
         c.close()
 
         c = self.session.open_cursor(uri)
@@ -370,7 +370,7 @@ class test_assert04(wttest.WiredTigerTestCase, suite_subprocess):
         c.close()
 
         c = self.session.open_cursor(uri)
-        self.assertEquals(c['key_ts6'], 'value21_after')
+        self.assertEqual(c['key_ts6'], 'value21_after')
         c.close()
 
         # Confirm it is okay to set the timestamp on the commit call.

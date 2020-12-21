@@ -1,13 +1,13 @@
 #ifndef CPPJIBEA_HMMSEGMENT_H
 #define CPPJIBEA_HMMSEGMENT_H
 
+#include "DictTrie.hpp"
 #include "HMMModel.hpp"
 #include "SegmentBase.hpp"
 #include <cassert>
 #include <fstream>
 #include <iostream>
 #include <memory.h>
-#include "DictTrie.hpp"
 
 namespace cppjieba {
 class HMMSegment : public SegmentBase {

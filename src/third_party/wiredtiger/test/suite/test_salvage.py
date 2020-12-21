@@ -32,6 +32,21 @@ import wiredtiger, wttest
 
 # test_salvage.py
 #    Utilities: wt salvage
+
+
+def open_file_test_salvage(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 class test_salvage(wttest.WiredTigerTestCase, suite_subprocess):
     tablename = 'test_salvage.a'
     nentries = 1000
@@ -118,7 +133,7 @@ class test_salvage(wttest.WiredTigerTestCase, suite_subprocess):
         # flushed and closed from the WT point of view.
         filename = tablename + ".wt"
 
-        fp = open(filename, "r+b")
+        fp = open_file_test_salvage(filename, "r+b")
         found = matchpos = 0
         match = unique
         matchlen = len(match)

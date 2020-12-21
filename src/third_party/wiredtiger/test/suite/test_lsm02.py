@@ -43,7 +43,7 @@ class test_lsm02(wttest.WiredTigerTestCase):
         cursor.set_key(key)
         cursor.search()
         if value != cursor.get_value():
-            print 'Unexpected value from LSM tree'
+            print('Unexpected value from LSM tree')
         cursor.close()
 
     # Put some special values that start with the LSM tombstone

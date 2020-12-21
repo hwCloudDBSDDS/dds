@@ -66,6 +66,26 @@ struct CompressionHeader {
         compressorId = _readWithChecking<LittleEndian<uint8_t>>(cursor);
     }
 
+    Status validate(const MessageCompressorRegistry& reg) const {
+        if (originalOpCode < 0) {
+            return {ErrorCodes::BadValue, "Invalid opcode"};
+        }
+        if (uncompressedSize < 0) {
+            return {ErrorCodes::BadValue, "Invalid uncompressedSize"};
+        }
+        auto compressor = reg.getCompressor(compressorId);
+        if (!compressor) {
+            return {ErrorCodes::InternalError,
+                    "Compression algorithm specified in message is not available"};
+        }
+        size_t bufferSize = uncompressedSize + MsgData::MsgDataHeaderSize;
+        if (bufferSize > MaxMessageSizeBytes) {
+            return {ErrorCodes::BadValue,
+                    "Decompressed message would be larger than maximum message size"};
+        }
+        return Status::OK();
+    }
+
     static size_t size() {
         return sizeof(originalOpCode) + sizeof(uncompressedSize) + sizeof(compressorId);
     }
@@ -149,24 +169,17 @@ StatusWith<Message> MessageCompressorManager::decompressMessage(const Message& m
     }
     CompressionHeader compressionHeader(&input);
 
-    auto compressor = _registry->getCompressor(compressionHeader.compressorId);
-    if (!compressor) {
-        return {ErrorCodes::InternalError,
-                "Compression algorithm specified in message is not available"};
+    auto status = compressionHeader.validate(*_registry);
+    if (!status.isOK()) {
+        return status;
     }
-
+    auto compressor = _registry->getCompressor(compressionHeader.compressorId);
+    invariant(compressor);
     if (compressorId) {
         *compressorId = compressor->getId();
     }
 
-    LOG(3) << "Decompressing message with " << compressor->getName();
-
-    size_t bufferSize = compressionHeader.uncompressedSize + MsgData::MsgDataHeaderSize;
-    if (bufferSize > MaxMessageSizeBytes) {
-        return {ErrorCodes::BadValue,
-                "Decompressed message would be larger than maximum message size"};
-    }
-
+    const size_t bufferSize = compressionHeader.uncompressedSize + MsgData::MsgDataHeaderSize;
     auto outputMessageBuffer = SharedBuffer::allocate(bufferSize);
     MsgData::View outMessage(outputMessageBuffer.get());
     outMessage.setId(inputHeader.getId());

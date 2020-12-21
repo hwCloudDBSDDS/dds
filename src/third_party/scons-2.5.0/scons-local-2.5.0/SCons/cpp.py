@@ -72,7 +72,7 @@ cpp_lines_dict = {
 # the corresponding compiled regular expression that fetches the arguments
 # we care about.
 Table = {}
-for op_list, expr in cpp_lines_dict.items():
+for op_list, expr in list(cpp_lines_dict.items()):
     e = re.compile(expr)
     for op in op_list:
         Table[op] = e
@@ -87,7 +87,7 @@ del op_list
 override = {
     'if'                        : 'if(?!def)',
 }
-l = [override.get(x, x) for x in Table.keys()]
+l = [override.get(x, x) for x in list(Table.keys())]
 
 
 # Turn the list of expressions into one big honkin' regular expression
@@ -130,7 +130,7 @@ CPP_to_Python_Ops_Sub = lambda m: CPP_to_Python_Ops_Dict[m.group(0)]
 # re module, as late as version 2.2.2, empirically matches the
 # "!" in "!=" first, instead of finding the longest match.
 # What's up with that?
-l = sorted(CPP_to_Python_Ops_Dict.keys(), key=lambda a: len(a), reverse=True)
+l = sorted(list(CPP_to_Python_Ops_Dict.keys()), key=lambda a: len(a), reverse=True)
 
 # Turn the list of keys into one regular expression that will allow us
 # to substitute all of the operators at once.
@@ -156,6 +156,21 @@ for l in CPP_to_Python_Eval_List:
     l[0] = re.compile(l[0])
 
 # Wrap up all of the above into a handy function.
+
+
+def open_file_cpp(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
+
 def CPP_to_Python(s):
     """
     Converts a C pre-processor expression into an equivalent
@@ -266,7 +281,7 @@ class PreProcessor(object):
         d = {
             'scons_current_file'    : self.scons_current_file
         }
-        for op in Table.keys():
+        for op in list(Table.keys()):
             d[op] = getattr(self, 'do_' + op)
         self.default_table = d
 
@@ -379,7 +394,7 @@ class PreProcessor(object):
         return None
 
     def read_file(self, file):
-        return open(file).read()
+        return open_file_cpp(file).read()
 
     # Start and stop processing include lines.
 

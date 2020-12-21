@@ -32,8 +32,23 @@ selection method.
 
 __revision__ = "src/engine/SCons/Platform/darwin.py rel_2.5.0:3543:937e55cd78f7 2016/04/09 11:29:54 bdbaddog"
 
-import posix
+from . import posix
 import os
+
+
+
+def open_file_darwin(file_name, mode='r', encoding=None, **kwargs):
+    if mode in ['r', 'rt', 'tr'] and encoding is None:
+        with open(file_name, 'rb') as f:
+            context = f.read()
+            for encoding_item in ['UTF-8', 'GBK', 'ISO-8859-1']:
+                try:
+                    context.decode(encoding=encoding_item)
+                    encoding = encoding_item
+                    break
+                except UnicodeDecodeError as e:
+                    pass
+    return open(file_name, mode=mode, encoding=encoding, **kwargs)
 
 def generate(env):
     posix.generate(env)
@@ -56,7 +71,7 @@ def generate(env):
 
     for file in filelist:
         if os.path.isfile(file):
-            f = open(file, 'r')
+            f = open_file_darwin(file, 'r')
             lines = f.readlines()
             for line in lines:
                 if line:
