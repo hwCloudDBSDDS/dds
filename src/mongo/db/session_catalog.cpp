@@ -156,6 +156,30 @@ ScopedSession SessionCatalog::getOrCreateSession(OperationContext* opCtx,
     return ss;
 }
 
+ScopedCheckedOutSession SessionCatalog::checkOutSession(OperationContext* opCtx,
+                                                 const LogicalSessionId& lsid) {
+    invariant(!opCtx->lockState()->isLocked());
+    invariant(!opCtx->getLogicalSessionId());
+    invariant(!opCtx->getTxnNumber());
+
+    auto ss = [&] {
+        stdx::unique_lock<stdx::mutex> ul(_mutex);
+        auto sri = _getOrCreateSessionRuntimeInfo(ul, opCtx, lsid);
+
+        // Wait until the session is no longer checked out
+        opCtx->waitForConditionOrInterrupt(
+            sri->availableCondVar, ul, [&sri]() { return !sri->checkedOut; });
+
+        invariant(!sri->checkedOut);
+        sri->checkedOut = true;
+        return ScopedSession(sri);
+    }();
+
+    ss->refreshFromStorageIfNeeded(opCtx);
+
+    return ScopedCheckedOutSession(opCtx, ss);
+}
+
 void SessionCatalog::invalidateSessions(OperationContext* opCtx,
                                         boost::optional<BSONObj> singleSessionDoc) {
     auto replCoord = repl::ReplicationCoordinator::get(opCtx);
