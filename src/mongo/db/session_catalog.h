@@ -126,6 +126,8 @@ public:
                       const SessionKiller::Matcher& matcher,
                       stdx::function<void(OperationContext*, Session*)> workerFn);
 
+    ScopedCheckedOutSession checkOutSession(OperationContext* opCtx, const LogicalSessionId& lsid);
+
 private:
     struct SessionRuntimeInfo {
         SessionRuntimeInfo(LogicalSessionId lsid) : txnState(std::move(lsid)) {}
@@ -203,6 +205,8 @@ class ScopedCheckedOutSession {
     MONGO_DISALLOW_COPYING(ScopedCheckedOutSession);
 
     friend ScopedCheckedOutSession SessionCatalog::checkOutSession(OperationContext*);
+    friend ScopedCheckedOutSession SessionCatalog::checkOutSession(OperationContext*,
+                                                 const LogicalSessionId& lsid);
 
 public:
     ScopedCheckedOutSession(ScopedCheckedOutSession&&) = default;
