@@ -1,5 +1,5 @@
 # Jira integration
-cryptography == 39.0.1
+cryptography == 41.0.2
 jira == 1.0.10
 pyjwt == 2.4.0
 # Other
